@@ -34,6 +34,9 @@ Local dev outside Docker needs `codex` on PATH (`npm install --global @openai/co
 
 **Windows caveat:** `npm run check` fails on 2 of 12 tests that are platform artifacts, not bugs — `container-codex-runner.test.ts` expects POSIX paths but `path.resolve("/tmp/...")` yields `C:\tmp\...`, and `app.test.ts` can exceed vitest's 5s default on a cold first import (passes with `--testTimeout=30000`). Typecheck, the other 10 tests, and `build` pass on Windows; treat the suite as authoritative only on Linux/macOS (where CI/Docker run it).
 
+Running the judged Docker path (`npm run poc`) on Windows: npm hands scripts to `cmd.exe`, and Git Bash mangles `dst=/workspace` mount paths, so invoke it as
+`MSYS_NO_PATHCONV=1 LOCAL_POC_DATA_ROOT="C:/<abs>/Oculith/.local" bash scripts/start-local-poc.sh` (with `ARK_*` exported, e.g. `set -a; . ./.env; set +a`). Verified 2026-08-26: baseline acceptance task completes in ~70 s in a disposable container. The script falls back to `CODEX_SANDBOX_MODE=danger-full-access` inside the container because Docker Desktop's kernel lacks Landlock — expected, documented in `.env.example`.
+
 Also on Windows: Codex runs every `shell_command` via `powershell.exe -Command` **with the user profile loaded** (no `-NoProfile` option exists in Codex). A slow profile (e.g. a conda init hook, ~20–40 s) is paid on *every* tool call, so multi-step runs hit `CODEX_TIMEOUT_MS`. Fix is in the profile, not the app: guard slow hooks with `if (-not [Console]::IsOutputRedirected) { ... }`. `CODEX_BIN` must also point at the native `codex.exe` (the npm `.cmd` shim can't be spawned by `execFile`).
 
 ## Architecture
