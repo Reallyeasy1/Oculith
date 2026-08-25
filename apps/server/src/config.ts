@@ -44,7 +44,7 @@ const envSchema = z.object({
   ARK_BASE_URL: z
     .string()
     .url()
-    .default("https://ark.cn-beijing.volces.com/api/v3"),
+    .default("https://ark.ap-southeast.bytepluses.com/api/v3"),
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().optional(),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),

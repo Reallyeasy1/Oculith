@@ -20,6 +20,7 @@ describe("Codex runner protocol", () => {
       "--skip-git-repo-check",
       "-C",
       "/tmp/workspace",
+      "--",
       "build a calculator",
     ]);
   });
@@ -34,7 +35,20 @@ describe("Codex runner protocol", () => {
       },
       "workspace-write",
     );
-    expect(args.slice(-3)).toEqual(["resume", "thread-123", "add tests"]);
+    expect(args.slice(-4)).toEqual(["resume", "thread-123", "--", "add tests"]);
+  });
+
+  it("keeps flag-looking prompts positional and rejects flag-looking thread ids", () => {
+    const request = {
+      agentId: "agent",
+      workspacePath: "/tmp/workspace",
+      prompt: "--help",
+      threadId: null,
+    };
+    expect(buildCodexArgs(request, "workspace-write").slice(-2)).toEqual(["--", "--help"]);
+    expect(() =>
+      buildCodexArgs({ ...request, threadId: "--dangerous" }, "workspace-write"),
+    ).toThrow("Invalid Codex thread id");
   });
 
   it("extracts the session, final message and usage", () => {

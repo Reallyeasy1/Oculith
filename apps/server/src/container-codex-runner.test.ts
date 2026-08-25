@@ -57,7 +57,7 @@ describe("Container Codex runner", () => {
       },
       config,
     );
-    expect(args.slice(-3)).toEqual(["resume", "thread-123", "continue"]);
+    expect(args.slice(-4)).toEqual(["resume", "thread-123", "--", "continue"]);
     expect(args).not.toContain("keep-id");
   });
 });

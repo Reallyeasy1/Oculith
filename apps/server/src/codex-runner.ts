@@ -33,10 +33,14 @@ export function buildCodexArgs(
     "-C",
     workspacePath,
   ];
+  // "--" stops Codex (clap) flag parsing so a prompt like "--help" or "-C /" is a prompt, not a flag.
   if (request.threadId) {
-    args.push("resume", request.threadId, request.prompt);
+    if (request.threadId.startsWith("-")) {
+      throw new Error("Invalid Codex thread id");
+    }
+    args.push("resume", request.threadId, "--", request.prompt);
   } else {
-    args.push(request.prompt);
+    args.push("--", request.prompt);
   }
   return args;
 }
