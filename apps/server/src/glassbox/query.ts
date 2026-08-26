@@ -1,0 +1,120 @@
+import { SCHEMA_VERSION, type CapturePolicy, type Category, type ObservationEvent, type TraceStatus } from "./schema.js";
+
+export interface Span {
+  spanId: string; parentSpanId?: string | undefined; name: string; category: Category; status: TraceStatus;
+  startedAt: string; endedAt?: string | undefined; durationMs?: number | undefined; incomplete: boolean; sequence: number;
+  source: ObservationEvent["source"]; attributes: ObservationEvent["attributes"]; summary?: ObservationEvent["summary"];
+  error?: ObservationEvent["error"]; events: ObservationEvent[]; children: Span[]; depth: number;
+}
+export interface FailureFocus {
+  kind: "error" | "timeout" | "cancelled" | "degraded"; spanId: string; eventId: string; sequence: number;
+  name: string; category: Category; component: string; message?: string | undefined; path: string[]; diagnosis: string;
+}
+export interface TraceSummary {
+  schemaVersion: typeof SCHEMA_VERSION; capturePolicy: CapturePolicy; runId: string; traceId: string; agentId: string;
+  sessionId?: string | undefined; status: TraceStatus; startedAt?: string | undefined; endedAt?: string | undefined;
+  durationMs?: number | undefined; eventCount: number; spanCount: number; incompleteSpans: number; redactedEvents: number;
+  degraded: boolean; truncated: boolean;
+  usage?: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number } | undefined;
+  capabilities: { model: "observed" | "unavailable"; tool: "observed" | "unavailable" };
+  firstFailingStep?: string | undefined; failure?: FailureFocus | undefined;
+}
+export interface TraceView { summary: TraceSummary; spans: Span[]; events: ObservationEvent[] }
+
+const TERMINAL: Record<string, TraceStatus> = { "run.completed": "ok", "run.failed": "error", "run.cancelled": "cancelled", "run.timed_out": "timeout" };
+const CATEGORY_RANK: Record<Category, number> = { tool: 0, model: 1, runtime: 2, workspace: 3, sandbox: 4, policy: 5, infrastructure: 6, control: 7, experience: 8 };
+
+export function flattenSpans(spans: Span[]): Span[] {
+  const out: Span[] = []; const walk = (s: Span) => { out.push(s); s.children.forEach(walk); }; spans.forEach(walk); return out;
+}
+
+function reconstructSpans(events: ObservationEvent[]): Map<string, Span> {
+  const spans = new Map<string, Span>();
+  for (const e of events) {
+    let span = spans.get(e.spanId);
+    if (!span) {
+      span = { spanId: e.spanId, parentSpanId: e.parentSpanId, name: e.name, category: e.category, status: e.phase === "start" ? "running" : e.status,
+        startedAt: e.timestamp, incomplete: e.phase === "start", sequence: e.sequence, source: e.source, attributes: { ...e.attributes },
+        summary: e.summary, error: e.error, events: [], children: [], depth: 0 };
+      if (e.phase === "instant") { span.endedAt = e.timestamp; span.durationMs = e.durationMs ?? 0; }
+      spans.set(e.spanId, span);
+    } else if (e.phase === "end") {
+      span.endedAt = e.timestamp; span.status = e.status; span.incomplete = false; span.name = span.name === span.spanId ? e.name : span.name;
+      span.durationMs = e.durationMs ?? Math.max(0, Date.parse(e.timestamp) - Date.parse(span.startedAt));
+      Object.assign(span.attributes, e.attributes); if (e.error) span.error = e.error; if (e.summary) span.summary = e.summary;
+    } else {
+      span.events.push(e);
+    }
+    if (e.spanId !== span.spanId) span.events.push(e);
+  }
+  return spans;
+}
+
+function buildTree(spans: Map<string, Span>): Span[] {
+  const roots: Span[] = [];
+  for (const s of spans.values()) { const p = s.parentSpanId ? spans.get(s.parentSpanId) : undefined; if (p) p.children.push(s); else roots.push(s); }
+  const sortRec = (list: Span[], depth: number) => { list.sort((a, b) => a.sequence - b.sequence); for (const s of list) { s.depth = depth; sortRec(s.children, depth + 1); } };
+  sortRec(roots, 0);
+  return roots;
+}
+
+function pathTo(spans: Map<string, Span>, spanId: string): string[] {
+  const path: string[] = []; let cur = spans.get(spanId);
+  while (cur) { path.unshift(cur.spanId); cur = cur.parentSpanId ? spans.get(cur.parentSpanId) : undefined; }
+  return path;
+}
+
+function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, status: TraceStatus, degraded: boolean, durationMs: number | undefined): FailureFocus | undefined {
+  if (status === "ok" && !degraded) return undefined;
+  const candidates = events.filter((e) => e.status === "error" || e.status === "timeout" || e.status === "cancelled" || e.type === "error.recorded");
+  if (candidates.length === 0) {
+    if (degraded) return { kind: "degraded", spanId: "", eventId: "", sequence: -1, name: "telemetry.degraded", category: "control", component: "GlassBox", path: [], diagnosis: "Trace evidence is incomplete: the trace store was unavailable during this Run. The Run's real result is unaffected; some spans may be missing." };
+    return undefined;
+  }
+  candidates.sort((a, b) => a.sequence - b.sequence || CATEGORY_RANK[a.category] - CATEGORY_RANK[b.category]);
+  const first = candidates[0]!;
+  const kind: FailureFocus["kind"] = first.status === "timeout" ? "timeout" : first.status === "cancelled" ? "cancelled" : "error";
+  const path = pathTo(spans, first.spanId);
+  const secs = durationMs === undefined ? "an unknown duration" : (durationMs / 1000).toFixed(1) + " s";
+  const cleanup = events.find((e) => e.type === "runtime.container.stopped" || (e.type === "runtime.codex.failed" && e.attributes.terminationSignal));
+  const capability = events.find((e) => e.type === "capability.unavailable");
+  const diagnosis = [
+    `Run ${status} in ${first.source.component} after ${secs}.`,
+    `First actionable ${kind}: ${first.name}${first.error ? " — " + first.error.message : ""}.`,
+    cleanup ? `Cleanup evidence: ${cleanup.name}${cleanup.attributes.exitCode !== undefined ? " (exit " + String(cleanup.attributes.exitCode) + ")" : ""}${cleanup.attributes.terminationSignal ? " via " + String(cleanup.attributes.terminationSignal) : ""}.` : "",
+    capability ? "No model/tool-level details were available from the runtime." : "",
+    degraded ? "Trace store was degraded during this Run; evidence may be incomplete." : "",
+  ].filter(Boolean).join(" ");
+  return { kind, spanId: first.spanId, eventId: first.eventId, sequence: first.sequence, name: first.name, category: first.category,
+    component: first.source.component, message: first.error?.message, path, diagnosis };
+}
+
+export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: CapturePolicy; degraded?: boolean | undefined; truncated?: boolean | undefined }): TraceView {
+  const events = [...input].sort((a, b) => a.sequence - b.sequence || a.timestamp.localeCompare(b.timestamp));
+  const spans = reconstructSpans(events);
+  const tree = buildTree(spans);
+  const flat = flattenSpans(tree);
+  const first = events[0];
+  const terminal = [...events].reverse().find((e) => TERMINAL[e.type] !== undefined);
+  const status: TraceStatus = terminal ? TERMINAL[terminal.type]! : events.length > 0 ? "running" : "unset";
+  const startedAt = first?.timestamp;
+  const endedAt = terminal?.timestamp ?? (status === "running" ? undefined : events.at(-1)?.timestamp);
+  const durationMs = startedAt && endedAt ? Math.max(0, Date.parse(endedAt) - Date.parse(startedAt)) : undefined;
+  const usageEvents = events.filter((e) => e.type === "model.completed");
+  const sum = (k: string) => usageEvents.reduce((n, e) => n + (typeof e.attributes[k] === "number" ? (e.attributes[k] as number) : 0), 0);
+  const usage = usageEvents.length ? { ...(sum("inputTokens") ? { inputTokens: sum("inputTokens") } : {}), ...(sum("cachedInputTokens") ? { cachedInputTokens: sum("cachedInputTokens") } : {}), ...(sum("outputTokens") ? { outputTokens: sum("outputTokens") } : {}) } : undefined;
+  const degraded = opts.degraded === true || events.some((e) => e.type === "telemetry.degraded");
+  const truncated = opts.truncated === true || events.some((e) => e.type === "trace.truncated");
+  const failure = focusFailure(events, spans, status, degraded, durationMs);
+  const summary: TraceSummary = {
+    schemaVersion: SCHEMA_VERSION, capturePolicy: opts.capturePolicy,
+    runId: first?.runId ?? "", traceId: first?.traceId ?? "", agentId: first?.agentId ?? "",
+    sessionId: events.find((e) => e.sessionId)?.sessionId,
+    status, startedAt, endedAt, durationMs, eventCount: events.length, spanCount: flat.length,
+    incompleteSpans: flat.filter((s) => s.incomplete).length, redactedEvents: events.filter((e) => e.privacy.redacted).length,
+    degraded, truncated, usage,
+    capabilities: { model: events.some((e) => e.category === "model") ? "observed" : "unavailable", tool: events.some((e) => e.category === "tool") ? "observed" : "unavailable" },
+    firstFailingStep: failure?.name, failure,
+  };
+  return { summary, spans: tree, events };
+}
