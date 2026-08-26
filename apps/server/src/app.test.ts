@@ -163,6 +163,12 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     expect((await get("/api/traces/trc_9")).json().summary.runId).toBe("run-9");
     const filtered = (await get("/api/traces/trc_9/events?status=timeout")).json();
     expect(filtered.events.map((e: { type: string }) => e.type)).toEqual(["runtime.codex.failed", "run.timed_out"]);
+    const byCategories = (await get("/api/traces/trc_9/events?category=control,runtime")).json();
+    expect(byCategories.events).toHaveLength(5);
+    const audit = (await get("/api/runs/run-9/audit")).json();
+    expect(audit.audit).toEqual(expect.arrayContaining([expect.objectContaining({ action: "runtime.codex.failed", outcome: "timeout" })]));
+    expect(audit.audit.every((row: { eventId: string }) => trace.json().events.some((event: { eventId: string }) => event.eventId === row.eventId))).toBe(true);
+    expect((await get("/api/traces/trc_9/audit")).json().audit).toEqual(audit.audit);
     expect((await get("/api/runs/nope/trace")).statusCode).toBe(404);
     expect((await get("/api/runs?limit=9999")).statusCode).toBe(400);
     // FR-12: export = the trace route's body wrapped in { schemaVersion, exportedAt } — same builder, same policy.

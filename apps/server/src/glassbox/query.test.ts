@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTrace, flattenSpans, formatExitCode } from "./query.js";
+import { buildTrace, flattenSpans, formatExitCode, projectAudit } from "./query.js";
 import { SCHEMA_VERSION, type ObservationEvent } from "./schema.js";
 
 let seq = 0;
@@ -187,6 +187,27 @@ describe("buildTrace", () => {
     const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
     expect(summary).toMatchObject({ status: "ok", denials: 1, firstFailingStep: "pwsh" });
     expect(summary.failure).toMatchObject({ kind: "denied", name: "pwsh", component: "Sandbox", diagnosis: "sandbox declined `pwsh`" });
+  });
+  it("projects audit rows from stored facts and summarizes their counts", () => {
+    seq = 0;
+    const events = [root(),
+      ev({ type: "run.created", category: "control", spanId: "created", name: "run.created" }),
+      ev({ type: "policy.denied", category: "policy", spanId: "deny", name: "shell:pwsh", actorType: "service", actorId: "sandbox", status: "error", attributes: { program: "pwsh" } }),
+      ev({ type: "runtime.codex.completed", category: "runtime", spanId: "rt", phase: "end", status: "ok", name: "codex exec" }),
+      ev({ type: "run.completed", category: "control", spanId: "done", name: "run.completed", status: "ok" }),
+    ];
+    const rows = projectAudit(events);
+    expect(rows.map((row) => row.eventId)).toEqual(expect.arrayContaining(events.map((event) => event.eventId)));
+    expect(rows.find((row) => row.action === "run.created")).toMatchObject({ actor: { type: "human", id: "local-user" }, outcome: "allowed", resource: "run.created" });
+    expect(rows.find((row) => row.action === "policy.denied")).toMatchObject({ actor: { type: "service", id: "sandbox" }, outcome: "denied", resource: "pwsh" });
+    expect(rows.find((row) => row.action === "runtime.codex.completed")).toMatchObject({ outcome: "ok" });
+    const view = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(view.summary.audit).toEqual({ actions: rows.length, denials: 1, actors: ["human/local-user", "service/sandbox"] });
+  });
+  it("projects restart cancellation as a service audit fact", () => {
+    seq = 0;
+    const cancellation = ev({ type: "run.cancelled", category: "control", spanId: "cancel", status: "cancelled", actorType: "service", actorId: "server", attributes: { reason: "server_restart" } });
+    expect(projectAudit([cancellation])).toEqual([expect.objectContaining({ action: "run.cancelled", outcome: "cancelled", actor: { type: "service", id: "server" } })]);
   });
   it("focuses a denial ahead of its associated tool failure when the Run fails", () => {
     seq = 0;
