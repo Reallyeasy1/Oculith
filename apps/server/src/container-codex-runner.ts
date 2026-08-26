@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
 import { RunCancelledError } from "./errors.js";
-import { CodexStreamObserver } from "./glassbox/codex-observer.js";
+import { CodexStreamObserver, RUNNER_ACTOR } from "./glassbox/codex-observer.js";
 import { createDefaultEmitter, type ObservationEmitter } from "./glassbox/emitter.js";
 import { newId } from "./glassbox/schema.js";
 import type {
@@ -176,6 +176,7 @@ export class ContainerCodexRunner implements AgentRunner {
           traceId: request.trace.traceId,
           runId: request.trace.runId,
           agentId: request.trace.agentId,
+          ...RUNNER_ACTOR,
           source: { component: "AgentRunner", adapter: "ContainerCodexRunner", observed: true },
         }
       : undefined;
