@@ -19,6 +19,29 @@ describe("buildTrace", () => {
     expect(formatExitCode(137)).toBe("137 — SIGKILL (timeout, cancellation, or out-of-memory termination)");
     expect(formatExitCode(1)).toBe("1");
   });
+  it("explains exit code 127 as a missing program", () => {
+    expect(formatExitCode(127)).toBe("127 — command not found — the program is missing from the runtime image");
+  });
+  it("explains exit code 126 as found but not executable", () => {
+    expect(formatExitCode(126)).toBe("126 — found but not executable — permissions or wrong interpreter");
+  });
+  it("explains exit code 124 as a timeout-wrapper kill", () => {
+    expect(formatExitCode(124)).toBe("124 — timed out — killed by the timeout wrapper");
+  });
+  it("explains exit code 130 as SIGINT", () => {
+    expect(formatExitCode(130)).toBe("130 — interrupted — SIGINT");
+  });
+  it("explains exit code 2 as a usage error or interpreter file-not-found", () => {
+    expect(formatExitCode(2)).toBe("2 — usage error, or the interpreter could not find the file");
+  });
+  it("names the missing-program cause in the diagnosis for an exit code 127 tool failure", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "tool.call.failed", category: "tool", spanId: "tool", parentSpanId: "rt", status: "error", name: "shell:curl", error: { type: "exit_code", message: "exit code 127" } }),
+      ev({ type: "run.failed", category: "control", spanId: "failed", parentSpanId: "svc", status: "error" })];
+    const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(summary.failure?.diagnosis).toContain("command not found");
+  });
   it("uses the formatted exit code in failure focus and diagnosis", () => {
     seq = 0;
     const events = [root(), svcStart(), rtStart(),
