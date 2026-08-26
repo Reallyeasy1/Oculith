@@ -65,6 +65,11 @@ export class AgentService {
         }
       }
     });
+    // AGENTS.md is platform-owned. Refresh every existing workspace at boot so newly introduced
+    // safety/runtime guidance reaches Agents created by earlier versions too.
+    for (const agent of this.store.snapshot().agents) {
+      await this.workspaces.writeInstructions(agent);
+    }
     for (const run of interrupted) {
       if (!run.traceId) continue;
       // The server itself cancelled this Run, not the local user: say so in the actor fields.
