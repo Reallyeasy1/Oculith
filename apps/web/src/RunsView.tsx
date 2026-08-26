@@ -99,7 +99,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 <td>{formatDuration(run.durationMs)}{run.endedReason === "server_restart" ? " · interrupted" : ""}</td>
                 <td>{run.firstFailingStep ?? "—"}</td>
                 <td>{run.eventCount}</td>
-                <td>{run.runtime} · {run.model}</td>
+                <td className="runs-runtime" title={run.runtime + " · " + run.model}>{run.runtime} · {run.model}</td>
                 <td>{formatUsage(run.usage)}</td>
                 <td>
                   {run.redacted && <span className="badge">redacted</span>}

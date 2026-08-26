@@ -79,7 +79,8 @@ export function formatDuration(ms: number | undefined): string {
 
 export function formatUsage(usage: RunListItem["usage"]): string {
   if (!usage || (usage.inputTokens === undefined && usage.outputTokens === undefined)) return "—";
-  return (usage.inputTokens ?? 0) + " in · " + (usage.outputTokens ?? 0) + " out";
+  const compact = (value: number) => value >= 1000 ? (value / 1000).toFixed(value >= 10_000 ? 0 : 1).replace(/\.0$/, "") + "k" : String(value);
+  return compact(usage.inputTokens ?? 0) + " in · " + compact(usage.outputTokens ?? 0) + " out";
 }
 
 const clock = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });

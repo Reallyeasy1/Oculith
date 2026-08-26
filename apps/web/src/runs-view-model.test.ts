@@ -2,7 +2,7 @@
 //   npx vitest run apps/web/src/runs-view-model.test.ts
 import { describe, expect, it } from "vitest";
 import type { RunListItem, TraceStatus } from "./types";
-import { matchesFilter, needsAttention, summarizeRuns } from "./runs-view-model";
+import { formatUsage, matchesFilter, needsAttention, summarizeRuns } from "./runs-view-model";
 
 function run(status: TraceStatus, degraded = false, agentId = "a", agentName = "A"): RunListItem {
   return {
@@ -52,5 +52,12 @@ describe("needsAttention", () => {
     expect(matchesFilter(run("timeout"), "failed")).toBe(false);
     expect(matchesFilter(run("ok", true), "degraded")).toBe(true);
     expect(matchesFilter(run("unset"), "all")).toBe(true);
+  });
+});
+
+describe("formatUsage", () => {
+  it("keeps small usage exact and compacts wide token counts", () => {
+    expect(formatUsage({ inputTokens: 37384, outputTokens: 383 })).toBe("37k in · 383 out");
+    expect(formatUsage({ inputTokens: 999, outputTokens: 1200 })).toBe("999 in · 1.2k out");
   });
 });
