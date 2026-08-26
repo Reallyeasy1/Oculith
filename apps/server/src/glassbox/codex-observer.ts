@@ -120,6 +120,19 @@ export class CodexStreamObserver implements CodexStreamSink {
           }
         : {}),
     });
+    if (declined) {
+      // Keep this separate from tool.call.failed: consumers need to distinguish a sandbox policy
+      // decision from an ordinary non-zero exit. Only bounded metadata is captured here.
+      this.emitter.emit({
+        ...this.base("policy.denied", program || "shell"),
+        category: "policy",
+        status: "error",
+        actorId: "sandbox",
+        actorType: "service",
+        source: { component: "Sandbox", adapter: this.adapter, observed: true },
+        attributes: { program, decision: "sandbox_declined", commandBytes: Buffer.byteLength(command, "utf8") },
+      });
+    }
   }
 
   private fileChange(changes: Array<Record<string, unknown>>): void {
