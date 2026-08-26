@@ -73,6 +73,8 @@ export interface RunListItem {
   };
   degraded: boolean;
   truncated: boolean;
+  /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
+  evicted: boolean;
   redacted: boolean;
   lastEventAt?: string;
 }
@@ -107,6 +109,8 @@ export interface TraceSummary {
   redactedEvents: number;
   degraded: boolean;
   truncated: boolean;
+  /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
+  evicted: boolean;
   usage?: {
     inputTokens?: number;
     cachedInputTokens?: number;

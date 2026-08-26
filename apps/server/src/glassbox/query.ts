@@ -1,4 +1,5 @@
 import { SCHEMA_VERSION, type CapturePolicy, type Category, type ObservationEvent, type TraceStatus } from "./schema.js";
+import { TERMINAL_EVENT_STATUS as TERMINAL, isEvictionMarker } from "./store.js";
 
 export interface Span {
   spanId: string; parentSpanId?: string | undefined; name: string; category: Category; status: TraceStatus;
@@ -15,13 +16,14 @@ export interface TraceSummary {
   sessionId?: string | undefined; status: TraceStatus; startedAt?: string | undefined; endedAt?: string | undefined;
   durationMs?: number | undefined; eventCount: number; spanCount: number; incompleteSpans: number; redactedEvents: number;
   degraded: boolean; truncated: boolean;
+  /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
+  evicted: boolean;
   usage?: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number } | undefined;
   capabilities: { model: "observed" | "unavailable"; tool: "observed" | "unavailable" };
   firstFailingStep?: string | undefined; failure?: FailureFocus | undefined;
 }
 export interface TraceView { summary: TraceSummary; spans: Span[]; events: ObservationEvent[] }
 
-const TERMINAL: Record<string, TraceStatus> = { "run.completed": "ok", "run.failed": "error", "run.cancelled": "cancelled", "run.timed_out": "timeout" };
 const CATEGORY_RANK: Record<Category, number> = { tool: 0, model: 1, runtime: 2, workspace: 3, sandbox: 4, policy: 5, infrastructure: 6, control: 7, experience: 8 };
 
 export function flattenSpans(spans: Span[]): Span[] {
@@ -149,6 +151,7 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
     : undefined;
   const degraded = opts.degraded === true || events.some((e) => e.type === "telemetry.degraded");
   const truncated = opts.truncated === true || events.some((e) => e.type === "trace.truncated");
+  const evicted = events.some(isEvictionMarker);
   const failure = focusFailure(events, spans, status, degraded, durationMs);
   const summary: TraceSummary = {
     schemaVersion: SCHEMA_VERSION, capturePolicy: opts.capturePolicy,
@@ -156,7 +159,7 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
     sessionId: events.find((e) => e.sessionId)?.sessionId,
     status, startedAt, endedAt, durationMs, eventCount: events.length, spanCount: flat.length,
     incompleteSpans: flat.filter((s) => s.incomplete).length, redactedEvents: events.filter((e) => e.privacy.redacted).length,
-    degraded, truncated, usage,
+    degraded, truncated, evicted, usage,
     capabilities: { model: events.some((e) => e.category === "model") ? "observed" : "unavailable", tool: events.some((e) => e.category === "tool") ? "observed" : "unavailable" },
     firstFailingStep: failure && failure.kind !== "degraded" ? failure.name : undefined, failure,
   };

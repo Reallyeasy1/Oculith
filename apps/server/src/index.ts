@@ -18,6 +18,16 @@ const glassboxLog = (message: string, meta: Record<string, unknown>) =>
   console.warn("[glassbox]", message, JSON.stringify(meta));
 const traceStore = new NdjsonTraceStore(config.traceDirectory, glassboxLog);
 await traceStore.initialize();
+// Retention (FR-14) runs once per boot, before sequences are seeded so tombstones count. Never silent: one summary
+// line always, one line per evicted Run, and a failure here must not stop the server from booting.
+try {
+  const retention = await traceStore.cleanup({ retentionDays: config.glassboxRetentionDays, maxDiskMb: config.glassboxMaxDiskMb });
+  glassboxLog("retention", { retentionDays: config.glassboxRetentionDays, maxDiskMb: config.glassboxMaxDiskMb, runs: retention.runs,
+    evicted: retention.evicted.length, bytesBefore: retention.bytesBefore, bytesAfter: retention.bytesAfter, overCap: retention.overCap });
+  for (const e of retention.evicted) glassboxLog("retention.evicted", e);
+} catch (error) {
+  glassboxLog("retention.failed", { error: String(error).slice(0, 200) });
+}
 const emitter = new ObservationEmitter({
   store: traceStore,
   capturePolicy: config.glassboxCapturePolicy,

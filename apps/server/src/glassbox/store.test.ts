@@ -1,7 +1,8 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { buildTrace } from "./query.js";
 import { SCHEMA_VERSION, type ObservationEvent } from "./schema.js";
 import { ALWAYS_KEEP_TYPES, MemoryTraceStore, NdjsonTraceStore, TRACE_CAPS, shrinkToCap } from "./store.js";
 
@@ -160,5 +161,150 @@ describe("shrinkToCap", () => {
     expect(out.attributes).toEqual({});
     expect(out.privacy.reason).toBe("event_truncated");
     expect(shrinkToCap(ev(2))).toEqual(ev(2));
+  });
+});
+
+describe("NdjsonTraceStore.cleanup (retention, FR-14)", () => {
+  const DAY = 86_400_000;
+  const T0 = 1_700_000_000_000;
+  const at = (daysAgo: number, seq: number) => new Date(T0 - daysAgo * DAY + seq).toISOString();
+  const now = new Date(T0);
+  // ~4 KB of schema-valid padding (attribute strings are capped at 2048 chars; longer ones fail parse on read-back).
+  const blob = { b1: "x".repeat(2000), b2: "x".repeat(2000) };
+  /** A finished run with `n` content events + run.completed, last event `daysAgo` days before `now`. */
+  async function seedRun(store: NdjsonTraceStore, runId: string, daysAgo: number, n = 3, attributes: ObservationEvent["attributes"] = {}) {
+    const base = { runId, traceId: "trc_" + runId };
+    for (let i = 1; i <= n; i++) await store.append(ev(i, { ...base, attributes, timestamp: at(daysAgo, i) }));
+    await store.append(ev(n + 1, { ...base, type: "run.completed", category: "control", status: "ok", timestamp: at(daysAgo, n + 1) }));
+  }
+
+  it("age: compacts runs whose last event is older than the window to terminal events + trace.truncated", async () => {
+    const dir = path.join(await tmp(), "traces");
+    const store = new NdjsonTraceStore(dir); await store.initialize();
+    await seedRun(store, "old", 10); await seedRun(store, "young", 1);
+    const report = await store.cleanup({ retentionDays: 7, maxDiskMb: 0, now });
+    expect(report.evicted).toEqual([expect.objectContaining({ runId: "old", traceId: "trc_old", status: "ok", reason: "retention_age" })]);
+    const kept = await store.readRun("old");
+    expect(kept.map((e) => e.type)).toEqual(["run.completed", "trace.truncated"]);
+    expect(kept[1]).toMatchObject({ attributes: { reason: "retention_age", droppedEvents: 3 }, sequence: 5, status: "unset" });
+    expect(store.listRuns().find((r) => r.runId === "old")).toMatchObject({ evicted: true, truncated: true, status: "ok", eventCount: 2 });
+    expect(store.listRuns().find((r) => r.runId === "young")).toMatchObject({ evicted: false, truncated: false, status: "ok", eventCount: 4 });
+    expect((await store.readRun("young")).length).toBe(4);
+  });
+
+  it("disk cap: evicts oldest completed runs first until total bytes are under the cap", async () => {
+    const dir = path.join(await tmp(), "traces");
+    const store = new NdjsonTraceStore(dir); await store.initialize();
+    await seedRun(store, "b", 2, 4, blob); await seedRun(store, "c", 1, 4, blob); await seedRun(store, "a", 3, 4, blob);
+    const before = store.listRuns().reduce((n, e) => n + e.bytes, 0);
+    expect(before).toBeGreaterThan(48_000); // 3 runs x 4 x ~4 KB
+    const report = await store.cleanup({ retentionDays: 0, maxDiskMb: 0.025, now }); // ~26 KB: needs a AND b gone
+    expect(report.evicted.map((e) => [e.runId, e.reason])).toEqual([["a", "retention_disk"], ["b", "retention_disk"]]);
+    expect(report.bytesBefore).toBe(before);
+    expect(report.bytesAfter).toBeLessThanOrEqual(0.025 * 1024 * 1024);
+    expect(report.overCap).toBe(false);
+    expect(store.listRuns().find((r) => r.runId === "c")).toMatchObject({ evicted: false, eventCount: 5 });
+  });
+
+  it("never evicts a run without terminal evidence (still running), even under pressure", async () => {
+    const dir = path.join(await tmp(), "traces");
+    const store = new NdjsonTraceStore(dir); await store.initialize();
+    for (let i = 1; i <= 3; i++) await store.append(ev(i, { runId: "live", traceId: "trc_live", timestamp: at(30, i), attributes: blob }));
+    const report = await store.cleanup({ retentionDays: 1, maxDiskMb: 0.001, now });
+    expect(report.evicted).toEqual([]);
+    expect(store.listRuns()[0]).toMatchObject({ runId: "live", status: "running", evicted: false, eventCount: 3 });
+  });
+
+  it("tombstone survives a restart and is never re-evicted", async () => {
+    const dir = path.join(await tmp(), "traces");
+    const a = new NdjsonTraceStore(dir); await a.initialize();
+    await seedRun(a, "old", 10, 3);
+    await a.cleanup({ retentionDays: 7, maxDiskMb: 0, now });
+    const b = new NdjsonTraceStore(dir); await b.initialize();
+    expect(b.listRuns()).toEqual(a.listRuns());
+    expect(b.listRuns()[0]).toMatchObject({ runId: "old", evicted: true, truncated: true, status: "ok", eventCount: 2, lastSequence: 5 });
+    const again = await b.cleanup({ retentionDays: 0, maxDiskMb: 0.0001, now });
+    expect(again.evicted).toEqual([]);
+  });
+
+  it("disabled knobs (0) do nothing", async () => {
+    const dir = path.join(await tmp(), "traces");
+    const store = new NdjsonTraceStore(dir); await store.initialize();
+    await seedRun(store, "old", 365, 3, blob);
+    const raw = await readFile(path.join(dir, "old.ndjson"), "utf8");
+    const report = await store.cleanup({ retentionDays: 0, maxDiskMb: 0, now });
+    expect(report).toMatchObject({ runs: 1, evicted: [] });
+    expect(report.bytesAfter).toBe(report.bytesBefore);
+    expect(await readFile(path.join(dir, "old.ndjson"), "utf8")).toBe(raw);
+  });
+
+  /** Realistic 8-event ok Run: root run.created/run.completed, a completed tool span, an unfinished runtime span, model usage. */
+  async function seedRealRun(store: NdjsonTraceStore, runId = "real") {
+    const base = { runId, traceId: "trc_" + runId };
+    const t = (ms: number) => new Date(T0 - 10 * DAY + ms).toISOString();
+    await store.append(ev(1, { ...base, type: "run.created", category: "control", phase: "start", status: "running", spanId: "root", timestamp: t(0) }));
+    await store.append(ev(2, { ...base, type: "runtime.codex.started", category: "runtime", phase: "start", status: "running", spanId: "rt", parentSpanId: "root", timestamp: t(100) }));
+    await store.append(ev(3, { ...base, type: "tool.call.started", category: "tool", phase: "start", status: "running", spanId: "tool", parentSpanId: "rt", timestamp: t(200) }));
+    await store.append(ev(4, { ...base, type: "tool.call.completed", category: "tool", phase: "end", status: "ok", spanId: "tool", parentSpanId: "rt", timestamp: t(300) }));
+    await store.append(ev(5, { ...base, type: "model.completed", category: "model", spanId: "m1", parentSpanId: "rt", timestamp: t(400), attributes: { inputTokens: 10, outputTokens: 5 } }));
+    await store.append(ev(6, { ...base, type: "workspace.changed", category: "workspace", spanId: "ws", parentSpanId: "rt", timestamp: t(500), attributes: { files: 3 } }));
+    await store.append(ev(7, { ...base, type: "runtime.codex.completed", category: "runtime", phase: "end", status: "ok", spanId: "rt", parentSpanId: "root", timestamp: t(60_000) }));
+    await store.append(ev(8, { ...base, type: "run.completed", category: "control", phase: "end", status: "ok", spanId: "root", timestamp: t(60_040) }));
+  }
+  const rollup = (events: ObservationEvent[]) => {
+    const s = buildTrace(events, { capturePolicy: "metadata_only" }).summary;
+    return { status: s.status, startedAt: s.startedAt, durationMs: s.durationMs, incompleteSpans: s.incompleteSpans, usage: s.usage };
+  };
+
+  it("keeps the span skeleton: rollup (status, startedAt, durationMs, incompleteSpans, usage) is identical before and after eviction", async () => {
+    const store = new NdjsonTraceStore(path.join(await tmp(), "traces")); await store.initialize();
+    await seedRealRun(store);
+    const before = rollup(await store.readRun("real"));
+    expect(before).toMatchObject({ status: "ok", durationMs: 60_040, usage: { inputTokens: 10, outputTokens: 5 } });
+    const report = await store.cleanup({ retentionDays: 7, maxDiskMb: 0, now });
+    expect(report.evicted).toEqual([expect.objectContaining({ runId: "real", reason: "retention_age" })]);
+    const after = await store.readRun("real");
+    // Kept: root run.*, the start half of every always-kept span, model usage, terminals, tombstone. Dropped: the ok tool span + workspace.changed.
+    expect(after.map((e) => e.type)).toEqual(["run.created", "runtime.codex.started", "model.completed", "runtime.codex.completed", "run.completed", "trace.truncated"]);
+    expect(after.at(-1)!.attributes).toEqual({ reason: "retention_age", droppedEvents: 3 });
+    expect(rollup(after)).toEqual(before);
+    expect(buildTrace(after, { capturePolicy: "metadata_only" }).summary).toMatchObject({ evicted: true, truncated: true });
+  });
+
+  it("tombstone carries nothing content-bearing: attributes are exactly { reason, droppedEvents } and status is unset", async () => {
+    const store = new NdjsonTraceStore(path.join(await tmp(), "traces")); await store.initialize();
+    await seedRealRun(store);
+    await store.cleanup({ retentionDays: 7, maxDiskMb: 0, now });
+    const tombstone = (await store.readRun("real")).at(-1)!;
+    expect(tombstone).toMatchObject({ type: "trace.truncated", status: "unset", category: "control", source: { component: "GlassBox", observed: true }, privacy: { redacted: false } });
+    expect(tombstone.attributes).toEqual({ reason: "retention_age", droppedEvents: 3 });
+    expect(tombstone.summary).toBeUndefined();
+    expect(tombstone.error).toBeUndefined();
+  });
+
+  it("does not fake an eviction when there is nothing to drop, and reports overCap when the cap is unreachable", async () => {
+    const dir = path.join(await tmp(), "traces");
+    const store = new NdjsonTraceStore(dir); await store.initialize();
+    const base = { runId: "tiny", traceId: "trc_tiny" };
+    await store.append(ev(1, { ...base, type: "run.created", category: "control", phase: "start", status: "running", spanId: "root", timestamp: at(1, 1) }));
+    await store.append(ev(2, { ...base, type: "run.completed", category: "control", phase: "end", status: "ok", spanId: "root", timestamp: at(1, 2) }));
+    const raw = await readFile(path.join(dir, "tiny.ndjson"), "utf8");
+    const report = await store.cleanup({ retentionDays: 0, maxDiskMb: 0.0001, now });
+    expect(report).toMatchObject({ evicted: [], overCap: true });
+    expect(store.listRuns()[0]).toMatchObject({ runId: "tiny", evicted: false, truncated: false, eventCount: 2 });
+    expect(await readFile(path.join(dir, "tiny.ndjson"), "utf8")).toBe(raw);
+  });
+
+  it("a Run whose file cannot be compacted is logged and skipped; the pass continues", async () => {
+    const dir = path.join(await tmp(), "traces");
+    const logs: [string, Record<string, unknown>][] = [];
+    const store = new NdjsonTraceStore(dir, (m, meta) => logs.push([m, meta])); await store.initialize();
+    await seedRun(store, "bad", 10); await seedRun(store, "good", 10);
+    await mkdir(path.join(dir, "bad.ndjson.tmp")); // writeFile onto a directory throws EISDIR
+    const report = await store.cleanup({ retentionDays: 7, maxDiskMb: 0, now });
+    expect(report.evicted.map((e) => e.runId)).toEqual(["good"]);
+    expect(logs).toEqual([["retention.evict_failed", expect.objectContaining({ runId: "bad", reason: "retention_age" })]]);
+    expect((await store.readRun("bad")).length).toBe(4);
+    expect(store.listRuns().find((r) => r.runId === "bad")).toMatchObject({ evicted: false, eventCount: 4 });
   });
 });
