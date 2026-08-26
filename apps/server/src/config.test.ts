@@ -47,4 +47,8 @@ describe("GlassBox retention config", () => {
     expect(() => loadConfig({ NODE_ENV: "test", GLASSBOX_RETENTION_DAYS: "-1" })).toThrow();
     expect(() => loadConfig({ NODE_ENV: "test", GLASSBOX_MAX_DISK_MB: "lots" })).toThrow();
   });
+  it("treats an empty string as unset (default), not as 0", () => {
+    expect(loadConfig({ NODE_ENV: "test", GLASSBOX_RETENTION_DAYS: "", GLASSBOX_MAX_DISK_MB: "" }))
+      .toMatchObject({ glassboxRetentionDays: 7, glassboxMaxDiskMb: 200 });
+  });
 });

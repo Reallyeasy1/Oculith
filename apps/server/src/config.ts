@@ -52,8 +52,9 @@ const envSchema = z.object({
   GLASSBOX_DEMO_FAILURE: z.enum(["off", "timeout"]).default("off"),
   GLASSBOX_TRACE_DIR: z.string().optional(),
   // Retention (FR-14): 0 disables a knob. Defaults are conservative for a single-user demo box.
-  GLASSBOX_RETENTION_DAYS: z.coerce.number().min(0).default(7),
-  GLASSBOX_MAX_DISK_MB: z.coerce.number().min(0).default(200),
+  // `KNOB=` (empty) means unset → default, not 0 (which would silently disable the knob).
+  GLASSBOX_RETENTION_DAYS: z.preprocess((v) => (v === "" ? undefined : v), z.coerce.number().min(0).default(7)),
+  GLASSBOX_MAX_DISK_MB: z.preprocess((v) => (v === "" ? undefined : v), z.coerce.number().min(0).default(200)),
 });
 
 export type AppConfig = ReturnType<typeof loadConfig>;

@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { REDACTION_RULESET_VERSION, SCHEMA_VERSION, newId, observationEventSchema, type ObservationEvent, type TraceStatus } from "./schema.js";
 
@@ -29,6 +29,8 @@ export interface RunIndexEntry {
 export interface CleanupOptions { retentionDays: number; maxDiskMb: number; now?: Date | undefined }
 export interface CleanupReport {
   runs: number; bytesBefore: number; bytesAfter: number;
+  /** Disk cap enabled but not reachable: every finished Run is already a skeleton (or running Runs hold the bytes). */
+  overCap: boolean;
   evicted: { runId: string; traceId: string; status: TraceStatus; reason: EvictionReason; bytesFreed: number }[];
 }
 export type AppendResult = { stored: true } | { stored: false; reason: "duplicate" | "cap_events" | "cap_bytes" };
@@ -189,33 +191,43 @@ export class NdjsonTraceStore extends BaseTraceStore {
   /**
    * Retention (FR-14), startup-only. Age: Runs whose LAST event is older than `retentionDays`. Disk: while total
    * indexed bytes exceed `maxDiskMb`, evict the oldest finished Run. `0` disables a knob. Eviction never deletes a
-   * file: it compacts the Run to its always-kept terminal/error events plus one `trace.truncated`
-   * (`reason: retention_*`) tombstone, so the Run stays listable, keeps its terminal status and survives a rebuild.
+   * file: it compacts the Run to a metadata skeleton — always-kept terminal/error events, the root run.* events, the
+   * `start` half of every kept span and `model.completed` (usage) — plus one `trace.truncated` (`reason: retention_*`)
+   * tombstone, so status/startedAt/durationMs/incomplete/usage roll up identically and the Run survives a rebuild.
+   * A Run whose file fails to compact is logged (`retention.evict_failed`) and skipped; the pass continues.
    */
   async cleanup(opts: CleanupOptions): Promise<CleanupReport> {
     const now = opts.now ?? new Date();
     const total = () => [...this.index.values()].reduce((n, e) => n + e.bytes, 0);
-    const report: CleanupReport = { runs: this.index.size, bytesBefore: total(), bytesAfter: 0, evicted: [] };
+    const report: CleanupReport = { runs: this.index.size, bytesBefore: total(), bytesAfter: 0, overCap: false, evicted: [] };
     // ponytail: a Run with no terminal event stays forever ("running" = never evict); AgentService.initialize()
     // writes run.cancelled for interrupted Runs on the next boot, so this only leaks if telemetry was degraded.
     const finished = () => [...this.index.values()].filter((e) => e.status !== "running" && !e.evicted).sort((a, b) => a.lastTimestamp.localeCompare(b.lastTimestamp));
+    const tryEvict = async (e: RunIndexEntry, reason: EvictionReason) => {
+      try { const r = await this.evict(e, reason, now); if (r) report.evicted.push(r); }
+      catch (error) { this.log?.("retention.evict_failed", { runId: e.runId, reason, error: String(error).slice(0, 200) }); }
+    };
     if (opts.retentionDays > 0) {
       const cutoff = new Date(now.getTime() - opts.retentionDays * 86_400_000).toISOString();
-      for (const e of finished()) if (e.lastTimestamp < cutoff) report.evicted.push(await this.evict(e, "retention_age", now));
+      for (const e of finished()) if (e.lastTimestamp < cutoff) await tryEvict(e, "retention_age");
     }
     if (opts.maxDiskMb > 0) {
       const cap = opts.maxDiskMb * 1024 * 1024;
-      for (const e of finished()) { if (total() <= cap) break; report.evicted.push(await this.evict(e, "retention_disk", now)); }
+      for (const e of finished()) { if (total() <= cap) break; await tryEvict(e, "retention_disk"); }
+      report.overCap = total() > cap;
     }
     report.bytesAfter = total();
     return report;
   }
 
-  private async evict(entry: RunIndexEntry, reason: EvictionReason, now: Date): Promise<CleanupReport["evicted"][number]> {
+  /** Returns undefined (and touches nothing) when the Run is already a skeleton — an eviction that drops nothing is not one. */
+  private async evict(entry: RunIndexEntry, reason: EvictionReason, now: Date): Promise<CleanupReport["evicted"][number] | undefined> {
     const file = this.file(entry.runId);
     const all = await this.parseFile(file);
     const mine = all.filter((e) => e.runId === entry.runId);
-    const kept = mine.filter(keepAlways);
+    const keptSpans = new Set(mine.filter(keepAlways).map((e) => e.spanId));
+    const kept = mine.filter((e) => keepAlways(e) || e.type === "run.created" || e.type === "run.started" || e.type === "model.completed" || (e.phase === "start" && keptSpans.has(e.spanId)));
+    if (kept.length === mine.length) return undefined;
     const tombstone = observationEventSchema.parse({
       schemaVersion: SCHEMA_VERSION, eventId: newId("evt"), sequence: entry.lastSequence + 1, traceId: entry.traceId, spanId: newId("spn"),
       runId: entry.runId, agentId: entry.agentId, timestamp: now.toISOString(), type: "trace.truncated", category: "control",
@@ -223,8 +235,9 @@ export class NdjsonTraceStore extends BaseTraceStore {
       attributes: { reason, droppedEvents: mine.length - kept.length }, privacy: { redacted: false, rulesetVersion: REDACTION_RULESET_VERSION },
     });
     const survivors = [...all.filter((e) => e.runId !== entry.runId), ...kept, tombstone]; // other runIds sharing this sanitized filename are untouched
-    // ponytail: plain writeFile — cleanup runs once at startup before any appender exists; tmp+rename if that changes.
-    await writeFile(file, survivors.map((e) => JSON.stringify(e) + "\n").join(""), { encoding: "utf8", mode: 0o600 });
+    // tmp + rename (same as JsonStore): a crash mid-write must not lose exactly the terminal events we promised to keep.
+    await writeFile(file + ".tmp", survivors.map((e) => JSON.stringify(e) + "\n").join(""), { encoding: "utf8", mode: 0o600 });
+    await rename(file + ".tmp", file);
     this.index.delete(entry.runId); this.seen.delete(entry.runId);
     for (const e of [...kept, tombstone]) this.track(e, Buffer.byteLength(JSON.stringify(e) + "\n", "utf8"));
     return { runId: entry.runId, traceId: entry.traceId, status: entry.status, reason, bytesFreed: entry.bytes - this.index.get(entry.runId)!.bytes };
