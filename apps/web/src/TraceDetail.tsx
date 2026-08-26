@@ -231,7 +231,7 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
               aria-describedby={timingDescription ? timingId : undefined}
               tabIndex={rovingId === s.spanId ? 0 : -1}
               className={"trace-row" + (failing ? " failing" : "") + (row.context ? " context" : "") + (openId === s.spanId ? " selected" : "")}
-              style={{ paddingLeft: 12 + s.depth * 18 }}
+              style={{ "--trace-indent": `${s.depth * 18}px` } as React.CSSProperties}
               onClick={() => { setFocusId(s.spanId); setOpenId(s.spanId); }}
               onKeyDown={(e) => onRowKey(e, index)}
             >

@@ -1440,6 +1440,7 @@ textarea:focus {
 
 .trace-name {
   font-weight: 600;
+  padding-left: var(--trace-indent, 0);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
