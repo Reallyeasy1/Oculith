@@ -22,7 +22,7 @@ base="${LAUNCHPAD_URL:-http://127.0.0.1:${PORT:-3000}}"
 env_file="${ENV_FILE:-$repo_dir/.env}"
 token="${APP_AUTH_TOKEN:-}"
 if [[ -z "$token" && -f "$env_file" ]]; then
-  token="$(grep -E '^APP_AUTH_TOKEN=' "$env_file" | tail -n1 | cut -d= -f2- | tr -d '"'"'"' \r')"
+  token="$(grep -E '^APP_AUTH_TOKEN=' "$env_file" | tail -n1 | cut -d= -f2- | tr -d '"'"'"' \r' || true)"
 fi
 auth=()
 [[ -n "$token" ]] && auth=(-H "Authorization: Bearer $token")
@@ -30,7 +30,7 @@ auth=()
 # call METHOD PATH [JSON-BODY] → response body on stdout; non-2xx exits with the server's message.
 call() {
   local method="$1" path="$2" body="${3:-}" out code
-  out="$(curl -sS -o - -w '\n%{http_code}' -X "$method" "${auth[@]}" \
+  out="$(curl -sS -o - -w '\n%{http_code}' -X "$method" ${auth[@]+"${auth[@]}"} \
     ${body:+-H "Content-Type: application/json" --data "$body"} "$base$path")"
   code="${out##*$'\n'}"
   out="${out%$'\n'*}"
@@ -71,11 +71,13 @@ done
 trace_status="$(call GET "/api/runs/$run_id/trace" | json 'd.summary.status')"
 log "Run $run_id ended: run=$status trace=$trace_status"
 
-if [[ "$phase" == "ok" && "$trace_status" != "ok" ]]; then
-  log "Expected an ok Run. Is GLASSBOX_DEMO_FAILURE still on, or is the model/runtime misconfigured?"
-elif [[ "$phase" == "fail" && "$trace_status" != "timeout" ]]; then
-  log "Expected a timeout Run. Set GLASSBOX_DEMO_FAILURE=timeout in .env, restart the server, rerun '$0 fail'."
-fi
-
 echo "agent=$agent_id run=$run_id status=$trace_status"
 echo "open ${PUBLIC_URL:-http://localhost:${PORT:-3000}} → Runs → click the row"
+
+if [[ "$phase" == "ok" && "$trace_status" != "ok" ]]; then
+  log "Expected an ok Run. Is GLASSBOX_DEMO_FAILURE still on, or is the model/runtime misconfigured?"
+  exit 1
+elif [[ "$phase" == "fail" && "$trace_status" != "timeout" ]]; then
+  log "Expected a timeout Run. Set GLASSBOX_DEMO_FAILURE=timeout in .env, restart the server, rerun '$0 fail'."
+  exit 1
+fi

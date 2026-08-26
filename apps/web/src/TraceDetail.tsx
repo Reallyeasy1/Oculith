@@ -21,7 +21,7 @@ const CAPABILITY_LABEL = { observed: "observed", unavailable: "unavailable", unk
 const CAPABILITY_TITLE = {
   observed: "The runtime emitted events for this layer.",
   unavailable: "The Run completed but the runtime exposed no events for this layer.",
-  unknown: "The Run was cancelled or timed out before the stream said anything about this layer; absence proves nothing.",
+  unknown: "The Run was cancelled, timed out, or its stream never started, so nothing was said about this layer; absence proves nothing.",
 } as const;
 
 function CapabilityBadge({ layer, state }: { layer: "model" | "tool"; state: keyof typeof CAPABILITY_LABEL }) {

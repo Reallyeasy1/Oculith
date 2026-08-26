@@ -170,7 +170,7 @@ ObservationEmitter ──► validate (zod) ──► RedactionPipeline ──�
 
 **Capture policy:** `metadata_only` (default: IDs, timing, status, names, counts, codes, sizes, flags) · `safe_summary` (opt-in: bounded, filtered, redacted summaries) · `full/raw` (**not implemented**).
 
-**Evidence states:** `observed` (emitted by instrumented component) · `derived` (computed deterministically from stored facts) · `unavailable` (the Run completed and the component exposed nothing for that layer) · `unknown` (the Run was cancelled or timed out before that layer's stream said anything — absence proves nothing, so no `capability.unavailable` is emitted) · `redacted` · `truncated`. Per-layer capabilities (`model`, `tool`) take exactly `observed | unavailable | unknown`; the UI renders `unknown` as "no evidence — run cut short".
+**Evidence states:** `observed` (emitted by instrumented component) · `derived` (computed deterministically from stored facts) · `unavailable` (the Run completed and the component exposed nothing for that layer) · `unknown` (the Run was cancelled, timed out, or its stream never started — including error Runs that died before the first stream event — so that layer said nothing; absence proves nothing and no `capability.unavailable` is emitted) · `redacted` · `truncated`. Per-layer capabilities (`model`, `tool`) take exactly `observed | unavailable | unknown`; the UI renders `unknown` as "no evidence — run cut short".
 
 ## 9. Failure & degraded behaviour
 
@@ -233,7 +233,7 @@ ObservationEmitter ──► validate (zod) ──► RedactionPipeline ──�
 | 0:00–0:20 | Orient | Agent catalog/Playground; select or create one Agent |
 | 0:20–0:55 | Successful Run | real task using runtime + workspace; let the backend finish |
 | 0:55–1:30 | Evidence | open Trace: connected layers, timing, container metadata, workspace change, usage, trust badges |
-| 1:30–1:55 | Controlled failure | run the gated deterministic failure through the same path |
+| 1:30–1:55 | Controlled failure | set `GLASSBOX_DEMO_FAILURE=timeout` → restart the server → run the gated deterministic failure through the same path → open its trace → set `off` → restart |
 | 1:55–2:25 | Diagnosis | error banner → jump to failing runtime/tool span; cleanup/terminal state |
 | 2:25–2:45 | Privacy proof | seeded fake secret was in the input; absent from persisted/API/UI evidence |
 | 2:45–3:00 | Platform arc | architecture: trace plane today; controller consumes the same facts tomorrow |

@@ -54,6 +54,8 @@ export default function App() {
   // "Expand" re-opens it for this trace, "Close trace" restores it.
   const [playgroundExpanded, setPlaygroundExpanded] = useState(false);
   const playgroundCollapsed = selectedRunId !== null && !playgroundExpanded;
+  // Switching Agents closes the open trace: the bar must never show one Agent above another's trace.
+  useEffect(() => { setSelectedRunId(null); }, [selectedId]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -434,9 +436,14 @@ export default function App() {
               <h1>{selected.name}</h1>
               <StatusPill status={selected.status} />
             </div>
-            <button className="button button-ghost" onClick={() => setPlaygroundExpanded(true)}>
-              Expand Playground
-            </button>
+            <div className="header-actions">
+              {selected.status === "busy" && (
+                <button className="button button-ghost" onClick={toggleAgent} disabled={busy}>Stop</button>
+              )}
+              <button className="button button-ghost" onClick={() => setPlaygroundExpanded(true)}>
+                Expand Playground
+              </button>
+            </div>
           </div>
         ) : (
           <>
