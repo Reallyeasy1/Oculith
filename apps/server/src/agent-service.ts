@@ -30,6 +30,7 @@ export class AgentService {
     {
       traceId: string;
       rootSpanId: string;
+      agentId: string;
       requestId?: string | undefined;
       service?: SpanHandle | undefined;
       cancelRequestedAt?: string | undefined;
@@ -199,8 +200,6 @@ export class AgentService {
     const timestamp = now();
     const runId = randomUUID();
     const ctx = context ?? createTraceContext({}, this.emitter.capturePolicy);
-    ctx.runId = runId;
-    ctx.agentId = agentId;
     const run: AgentRun = {
       id: runId,
       traceId: ctx.traceId,
@@ -241,8 +240,11 @@ export class AgentService {
       storedAgent.updatedAt = timestamp;
       return snapshot;
     });
-    // Emitted after the Run really exists (invariant 3: never fabricate evidence) so a rejected
-    // request (404/409) leaves no phantom trace and no dangling `spans` entry behind.
+    // Published only once the Run really exists (invariant 3: never fabricate evidence). A rejected
+    // request (404/409) must leave `ctx.runId`/`ctx.agentId` unset, or the ingress `onResponse` hook
+    // emits an orphan http.request.completed for a Run that never was.
+    ctx.runId = runId;
+    ctx.agentId = agentId;
     const ids = {
       traceId: ctx.traceId,
       runId,
@@ -278,6 +280,7 @@ export class AgentService {
     this.spans.set(runId, {
       traceId: ctx.traceId,
       rootSpanId: ctx.rootSpanId,
+      agentId,
       requestId: ctx.requestId,
     });
     const execution = this.executeRun(agentAtStart, run);
@@ -322,40 +325,41 @@ export class AgentService {
           requestId: link.requestId,
         }
       : undefined;
-    const service =
-      ids && link
-        ? this.emitter.startSpan({
-            ...ids,
-            spanId: newId("spn"),
-            parentSpanId: link.rootSpanId,
-            type: "agent_service.run.started",
-            category: "control",
-            name: "agent_service.run",
-            source: { component: "AgentService", observed: true },
-            attributes: { resume: agentAtStart.codexThreadId !== null },
-          })
-        : undefined;
-    if (link) link.service = service;
-    if (ids && service) {
-      this.emitter.emit({
-        ...ids,
-        spanId: newId("spn"),
-        parentSpanId: service.spanId,
-        type: "run.started",
-        category: "control",
-        name: "run.started",
-        status: "ok",
-        source: { component: "AgentService", observed: true },
-      });
-    }
-    await this.store.mutate((database) => {
-      const storedRun = database.runs.find((item) => item.id === run.id);
-      if (storedRun) {
-        storedRun.status = "running";
-        storedRun.startedAt = now();
-      }
-    });
+    let service: SpanHandle | undefined;
     try {
+      service =
+        ids && link
+          ? this.emitter.startSpan({
+              ...ids,
+              spanId: newId("spn"),
+              parentSpanId: link.rootSpanId,
+              type: "agent_service.run.started",
+              category: "control",
+              name: "agent_service.run",
+              source: { component: "AgentService", observed: true },
+              attributes: { resume: agentAtStart.codexThreadId !== null },
+            })
+          : undefined;
+      if (link) link.service = service;
+      if (ids && service) {
+        this.emitter.emit({
+          ...ids,
+          spanId: newId("spn"),
+          parentSpanId: service.spanId,
+          type: "run.started",
+          category: "control",
+          name: "run.started",
+          status: "ok",
+          source: { component: "AgentService", observed: true },
+        });
+      }
+      await this.store.mutate((database) => {
+        const storedRun = database.runs.find((item) => item.id === run.id);
+        if (storedRun) {
+          storedRun.status = "running";
+          storedRun.startedAt = now();
+        }
+      });
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
@@ -491,10 +495,8 @@ export class AgentService {
   }
 
   private async cancelExecution(agentId: string): Promise<void> {
-    for (const [runId, link] of this.spans) {
-      if (this.store.snapshot().runs.find((item) => item.id === runId)?.agentId === agentId) {
-        link.cancelRequestedAt = now();
-      }
+    for (const link of this.spans.values()) {
+      if (link.agentId === agentId) link.cancelRequestedAt = now();
     }
     this.cancellationRequests.add(agentId);
     try {

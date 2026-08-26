@@ -3,6 +3,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
+import { RunCancelledError } from "./errors.js";
 import { loadConfig } from "./config.js";
 import { JsonStore } from "./store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
@@ -202,7 +203,7 @@ describe("GlassBox control-plane adapter", () => {
     expect(JSON.stringify(events)).not.toContain("hello"); // prompt text is never stored
   });
 
-  it("classifies a runner timeout as timeout, and stop as cancelled with actor evidence", async () => {
+  it("classifies a runner timeout as timeout", async () => {
     const { service, store, emitter } = await makeTraced(new TimeoutRunner());
     const agent = await service.createAgent({ name: "t" });
     const { run } = await service.sendMessage(agent.id, "x");
@@ -235,5 +236,67 @@ describe("GlassBox control-plane adapter", () => {
       status: "cancelled",
       attributes: { reason: "server_restart" },
     });
+  });
+});
+
+/** Blocks until `cancel()` rejects the in-flight run, the way the real runners kill their child. */
+class CancellableRunner extends FakeRunner {
+  private rejectRun: ((error: unknown) => void) | undefined;
+  override run(): Promise<RunnerResult> {
+    return new Promise<RunnerResult>((_resolve, reject) => {
+      this.rejectRun = reject;
+    });
+  }
+  override async cancel(): Promise<boolean> {
+    this.rejectRun?.(new RunCancelledError());
+    return true;
+  }
+}
+
+describe("GlassBox control-plane adapter: cancellation and rejection", () => {
+  it("records stop as cancelled with actor evidence", async () => {
+    const { service, store, emitter } = await makeTraced(new CancellableRunner());
+    const agent = await service.createAgent({ name: "c" });
+    const { run } = await service.sendMessage(agent.id, "x");
+    await new Promise((resolve) => setTimeout(resolve, 20)); // let executeRun reach the runner
+    await service.stopAgent(agent.id);
+    await settle(service, run.id);
+    await emitter.flush();
+    const events = await store.readRun(run.id);
+    const cancelled = events.find((e) => e.type === "run.cancelled");
+    expect(cancelled).toMatchObject({
+      status: "cancelled",
+      attributes: { cancelledBy: "local-user" },
+    });
+    expect(typeof cancelled!.attributes["cancelRequestedAt"]).toBe("string");
+    expect(new Date(String(cancelled!.attributes["cancelRequestedAt"])).toISOString()).toBe(
+      cancelled!.attributes["cancelRequestedAt"],
+    );
+    expect(events.at(-1)).toMatchObject({
+      type: "agent_service.run.failed",
+      status: "cancelled",
+    });
+  });
+
+  it("opens no trace when the Run is rejected", async () => {
+    const { service, store, emitter } = await makeTraced(
+      new (class extends FakeRunner {
+        override run(): Promise<RunnerResult> {
+          return new Promise(() => undefined);
+        }
+      })(),
+    );
+    const agent = await service.createAgent({ name: "busy" });
+    await service.sendMessage(agent.id, "first");
+    const ctx = createTraceContext({ requestId: "req-2", method: "POST" }, "metadata_only");
+    await expect(service.sendMessage(agent.id, "second", ctx)).rejects.toMatchObject({
+      statusCode: 409,
+    });
+    await emitter.flush();
+    // The ingress hook ends the root span only when both are set, so a rejected POST must leave
+    // them undefined — otherwise onResponse emits an http.request.completed for a Run that never was.
+    expect(ctx.runId).toBeUndefined();
+    expect(ctx.agentId).toBeUndefined();
+    expect(store.listRuns().map((entry) => entry.traceId)).not.toContain(ctx.traceId);
   });
 });

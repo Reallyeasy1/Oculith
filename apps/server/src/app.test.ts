@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
 import { MemoryTraceStore } from "./glassbox/store.js";
@@ -104,5 +105,26 @@ it("ends the root http span with the response status", async () => {
     attributes: { statusCode: 202, method: "POST" },
   });
   expect(JSON.stringify(events)).not.toContain("authorization");
+  await app.close();
+});
+
+it("writes no trace events when the message POST is rejected", async () => {
+  const store = new MemoryTraceStore();
+  const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+  const svc = {
+    ...service,
+    sendMessage: async () => {
+      throw new HttpError(409, "This Agent is already running");
+    },
+  } as unknown as AgentService;
+  const app = await createApp(loadConfig({ NODE_ENV: "test" }), svc, { emitter, store });
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/agents/2c1b9f8e-3b7e-4b9d-9d3a-1c2d3e4f5a6b/messages",
+    payload: { content: "hi" },
+  });
+  expect(res.statusCode).toBe(409);
+  await emitter.flush();
+  expect(store.listRuns()).toEqual([]);
   await app.close();
 });
