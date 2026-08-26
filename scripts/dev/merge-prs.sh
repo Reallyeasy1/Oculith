@@ -18,7 +18,7 @@ merge_one() {
   [[ "$base" == main ]] || { echo "STOP: PR #$pr base is $base, expected main (merge its parent first)" >&2; exit 1; }
   case "$state" in CLEAN|UNSTABLE|HAS_HOOKS) ;; *) echo "STOP: PR #$pr mergeStateStatus=$state — resolve by merging main into the branch (never rebase a pushed branch)" >&2; exit 1;; esac
   # Gate on the LATEST review verdict: an old Mergeable must not outrank a later Blocked.
-  last_review="$(gh pr view "$pr" --json comments,reviews --jq '[.comments[], .reviews[]] | sort_by(.createdAt) | map(.body) | map(select(startswith("## Review —"))) | last // ""')"
+  last_review="$(gh pr view "$pr" --json comments,reviews --jq '[.comments[], .reviews[]] | sort_by(.createdAt // .submittedAt) | map(.body) | map(select(startswith("## Review —"))) | last // ""')"
   if [[ $gate == 1 ]] && [[ "$last_review" != "## Review — Mergeable"* ]]; then
     echo "STOP: PR #$pr — latest review is not Mergeable (${last_review:-none}); run a mergeability review first (or --no-review-gate with a reason)" >&2; exit 1
   fi
