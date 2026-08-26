@@ -97,9 +97,10 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 <td>
                   {run.redacted && <span className="badge">redacted</span>}
                   {run.denials > 0 && <span className="badge badge-warn">denied {run.denials}</span>}
+                  {run.actions > 0 && <span className="badge">actions {run.actions}</span>}
                   {run.degraded && <span className="badge badge-warn">degraded</span>}
                   {run.truncated && <span className="badge badge-warn">truncated</span>}
-                  {!run.redacted && run.denials === 0 && !run.degraded && !run.truncated && "—"}
+                  {!run.redacted && run.denials === 0 && run.actions === 0 && !run.degraded && !run.truncated && "—"}
                 </td>
                 <td>{formatClock(run.lastEventAt)}</td>
               </tr>
