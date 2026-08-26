@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -61,6 +61,26 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
 }
 
 describe("Agent lifecycle", () => {
+  it("briefs new and existing Agents about disposable containers and host-side commands", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Frontend Builder" });
+    const instructionsPath = path.join(agent.workspacePath, "AGENTS.md");
+    const expected = [
+      "no process you start survives this turn",
+      "Never tell the user to open a localhost URL you started",
+      "leave build output in the workspace",
+      "state the exact command the user runs on their own machine",
+    ];
+    const initial = await readFile(instructionsPath, "utf8");
+    for (const text of expected) expect(initial).toContain(text);
+
+    await writeFile(instructionsPath, "stale platform instructions", "utf8");
+    await service.initialize();
+    const refreshed = await readFile(instructionsPath, "utf8");
+    for (const text of expected) expect(refreshed).toContain(text);
+    expect(refreshed).toContain("This file is regenerated when the Agent configuration is updated.");
+  });
+
   it("stamps stable behavior configuration and changes the hash when instructions change", async () => {
     const service = await makeService();
     const agent = await service.createAgent({ name: "Versioned", instructions: "Run tests" });
