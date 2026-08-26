@@ -12,6 +12,7 @@ import type { ObservationEmitter } from "./glassbox/emitter.js";
 import { buildTrace, type TraceView } from "./glassbox/query.js";
 import { CATEGORIES, SCHEMA_VERSION, STATUSES } from "./glassbox/schema.js";
 import type { RunIndexEntry, TraceStore } from "./glassbox/store.js";
+import { caseFromRun, regressionCaseInput } from "./eval/cases.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -211,6 +212,18 @@ export async function createApp(
     return { run: service.getRun(id) };
   });
 
+  app.get("/api/regression-cases", async () => ({ cases: service.listRegressionCases() }));
+  app.get("/api/regression-cases/:id", async (request) => ({ regressionCase: service.getRegressionCase(z.object({ id: z.string().uuid() }).parse(request.params).id) }));
+  app.delete("/api/regression-cases/:id", async (request, reply) => {
+    await service.deleteRegressionCase(z.object({ id: z.string().uuid() }).parse(request.params).id);
+    return reply.code(204).send();
+  });
+  app.post("/api/regression-cases", async (request, reply) => {
+    const body = regressionCaseInput.parse(request.body);
+    const regressionCase = await service.createRegressionCase({ ...body });
+    return reply.code(201).send({ regressionCase });
+  });
+
   if (glassbox) {
     const runsQuery = z.object({ status: z.enum(STATUSES).optional(), agentId: z.string().uuid().optional(), from: z.string().datetime().optional(), to: z.string().datetime().optional(), limit: z.coerce.number().int().min(1).max(200).default(50) });
     const eventsQuery = z.object({ category: z.enum(CATEGORIES).optional(), status: z.enum(STATUSES).optional(), q: z.string().max(200).optional() });
@@ -221,6 +234,16 @@ export async function createApp(
       const found = entry ?? glassbox.store.listRuns().find((r) => r.runId === runId);
       return buildTrace(events, { capturePolicy: glassbox.emitter.capturePolicy, degraded: glassbox.emitter.isDegraded(runId), truncated: found?.truncated });
     };
+    app.post("/api/runs/:id/regression-case", async (request, reply) => {
+      const run = service.getRun(runIdParams.parse(request.params).id);
+      const template = service.getAgent(run.agentId).workspaceTemplate;
+      if (!template) throw new HttpError(409, "This Run did not start from a template-backed workspace");
+      let input;
+      try { input = caseFromRun(run, await viewFor(run.id), template); }
+      catch (error) { throw new HttpError(400, error instanceof Error ? error.message : "Unable to create regression case"); }
+      const regressionCase = await service.createRegressionCase({ ...input, sourceRunId: run.id });
+      return reply.code(201).send({ regressionCase });
+    });
     app.get("/api/runs", async (request) => {
       const q = runsQuery.parse(request.query);
       const agents = new Map(service.listAgents().map((a) => [a.id, a.name]));

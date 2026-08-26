@@ -18,6 +18,7 @@ import type {
   AgentRunner,
   CreateAgentInput,
   Message,
+  RegressionCase,
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -275,6 +276,29 @@ export class AgentService {
 
   allRuns(): AgentRun[] {
     return this.store.snapshot().runs;
+  }
+
+  listRegressionCases(): RegressionCase[] {
+    return this.store.snapshot().regressionCases.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  getRegressionCase(id: string): RegressionCase {
+    const item = this.store.snapshot().regressionCases.find((candidate) => candidate.id === id);
+    if (!item) throw new HttpError(404, "Regression case not found");
+    return item;
+  }
+
+  async createRegressionCase(input: Omit<RegressionCase, "id" | "createdAt">): Promise<RegressionCase> {
+    const item: RegressionCase = { ...input, id: randomUUID(), createdAt: now() };
+    await this.store.mutate((database) => database.regressionCases.push(item));
+    return item;
+  }
+
+  async deleteRegressionCase(id: string): Promise<void> {
+    await this.store.mutate((database) => {
+      if (!database.regressionCases.some((item) => item.id === id)) throw new HttpError(404, "Regression case not found");
+      database.regressionCases = database.regressionCases.filter((item) => item.id !== id);
+    });
   }
 
   async sendMessage(
