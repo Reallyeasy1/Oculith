@@ -1,4 +1,4 @@
-import { cp, mkdir, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Agent } from "./types.js";
 
@@ -23,6 +23,7 @@ export class WorkspaceManager {
   async initialize(): Promise<void> {
     await mkdir(this.root, { recursive: true });
     await mkdir(path.join(this.root, ".deleted"), { recursive: true });
+    await mkdir(path.join(this.root, ".eval"), { recursive: true });
   }
 
   private templatePath(name: string): string {
@@ -87,11 +88,38 @@ export class WorkspaceManager {
     );
   }
 
+  /** Copy a bounded template into an evaluation-only workspace that cannot overlap an Agent workspace. */
+  async materializeEvalWorkspace(runId: string, template: string, agent: Agent): Promise<string> {
+    if (!NAME.test(runId)) throw new Error("Invalid evaluation run id");
+    const base = path.resolve(this.root, ".eval");
+    const destination = path.resolve(base, runId);
+    if (path.dirname(destination) !== base) throw new Error("Invalid evaluation workspace path");
+    const source = this.templatePath(template);
+    await this.templateSize(source);
+    await mkdir(destination, { recursive: false });
+    try {
+      await cp(source, destination, { recursive: true, dereference: false, errorOnExist: false, force: false });
+      await this.writeInstructions({ ...agent, workspacePath: destination });
+      return destination;
+    } catch (error) {
+      await rm(destination, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  async removeEvalWorkspace(runId: string): Promise<void> {
+    if (!NAME.test(runId)) throw new Error("Invalid evaluation run id");
+    const base = path.resolve(this.root, ".eval");
+    const destination = path.resolve(base, runId);
+    if (path.dirname(destination) !== base) throw new Error("Invalid evaluation workspace path");
+    await rm(destination, { recursive: true, force: true });
+  }
+
   async list(agents: Agent[]): Promise<{ name: string; path: string; agents: string[]; fileCount: number; lastModified: string; managed: boolean }[]> {
     const entries = await readdir(this.root, { withFileTypes: true });
     const output = [];
     for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name === ".deleted") continue;
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
       const workspacePath = this.pathForName(entry.name);
       let fileCount = 0;
       let latest = (await stat(workspacePath)).mtimeMs;
