@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
-export const SCHEMA_VERSION = "1.1" as const;
+export const SCHEMA_VERSION = "1.0" as const; // additive event types do not bump the version: a bump would make every stored 1.0 line unreadable
 export const REDACTION_RULESET_VERSION = "1" as const;
 
 export const STATUSES = ["running", "ok", "error", "cancelled", "timeout", "unset"] as const;

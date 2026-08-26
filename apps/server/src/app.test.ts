@@ -147,7 +147,7 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     const list = await get("/api/runs?limit=10");
     expect(list.statusCode).toBe(200);
     const body = list.json();
-    expect(body.schemaVersion).toBe("1.1"); expect(body.capturePolicy).toBe("metadata_only");
+    expect(body.schemaVersion).toBe("1.0"); expect(body.capturePolicy).toBe("metadata_only");
     expect(body.runs[0]).toMatchObject({ runId: "run-9", agentName: "Nine", status: "timeout", firstFailingStep: "codex", eventCount: 4 });
     const trace = await get("/api/runs/run-9/trace");
     expect(trace.json().summary.failure).toMatchObject({ kind: "timeout", spanId: "rt", path: ["root", "rt"] });
@@ -163,7 +163,7 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     expect(exported.headers["content-type"]).toMatch(/^application\/json/);
     expect(exported.headers["content-disposition"]).toBe('attachment; filename="trace-trc_9.json"');
     const { schemaVersion, exportedAt, ...view } = exported.json();
-    expect(schemaVersion).toBe("1.1"); expect(Number.isNaN(Date.parse(exportedAt))).toBe(false);
+    expect(schemaVersion).toBe("1.0"); expect(Number.isNaN(Date.parse(exportedAt))).toBe(false);
     expect(JSON.stringify(view)).toBe(trace.body);
     expect((await get("/api/traces/nope/export")).json()).toEqual({ error: "Trace not found" });
     await app.close();
