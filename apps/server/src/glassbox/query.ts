@@ -160,6 +160,11 @@ function pathTo(spans: Map<string, Span>, spanId: string): string[] {
 const DEGRADED_FOCUS: FailureFocus = { kind: "degraded", spanId: "", eventId: "", sequence: -1, name: "telemetry.degraded", category: "control", component: "GlassBox", path: [], diagnosis: "Trace evidence is incomplete: the trace store was unavailable during this Run. The Run's real result is unaffected; some spans may be missing." };
 
 const EXIT_HINTS: Record<number, string> = {
+  2: "usage error, or the interpreter could not find the file",
+  124: "timed out — killed by the timeout wrapper",
+  126: "found but not executable — permissions or wrong interpreter",
+  127: "command not found — the program is missing from the runtime image",
+  130: "interrupted — SIGINT",
   137: "SIGKILL (timeout, cancellation, or out-of-memory termination)",
   3221225794: "process failed to initialise — the runtime CLI could not start; restart the server",
 };

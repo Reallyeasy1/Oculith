@@ -7,7 +7,7 @@ import { matchesFilter, needsAttention, summarizeRuns } from "./runs-view-model"
 function run(status: TraceStatus, degraded = false, agentId = "a", agentName = "A"): RunListItem {
   return {
     runId: "r", traceId: "t", agentId, agentName, status, eventCount: 0, runtime: "x", model: "y", toolCalls: 0, toolFailures: 0,
-    capabilities: { model: "unknown", tool: "unknown" }, denials: 0, degraded, truncated: false, evicted: false, redacted: false,
+    capabilities: { model: "unknown", tool: "unknown" }, denials: 0, actions: 0, degraded, truncated: false, evicted: false, redacted: false,
   };
 }
 
@@ -45,6 +45,12 @@ describe("needsAttention", () => {
   ])("%s degraded=%s → %s", (status, degraded, expected) => {
     expect(needsAttention(run(status, degraded))).toBe(expected);
     expect(matchesFilter(run(status, degraded), "attention")).toBe(expected);
+  });
+
+  it("includes a denial even when the Run reached an otherwise successful terminal state", () => {
+    const denied = { ...run("ok"), denials: 1 };
+    expect(needsAttention(denied)).toBe(true);
+    expect(matchesFilter(denied, "attention")).toBe(true);
   });
 
   it("keeps the specific filters exact", () => {
