@@ -224,7 +224,7 @@ export async function createApp(
     app.get("/api/traces/:traceId/export", async (request, reply) => {
       // FR-12: same builder as the trace route, so the export can never carry anything the API would not.
       const { traceId } = traceParams.parse(request.params); const view = await viewFor(runIdFor(traceId));
-      reply.header("content-disposition", `attachment; filename="trace-${traceId}.json"`);
+      reply.header("content-disposition", `attachment; filename="trace-${traceId.replace(/[^\w.-]/g, "_")}.json"`);
       return { schemaVersion: SCHEMA_VERSION, exportedAt: new Date().toISOString(), ...view };
     });
     app.get("/api/traces/:traceId/events", async (request) => {
