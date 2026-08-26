@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTrace, flattenSpans } from "./query.js";
+import { buildTrace, flattenSpans, formatExitCode } from "./query.js";
 import { SCHEMA_VERSION, type ObservationEvent } from "./schema.js";
 
 let seq = 0;
@@ -14,10 +14,32 @@ const svcStart = () => ev({ type: "agent_service.run.started", category: "contro
 const rtStart = () => ev({ type: "runtime.codex.started", category: "runtime", spanId: "rt", parentSpanId: "svc", phase: "start", status: "running", source: { component: "AgentRunner", observed: true } });
 
 describe("buildTrace", () => {
+  it("formats Windows crash and SIGKILL exit codes with deterministic operator hints", () => {
+    expect(formatExitCode(3221225794)).toBe("3221225794 (0xC0000142) — process failed to initialise — the runtime CLI could not start; restart the server");
+    expect(formatExitCode(137)).toBe("137 — SIGKILL (timeout, cancellation, or out-of-memory termination)");
+    expect(formatExitCode(1)).toBe("1");
+  });
+  it("uses the formatted exit code in failure focus and diagnosis", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "tool.call.failed", category: "tool", spanId: "tool", parentSpanId: "rt", status: "error", error: { type: "exit_code", message: "exit code 3221225794" } }),
+      ev({ type: "run.failed", category: "control", spanId: "failed", parentSpanId: "svc", status: "error" })];
+    const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(summary.failure?.message).toContain("3221225794 (0xC0000142)");
+    expect(summary.failure?.diagnosis).toContain("runtime CLI could not start; restart the server");
+  });
+  it("formats runner-shaped 'exited with code N: detail' messages without losing the detail", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "error.recorded", category: "control", spanId: "err", parentSpanId: "rt", status: "error", error: { type: "runtime_error", message: "Codex exited with code 137: stderr tail" } }),
+      ev({ type: "run.failed", category: "control", spanId: "failed", parentSpanId: "svc", status: "error" })];
+    const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(summary.failure?.message).toBe("Codex exited with code 137 — SIGKILL (timeout, cancellation, or out-of-memory termination): stderr tail");
+  });
   it("reconstructs a nested tree with durations and rolls up ok", () => {
     seq = 0;
     const events = [
-      root(), ev({ type: "run.created", category: "control", spanId: "rc", parentSpanId: "root", attributes: { workspace: "repo-doctor" } }), svcStart(), rtStart(),
+      root(), ev({ type: "run.created", category: "control", spanId: "rc", parentSpanId: "root", attributes: { configHash: "0123456789abcdef" } }), svcStart(), rtStart(),
       ev({ type: "tool.call.completed", category: "tool", spanId: "tool1", parentSpanId: "rt", status: "ok", durationMs: 5 }),
       ev({ type: "model.completed", category: "model", spanId: "m1", parentSpanId: "rt", status: "ok", attributes: { inputTokens: 10, outputTokens: 2 } }),
       ev({ type: "runtime.codex.completed", category: "runtime", spanId: "rt", phase: "end", status: "ok" }),
@@ -30,8 +52,18 @@ describe("buildTrace", () => {
     expect(view.summary.spanCount).toBe(7);
     expect(view.summary.incompleteSpans).toBe(0);
     expect(view.summary.usage).toEqual({ inputTokens: 10, outputTokens: 2 });
+    expect(view.summary.metrics).toEqual({
+      durationMs: 70,
+      terminalStatus: "ok",
+      toolCalls: 1,
+      toolFailures: 0,
+      modelCalls: 1,
+      tokens: { input: 10, output: 2 },
+      retries: 0,
+      denials: 0,
+    });
+    expect(view.summary.configHash).toBe("0123456789abcdef");
     expect(view.summary.capabilities).toEqual({ model: "observed", tool: "observed" });
-    expect(view.summary.workspace).toBe("repo-doctor");
     expect(view.spans[0]!.spanId).toBe("root");
     const rt = flattenSpans(view.spans).find((s) => s.spanId === "rt")!;
     expect(rt.depth).toBe(2); expect(rt.durationMs).toBe(30); expect(rt.children.map((c) => c.spanId)).toEqual(["tool1", "m1"]);
@@ -49,6 +81,27 @@ describe("buildTrace", () => {
     expect(summary.failure).toMatchObject({ kind: "timeout", spanId: "rt", component: "AgentRunner", path: ["root", "svc", "rt"] });
     expect(summary.failure!.diagnosis).toMatch(/^Run timeout in AgentRunner after 0\.\d+ s\. First actionable timeout: runtime\.codex\.failed/);
     expect(summary.firstFailingStep).toBe("runtime.codex.failed");
+    expect(summary.metrics).toEqual({
+      durationMs: 40,
+      terminalStatus: "timeout",
+      toolCalls: 0,
+      toolFailures: 0,
+      modelCalls: 0,
+      retries: 0,
+      denials: 0,
+    });
+  });
+  it("computes retries, failed tool calls, denials and cached tokens from numeric evidence only", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "tool.call.failed", category: "tool", spanId: "tool-retry", parentSpanId: "rt", status: "error", attempt: 2 }),
+      ev({ type: "policy.denied", category: "policy", spanId: "denial", parentSpanId: "rt", status: "error" }),
+      ev({ type: "model.completed", category: "model", spanId: "model", parentSpanId: "rt", status: "ok", attributes: { inputTokens: 3, cachedInputTokens: 2, outputTokens: 1, text: "ignored" } }),
+      ev({ type: "run.completed", category: "control", spanId: "done", parentSpanId: "svc", status: "ok" })];
+    expect(buildTrace(events, { capturePolicy: "metadata_only" }).summary.metrics).toMatchObject({
+      terminalStatus: "ok", toolCalls: 1, toolFailures: 1, modelCalls: 1,
+      tokens: { input: 3, cachedInput: 2, output: 1 }, retries: 1, denials: 1,
+    });
   });
   it("handled tool failure keeps parent ok; cancelled never rolls up ok; open spans are incomplete", () => {
     seq = 0;
@@ -123,6 +176,27 @@ describe("buildTrace", () => {
     expect(summary.status).toBe("ok");
     expect(summary.failure?.kind).toBe("degraded");
     expect(summary.firstFailingStep).toBeUndefined();
+  });
+  it("surfaces a handled sandbox denial even when the Run later completes", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "tool.call.failed", category: "tool", spanId: "tool", parentSpanId: "rt", status: "error", name: "shell:pwsh", error: { type: "denied", message: "Command declined by the sandbox policy" } }),
+      ev({ type: "policy.denied", category: "policy", spanId: "deny", parentSpanId: "rt", status: "error", name: "pwsh", source: { component: "Sandbox", observed: true }, attributes: { program: "pwsh", decision: "sandbox_declined", commandBytes: 9 } }),
+      ev({ type: "runtime.codex.completed", category: "runtime", spanId: "rt", phase: "end", status: "ok" }),
+      ev({ type: "run.completed", category: "control", spanId: "done", parentSpanId: "svc", status: "ok" })];
+    const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(summary).toMatchObject({ status: "ok", denials: 1, firstFailingStep: "pwsh" });
+    expect(summary.failure).toMatchObject({ kind: "denied", name: "pwsh", component: "Sandbox", diagnosis: "sandbox declined `pwsh`" });
+  });
+  it("focuses a denial ahead of its associated tool failure when the Run fails", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "tool.call.failed", category: "tool", spanId: "tool", parentSpanId: "rt", status: "error", name: "shell:node", error: { type: "denied", message: "Command declined by the sandbox policy" } }),
+      ev({ type: "policy.denied", category: "policy", spanId: "deny", parentSpanId: "rt", status: "error", name: "node", source: { component: "Sandbox", observed: true }, attributes: { program: "node", decision: "sandbox_declined", commandBytes: 12 } }),
+      ev({ type: "run.failed", category: "control", spanId: "failed", parentSpanId: "svc", status: "error" })];
+    const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(summary.denials).toBe(1);
+    expect(summary.failure).toMatchObject({ kind: "denied", name: "node", diagnosis: "sandbox declined `node`" });
   });
   it("cut short before any stream event => capabilities unknown, never unavailable (invariant 3)", () => {
     seq = 0;

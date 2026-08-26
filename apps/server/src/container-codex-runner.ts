@@ -45,6 +45,30 @@ export function buildContainerRunArgs(
   config: AppConfig,
 ): string[] {
   const name = containerName(request.agentId, config.runtimeInstanceId);
+  return [
+    ...buildHardenedContainerPrefix({
+      name,
+      agentId: request.agentId,
+      workspacePath: request.workspacePath,
+      config,
+      includeModelCredentials: true,
+      mountCodexHome: true,
+    }),
+    config.containerRuntimeImage,
+    "codex",
+    ...buildCodexArgs(request, config.codexSandboxMode, "/workspace"),
+  ];
+}
+
+export function buildHardenedContainerPrefix(options: {
+  name: string;
+  agentId: string;
+  workspacePath: string;
+  config: AppConfig;
+  includeModelCredentials: boolean;
+  mountCodexHome: boolean;
+}): string[] {
+  const { name, agentId, workspacePath, config } = options;
   const engineName = config.containerEngine.split(/[\\/]/).at(-1)?.toLowerCase();
   return [
     "run",
@@ -55,7 +79,7 @@ export function buildContainerRunArgs(
     "--label",
     "io.codejam.launchpad=agent-runtime",
     "--label",
-    "io.codejam.agent-id=" + request.agentId,
+    "io.codejam.agent-id=" + agentId,
     "--label",
     "io.codejam.instance-id=" + config.runtimeInstanceId,
     ...(engineName === "podman" ? ["--userns", "keep-id"] : []),
@@ -73,25 +97,17 @@ export function buildContainerRunArgs(
     String(config.containerPidsLimit),
     "--user",
     config.containerUser,
-    "--env",
-    "ARK_API_KEY",
-    "--env",
-    "OPENAI_API_KEY",
-    "--env",
-    "CODEX_HOME=/codex-home",
+    ...(options.includeModelCredentials ? ["--env", "ARK_API_KEY", "--env", "OPENAI_API_KEY"] : []),
+    ...(options.mountCodexHome ? ["--env", "CODEX_HOME=/codex-home"] : []),
     "--env",
     "HOME=/tmp",
     "--env",
     "NO_COLOR=1",
     "--mount",
-    "type=bind,src=" + request.workspacePath + ",dst=/workspace",
-    "--mount",
-    "type=bind,src=" + config.codexHome + ",dst=/codex-home",
+    "type=bind,src=" + workspacePath + ",dst=/workspace",
+    ...(options.mountCodexHome ? ["--mount", "type=bind,src=" + config.codexHome + ",dst=/codex-home"] : []),
     "--workdir",
     "/workspace",
-    config.containerRuntimeImage,
-    "codex",
-    ...buildCodexArgs(request, config.codexSandboxMode, "/workspace"),
   ];
 }
 

@@ -9,8 +9,16 @@ import {
   formatUsage,
   matchesFilter,
   sortNewestFirst,
+  summarizeRuns,
   type QuickFilter,
 } from "./runs-view-model";
+
+function noEvidenceTitle(run: RunListItem): string {
+  const layers = [run.capabilities.model === "unknown" ? "model" : "", run.capabilities.tool === "unknown" ? "tool" : ""].filter(Boolean).join(" and ");
+  return run.status === "timeout" || run.status === "cancelled" || run.status === "running"
+    ? `No ${layers} evidence — the Run was cut short before calls were observed.`
+    : `No ${layers} calls observed in this Run.`;
+}
 
 interface Props {
   runs: RunListItem[];
@@ -28,6 +36,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
     () => sortNewestFirst(runs).filter((run) => matchesFilter(run, filter)),
     [runs, filter],
   );
+  const okCount = summarizeRuns(runs).ok;
 
   return (
     <section className="runs-view" aria-labelledby="runs-heading">
@@ -61,9 +70,10 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
               <th scope="col">Duration</th>
               <th scope="col">First failing step</th>
               <th scope="col">Events</th>
+              <th scope="col">Config</th>
               <th scope="col">Runtime / model</th>
               <th scope="col">Usage</th>
-              <th scope="col">Trust</th>
+              <th scope="col">Tool calls</th>
               <th scope="col">Last event</th>
             </tr>
           </thead>
@@ -91,16 +101,25 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 {showAgent && <td>{run.agentName || run.agentId}</td>}
                 <td>{run.workspace ?? "—"}</td>
                 <td>{formatClock(run.startedAt)}</td>
-                <td>{formatDuration(run.durationMs)}{run.endedReason === "server_restart" ? " until restart" : ""}</td>
+                <td>{formatDuration(run.durationMs)}{run.endedReason === "server_restart" ? " · interrupted" : ""}</td>
                 <td>{run.firstFailingStep ?? "—"}</td>
                 <td>{run.eventCount}</td>
+                <td title={run.configSnapshot ? JSON.stringify(run.configSnapshot) : undefined}>
+                  <code>{run.configHash?.slice(0, 8) ?? "—"}</code>
+                </td>
                 <td>{run.runtime} · {run.model}</td>
                 <td>{formatUsage(run.usage)}</td>
                 <td>
+                  <span>{run.toolCalls}{run.toolFailures > 0 && <> · {run.toolFailures} failed</>}</span>{" "}
                   {run.redacted && <span className="badge">redacted</span>}
+                  {run.denials > 0 && <span className="badge badge-warn">denied {run.denials}</span>}
                   {run.degraded && <span className="badge badge-warn">degraded</span>}
                   {run.truncated && <span className="badge badge-warn">truncated</span>}
-                  {!run.redacted && !run.degraded && !run.truncated && "—"}
+                  {run.evicted && <span className="badge badge-warn">evicted</span>}
+                  {(run.capabilities.model === "unknown" || run.capabilities.tool === "unknown") && (
+                    <span className="badge" title={noEvidenceTitle(run)}>no evidence</span>
+                  )}
+                  {run.workspaceChanges && <span className="badge">{run.workspaceChanges.added + run.workspaceChanges.modified + run.workspaceChanges.removed} files changed</span>}
                 </td>
                 <td>{formatClock(run.lastEventAt)}</td>
               </tr>
@@ -108,9 +127,14 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
           </tbody>
         </table>
         {visible.length === 0 && (
-          <p className="runs-empty">
-            {runs.length === 0 ? emptyText : filter === "attention" ? "Nothing needs attention." : "No Runs match this filter."}
-          </p>
+          <div className="runs-empty">
+            {runs.length === 0 ? emptyText : filter === "attention" ? (
+              <>
+                Nothing needs attention · {okCount} ok {okCount === 1 ? "Run" : "Runs"}
+                <button type="button" className="button button-ghost runs-empty-action" onClick={() => setFilter("all")}>Show all</button>
+              </>
+            ) : "No Runs match this filter."}
+          </div>
         )}
       </div>
     </section>

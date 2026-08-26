@@ -136,6 +136,8 @@ export class WorkspaceManager {
       "- Preserve existing user files and avoid destructive operations.",
       "- Build and test changes when practical.",
       "- Never print environment variables or credentials.",
+      "- You run in a disposable container: no process you start survives this turn and no port is reachable from the user's machine. Never tell the user to open a localhost URL you started.",
+      "- For anything runnable, leave build output in the workspace (e.g. `dist/`) and state the exact command the user runs on their own machine.",
       "",
       "This file is regenerated when the Agent configuration is updated.",
       "",
