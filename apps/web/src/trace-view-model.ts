@@ -19,6 +19,29 @@ export const STATUSES: TraceStatus[] = ["running", "ok", "error", "cancelled", "
 
 export const DRAWER_EVENT_CAP = 200;
 
+export function refreshIntervalMs(status: TraceStatus | undefined): number {
+  return status === "running" ? 1_500 : 5_000;
+}
+
+export function capabilityCopy(
+  state: "observed" | "unavailable" | "unknown",
+  runStatus: TraceStatus,
+): { label: string; title: string } {
+  if (state === "observed") {
+    return { label: "observed", title: "The runtime emitted events for this layer." };
+  }
+  if (state === "unavailable") {
+    return { label: "unavailable", title: "The Run completed but the runtime exposed no events for this layer." };
+  }
+  if (runStatus === "running") {
+    return { label: "pending", title: "The Run is still in progress; capability evidence may arrive on a later refresh." };
+  }
+  return {
+    label: "no evidence — run cut short",
+    title: "The Run was cancelled, timed out, or its stream never started, so nothing was said about this layer; absence proves nothing.",
+  };
+}
+
 export function isFilterActive(f: TraceFilter): boolean {
   return f.category !== "" || f.status !== "" || f.text.trim() !== "" || f.errorsOnly;
 }
