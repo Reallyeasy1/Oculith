@@ -48,8 +48,10 @@ process.stdin.on("end", () => {
   // Test seam: OCULITH_GH_BIN=<script.js> substitutes a fake gh (scripts/dev/test-guards.sh); production always runs the real gh.
   const gh = (args, t) => (process.env.OCULITH_GH_BIN ? exec(process.execPath, [process.env.OCULITH_GH_BIN, ...args], t) : exec("gh", args, t));
   // `git -C dir -c k=v <sub>` → match the subcommand regardless of global options.
-  const GIT = String.raw`git(?:\s+-[cC]\s+\S+)*`;
+  const GIT = String.raw`git(?:\s+(?:-[cC]\s+\S+|--no-pager|--git-dir=\S+|--work-tree=\S+))*`;
   const sub = (name) => new RegExp(`${GIT}\\s+${name}\\b`);
+  // Forms that re-point git at another repo defeat the ownership lookup; refuse them outright.
+  if (/(^|[\s;&|])GIT_DIR=|--git-dir[\s=]|--work-tree[\s=]/.test(cmd)) block("GIT_DIR / --git-dir / --work-tree re-point git at another repo; use `cd <path> &&` or `git -C <path>` so the guard can see which branch you touch.");
 
   // ---- unsafe git / secrets in the transcript --------------------------------------------------------------
   if (sub("push").test(cmd) && /(\s--force\b|\s-f\b|\s--force-with-lease\b|\s\+[\w./-]+)/.test(cmd)) block("force push rewrites shared history; open an issue and ask the user instead.");
@@ -109,20 +111,21 @@ process.stdin.on("end", () => {
   const issueOf = (branch) => branch?.match(/^(?:feat|fix|chore)\/(\d+)-/)?.[1];
 
   // Claiming an issue: same-machine sessions share the GitHub login, so GitHub cannot tell them apart — we can.
-  const claiming = cmd.match(/claim-issue\.sh\s+(\d+)/)?.[1];
+  // Only an invocation counts (statement start, optional `bash `), never a `cat`/`grep` of the script.
+  const claiming = cmd.match(/(?:^|[;&|]\s*)(?:bash\s+)?(?:[\w./-]*\/)?claim-issue\.sh\s+(\d+)/)?.[1];
   if (stateFile && claiming) {
     const s = readState();
     const cur = s.issues[claiming];
-    if (cur && cur.session !== session && !claimOverride) block(`issue #${claiming} is already claimed by another session on this machine (${cur.session.slice(0, 8)}…, since ${cur.at}); pick another issue.`);
+    if (cur && cur.session !== session && !claimOverride) block(`issue #${claiming} is already claimed by another session on this machine (${cur.session.slice(0, 8)}…, since ${cur.at}); pick another issue (a controller releasing an abandoned claim may prefix OCULITH_CLAIM_OVERRIDE=1).`);
     s.issues[claiming] = { session, at: now };
     writeState(s);
   }
 
   // Releasing a claim (--abort) frees the local lock too; --review keeps it (the claim is the lock until the issue closes).
-  const releasing = cmd.match(/release-issue\.sh\s+(\d+)\s+--abort/)?.[1];
+  const releasing = cmd.match(/(?:^|[;&|]\s*)(?:bash\s+)?(?:[\w./-]*\/)?release-issue\.sh\s+(\d+)\s+--abort/)?.[1];
   if (stateFile && releasing) {
     const s = readState();
-    if (s.issues[releasing]?.session === session || ownerOverride) { delete s.issues[releasing]; writeState(s); }
+    if (s.issues[releasing]?.session === session || claimOverride) { delete s.issues[releasing]; writeState(s); }
   }
 
   // Creating a branch: the issue must be claimed (GitHub: label in-progress + assignee = me; local: this session).

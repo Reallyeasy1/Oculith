@@ -19,10 +19,14 @@ if [[ -n "$assignees" && "$assignees" != "$me" ]]; then echo "claim-issue: #$n i
 existing="$(git ls-remote --heads origin "refs/heads/feat/$n-*" "refs/heads/fix/$n-*" "refs/heads/chore/$n-*" | awk '{print $2}' | sed 's|refs/heads/||' | tr '\n' ' ')"
 if [[ -n "$existing" ]]; then echo "claim-issue: a branch for #$n already exists on origin: $existing — continue on it (git switch) instead of starting a second one." >&2; exit 1; fi
 token="$(node -pe 'require("crypto").randomBytes(6).toString("hex")')"
-since="$(node -pe 'new Date(Date.now()-10*60*1000).toISOString()')"
 gh issue edit "$n" --add-assignee "$me" --add-label in-progress >/dev/null
 gh issue comment "$n" --body "claim-token: $token ($me)" >/dev/null
-first="$(gh issue view "$n" --json comments --jq "[.comments[] | select(.createdAt >= \"$since\") | .body | select(startswith(\"claim-token: \")) | select(contains(\" released\") | not)][0] // \"\"")"
+# Race window measured on the SERVER clock: the first non-released claim token posted within 90 s before ours must be
+# ours. Older tokens (an earlier claim of the same issue, aborted or merged) do not count, whatever the local clock says.
+first="$(gh issue view "$n" --json comments --jq "
+  [.comments[] | select(.body | startswith(\"claim-token: \")) | select(.body | contains(\" released\") | not)] as \$c
+  | (\$c[] | select(.body == \"claim-token: $token ($me)\") | .createdAt | fromdateiso8601) as \$mine
+  | [\$c[] | select((.createdAt | fromdateiso8601) >= (\$mine - 90))][0].body // \"\"")"
 if [[ "$first" != "claim-token: $token ($me)" ]]; then
   gh issue comment "$n" --body "claim-token: $token released (lost the race to: $first)" >/dev/null || true
   winner="$(printf '%s' "$first" | sed -nE 's/.*[(]([^)]+)[)]$/\1/p')"

@@ -33,7 +33,7 @@ impossible where a hook can enforce them, and explicit where it cannot.
   (`bash scripts/dev/release-issue.sh N --abort`) and says so on the issue.
 
 ## Keeping the guards honest
-`npm run check` runs `scripts/dev/test-guards.sh` (28 cases against a throwaway repo with two fake sessions and a fake
+`npm run check` runs `scripts/dev/test-guards.sh` (40+ cases against a throwaway repo with two fake sessions and a fake
 `gh`); a change to `guard-bash.cjs` that weakens a rule fails the build. Add a case whenever you add a rule.
 
 ## Escapes (write down why when you use one)

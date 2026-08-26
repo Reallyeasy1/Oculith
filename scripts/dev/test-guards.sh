@@ -53,6 +53,10 @@ expect 0 "$(run A "git -C wt commit -m x -- file")" "owner claims the worktree b
 expect 2 "$(run B "git -C wt commit -m x -- file")" "git -C into another session's worktree is blocked"
 expect 2 "$(run B "cd wt && git push -u origin HEAD")" "cd into another session's worktree is blocked"
 expect 0 "$(run B "OCULITH_OWNER_OVERRIDE=1 git -C wt commit -m x -- file")" "controller override applies across worktrees"
+expect 0 "$(run B 'cat scripts/dev/claim-issue.sh 2>&1')" "reading the claim script is not a claim"
+expect 2 "$(run B 'git switch -c feat/2-again origin/main')" "…so issue 2 is still A's (fake gh says unclaimed, local lock says A)"
+expect 2 "$(run B 'GIT_DIR=wt/.git git commit -m x -- file')" "GIT_DIR re-pointing is refused"
+expect 2 "$(run B 'git --no-pager push --force origin feat/1-thing')" "--no-pager does not hide a force push"
 # Aborting a claim frees the local lock for other sessions
 expect 0 "$(run A 'bash scripts/dev/claim-issue.sh 7')" "session A claims issue 7"
 expect 2 "$(run B 'bash scripts/dev/claim-issue.sh 7')" "session B is blocked while A holds 7"

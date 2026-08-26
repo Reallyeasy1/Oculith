@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The only sanctioned way to merge: serialized, in the order given, with merge commits (stacked diffs stay per-issue).
-# For each PR: base must be main and mergeable, a `## Review —` comment must exist (--no-review-gate to skip),
+# For each PR: base must be main and mergeable, the LATEST `## Review —` comment must be Mergeable (--no-review-gate to skip),
 # then merge → retarget every open PR based on the merged head branch to main → delete the head branch.
 # Deleting a base branch first would CLOSE the dependent PRs (GitHub does not retarget on `git push --delete`).
 set -euo pipefail
