@@ -8,9 +8,9 @@ export const QUICK_FILTERS: QuickFilter[] = ["attention", "all", "failed", "runn
 
 export const FILTER_LABEL: Partial<Record<QuickFilter, string>> = { attention: "Needs attention", timeout: "Timed out" };
 
-/** error ∪ timeout ∪ cancelled ∪ degraded — the default Runs filter (issue #35). */
+/** error ∪ timeout ∪ cancelled ∪ degraded ∪ denial — the default Runs filter (issue #35). */
 export function needsAttention(run: RunListItem): boolean {
-  return run.degraded || run.status === "error" || run.status === "timeout" || run.status === "cancelled";
+  return run.denials > 0 || run.degraded || run.status === "error" || run.status === "timeout" || run.status === "cancelled";
 }
 
 export interface RunsSummary {
