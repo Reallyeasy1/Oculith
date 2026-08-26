@@ -23,6 +23,8 @@ interface ActiveContainer {
   outputExceeded: boolean;
   settled: Promise<void>;
   termination: Promise<void> | null;
+  /** How the container was actually torn down — set from the real outcome of `rm --force`. */
+  cleanup?: "rm --force" | "signal" | undefined;
 }
 
 interface ParsedEvents {
@@ -135,8 +137,9 @@ export class ContainerCodexRunner implements AgentRunner {
         ["rm", "--force", active.containerName],
         { timeout: 8_000, env: this.childEnvironment() },
       )
-        .then(() => undefined)
+        .then(() => { active.cleanup = "rm --force"; })
         .catch(() => {
+          active.cleanup = "signal";
           active.child.kill("SIGTERM");
           const forceKill = setTimeout(() => active.child.kill("SIGKILL"), 3_000);
           forceKill.unref();
@@ -286,7 +289,7 @@ export class ContainerCodexRunner implements AgentRunner {
         type: "runtime.container.stopped",
         attributes: {
           ...(child.exitCode !== null ? { exitCode: child.exitCode } : {}),
-          removed: active.termination !== null,
+          ...(active.cleanup ? { cleanup: active.cleanup } : {}),
         },
         ...(error ? { error } : {}),
       });
@@ -297,6 +300,8 @@ export class ContainerCodexRunner implements AgentRunner {
         child.once("error", reject);
         child.once("close", (code) => resolve(code ?? 1));
       });
+      // The child can close before `rm --force` reports back; wait so the span records the real cleanup.
+      if (active.termination) await active.termination;
       if (stdout.trim()) parseCodexEventLine(stdout.trim(), parsed, observer);
       const output = parsed.messages.at(-1)?.trim();
       const outcome = active.cancelled
@@ -334,7 +339,8 @@ export class ContainerCodexRunner implements AgentRunner {
         throw new Error(message);
       }
       if (exitCode !== 0) {
-        const detail = parsed.errors.at(-1) ?? stderr.trim() ?? "No error detail";
+        // Bounded: see CodexRunner — an oversized error.message would quarantine the span end.
+        const detail = ((parsed.errors.at(-1) ?? stderr.trim()) || "No error detail").slice(0, 1024);
         const message =
           this.config.containerEngine + " Runtime exited with code " + exitCode + ": " + detail;
         endSpans("error", { type: "exit_code", message });

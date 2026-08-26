@@ -73,6 +73,8 @@ describe("redactEvent", () => {
     ["access_token", true], ["x-api-key", true], ["total_tokens", false], ["input_tokens", false],
     ["accessToken", true], ["authToken", true], ["apiSecret", true], ["sessionCookie", true], ["xApiKey", true],
     ["inputTokens", false], ["cachedInputTokens", false], ["exitCode", false],
+    ["secret_key", true], ["aws_secret_access_key", true], ["SecretKey", true], ["password_hash", true],
+    ["http.request.header.authorization", true], ["tokens_total", false],
   ] as const)("denylist: %s dropped=%s", (key, dropped) => {
     const out = redactEvent(ev({ attributes: { [key]: 7 } }), { policy: "metadata_only" });
     expect(Object.hasOwn(out.attributes, key)).toBe(!dropped);

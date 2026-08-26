@@ -1,7 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
-import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
+import { CodexRunner, buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
+import { loadConfig } from "./config.js";
+import { ObservationEmitter } from "./glassbox/emitter.js";
+import { MemoryTraceStore } from "./glassbox/store.js";
 
 describe("Codex runner protocol", () => {
   it("builds a new-session invocation", () => {
@@ -86,6 +91,48 @@ describe("Codex runner protocol", () => {
     expect(parsed.messages).toEqual(["Done."]);
     expect(parsed.usage).toEqual({ inputTokens: 10, outputTokens: 4 });
   });
+});
+
+describe("CodexRunner against a real child process", () => {
+  // No module mocks: CODEX_BIN is node itself, so the `exec` subcommand resolves to a script named
+  // `exec` in the workspace cwd (node stops parsing its own flags at the script name).
+  const dirs: string[] = [];
+  afterEach(async () => {
+    await Promise.all(dirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
+  });
+  const workspace = async (script: string) => {
+    const dir = await mkdtemp(path.join(tmpdir(), "codex-runner-"));
+    dirs.push(dir);
+    await writeFile(path.join(dir, "exec"), script);
+    return dir;
+  };
+  const trace = { traceId: "trc_1", runId: "run-1", agentId: "agt-1", parentSpanId: "spn_svc" };
+  const setup = (home: string) => {
+    const store = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const config = loadConfig({
+      NODE_ENV: "test",
+      CODEX_BIN: process.execPath,
+      CODEX_HOME: home,
+      ARK_API_KEY: "test-key",
+      ARK_MODEL: "ep-test",
+    });
+    return { store, emitter, runner: new CodexRunner(config, emitter) };
+  };
+
+  it("bounds a 5000-char stderr so the failed span end is still accepted with terminal evidence", async () => {
+    const ws = await workspace('process.stderr.write("x".repeat(5000)); process.exitCode = 2;');
+    const { store, emitter, runner } = setup(ws);
+    await expect(
+      runner.run({ agentId: "agt-1", workspacePath: ws, prompt: "p", threadId: null, trace }),
+    ).rejects.toThrow(/exited with code 2/);
+    await emitter.flush();
+    const events = await store.readRun("run-1");
+    const end = events.find((e) => e.type === "runtime.codex.failed");
+    expect(end).toMatchObject({ status: "error", phase: "end", error: { type: "exit_code" } });
+    expect(end!.error!.message.length).toBeLessThanOrEqual("Codex exited with code 2: ".length + 1024);
+    expect(events.some((e) => e.type === "error.recorded")).toBe(false);
+  }, 30_000);
 });
 
 describe("Codex stream fixtures", () => {

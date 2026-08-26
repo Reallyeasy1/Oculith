@@ -35,6 +35,7 @@ describe.each([
     const store = await make(); await store.initialize();
     for (let i = 1; i <= TRACE_CAPS.maxEventsPerRun; i++) await store.append(ev(i));
     expect(await store.append(ev(9001))).toEqual({ stored: false, reason: "cap_events" });
+    expect(store.listRuns()[0]).toMatchObject({ runId: "run-1", truncated: true }); // visible before trace.truncated lands
     expect(await store.append(ev(9002, { type: "run.failed", category: "control", status: "error" }))).toEqual({ stored: true });
     expect(ALWAYS_KEEP_TYPES.has("run.failed")).toBe(true);
     expect((await store.readRun("run-1")).length).toBe(TRACE_CAPS.maxEventsPerRun + 1);
@@ -77,9 +78,23 @@ describe("NdjsonTraceStore persistence", () => {
     expect(logged[0]![0]).toBe("trace.lines_skipped");
     expect(logged[0]![1]).toMatchObject({ skipped: 1 });
     expect(String(logged[0]![1].file)).toContain("run-1.ndjson");
-    // readRun re-parses the same file, so it reports the skip again rather than hiding it.
+    // readRun re-parses the same file on every poll; the skip is reported once per file per process.
     expect((await b.readRun("run-1")).length).toBe(1);
-    expect(logged).toHaveLength(2);
+    expect((await b.readRun("run-1")).length).toBe(1);
+    expect(logged).toHaveLength(1);
+  });
+  it("starts a fresh line after a partial trailing line (crash mid-write) instead of corrupting both", async () => {
+    const dir = path.join(await tmp(), "traces");
+    const a = new NdjsonTraceStore(dir); await a.initialize(); await a.append(ev(1));
+    const file = path.join(dir, "run-1.ndjson");
+    await writeFile(file, (await readFile(file, "utf8")) + JSON.stringify(ev(2)).slice(0, 40));
+    const logged: Array<[string, Record<string, unknown>]> = [];
+    const b = new NdjsonTraceStore(dir, (message, meta) => logged.push([message, meta]));
+    await b.initialize();
+    expect(logged).toEqual([["trace.lines_skipped", expect.objectContaining({ skipped: 1 })]]);
+    expect(await b.append(ev(3))).toEqual({ stored: true });
+    expect((await b.readRun("run-1")).map((e) => e.sequence)).toEqual([1, 3]);
+    expect((await readFile(file, "utf8")).split("\n").filter(Boolean)).toHaveLength(3);
   });
   it("restores the truncated flag on rebuild", async () => {
     const dir = path.join(await tmp(), "traces");
@@ -123,6 +138,7 @@ describe("per-run byte cap and markTruncated", () => {
     }
     const overflow = await store.append(ev(i + 1, { attributes }));
     expect(overflow).toEqual({ stored: false, reason: "cap_bytes" });
+    expect(store.listRuns()[0]!.truncated).toBe(true);
     const kept = await store.append(ev(i + 2, { type: "run.failed", category: "control", status: "error" }));
     expect(kept).toEqual({ stored: true });
   });

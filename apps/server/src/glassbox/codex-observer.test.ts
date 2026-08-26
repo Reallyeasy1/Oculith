@@ -176,14 +176,44 @@ describe("CodexStreamObserver", () => {
     const run = async (outcome: "ok" | "timeout" | "cancelled") => {
       const store = new MemoryTraceStore();
       const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
-      // No tool or model line was ever seen — the only question is whether that is evidence.
-      new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner").finish(outcome);
+      // The stream ran (thread.started) but no tool or model line was ever seen — is that evidence?
+      const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner");
+      parseCodexEventLine(lines[0]!, parsed(), obs);
+      obs.finish(outcome);
       await em.flush();
       return (await store.readRun("run-1")).map((e) => e.type);
     };
     expect(await run("timeout")).toEqual([]);
     expect(await run("cancelled")).toEqual([]);
     expect(await run("ok")).toEqual(["capability.unavailable"]);
+  });
+
+  it("emits no capability.unavailable when no stream event was observed at all (spawn failure, early abort)", async () => {
+    const store = new MemoryTraceStore();
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner").finish("error");
+    await em.flush();
+    expect(await store.readRun("run-1")).toEqual([]);
+  });
+
+  it.each([
+    ["C:\\Users\\someone\\AppData\\Roaming\\npm\\codex.exe --version", "codex.exe"],
+    ["/usr/local/bin/git status", "git"],
+    ["curl -s x", "curl"],
+  ])("stores only the basename of the program token: %s", async (command, program) => {
+    const store = new MemoryTraceStore();
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner");
+    parseCodexEventLine(
+      JSON.stringify({ type: "item.completed", item: { type: "command_execution", command, exit_code: 0 } }),
+      parsed(),
+      obs,
+    );
+    await em.flush();
+    const [e] = await store.readRun("run-1");
+    expect(e!.attributes.program).toBe(program);
+    expect(e!.name).toBe("shell:" + program);
+    expect(JSON.stringify(e)).not.toContain("someone");
   });
 
   it("drops the buffered stream error when the run succeeded", async () => {

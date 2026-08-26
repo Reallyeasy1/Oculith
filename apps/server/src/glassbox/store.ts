@@ -78,7 +78,11 @@ abstract class BaseTraceStore implements TraceStore {
     const prior = this.queues.get(event.runId) ?? Promise.resolve();
     const operation = prior.then(async () => {
       const admitted = this.admit(event);
-      if ("stored" in admitted) { result = admitted; return; }
+      if ("stored" in admitted) {
+        // A dropped event is a truncation the moment it happens, not only once the emitter lands trace.truncated.
+        if (!admitted.stored && admitted.reason !== "duplicate") this.markTruncated(event.runId);
+        result = admitted; return;
+      }
       const line = JSON.stringify(admitted) + "\n";
       await this.persist(admitted, line);
       this.track(admitted, Buffer.byteLength(line, "utf8"));
@@ -111,6 +115,8 @@ export class NdjsonTraceStore extends BaseTraceStore {
     private readonly directory: string,
     private readonly log?: ((message: string, meta: Record<string, unknown>) => void) | undefined,
   ) { super(); }
+  /** Files whose skipped lines were already reported: readRun re-parses on every poll, so report once per file per process. */
+  private readonly reported = new Set<string>();
   private file(runId: string): string { return path.join(this.directory, runId.replace(/[^a-zA-Z0-9_-]/g, "_") + ".ndjson"); }
 
   async initialize(): Promise<void> {
@@ -118,7 +124,13 @@ export class NdjsonTraceStore extends BaseTraceStore {
     this.index.clear(); this.seen.clear(); this.traceToRun.clear();
     for (const name of await readdir(this.directory)) {
       if (!name.endsWith(".ndjson")) continue;
-      for (const event of await this.parseFile(path.join(this.directory, name))) {
+      const file = path.join(this.directory, name);
+      let raw = "";
+      try { raw = await readFile(file, "utf8"); } catch { continue; }
+      // A crash mid-write leaves a partial last line with no "\n"; the next append would glue onto it and
+      // corrupt both records. Close the line now so every later append starts fresh.
+      if (raw.length > 0 && !raw.endsWith("\n")) await appendFile(file, "\n", { encoding: "utf8", mode: 0o600 });
+      for (const event of this.parseLines(raw, file)) {
         const ids = this.seen.get(event.runId);
         if (ids?.has(event.eventId)) continue;
         this.track(event, Buffer.byteLength(JSON.stringify(event) + "\n", "utf8"));
@@ -130,6 +142,9 @@ export class NdjsonTraceStore extends BaseTraceStore {
   private async parseFile(file: string): Promise<ObservationEvent[]> {
     let raw = "";
     try { raw = await readFile(file, "utf8"); } catch { return []; }
+    return this.parseLines(raw, file);
+  }
+  private parseLines(raw: string, file: string): ObservationEvent[] {
     const out: ObservationEvent[] = [];
     let skipped = 0;
     for (const line of raw.split("\n")) {
@@ -139,7 +154,7 @@ export class NdjsonTraceStore extends BaseTraceStore {
         if (parsed.success) out.push(parsed.data); else skipped++;
       } catch { skipped++; }
     }
-    if (skipped > 0) this.log?.("trace.lines_skipped", { file, skipped });
+    if (skipped > 0 && !this.reported.has(file)) { this.reported.add(file); this.log?.("trace.lines_skipped", { file, skipped }); }
     return out;
   }
   protected async persist(event: ObservationEvent, line: string): Promise<void> {

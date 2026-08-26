@@ -6,9 +6,10 @@ export interface RedactOptions {
   maxSummaryChars?: number | undefined;
 }
 
-// Boundary-aware: allows a prefix like "x-" or "access_" before the sensitive word, but requires the
-// word to end the key (so "total_tokens"/"input_tokens" survive while "access_token"/"x-api-key" don't).
-const DENY_KEY = /^(?:[a-z0-9]+[_-])*(authorization|api[_-]?key|token|secret|password|cookie|private[_-]?key)$/i;
+// Boundary-aware "contains": the sensitive word must sit between separators (or the key's ends), so
+// "aws_secret_access_key" and "http.request.header.authorization" drop while "total_tokens"/"tokens_total"
+// survive (plural is a different word).
+const DENY_KEY = /(^|[_.\-])(authorization|api[_-]?key|token|secret|password|cookie|private[_-]?key)($|[_.\-])/i;
 
 /** camelCase keys carry the same words without a separator, so the prefix alternation above can't see
  * the boundary ("accessToken" is one word to the regex). Testing the snake_cased form as well catches

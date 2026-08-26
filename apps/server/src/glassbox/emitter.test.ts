@@ -15,12 +15,13 @@ describe("ObservationEmitter", () => {
     await em.flush();
     expect((await store.readRun("run-1")).map((e) => e.sequence)).toEqual([0, 1]);
   });
-  it("returns synchronously even if the store hangs, and never throws when the store rejects", async () => {
+  it("never awaits the store on emit (append runs on the microtask queue), and never throws when the store rejects", async () => {
     let calls = 0;
-    const slow: TraceStore = { async initialize() {}, async append() { calls++; await new Promise((r) => setTimeout(r, 200)); return { stored: true }; }, async readRun() { return []; }, runIdForTrace() { return undefined; }, listRuns() { return []; }, markTruncated() {} };
-    const em = new ObservationEmitter({ store: slow, capturePolicy: "metadata_only" });
-    const t = performance.now(); em.emit(base); expect(performance.now() - t).toBeLessThan(50);
-    const bad: TraceStore = { ...slow, async append() { throw new Error("EACCES"); } };
+    const counting: TraceStore = { async initialize() {}, async append() { calls++; return { stored: true }; }, async readRun() { return []; }, runIdForTrace() { return undefined; }, listRuns() { return []; }, markTruncated() {} };
+    const em = new ObservationEmitter({ store: counting, capturePolicy: "metadata_only" });
+    em.emit(base); expect(calls).toBe(0);
+    await em.flush(); expect(calls).toBe(1);
+    const bad: TraceStore = { ...counting, async append() { throw new Error("EACCES"); } };
     const logs: string[] = [];
     const em2 = new ObservationEmitter({ store: bad, capturePolicy: "metadata_only", log: (m) => logs.push(m) });
     expect(() => em2.emit(base)).not.toThrow();

@@ -255,7 +255,7 @@ What the automated suite proves and what it does not: the tests drive `AgentServ
 runner, so they cover the classification (timeout status, terminal event, first-failure focus,
 determinism across two Runs) but not the real process/container teardown. The real-runner span shape
 and its cleanup evidence (`runtime.codex.failed` with `terminationSignal`, `runtime.container.stopped`
-with `removed`) are verified by hand against a live Run before the demo.
+with `cleanup: "rm --force" | "signal"`) are verified by hand against a live Run before the demo.
 
 ## Limitations
 
