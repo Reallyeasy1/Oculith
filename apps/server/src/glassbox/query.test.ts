@@ -124,6 +124,27 @@ describe("buildTrace", () => {
     expect(summary.failure?.kind).toBe("degraded");
     expect(summary.firstFailingStep).toBeUndefined();
   });
+  it("surfaces a handled sandbox denial even when the Run later completes", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "tool.call.failed", category: "tool", spanId: "tool", parentSpanId: "rt", status: "error", name: "shell:pwsh", error: { type: "denied", message: "Command declined by the sandbox policy" } }),
+      ev({ type: "policy.denied", category: "policy", spanId: "deny", parentSpanId: "rt", status: "error", name: "pwsh", source: { component: "Sandbox", observed: true }, attributes: { program: "pwsh", decision: "sandbox_declined", commandBytes: 9 } }),
+      ev({ type: "runtime.codex.completed", category: "runtime", spanId: "rt", phase: "end", status: "ok" }),
+      ev({ type: "run.completed", category: "control", spanId: "done", parentSpanId: "svc", status: "ok" })];
+    const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(summary).toMatchObject({ status: "ok", denials: 1, firstFailingStep: "pwsh" });
+    expect(summary.failure).toMatchObject({ kind: "denied", name: "pwsh", component: "Sandbox", diagnosis: "sandbox declined `pwsh`" });
+  });
+  it("focuses a denial ahead of its associated tool failure when the Run fails", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "tool.call.failed", category: "tool", spanId: "tool", parentSpanId: "rt", status: "error", name: "shell:node", error: { type: "denied", message: "Command declined by the sandbox policy" } }),
+      ev({ type: "policy.denied", category: "policy", spanId: "deny", parentSpanId: "rt", status: "error", name: "node", source: { component: "Sandbox", observed: true }, attributes: { program: "node", decision: "sandbox_declined", commandBytes: 12 } }),
+      ev({ type: "run.failed", category: "control", spanId: "failed", parentSpanId: "svc", status: "error" })];
+    const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(summary.denials).toBe(1);
+    expect(summary.failure).toMatchObject({ kind: "denied", name: "node", diagnosis: "sandbox declined `node`" });
+  });
   it("cut short before any stream event => capabilities unknown, never unavailable (invariant 3)", () => {
     seq = 0;
     const events = [root(), svcStart(), rtStart(),

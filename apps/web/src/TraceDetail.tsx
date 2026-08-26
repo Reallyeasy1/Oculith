@@ -162,7 +162,7 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
       {failure && (
         <div className="error-banner trace-banner" aria-live="polite">
           <div>
-            <strong>First actionable {failure.kind}: {failure.name}</strong>
+            <strong>{failure.kind === "denied" ? "First denial" : "First actionable " + failure.kind}: {failure.name}</strong>
             <span className="trace-banner-meta">{failure.category} · {failure.component}{failure.message ? " · " + failure.message : ""}</span>
             <p className="trace-diagnosis">{failure.diagnosis}</p>
           </div>
