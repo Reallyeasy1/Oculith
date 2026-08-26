@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
 
 describe("Codex runner protocol", () => {
@@ -83,5 +85,44 @@ describe("Codex runner protocol", () => {
     expect(parsed.threadId).toBe("thread-123");
     expect(parsed.messages).toEqual(["Done."]);
     expect(parsed.usage).toEqual({ inputTokens: 10, outputTokens: 4 });
+  });
+});
+
+describe("Codex stream fixtures", () => {
+  // Real captures, see fixtures/codex-stream/README.md + docs/CODEX_EVENTS.md.
+  // vitest runs with cwd apps/server, hence the ../..
+  const dir = path.join(process.cwd(), "..", "..", "fixtures", "codex-stream");
+  const parseFixture = (name: string) => {
+    const parsed = {
+      messages: [] as string[],
+      threadId: null as string | null,
+      usage: null as null | Record<string, number>,
+      errors: [] as string[],
+    };
+    for (const line of readFileSync(path.join(dir, name), "utf8").split(/\r?\n/)) {
+      if (line.trim()) parseCodexEventLine(line, parsed);
+    }
+    return parsed;
+  };
+
+  it.each(["codex-0.111.jsonl", "codex-0.142.jsonl", "codex-0.142-sandbox-denied.jsonl"])(
+    "parses %s to a thread id, a final message and usage",
+    (name) => {
+      const parsed = parseFixture(name);
+      expect(parsed.threadId).toBeTruthy();
+      expect(parsed.messages.length).toBeGreaterThan(0);
+      expect(parsed.usage).not.toBeNull();
+      expect(parsed.usage?.inputTokens).toBeGreaterThan(0);
+    },
+  );
+
+  it("collects provider errors from a failed turn but gets no usage", () => {
+    const parsed = parseFixture("codex-0.111-turn-failed.jsonl");
+    expect(parsed.threadId).toBeTruthy();
+    expect(parsed.messages).toEqual([]);
+    expect(parsed.usage).toBeNull();
+    expect(parsed.errors.at(-1)).toContain("401 Unauthorized");
+    // Known gap (docs/CODEX_EVENTS.md trap 1): turn.failed nests its message under
+    // error.message and is not parsed yet — the top-level error events cover it for now.
   });
 });
