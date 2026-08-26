@@ -236,7 +236,7 @@ export async function createApp(
         const status = view.summary.eventCount ? view.summary.status : run.status === "completed" ? "ok" : run.status === "failed" ? "error" : run.status === "cancelled" ? "cancelled" : "running";
         if (q.status && status !== q.status) continue;
         const s = view.summary;
-        items.push({ runId: run.id, traceId: run.traceId ?? s.traceId, agentId: run.agentId, agentName: agents.get(run.agentId) ?? "", status, startedAt: s.startedAt ?? run.createdAt, durationMs: s.durationMs,
+        items.push({ runId: run.id, traceId: run.traceId ?? s.traceId, agentId: run.agentId, agentName: agents.get(run.agentId) ?? "", status, startedAt: s.startedAt ?? run.createdAt, durationMs: s.durationMs, endedReason: s.endedReason,
           firstFailingStep: s.firstFailingStep, eventCount: s.eventCount, runtime: config.runtimeProvider, model: config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default",
           usage: s.usage, degraded: s.degraded, truncated: s.truncated, evicted: s.evicted, redacted: s.redactedEvents > 0, lastEventAt: view.events.at(-1)?.timestamp });
         if (items.length >= q.limit) break;

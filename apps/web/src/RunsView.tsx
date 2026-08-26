@@ -85,7 +85,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace }: Props) {
                 </td>
                 <td>{run.agentName || run.agentId}</td>
                 <td>{formatClock(run.startedAt)}</td>
-                <td>{formatDuration(run.durationMs)}</td>
+                <td>{formatDuration(run.durationMs)}{run.endedReason === "server_restart" ? " until restart" : ""}</td>
                 <td>{run.firstFailingStep ?? "—"}</td>
                 <td>{run.eventCount}</td>
                 <td>{run.runtime} · {run.model}</td>

@@ -68,6 +68,38 @@ describe("buildTrace", () => {
     expect(c.summary.failure?.kind).toBe("cancelled");
     expect(flattenSpans(c.spans).every((s) => s.spanId === "rc" || s.incomplete)).toBe(true);
   });
+  it("interrupted by a server restart: focuses the deepest incomplete runtime span; clock stops at the last observed event", () => {
+    seq = 0;
+    const events = [root(), svcStart(),
+      ev({ type: "runtime.container.started", category: "runtime", spanId: "ct", parentSpanId: "svc", phase: "start", status: "running", name: "docker run" }),
+      ev({ type: "runtime.codex.started", category: "runtime", spanId: "rt", parentSpanId: "ct", phase: "start", status: "running", name: "codex exec", source: { component: "AgentRunner", observed: true } }),
+      ev({ type: "run.cancelled", category: "control", spanId: "rc", parentSpanId: "svc", status: "cancelled", timestamp: t(60_000), source: { component: "AgentService", observed: true }, attributes: { reason: "server_restart" } })];
+    const view = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(view.summary.status).toBe("cancelled");
+    expect(view.summary.endedReason).toBe("server_restart");
+    expect(view.summary.endedAt).toBe(t(60_000));
+    expect(view.summary.durationMs).toBe(30); // codex exec start (t40) - root (t10), not the restart-cancel at t60000
+    expect(view.summary.failure?.kind).toBe("cancelled");
+    expect(view.summary.failure?.spanId).toBe("rt");
+    expect(view.summary.failure?.eventId).toBe("evt_4");
+    expect(view.summary.failure?.path).toEqual(["root", "svc", "ct", "rt"]);
+    expect(view.summary.failure?.component).toBe("AgentRunner");
+    expect(view.summary.firstFailingStep).toBe("codex exec");
+    expect(view.summary.failure?.diagnosis).toBe("Run interrupted by a server restart after 0.0 s of observed activity; the runtime span codex exec never closed.");
+  });
+  it("user cancel (no reason): still focuses the cancelled codex exec span; no endedReason; full duration", () => {
+    seq = 0;
+    const events = [root(), svcStart(),
+      ev({ type: "runtime.codex.started", category: "runtime", spanId: "rt", parentSpanId: "svc", phase: "start", status: "running", name: "codex exec" }),
+      ev({ type: "runtime.codex.failed", category: "runtime", spanId: "rt", phase: "end", status: "cancelled", name: "codex exec", error: { type: "cancelled", message: "Run cancelled" } }),
+      ev({ type: "run.cancelled", category: "control", spanId: "rc", parentSpanId: "svc", status: "cancelled" })];
+    const view = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(view.summary.endedReason).toBeUndefined();
+    expect(view.summary.durationMs).toBe(40);
+    expect(view.summary.failure?.spanId).toBe("rt");
+    expect(view.summary.firstFailingStep).toBe("codex exec");
+    expect(view.summary.failure?.diagnosis).toContain("First actionable cancelled: codex exec");
+  });
   it("handled tool failure then timeout: focuses the timeout span, not the earlier handled error", () => {
     seq = 0;
     const events = [root(), svcStart(), rtStart(),

@@ -141,7 +141,7 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
         <Field label="Runtime / model">{run ? run.runtime + " · " + run.model : "—"}</Field>
         <Field label="Session">{summary.sessionId ?? "—"}</Field>
         <Field label="Start">{formatClock(summary.startedAt)}</Field>
-        <Field label="Duration">{formatDuration(summary.durationMs)}</Field>
+        <Field label="Duration">{formatDuration(summary.durationMs)}{summary.endedReason === "server_restart" ? " until restart" : ""}</Field>
         <Field label="Events">{summary.eventCount} · {summary.spanCount} spans</Field>
         <Field label="Usage">{formatUsage(summary.usage)}</Field>
         <Field label="Trust">

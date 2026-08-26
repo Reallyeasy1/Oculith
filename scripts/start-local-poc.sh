@@ -174,4 +174,5 @@ log "Building the local Web and API."
 npm run build
 
 log "Open http://localhost:$PORT"
-npm start
+# LOCAL_POC_COMMAND lets scripts/e2e/run.sh drive the built server from this exact environment.
+if [[ -n "${LOCAL_POC_COMMAND:-}" ]]; then bash -c "$LOCAL_POC_COMMAND"; else npm start; fi
