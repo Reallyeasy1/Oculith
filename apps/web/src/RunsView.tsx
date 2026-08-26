@@ -98,7 +98,8 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                   {run.redacted && <span className="badge">redacted</span>}
                   {run.degraded && <span className="badge badge-warn">degraded</span>}
                   {run.truncated && <span className="badge badge-warn">truncated</span>}
-                  {!run.redacted && !run.degraded && !run.truncated && "—"}
+                  {run.workspaceChanges && <span className="badge">{run.workspaceChanges.added + run.workspaceChanges.modified + run.workspaceChanges.removed} files changed</span>}
+                  {!run.redacted && !run.degraded && !run.truncated && !run.workspaceChanges && "—"}
                 </td>
                 <td>{formatClock(run.lastEventAt)}</td>
               </tr>
