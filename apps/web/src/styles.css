@@ -1260,6 +1260,10 @@ textarea:focus {
   padding: 0 22px 12px;
 }
 
+.trace-detail > .trace-summary {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
 .trace-summary dt {
   font-size: 9px;
   font-weight: 700;
@@ -1272,6 +1276,31 @@ textarea:focus {
   margin: 2px 0 0;
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+.trace-runtime,
+.trace-runtime dd,
+.trace-runtime dd span {
+  min-width: 0;
+}
+
+.trace-runtime dd span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-muted {
+  color: var(--muted);
+}
+
+.trace-evidence {
+  grid-column: 1 / -1;
+}
+
+.trace-evidence .badge {
+  white-space: nowrap;
 }
 
 .trace-banner {
@@ -1297,6 +1326,19 @@ textarea:focus {
 
 .trace-banner .button {
   flex-shrink: 0;
+  color: #fff;
+  background: #8b3030;
+  box-shadow: 0 7px 18px rgba(92, 27, 27, 0.22);
+}
+
+.trace-banner .button:hover:not(:disabled) {
+  background: #702424;
+}
+
+.trace-banner .button:focus-visible {
+  outline: 3px solid #fff;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px #8b3030;
 }
 
 .trace-filters {
@@ -1329,7 +1371,18 @@ textarea:focus {
 .trace-filters .trace-check {
   flex-direction: row;
   align-items: center;
-  padding-bottom: 6px;
+  align-self: flex-end;
+  min-height: 30px;
+  padding-bottom: 0;
+  white-space: nowrap;
+}
+
+.trace-filters input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--purple);
 }
 
 .trace-tree {
@@ -1529,6 +1582,10 @@ textarea:focus {
 }
 
 @media (max-width: 720px) {
+  .trace-detail > .trace-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .trace-row {
     grid-template-columns: 18px 84px minmax(0, 1fr) 64px;
   }
@@ -1537,6 +1594,12 @@ textarea:focus {
   .trace-row .trace-badges,
   .trace-row .trace-bar {
     display: none;
+  }
+}
+
+@media (min-width: 721px) and (max-width: 1050px) {
+  .trace-detail > .trace-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 

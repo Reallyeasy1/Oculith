@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTrace, flattenSpans } from "./query.js";
+import { buildTrace, flattenSpans, formatExitCode } from "./query.js";
 import { SCHEMA_VERSION, type ObservationEvent } from "./schema.js";
 
 let seq = 0;
@@ -14,6 +14,20 @@ const svcStart = () => ev({ type: "agent_service.run.started", category: "contro
 const rtStart = () => ev({ type: "runtime.codex.started", category: "runtime", spanId: "rt", parentSpanId: "svc", phase: "start", status: "running", source: { component: "AgentRunner", observed: true } });
 
 describe("buildTrace", () => {
+  it("formats Windows crash and SIGKILL exit codes with deterministic operator hints", () => {
+    expect(formatExitCode(3221225794)).toBe("3221225794 (0xC0000142) — process failed to initialise — the runtime CLI could not start; restart the server");
+    expect(formatExitCode(137)).toBe("137 — SIGKILL (timeout, cancellation, or out-of-memory termination)");
+    expect(formatExitCode(1)).toBe("1");
+  });
+  it("uses the formatted exit code in failure focus and diagnosis", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "tool.call.failed", category: "tool", spanId: "tool", parentSpanId: "rt", status: "error", error: { type: "exit_code", message: "exit code 3221225794" } }),
+      ev({ type: "run.failed", category: "control", spanId: "failed", parentSpanId: "svc", status: "error" })];
+    const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(summary.failure?.message).toContain("3221225794 (0xC0000142)");
+    expect(summary.failure?.diagnosis).toContain("runtime CLI could not start; restart the server");
+  });
   it("reconstructs a nested tree with durations and rolls up ok", () => {
     seq = 0;
     const events = [

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ObservationEvent, RunListItem, Span, TraceView } from "./types";
+import type { ObservationEvent, RunListItem, Span, TraceStatus, TraceView } from "./types";
 import { STATUS_ICON, formatClock, formatDuration, formatUsage } from "./runs-view-model";
 import {
   CATEGORIES,
@@ -15,17 +15,20 @@ import {
   type TraceFilter,
 } from "./trace-view-model";
 
-// Three capability states (PRD §8): observed | unavailable | unknown. "unknown" = the Run was cut short
-// before the stream said anything; it is not a capability gap. Short badge copy; long form in `title`.
-const CAPABILITY_LABEL = { observed: "observed", unavailable: "unavailable", unknown: "no evidence — run cut short" } as const;
+// Three capability states (PRD §8): observed | unavailable | unknown. Unknown is absence of evidence,
+// not a capability gap; terminal status supplies the missing context in the long-form title.
+const CAPABILITY_LABEL = { observed: "observed", unavailable: "unavailable", unknown: "not observed" } as const;
 const CAPABILITY_TITLE = {
   observed: "The runtime emitted events for this layer.",
   unavailable: "The Run completed but the runtime exposed no events for this layer.",
-  unknown: "The Run was cancelled, timed out, or its stream never started, so nothing was said about this layer; absence proves nothing.",
 } as const;
 
-function CapabilityBadge({ layer, state }: { layer: "model" | "tool"; state: keyof typeof CAPABILITY_LABEL }) {
-  return <span className="badge" title={layer + ": " + CAPABILITY_TITLE[state]}>{layer} {CAPABILITY_LABEL[state]}</span>;
+function CapabilityBadge({ layer, state, status }: { layer: "model" | "tool"; state: keyof typeof CAPABILITY_LABEL; status: TraceStatus }) {
+  const unknownTitle = status === "timeout" || status === "cancelled" || status === "running"
+    ? `No ${layer} evidence — the Run was cut short before calls were observed.`
+    : `No ${layer} calls observed in this Run.`;
+  const title = state === "unknown" ? unknownTitle : CAPABILITY_TITLE[state];
+  return <span className="badge" title={layer + ": " + title}>{layer} {CAPABILITY_LABEL[state]}</span>;
 }
 
 interface Props {
@@ -138,15 +141,15 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
       <dl className="trace-summary">
         <Field label="Trace">{summary.traceId || "—"}</Field>
         <Field label="Agent">{run?.agentName || summary.agentId || "—"}</Field>
-        <Field label="Runtime / model">{run ? run.runtime + " · " + run.model : "—"}</Field>
-        <Field label="Session">{summary.sessionId ?? "—"}</Field>
+        <Field label="Runtime / model" className="trace-runtime"><span title={run ? run.runtime + " · " + run.model : undefined}>{run ? run.runtime + " · " + run.model : "—"}</span></Field>
+        <Field label="Session">{summary.sessionId ?? <span className="trace-muted">not observed</span>}</Field>
         <Field label="Start">{formatClock(summary.startedAt)}</Field>
-        <Field label="Duration">{formatDuration(summary.durationMs)}{summary.endedReason === "server_restart" ? " until restart" : ""}</Field>
+        <Field label="Duration">{formatDuration(summary.durationMs)}{summary.endedReason === "server_restart" ? " observed · interrupted by restart" : ""}</Field>
         <Field label="Events">{summary.eventCount} · {summary.spanCount} spans</Field>
-        <Field label="Usage">{formatUsage(summary.usage)}</Field>
-        <Field label="Trust">
-          <CapabilityBadge layer="model" state={summary.capabilities.model} />
-          <CapabilityBadge layer="tool" state={summary.capabilities.tool} />
+        <Field label="Usage">{summary.usage ? formatUsage(summary.usage) : <span className="trace-muted">not observed</span>}</Field>
+        <Field label="Evidence" className="trace-evidence">
+          <CapabilityBadge layer="model" state={summary.capabilities.model} status={summary.status} />
+          <CapabilityBadge layer="tool" state={summary.capabilities.tool} status={summary.status} />
           {summary.redactedEvents > 0 && <span className="badge">redacted {summary.redactedEvents}</span>}
           {summary.truncated && <span className="badge badge-warn">truncated</span>}
           {summary.degraded && <span className="badge badge-warn">degraded</span>}
@@ -246,9 +249,9 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
   return (
-    <div>
+    <div className={className}>
       <dt>{label}</dt>
       <dd>{children}</dd>
     </div>

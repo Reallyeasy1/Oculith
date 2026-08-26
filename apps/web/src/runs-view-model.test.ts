@@ -7,7 +7,7 @@ import { matchesFilter, needsAttention, summarizeRuns } from "./runs-view-model"
 function run(status: TraceStatus, degraded = false, agentId = "a", agentName = "A"): RunListItem {
   return {
     runId: "r", traceId: "t", agentId, agentName, status, eventCount: 0, runtime: "x", model: "y",
-    degraded, truncated: false, evicted: false, redacted: false,
+    capabilities: { model: "unknown", tool: "unknown" }, degraded, truncated: false, evicted: false, redacted: false,
   };
 }
 
