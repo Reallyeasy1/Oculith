@@ -3,7 +3,9 @@ import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
 import { RunCancelledError } from "./errors.js";
+import { CodexStreamObserver } from "./glassbox/codex-observer.js";
 import { createDefaultEmitter, type ObservationEmitter } from "./glassbox/emitter.js";
+import { newId } from "./glassbox/schema.js";
 import type {
   AgentRunner,
   RunUsage,
@@ -96,7 +98,6 @@ export class ContainerCodexRunner implements AgentRunner {
 
   constructor(
     private readonly config: AppConfig,
-    // Unused until the runtime spans land (T8); wired here so the factory has one shape.
     protected readonly emitter: ObservationEmitter = createDefaultEmitter(),
   ) {}
 
@@ -149,6 +150,59 @@ export class ContainerCodexRunner implements AgentRunner {
       throw new Error("Agent already has an active Runtime container");
     }
 
+    const name = containerName(request.agentId, this.config.runtimeInstanceId);
+    const timeoutMs = request.timeoutMs ?? this.config.codexTimeoutMs;
+    const traceBase = request.trace
+      ? {
+          traceId: request.trace.traceId,
+          runId: request.trace.runId,
+          agentId: request.trace.agentId,
+          source: { component: "AgentRunner", adapter: "ContainerCodexRunner", observed: true },
+        }
+      : undefined;
+    // The container is the outer boundary; the codex process runs inside it.
+    const containerSpan =
+      traceBase && request.trace
+        ? this.emitter.startSpan({
+            ...traceBase,
+            spanId: newId("spn"),
+            parentSpanId: request.trace.parentSpanId,
+            type: "runtime.container.started",
+            category: "infrastructure",
+            name: "container run",
+            attributes: {
+              engine: this.config.containerEngine,
+              image: this.config.containerRuntimeImage,
+              containerName: name,
+              cpus: this.config.containerCpuLimit,
+              memory: this.config.containerMemoryLimit,
+              pids: this.config.containerPidsLimit,
+            },
+          })
+        : undefined;
+    const span =
+      traceBase && containerSpan
+        ? this.emitter.startSpan({
+            ...traceBase,
+            spanId: newId("spn"),
+            parentSpanId: containerSpan.spanId,
+            type: "runtime.codex.started",
+            category: "runtime",
+            name: "codex exec",
+            attributes: {
+              sandbox: this.config.codexSandboxMode,
+              resume: request.threadId !== null,
+              timeoutMs,
+              // An explicit per-request timeout only comes from the gated demo failure fixture.
+              ...(request.timeoutMs !== undefined ? { demoFailure: "timeout" } : {}),
+            },
+          })
+        : undefined;
+    const observer =
+      request.trace && span
+        ? new CodexStreamObserver(this.emitter, request.trace, span.spanId, "ContainerCodexRunner")
+        : undefined;
+
     const child = spawn(
       this.config.containerEngine,
       buildContainerRunArgs(request, this.config),
@@ -164,7 +218,7 @@ export class ContainerCodexRunner implements AgentRunner {
     });
     const active: ActiveContainer = {
       child,
-      containerName: containerName(request.agentId, this.config.runtimeInstanceId),
+      containerName: name,
       cancelled: false,
       timedOut: false,
       outputExceeded: false,
@@ -194,7 +248,7 @@ export class ContainerCodexRunner implements AgentRunner {
         stdout += chunk.toString("utf8");
         const lines = stdout.split(/\r?\n/);
         stdout = lines.pop() ?? "";
-        for (const line of lines) parseCodexEventLine(line, parsed);
+        for (const line of lines) parseCodexEventLine(line, parsed, observer);
       } else {
         stderr += chunk.toString("utf8");
         if (stderr.length > 16_384) stderr = stderr.slice(-16_384);
@@ -207,35 +261,94 @@ export class ContainerCodexRunner implements AgentRunner {
     const timeout = setTimeout(() => {
       active.timedOut = true;
       void this.removeContainer(active);
-    }, this.config.codexTimeoutMs);
+    }, timeoutMs);
     timeout.unref();
+
+    let spanEnded = false;
+    /** Ends the codex span and its container wrapper together, so neither is left running. */
+    const endSpans = (
+      status: "ok" | "error" | "cancelled" | "timeout",
+      error?: { type: string; message: string },
+      extra: Record<string, string | number | boolean | null> = {},
+    ) => {
+      spanEnded = span !== undefined;
+      const endAttrs = {
+        ...(child.exitCode !== null ? { exitCode: child.exitCode } : {}),
+        ...(child.signalCode ? { terminationSignal: child.signalCode } : {}),
+        ...(observer?.sessionId ? { sessionId: observer.sessionId } : {}),
+      };
+      span?.end(status, {
+        type: status === "ok" ? "runtime.codex.completed" : "runtime.codex.failed",
+        attributes: { ...endAttrs, ...extra },
+        ...(error ? { error } : {}),
+      });
+      containerSpan?.end(status, {
+        type: "runtime.container.stopped",
+        attributes: {
+          ...(child.exitCode !== null ? { exitCode: child.exitCode } : {}),
+          removed: active.termination !== null,
+        },
+        ...(error ? { error } : {}),
+      });
+    };
 
     try {
       const exitCode = await new Promise<number>((resolve, reject) => {
         child.once("error", reject);
         child.once("close", (code) => resolve(code ?? 1));
       });
-      if (stdout.trim()) parseCodexEventLine(stdout.trim(), parsed);
-      if (active.cancelled) throw new RunCancelledError();
+      if (stdout.trim()) parseCodexEventLine(stdout.trim(), parsed, observer);
+      const output = parsed.messages.at(-1)?.trim();
+      const failed =
+        active.cancelled || active.timedOut || active.outputExceeded || exitCode !== 0 || !output;
+      observer?.finish(failed);
+      if (active.cancelled) {
+        endSpans("cancelled", { type: "cancelled", message: "Run cancelled" });
+        throw new RunCancelledError();
+      }
       if (active.timedOut) {
-        throw new Error("Runtime timed out after " + this.config.codexTimeoutMs + " ms");
+        const message = "Runtime timed out after " + timeoutMs + " ms";
+        endSpans("timeout", { type: "timeout", message });
+        throw new Error(message);
       }
       if (active.outputExceeded) {
-        throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
+        const message = "Codex output exceeded CODEX_MAX_OUTPUT_BYTES";
+        if (traceBase && span) {
+          this.emitter.emit({
+            ...traceBase,
+            spanId: newId("spn"),
+            parentSpanId: span.spanId,
+            type: "limit.exceeded",
+            category: "runtime",
+            name: "output_cap",
+            status: "error",
+            attributes: { limit: "CODEX_MAX_OUTPUT_BYTES", bytes: totalBytes },
+          });
+        }
+        endSpans("error", { type: "output_cap", message });
+        throw new Error(message);
       }
       if (exitCode !== 0) {
         const detail = parsed.errors.at(-1) ?? stderr.trim() ?? "No error detail";
-        throw new Error(
-          this.config.containerEngine +
-            " Runtime exited with code " +
-            exitCode +
-            ": " +
-            detail,
-        );
+        const message =
+          this.config.containerEngine + " Runtime exited with code " + exitCode + ": " + detail;
+        endSpans("error", { type: "exit_code", message });
+        throw new Error(message);
       }
-      const output = parsed.messages.at(-1)?.trim();
-      if (!output) throw new Error("Codex completed without an agent message");
+      if (!output) {
+        const message = "Codex completed without an agent message";
+        endSpans("error", { type: "no_output", message });
+        throw new Error(message);
+      }
+      endSpans("ok", undefined, { outputBytes: Buffer.byteLength(output, "utf8") });
       return { output, threadId: parsed.threadId, usage: parsed.usage };
+    } catch (error) {
+      // Only reached when the engine itself failed to spawn (the branches above end the spans).
+      if (span && !spanEnded) {
+        observer?.finish(true);
+        endSpans("error", { type: "spawn_failed", message: String(error).slice(0, 2048) });
+      }
+      throw error;
     } finally {
       clearTimeout(timeout);
       this.active.delete(request.agentId);
