@@ -164,7 +164,7 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     const filtered = (await get("/api/traces/trc_9/events?status=timeout")).json();
     expect(filtered.events.map((e: { type: string }) => e.type)).toEqual(["runtime.codex.failed", "run.timed_out"]);
     const byCategories = (await get("/api/traces/trc_9/events?category=control,runtime")).json();
-    expect(byCategories.events).toHaveLength(4);
+    expect(byCategories.events).toHaveLength(5);
     const audit = (await get("/api/runs/run-9/audit")).json();
     expect(audit.audit).toEqual(expect.arrayContaining([expect.objectContaining({ action: "runtime.codex.failed", outcome: "timeout" })]));
     expect(audit.audit.every((row: { eventId: string }) => trace.json().events.some((event: { eventId: string }) => event.eventId === row.eventId))).toBe(true);
