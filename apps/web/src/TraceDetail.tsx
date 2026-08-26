@@ -7,6 +7,7 @@ import {
   EMPTY_FILTER,
   STATUSES,
   barGeometry,
+  capabilityCopy,
   defaultExpanded,
   formatAttribute,
   indexSpans,
@@ -17,17 +18,15 @@ import {
   type TraceFilter,
 } from "./trace-view-model";
 
-// Three capability states (PRD §8): observed | unavailable | unknown. "unknown" = the Run was cut short
-// before the stream said anything; it is not a capability gap. Short badge copy; long form in `title`.
-const CAPABILITY_LABEL = { observed: "observed", unavailable: "unavailable", unknown: "no evidence — run cut short" } as const;
-const CAPABILITY_TITLE = {
-  observed: "The runtime emitted events for this layer.",
-  unavailable: "The Run completed but the runtime exposed no events for this layer.",
-  unknown: "The Run was cancelled, timed out, or its stream never started, so nothing was said about this layer; absence proves nothing.",
-} as const;
-
-function CapabilityBadge({ layer, state }: { layer: "model" | "tool"; state: keyof typeof CAPABILITY_LABEL }) {
-  return <span className="badge" title={layer + ": " + CAPABILITY_TITLE[state]}>{layer} {CAPABILITY_LABEL[state]}</span>;
+// Three capability states (PRD §8): observed | unavailable | unknown. Unknown remains pending while a
+// Run is live; only an ended Run can say it was cut short. Short badge copy; long form in `title`.
+function CapabilityBadge({ layer, state, status }: {
+  layer: "model" | "tool";
+  state: "observed" | "unavailable" | "unknown";
+  status: TraceView["summary"]["status"];
+}) {
+  const copy = capabilityCopy(state, status);
+  return <span className="badge" title={layer + ": " + copy.title}>{layer} {copy.label}</span>;
 }
 
 interface Props {
@@ -156,8 +155,8 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
           <code title={run?.configSnapshot ? JSON.stringify(run.configSnapshot) : undefined}>{summary.configHash ?? run?.configHash ?? "—"}</code>
         </Field>
         <Field label="Trust">
-          <CapabilityBadge layer="model" state={summary.capabilities.model} />
-          <CapabilityBadge layer="tool" state={summary.capabilities.tool} />
+          <CapabilityBadge layer="model" state={summary.capabilities.model} status={summary.status} />
+          <CapabilityBadge layer="tool" state={summary.capabilities.tool} status={summary.status} />
           {summary.redactedEvents > 0 && <span className="badge">redacted {summary.redactedEvents}</span>}
           {summary.truncated && <span className="badge badge-warn">truncated</span>}
           {summary.degraded && <span className="badge badge-warn">degraded</span>}

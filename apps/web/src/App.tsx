@@ -4,6 +4,7 @@ import type { Agent, AgentRun, Message, RunListItem, SystemInfo, TraceView } fro
 import RunsView from "./RunsView";
 import TraceDetail from "./TraceDetail";
 import Overview from "./Overview";
+import { refreshIntervalMs } from "./trace-view-model";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -282,6 +283,33 @@ export default function App() {
     }
   };
 
+  // The one dashboard refresh timer (#98). It covers both All runs and the selected Agent so Runs
+  // started outside this browser appear without a reload. Trace and poll failures stay soft.
+  useEffect(() => {
+    if (view === "agent" && !selectedId) return;
+    const refreshVisibleRuns = async () => {
+      await refreshRuns();
+      const openRunId = selectedRunIdRef.current;
+      if (openRunId) await refreshTrace(openRunId).catch(() => undefined);
+      const agentId = selectedIdRef.current;
+      if (viewRef.current !== "agent" || !agentId) return;
+      try {
+        const result = await api.runs(agentId);
+        if (selectedIdRef.current !== agentId) return;
+        const latest = result.runs[0] ?? null;
+        setActiveRun(latest);
+        if (latest && ["queued", "running"].includes(latest.status)) {
+          void pollRun(latest.id, agentId).catch(() => undefined);
+        }
+      } catch {
+        // ponytail: keep the last good Agent/run state when a refresh tick fails (invariant 12)
+      }
+    };
+    const intervalMs = refreshIntervalMs(trace?.summary.status);
+    const id = window.setInterval(() => void refreshVisibleRuns(), intervalMs);
+    return () => window.clearInterval(id);
+  }, [selectedId, trace?.summary.status, view]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const sendMessage = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!selected || !prompt.trim()) return;
@@ -472,7 +500,7 @@ export default function App() {
         )}
 
         {view === "overview" ? (
-          <Overview runs={runs} onRefresh={refreshRuns} />
+          <Overview runs={runs} />
         ) : selected ? playgroundCollapsed ? (
           <div className="playground-bar">
             <div className="header-title-row">

@@ -3,7 +3,7 @@
 // (vitest is hoisted from the server workspace — no new dependency.)
 import { describe, expect, it } from "vitest";
 import type { Span, TraceView } from "./types";
-import { EMPTY_FILTER, barGeometry, defaultExpanded, matchesSpan, spanStatusLabel, timelineTicks, visibleRows } from "./trace-view-model";
+import { EMPTY_FILTER, barGeometry, capabilityCopy, defaultExpanded, matchesSpan, refreshIntervalMs, spanStatusLabel, timelineTicks, visibleRows } from "./trace-view-model";
 
 const t0 = "2026-08-26T10:00:00.000Z";
 const at = (ms: number) => new Date(Date.parse(t0) + ms).toISOString();
@@ -69,6 +69,18 @@ describe("trace-view-model", () => {
       endsAfterParent: true,
     });
     expect(barGeometry(root, { ...view, summary: { ...view.summary, durationMs: undefined } })).toBeUndefined();
+  });
+
+  it("keeps unknown capabilities pending until a Run has ended", () => {
+    expect(capabilityCopy("unknown", "running").label).toBe("pending");
+    expect(capabilityCopy("unknown", "cancelled").label).toBe("no evidence — run cut short");
+    expect(capabilityCopy("observed", "running").label).toBe("observed");
+  });
+
+  it("refreshes a live trace faster than terminal or unopened traces", () => {
+    expect(refreshIntervalMs("running")).toBe(1_500);
+    expect(refreshIntervalMs("ok")).toBe(5_000);
+    expect(refreshIntervalMs(undefined)).toBe(5_000);
   });
 
   it("labels only restart-incomplete spans as interrupted", () => {
