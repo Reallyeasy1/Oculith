@@ -76,7 +76,7 @@ Governing rule: **ship evidence before control.** Never cut redaction, real back
 - **MCP** (`.mcp.json`): `context7` for Fastify/Vite/Codex docs, `playwright` for driving the UI in E2E checks and demo screenshots.
 - Permissions pre-allow read-only git/gh/npm-check commands and deny reading `.env`, `.local/`, `codex-home/`.
 
-Workflow per issue: `/start-issue N` → failing tests → implement → `npm run check` → security review if under the invariants rule → commit `Refs #N` / `Closes #N` → push.
+Workflow per issue — **one issue = one branch = one PR**: `/start-issue N` (branches `feat/N-slug` from `origin/main`, or from the parent issue's branch when the work depends on it) → failing tests → implement → `npm run check` → privacy review if under the invariants rule → commits `Refs #N` / `Closes #N` (pathspec commits only, never `--amend`, never `git add -A`) → `/finish-issue N [--base <parent-branch>]` pushes the branch and opens the PR with `Closes #N`. Dependent issues stack their PRs on the parent branch; GitHub retargets them to `main` as parents merge (merge in order). Never push `main` directly; merging is the user's call. In a multi-agent sprint the controller opens each PR right after that task's review is clean, not at the end.
 
 ## Conventions worth knowing
 
