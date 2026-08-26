@@ -14,6 +14,7 @@ import { CATEGORIES, SCHEMA_VERSION, STATUSES } from "./glassbox/schema.js";
 import type { RunIndexEntry, TraceStore } from "./glassbox/store.js";
 import { caseFromRun, regressionCaseInput } from "./eval/cases.js";
 import { EvalRunner } from "./eval/runner.js";
+import { compareEvalRuns } from "./eval/compare.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -227,6 +228,10 @@ export async function createApp(
   });
   app.get("/api/eval-runs", async () => ({ evalRuns: service.listEvalRuns() }));
   app.get("/api/eval-runs/:id", async (request) => ({ evalRun: service.getEvalRun(z.object({ id: z.string().uuid() }).parse(request.params).id) }));
+  app.get("/api/eval-runs/:baseline/compare/:candidate", async (request) => {
+    const { baseline, candidate } = z.object({ baseline: z.string().uuid(), candidate: z.string().uuid() }).parse(request.params);
+    return compareEvalRuns(service.getEvalRun(baseline), service.getEvalRun(candidate));
+  });
 
   if (glassbox) {
     const runsQuery = z.object({ status: z.enum(STATUSES).optional(), agentId: z.string().uuid().optional(), from: z.string().datetime().optional(), to: z.string().datetime().optional(), limit: z.coerce.number().int().min(1).max(200).default(50) });
