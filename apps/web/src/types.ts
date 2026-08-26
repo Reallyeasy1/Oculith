@@ -62,6 +62,7 @@ export interface RunListItem {
   status: TraceStatus;
   startedAt?: string;
   durationMs?: number;
+  endedReason?: "server_restart";
   firstFailingStep?: string;
   eventCount: number;
   runtime: string;
