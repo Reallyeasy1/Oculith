@@ -47,6 +47,17 @@ expect 2 "$(run B 'echo OCULITH_OWNER_OVERRIDE=1; git commit -m x -- file')" "ov
 git -C "$tmp" switch -q -c chore/9-unowned
 expect 0 "$(run B 'git commit -m x -- file')" "first touch of an ownerless branch claims it"
 expect 2 "$(run A 'git commit -m x -- file')" "…and the previous session is now excluded"
+# Another worktree: commands that target it via -C or cd must be judged against ITS branch
+git -C "$tmp" worktree add -q "$tmp/wt" -b feat/1-agent >/dev/null 2>&1
+expect 0 "$(run A "git -C wt commit -m x -- file")" "owner claims the worktree branch on first touch via -C"
+expect 2 "$(run B "git -C wt commit -m x -- file")" "git -C into another session's worktree is blocked"
+expect 2 "$(run B "cd wt && git push -u origin HEAD")" "cd into another session's worktree is blocked"
+expect 0 "$(run B "OCULITH_OWNER_OVERRIDE=1 git -C wt commit -m x -- file")" "controller override applies across worktrees"
+# Aborting a claim frees the local lock for other sessions
+expect 0 "$(run A 'bash scripts/dev/claim-issue.sh 7')" "session A claims issue 7"
+expect 2 "$(run B 'bash scripts/dev/claim-issue.sh 7')" "session B is blocked while A holds 7"
+expect 0 "$(run A 'bash scripts/dev/release-issue.sh 7 --abort')" "session A aborts 7"
+expect 0 "$(run B 'bash scripts/dev/claim-issue.sh 7')" "session B may claim 7 after the abort"
 # Merge discipline
 expect 2 "$(run A 'git push origin --delete feat/1-thing')" "manual remote branch delete is blocked"
 expect 2 "$(run A 'git push origin :feat/1-thing')" "refspec delete is blocked"
@@ -57,6 +68,8 @@ expect 2 "$(run A 'git push --force origin feat/1-thing')" "force push is blocke
 expect 2 "$(run A 'git push origin +feat/1-thing')" "plus-refspec force push is blocked"
 expect 2 "$(run A 'git push origin main')" "push to main is blocked"
 expect 2 "$(run A 'git push -u origin HEAD:main')" "push HEAD:main is blocked"
+expect 2 "$(run A 'git push origin HEAD:refs/heads/main')" "push to refs/heads/main is blocked"
+expect 2 "$(run A 'gh pr close 5 --delete-branch')" "gh pr close --delete-branch is blocked"
 expect 0 "$(run A 'git push -u origin feat/1-thing-main')" "branch names containing 'main' are not blocked"
 expect 0 "$(run A 'gh pr create --base main --head feat/1-thing --title t --body b')" "first PR for a branch is allowed"
 echo "guard-bash: all parallel-work rules hold"

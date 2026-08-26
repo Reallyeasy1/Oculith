@@ -19,7 +19,7 @@ Argument: the issue number (`/finish-issue 27`). Optional `--base <branch>` when
    ```
    Drop the "Stacked on" line when the base is `main`; the last line is this session's `https://claude.ai/code/session_…` URL (omit if unknown).
    Use `Refs #N` instead of `Closes #N` when the PR completes only part of the issue.
-6. Flip the claim: `bash scripts/dev/release-issue.sh N --review` (label `in-progress` → `in-review`). Print the PR URL. Do not merge here: merging is the user's call and, once authorised, happens only through `bash scripts/dev/merge-prs.sh <pr…>` in stack order — it gates on a `## Review —` comment, retargets dependent PRs to `main` and deletes the head branch afterwards (a manual `git push --delete` of a base branch would close the stacked PRs; the hook blocks it).
+6. Flip the claim: `bash scripts/dev/release-issue.sh N --review` (label `in-progress` → `in-review`). Print the PR URL. Do not merge here: merging is the user's call and, once authorised, happens only through `bash scripts/dev/merge-prs.sh <pr…>` in stack order — it gates on the latest `## Review — Mergeable…` comment, retargets dependent PRs to `main` and deletes the head branch afterwards (a manual `git push --delete` of a base branch would close the stacked PRs; the hook blocks it).
 
 ## Rules
 - Never push `main` directly; never force-push a branch that has an open PR.

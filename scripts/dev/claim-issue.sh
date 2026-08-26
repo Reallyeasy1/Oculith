@@ -19,11 +19,14 @@ if [[ -n "$assignees" && "$assignees" != "$me" ]]; then echo "claim-issue: #$n i
 existing="$(git ls-remote --heads origin "refs/heads/feat/$n-*" "refs/heads/fix/$n-*" "refs/heads/chore/$n-*" | awk '{print $2}' | sed 's|refs/heads/||' | tr '\n' ' ')"
 if [[ -n "$existing" ]]; then echo "claim-issue: a branch for #$n already exists on origin: $existing — continue on it (git switch) instead of starting a second one." >&2; exit 1; fi
 token="$(node -pe 'require("crypto").randomBytes(6).toString("hex")')"
+since="$(node -pe 'new Date(Date.now()-10*60*1000).toISOString()')"
 gh issue edit "$n" --add-assignee "$me" --add-label in-progress >/dev/null
 gh issue comment "$n" --body "claim-token: $token ($me)" >/dev/null
-first="$(gh issue view "$n" --json comments --jq '[.comments[].body | select(startswith("claim-token: "))][0] // ""')"
+first="$(gh issue view "$n" --json comments --jq "[.comments[] | select(.createdAt >= \"$since\") | .body | select(startswith(\"claim-token: \")) | select(contains(\" released\") | not)][0] // \"\"")"
 if [[ "$first" != "claim-token: $token ($me)" ]]; then
   gh issue comment "$n" --body "claim-token: $token released (lost the race to: $first)" >/dev/null || true
+  winner="$(printf '%s' "$first" | sed -nE 's/.*[(]([^)]+)[)]$/\1/p')"
+  if [[ -n "$winner" && "$winner" != "$me" ]]; then gh issue edit "$n" --remove-assignee "$me" >/dev/null || true; fi
   echo "claim-issue: #$n was claimed concurrently ($first) — backing off. Pick another issue." >&2; exit 1
 fi
 echo "claimed #$n ($title) for $me — label in-progress, token $token. Next: git switch -c feat/$n-<slug> origin/main"

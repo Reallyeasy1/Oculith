@@ -24,15 +24,22 @@ process.stdin.on("end", () => {
   if (!cmd) process.exit(0);
   const session = String(hook.session_id ?? "").slice(0, 64) || "unknown";
   const cwd = hook.cwd && fs.existsSync(hook.cwd) ? hook.cwd : process.cwd();
+  // The repo a git command targets may differ from the tool cwd: a leading `cd X &&` or `git -C X`.
+  let gitCwd = cwd;
+  const cdTo = cmd.match(/^\s*cd\s+["']?([^\s"';&|]+)["']?\s*(?:&&|;)/)?.[1];
+  if (cdTo) gitCwd = path.resolve(cwd, cdTo);
+  const dashC = cmd.match(/git\s+-C\s+["']?([^\s"';&|]+)/)?.[1];
+  if (dashC) gitCwd = path.resolve(gitCwd, dashC);
+  if (!fs.existsSync(gitCwd)) gitCwd = cwd;
   const skipGh = !!process.env.OCULITH_GUARD_SKIP_GH;
 
   const block = (why) => {
     process.stderr.write(`Blocked: ${why}\n`);
     process.exit(2);
   };
-  const exec = (bin, args, timeout = 5000) => {
+  const exec = (bin, args, timeout = 5000, dir = gitCwd) => {
     try {
-      return execFileSync(bin, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout }).trim(); // no shell: arguments never reach a shell
+      return execFileSync(bin, args, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout }).trim(); // no shell: arguments never reach a shell
     } catch {
       return null;
     }
@@ -60,7 +67,8 @@ process.stdin.on("end", () => {
     block("deleting a remote branch closes PRs stacked on it; merge with `bash scripts/dev/merge-prs.sh <pr…>` which retargets dependents first.");
   if (/gh\s+pr\s+merge\b/.test(cmd) || /gh\s+api\b.*\/(merge|git\/refs)\b/.test(cmd))
     block("merges and ref deletes are serialized through `bash scripts/dev/merge-prs.sh <pr…>` (review gate + retarget + branch cleanup).");
-  if (sub("push").test(cmd) && /(\s|:)main(\s|$)/.test(cmd)) block("never push to main directly; merge a reviewed PR instead.");
+  if (sub("push").test(cmd) && /(\s|:|refs\/heads\/)["']?main["']?(\s|$)/.test(cmd)) block("never push to main directly; merge a reviewed PR instead.");
+  if (/gh\s+pr\s+close\b.*--delete-branch/.test(cmd)) block("closing a PR with --delete-branch removes a branch other PRs may be stacked on; close without the flag, then let merge-prs.sh or the controller delete it.");
 
   // One PR per head branch.
   if (/gh\s+pr\s+create\b/.test(cmd) && !skipGh) {
@@ -77,7 +85,7 @@ process.stdin.on("end", () => {
 
   // ---- ownership state: shared .git dir so every worktree sees the same map ---------------------------------
   const commonDir = git(["rev-parse", "--git-common-dir"]);
-  const stateFile = commonDir ? path.resolve(cwd, commonDir, "oculith-branch-owners.json") : "";
+  const stateFile = commonDir ? path.resolve(gitCwd, commonDir, "oculith-branch-owners.json") : "";
   const readState = () => {
     try {
       const s = JSON.parse(fs.readFileSync(stateFile, "utf8"));
@@ -108,6 +116,13 @@ process.stdin.on("end", () => {
     if (cur && cur.session !== session && !claimOverride) block(`issue #${claiming} is already claimed by another session on this machine (${cur.session.slice(0, 8)}…, since ${cur.at}); pick another issue.`);
     s.issues[claiming] = { session, at: now };
     writeState(s);
+  }
+
+  // Releasing a claim (--abort) frees the local lock too; --review keeps it (the claim is the lock until the issue closes).
+  const releasing = cmd.match(/release-issue\.sh\s+(\d+)\s+--abort/)?.[1];
+  if (stateFile && releasing) {
+    const s = readState();
+    if (s.issues[releasing]?.session === session || ownerOverride) { delete s.issues[releasing]; writeState(s); }
   }
 
   // Creating a branch: the issue must be claimed (GitHub: label in-progress + assignee = me; local: this session).
