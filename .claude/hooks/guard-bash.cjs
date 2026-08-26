@@ -1,40 +1,187 @@
 #!/usr/bin/env node
-// PreToolUse guard for Bash: block history-rewriting/unsafe git, and scan staged changes for secrets before any commit.
+// PreToolUse guard for Bash/PowerShell: block history-rewriting/unsafe git, keep parallel sessions from racing on
+// issues, branches and PRs, and scan staged changes for secrets before any commit.
 // Exit 2 = block (stderr shown to Claude). Exit 0 = allow.
+//
+// Race prevention model (see .claude/rules/parallel-work.md):
+//   issue  → claimed on GitHub (label in-progress + assignee) AND locally (issue → session) before any branch for it
+//   branch → owned by the session that created (or first committed to) it; other sessions cannot commit/push it
+//   PR     → one per head branch; merges only through scripts/dev/merge-prs.sh
 const { execFileSync } = require("node:child_process");
+const fs = require("node:fs");
+const path = require("node:path");
 
 let input = "";
 process.stdin.on("data", (c) => (input += c));
 process.stdin.on("end", () => {
-  let cmd = "";
+  let hook = {};
   try {
-    cmd = JSON.parse(input).tool_input?.command ?? "";
+    hook = JSON.parse(input);
   } catch {
     process.exit(0);
   }
+  const cmd = hook.tool_input?.command ?? "";
   if (!cmd) process.exit(0);
+  const session = String(hook.session_id ?? "").slice(0, 64) || "unknown";
+  const cwd = hook.cwd && fs.existsSync(hook.cwd) ? hook.cwd : process.cwd();
+  // The repo a git command targets may differ from the tool cwd: a leading `cd X &&` or `git -C X`.
+  let gitCwd = cwd;
+  const cdTo = cmd.match(/^\s*cd\s+["']?([^\s"';&|]+)["']?\s*(?:&&|;)/)?.[1];
+  if (cdTo) gitCwd = path.resolve(cwd, cdTo);
+  const dashC = cmd.match(/git\s+(?:--no-pager\s+)?-C\s+["']?([^\s"';&|]+)/)?.[1];
+  if (dashC) gitCwd = path.resolve(gitCwd, dashC);
+  if (!fs.existsSync(gitCwd)) gitCwd = cwd;
+  const skipGh = !!process.env.OCULITH_GUARD_SKIP_GH;
 
   const block = (why) => {
     process.stderr.write(`Blocked: ${why}\n`);
     process.exit(2);
   };
+  const exec = (bin, args, timeout = 5000, dir = gitCwd) => {
+    try {
+      return execFileSync(bin, args, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout }).trim(); // no shell: arguments never reach a shell
+    } catch {
+      return null;
+    }
+  };
+  const git = (args) => exec("git", args) ?? "";
+  // Test seam: OCULITH_GH_BIN=<script.js> substitutes a fake gh (scripts/dev/test-guards.sh); production always runs the real gh.
+  const gh = (args, t) => (process.env.OCULITH_GH_BIN ? exec(process.execPath, [process.env.OCULITH_GH_BIN, ...args], t) : exec("gh", args, t));
+  // `git -C dir -c k=v <sub>` → match the subcommand regardless of global options.
+  const GIT = String.raw`git(?:\s+(?:-[cC]\s+\S+|--no-pager|--git-dir=\S+|--work-tree=\S+))*`;
+  const sub = (name) => new RegExp(`${GIT}\\s+${name}\\b`);
+  // Forms that re-point git at another repo defeat the ownership lookup; refuse them outright.
+  if (/(^|[\s;&|])GIT_DIR=|git\s+(?:--no-pager\s+)?--(?:git-dir|work-tree)[\s=]/.test(cmd)) block("GIT_DIR / --git-dir / --work-tree re-point git at another repo; use `cd <path> &&` or `git -C <path>` so the guard can see which branch you touch.");
 
-  if (/git\s+push\b.*(--force\b|-f\b)/.test(cmd)) block("force push rewrites shared history; open an issue and ask the user instead.");
-  if (/git\s+commit\b.*--no-verify/.test(cmd)) block("--no-verify skips hooks; fix the underlying failure.");
+  // ---- unsafe git / secrets in the transcript --------------------------------------------------------------
+  if (sub("push").test(cmd) && /(\s--force\b|\s-f\b|\s--force-with-lease\b|\s\+[\w./-]+)/.test(cmd)) block("force push rewrites shared history; open an issue and ask the user instead.");
+  if (sub("commit").test(cmd) && /--no-verify/.test(cmd)) block("--no-verify skips hooks; fix the underlying failure.");
   if (/git\s+(reset\s+--hard|clean\s+-[a-z]*f|checkout\s+--\s)/.test(cmd) && !/\.local|codex-home/.test(cmd))
     block("destructive git operation; confirm with the user before discarding work.");
   if (/rm\s+-rf?\s+(\/|~|\.\s*$|\.\.|\*)/.test(cmd)) block("recursive delete of a broad path.");
   if (/(^|\s)(cat|type|Get-Content|bat|less|head|tail)\s+[^|;&]*\.env(\s|$|\.production)/.test(cmd) && !/\.env\.example/.test(cmd))
     block("printing .env would put secrets in the transcript; read variable names from .env.example instead.");
 
-  // Secret scan of staged content before `git commit`
-  if (/git\s+commit\b/.test(cmd)) {
-    let staged = "";
-    try {
-      staged = execFileSync("git", ["diff", "--cached", "-U0"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    } catch {
-      staged = "";
+  // ---- parallel-work guards --------------------------------------------------------------------------------
+  // Remote branch deletion closes PRs stacked on it. Only scripts/dev/merge-prs.sh may do it (after retargeting);
+  // it runs as one command, so its inner `git push --delete` never reaches this hook.
+  if (sub("push").test(cmd) && /(\s--delete\b|\s-d\b|\s:[\w./-]+)/.test(cmd))
+    block("deleting a remote branch closes PRs stacked on it; merge with `bash scripts/dev/merge-prs.sh <pr…>` which retargets dependents first.");
+  if (/gh\s+pr\s+merge\b/.test(cmd) || /gh\s+api\b.*\/(merge|git\/refs)\b/.test(cmd))
+    block("merges and ref deletes are serialized through `bash scripts/dev/merge-prs.sh <pr…>` (review gate + retarget + branch cleanup).");
+  if (sub("push").test(cmd) && /(\s|:|refs\/heads\/)["']?main["']?(\s|$)/.test(cmd)) block("never push to main directly; merge a reviewed PR instead.");
+  if (/gh\s+pr\s+close\b.*--delete-branch/.test(cmd)) block("closing a PR with --delete-branch removes a branch other PRs may be stacked on; close without the flag, then let merge-prs.sh or the controller delete it.");
+
+  // One PR per head branch.
+  if (/gh\s+pr\s+create\b/.test(cmd) && !skipGh) {
+    const headArg = cmd.match(/--head\s+["']?([^\s"']+)/)?.[1];
+    const head = headArg && !headArg.startsWith("$") ? headArg : git(["branch", "--show-current"]);
+    if (head) {
+      const open = gh(["pr", "list", "--state", "open", "--head", head, "--json", "number"], 15000);
+      if (open) {
+        const nums = JSON.parse(open || "[]").map((p) => p.number);
+        if (nums.length) block(`branch ${head} already has open PR #${nums[0]}; push to it instead of opening a second PR.`);
+      }
     }
+  }
+
+  // ---- ownership state: shared .git dir so every worktree sees the same map ---------------------------------
+  const commonDir = git(["rev-parse", "--git-common-dir"]);
+  const stateFile = commonDir ? path.resolve(gitCwd, commonDir, "oculith-branch-owners.json") : "";
+  const readState = () => {
+    try {
+      const s = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+      return { branches: s.branches ?? {}, issues: s.issues ?? {} };
+    } catch {
+      return { branches: {}, issues: {} };
+    }
+  };
+  const writeState = (s) => {
+    try {
+      fs.writeFileSync(stateFile, JSON.stringify(s, null, 2));
+    } catch {
+      /* best effort */
+    }
+  };
+  // Overrides count only as leading env assignments (`OCULITH_OWNER_OVERRIDE=1 git commit …`), never when the token
+  // merely appears later in the command (a comment, an echo, a commit message).
+  const ownerOverride = /^\s*(?:\w+=\S+\s+)*OCULITH_OWNER_OVERRIDE=1\s+/.test(cmd);
+  const claimOverride = /^\s*(?:\w+=\S+\s+)*OCULITH_CLAIM_OVERRIDE=1\s+/.test(cmd);
+  const now = new Date().toISOString();
+  const issueOf = (branch) => branch?.match(/^(?:feat|fix|chore)\/(\d+)-/)?.[1];
+
+  // Claiming an issue: same-machine sessions share the GitHub login, so GitHub cannot tell them apart — we can.
+  // Only an invocation counts (statement start, optional `bash `), never a `cat`/`grep` of the script.
+  const claiming = cmd.match(/(?:^(?:\s*\w+=\S+\s+)*|[;&|]\s*)(?:bash\s+)?(?:[\w.:/-]*\/)?claim-issue\.sh\s+(\d+)/)?.[1];
+  if (stateFile && claiming) {
+    const s = readState();
+    const cur = s.issues[claiming];
+    if (cur && cur.session !== session && !claimOverride) block(`issue #${claiming} is already claimed by another session on this machine (${cur.session.slice(0, 8)}…, since ${cur.at}); pick another issue (a controller releasing an abandoned claim may prefix OCULITH_CLAIM_OVERRIDE=1).`);
+    s.issues[claiming] = { session, at: now };
+    writeState(s);
+  }
+
+  // Releasing a claim (--abort) frees the local lock too; --review keeps it (the claim is the lock until the issue closes).
+  const releasing = cmd.match(/(?:^(?:\s*\w+=\S+\s+)*|[;&|]\s*)(?:bash\s+)?(?:[\w.:/-]*\/)?release-issue\.sh\s+(\d+)\s+--abort/)?.[1];
+  if (stateFile && releasing) {
+    const s = readState();
+    const holder = s.issues[releasing];
+    if (holder && holder.session !== session && !claimOverride) block(`issue #${releasing} is claimed by another session on this machine (${holder.session.slice(0, 8)}…); only the holder can abort it — a controller releasing an abandoned claim prefixes OCULITH_CLAIM_OVERRIDE=1.`);
+    delete s.issues[releasing]; writeState(s);
+  }
+
+  // Creating a branch: the issue must be claimed (GitHub: label in-progress + assignee = me; local: this session).
+  const created = cmd.match(new RegExp(`${GIT}\\s+(?:switch\\s+(?:-c|-C|--create)|checkout\\s+-[bB]|branch|worktree\\s+add\\s+-b)\\s+["']?([^\\s"';&|-][^\\s"';&|]*)`))?.[1];
+  if (stateFile && created && !created.startsWith("$")) {
+    const s = readState();
+    const b = s.branches[created];
+    if (b && b.session !== session && !ownerOverride) block(`branch ${created} is owned by another session (${b.session.slice(0, 8)}…, since ${b.at}); pick another branch name or ask that session.`);
+    const n = issueOf(created);
+    if (n) {
+      const ic = s.issues[n];
+      if (ic && ic.session !== session && !claimOverride) block(`issue #${n} is claimed by another session on this machine (${ic.session.slice(0, 8)}…); do not start a second branch for it.`);
+      if (!claimOverride && !skipGh) {
+        const me = gh(["api", "user", "--jq", ".login"], 15000);
+        const view = gh(["issue", "view", n, "--json", "labels,assignees,state"], 15000);
+        if (!me || !view) block(`cannot verify that issue #${n} is claimed (gh unavailable). Run \`bash scripts/dev/claim-issue.sh ${n}\` first, or prefix with OCULITH_CLAIM_OVERRIDE=1 when offline.`);
+        const v = JSON.parse(view);
+        const labels = (v.labels ?? []).map((l) => l.name);
+        const assignees = (v.assignees ?? []).map((a) => a.login);
+        if (v.state !== "OPEN") block(`issue #${n} is ${v.state}; nothing to branch for.`);
+        if (!labels.includes("in-progress") || !assignees.includes(me))
+          block(`issue #${n} is not claimed by you (labels: ${labels.join(",") || "none"}; assignees: ${assignees.join(",") || "none"}). Assign it to yourself first: \`bash scripts/dev/claim-issue.sh ${n}\`.`);
+      }
+      s.issues[n] = { session, at: now };
+    }
+    s.branches[created] = { session, at: now };
+    writeState(s);
+  }
+
+  // Committing / pushing: only the owner. An ownerless branch is claimed by the first session that touches it.
+  const touches = sub("(?:commit|push)").test(cmd);
+  if (stateFile && touches) {
+    const current = git(["branch", "--show-current"]);
+    let target = current;
+    const ref = cmd.match(new RegExp(`${GIT}\\s+push\\b(?:\\s+-\\S+)*\\s+\\S+\\s+["']?([^\\s"';&|]+)`))?.[1];
+    if (ref && !ref.startsWith("$") && !ref.startsWith("-")) {
+      const local = ref.split(":")[0].replace(/^refs\/heads\//, "");
+      target = local === "HEAD" ? current : local;
+    }
+    if (target) {
+      const s = readState();
+      const b = s.branches[target];
+      if (b && b.session !== session && !ownerOverride)
+        block(`branch ${target} belongs to another session (${b.session.slice(0, 8)}…, since ${b.at}). Coordinate through the controller; a controller taking over a finished agent branch may prefix the command with OCULITH_OWNER_OVERRIDE=1.`);
+      if (!b || b.session === session) {
+        s.branches[target] = { session, at: now }; // claim-on-first-touch / refresh
+        writeState(s);
+      }
+    }
+  }
+
+  // ---- secret scan of staged content before `git commit` ---------------------------------------------------
+  if (sub("commit").test(cmd)) {
+    const staged = git(["diff", "--cached", "-U0"]);
     const added = staged.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++"));
     const patterns = [
       [/sk-(proj-)?[A-Za-z0-9_-]{20,}/, "OpenAI-style API key"],
