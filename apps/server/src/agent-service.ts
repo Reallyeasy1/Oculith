@@ -412,10 +412,11 @@ export class AgentService {
           source: { component: "AgentService", observed: true },
         });
       }
+      const workspaceBefore = await snapshotWorkspace(agentAtStart.workspacePath).catch(() => undefined);
+      // Last look before handing off to the runner: a stop that arrived during the snapshot must still win.
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
-      const workspaceBefore = await snapshotWorkspace(agentAtStart.workspacePath).catch(() => undefined);
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         workspacePath: agentAtStart.workspacePath,
