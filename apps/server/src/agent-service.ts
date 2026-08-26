@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { AppConfig } from "./config.js";
 import { isModelConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
@@ -12,6 +12,7 @@ import { newId, type TraceStatus } from "./glassbox/schema.js";
 import { JsonStore } from "./store.js";
 import type {
   Agent,
+  AgentConfigSnapshot,
   AgentRun,
   AgentRunner,
   CreateAgentInput,
@@ -21,6 +22,33 @@ import type {
 import { WorkspaceManager } from "./workspace.js";
 
 const now = () => new Date().toISOString();
+
+export function configSnapshot(agent: Agent, config: AppConfig): AgentConfigSnapshot {
+  return {
+    instructions: "sha256:" + createHash("sha256").update(agent.instructions).digest("hex"),
+    modelProvider: config.modelProvider,
+    model: config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default",
+    codexSandboxMode: config.codexSandboxMode,
+    runtimeProvider: config.runtimeProvider,
+    containerRuntimeImage: config.containerRuntimeImage,
+    capturePolicy: config.glassboxCapturePolicy,
+  };
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
+  if (value !== null && typeof value === "object") {
+    return "{" + Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => JSON.stringify(key) + ":" + canonicalJson(entry))
+      .join(",") + "}";
+  }
+  return JSON.stringify(value);
+}
+
+export function configHash(snapshot: AgentConfigSnapshot): string {
+  return createHash("sha256").update(canonicalJson(snapshot)).digest("hex").slice(0, 16);
+}
 
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
@@ -65,6 +93,11 @@ export class AgentService {
         }
       }
     });
+    // AGENTS.md is platform-owned. Refresh every existing workspace at boot so newly introduced
+    // safety/runtime guidance reaches Agents created by earlier versions too.
+    for (const agent of this.store.snapshot().agents) {
+      await this.workspaces.writeInstructions(agent);
+    }
     for (const run of interrupted) {
       if (!run.traceId) continue;
       // The server itself cancelled this Run, not the local user: say so in the actor fields.
@@ -241,6 +274,8 @@ export class AgentService {
       if (storedAgent.status === "busy") {
         throw new HttpError(409, "This Agent is already running");
       }
+      run.configSnapshot = configSnapshot(storedAgent, this.config);
+      run.configHash = configHash(run.configSnapshot);
       database.runs.push(run);
       database.messages.push(message);
       const snapshot = structuredClone(storedAgent);
@@ -284,7 +319,7 @@ export class AgentService {
       name: "run.created",
       status: "ok",
       source: { component: "AgentService", observed: true },
-      attributes: { promptBytes: Buffer.byteLength(prompt, "utf8") },
+      attributes: { promptBytes: Buffer.byteLength(prompt, "utf8"), configHash: run.configHash! },
     });
     this.spans.set(runId, {
       traceId: ctx.traceId,

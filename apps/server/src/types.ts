@@ -30,6 +30,16 @@ export interface RunUsage {
   outputTokens?: number;
 }
 
+export interface AgentConfigSnapshot {
+  instructions: string;
+  modelProvider: "ark" | "openai";
+  model: string;
+  codexSandboxMode: "read-only" | "workspace-write" | "danger-full-access";
+  runtimeProvider: "local-process" | "container";
+  containerRuntimeImage: string;
+  capturePolicy: "metadata_only" | "safe_summary";
+}
+
 export interface AgentRun {
   id: string;
   agentId: string;
@@ -44,6 +54,8 @@ export interface AgentRun {
   traceId?: string | undefined;
   /** Persisted observation parent used to attach restart cancellation after in-memory span handles are lost. */
   traceParentSpanId?: string | undefined;
+  configHash?: string | undefined;
+  configSnapshot?: AgentConfigSnapshot | undefined;
 }
 
 export interface Database {
