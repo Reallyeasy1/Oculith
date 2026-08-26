@@ -152,7 +152,7 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     expect(list.statusCode).toBe(200);
     const body = list.json();
     expect(body.schemaVersion).toBe("1.0"); expect(body.capturePolicy).toBe("metadata_only");
-    expect(body.runs[0]).toMatchObject({ runId: "run-9", agentName: "Nine", status: "timeout", firstFailingStep: "codex", eventCount: 7, toolCalls: 1, toolFailures: 1, tokens: { output: 7 }, denials: 0, configHash: "0123456789abcdef", configSnapshot, capabilities: { model: "observed", tool: "observed" }, actions: 4 });
+    expect(body.runs[0]).toMatchObject({ runId: "run-9", agentName: "Nine", status: "timeout", firstFailingStep: "codex", eventCount: 7, toolCalls: 1, toolFailures: 1, tokens: { output: 7 }, denials: 0, configHash: "0123456789abcdef", configSnapshot, capabilities: { model: "observed", tool: "observed" }, actions: 5 });
     const trace = await get("/api/runs/run-9/trace");
     expect(body.runs[0].toolCalls).toBe(trace.json().summary.metrics.toolCalls);
     expect(body.runs[0].toolFailures).toBe(trace.json().summary.metrics.toolFailures);
