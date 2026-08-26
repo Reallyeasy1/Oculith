@@ -55,6 +55,7 @@ const envSchema = z.object({
   // `KNOB=` (empty) means unset → default, not 0 (which would silently disable the knob).
   GLASSBOX_RETENTION_DAYS: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.coerce.number().finite().min(0).default(7)),
   GLASSBOX_MAX_DISK_MB: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.coerce.number().finite().min(0).default(200)),
+  GLASSBOX_LOG_MAX_MB: z.coerce.number().positive().default(50),
 });
 
 export type AppConfig = ReturnType<typeof loadConfig>;
@@ -108,6 +109,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     ),
     glassboxRetentionDays: env.GLASSBOX_RETENTION_DAYS,
     glassboxMaxDiskMb: env.GLASSBOX_MAX_DISK_MB,
+    glassboxLogMaxMb: env.GLASSBOX_LOG_MAX_MB,
   };
 }
 

@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ObservationEvent, RunListItem, Span, TraceView } from "./types";
+import type { RunLogLine } from "./types";
+import { api } from "./api";
 import { STATUS_ICON, formatClock, formatDuration, formatUsage } from "./runs-view-model";
 import {
   CATEGORIES,
@@ -44,6 +46,9 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
   const [expandedState, setExpanded] = useState<Set<string> | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [logs, setLogs] = useState<RunLogLine[]>([]);
+  const [logsTruncated, setLogsTruncated] = useState(false);
+  const [logLevel, setLogLevel] = useState("");
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   // Bumped whenever focus must move programmatically (keyboard nav, Jump, drawer close); the effect below
   // runs after the target row has rendered, which matters when Jump expands a collapsed path.
@@ -51,6 +56,9 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
   // Once per open (App keys this component by runId): bring the header + banner into the first viewport.
   const sectionRef = useRef<HTMLElement>(null);
   useEffect(() => { sectionRef.current?.scrollIntoView({ block: "start" }); }, []);
+  useEffect(() => {
+    void api.logs(runId, logLevel).then((result) => { setLogs(result.lines); setLogsTruncated(result.truncated); }).catch(() => undefined);
+  }, [logLevel, runId]);
 
   const byId = useMemo(() => (view ? indexSpans(view.spans) : new Map<string, Span>()), [view]);
   // Per-row redaction comes from the full event list: the server only nests intermediate events under
@@ -240,6 +248,28 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
           <p className="runs-empty">{view.spans.length === 0 ? "No spans observed yet." : "No spans match these filters."}</p>
         )}
       </div>
+
+      <details className="trace-logs">
+        <summary>Logs · {logs.length}{logsTruncated ? "+" : ""}</summary>
+        <label>Level
+          <select value={logLevel} onChange={(event) => setLogLevel(event.target.value)}>
+            <option value="">all</option>
+            <option value="info">info</option>
+            <option value="error">error</option>
+          </select>
+        </label>
+        {logs.length === 0 ? <p className="runs-empty">No log lines carry this Run&apos;s id.</p> : (
+          <ol className="run-logs">
+            {logs.map((line, index) => (
+              <li key={line.time + ":" + index}>
+                <time>{formatClock(line.time)}</time> <strong>{line.level}</strong>{" "}
+                {line.spanId && byId.has(line.spanId) ? <button type="button" onClick={() => focusRow(line.spanId!)}>{line.msg}</button> : <span>{line.msg}</span>}
+                {line.err && <small>{line.err}</small>}
+              </li>
+            ))}
+          </ol>
+        )}
+      </details>
 
       {openSpan && <SpanDrawer span={openSpan} view={view} parentName={openSpan.parentSpanId ? byId.get(openSpan.parentSpanId)?.name : undefined} onClose={closeDrawer} />}
     </section>

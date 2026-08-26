@@ -6,6 +6,7 @@ import { RunCancelledError } from "./errors.js";
 import { CodexStreamObserver } from "./glassbox/codex-observer.js";
 import { createDefaultEmitter, type ObservationEmitter } from "./glassbox/emitter.js";
 import { newId } from "./glassbox/schema.js";
+import { redactText } from "./glassbox/redact.js";
 import type {
   AgentRunner,
   RunUsage,
@@ -238,6 +239,7 @@ export class ContainerCodexRunner implements AgentRunner {
     };
     let stdout = "";
     let stderr = "";
+    let stderrBytes = 0;
     let totalBytes = 0;
 
     const consume = (chunk: Buffer, target: "stdout" | "stderr") => {
@@ -253,6 +255,7 @@ export class ContainerCodexRunner implements AgentRunner {
         stdout = lines.pop() ?? "";
         for (const line of lines) parseCodexEventLine(line, parsed, observer);
       } else {
+        stderrBytes += chunk.byteLength;
         stderr += chunk.toString("utf8");
         if (stderr.length > 16_384) stderr = stderr.slice(-16_384);
       }
@@ -279,11 +282,15 @@ export class ContainerCodexRunner implements AgentRunner {
         ...(child.exitCode !== null ? { exitCode: child.exitCode } : {}),
         ...(child.signalCode ? { terminationSignal: child.signalCode } : {}),
         ...(observer?.sessionId ? { sessionId: observer.sessionId } : {}),
+        stderrBytes,
       };
       span?.end(status, {
         type: status === "ok" ? "runtime.codex.completed" : "runtime.codex.failed",
         attributes: { ...endAttrs, ...extra },
         ...(error ? { error } : {}),
+        ...(status !== "ok" && this.emitter.capturePolicy === "safe_summary" && stderr.trim()
+          ? { summary: { text: redactText(stderr).text.slice(-2_048), policy: "safe_summary" as const } }
+          : {}),
       });
       containerSpan?.end(status, {
         type: "runtime.container.stopped",
@@ -340,9 +347,7 @@ export class ContainerCodexRunner implements AgentRunner {
       }
       if (exitCode !== 0) {
         // Bounded: see CodexRunner — an oversized error.message would quarantine the span end.
-        const detail = ((parsed.errors.at(-1) ?? stderr.trim()) || "No error detail").slice(0, 1024);
-        const message =
-          this.config.containerEngine + " Runtime exited with code " + exitCode + ": " + detail;
+        const message = this.config.containerEngine + " Runtime exited with code " + exitCode;
         endSpans("error", { type: "exit_code", message });
         throw new Error(message);
       }
@@ -358,6 +363,9 @@ export class ContainerCodexRunner implements AgentRunner {
       if (span && !spanEnded) {
         observer?.finish("error");
         endSpans("error", { type: "spawn_failed", message: String(error).slice(0, 2048) });
+      }
+      if (!(error instanceof RunCancelledError)) {
+        request.logger?.error(active.timedOut ? "Container runner timed out" : "Container runner failed", error);
       }
       throw error;
     } finally {

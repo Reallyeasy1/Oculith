@@ -83,6 +83,12 @@ export interface RunnerRequest {
   threadId: string | null;
   trace?: RunnerTraceContext | undefined;
   timeoutMs?: number | undefined;
+  logger?: RunnerLogger | undefined;
+}
+
+export interface RunnerLogger {
+  info(message: string): void;
+  error(message: string, error?: unknown): void;
 }
 
 export interface AgentRunner {

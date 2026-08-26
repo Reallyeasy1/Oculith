@@ -19,8 +19,13 @@ import type {
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import type { RunLogStore } from "./run-log-store.js";
 
 const now = () => new Date().toISOString();
+
+interface AppLogger {
+  child(bindings: Record<string, unknown>): { info(message: string): void; error(error: unknown, message?: string): void };
+}
 
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
@@ -36,6 +41,7 @@ export class AgentService {
       cancelRequestedAt?: string | undefined;
     }
   >();
+  private appLogger?: AppLogger | undefined;
 
   constructor(
     private readonly config: AppConfig,
@@ -43,7 +49,10 @@ export class AgentService {
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
     private readonly emitter: ObservationEmitter = createDefaultEmitter(),
+    private readonly runLogs?: RunLogStore | undefined,
   ) {}
+
+  setLogger(logger: AppLogger): void { this.appLogger = logger; }
 
   async initialize(): Promise<void> {
     await this.store.initialize();
@@ -333,7 +342,13 @@ export class AgentService {
         }
       : undefined;
     let service: SpanHandle | undefined;
+    const bindings = run.traceId ? { traceId: run.traceId, runId: run.id, agentId: run.agentId } : undefined;
+    const logger = bindings ? this.runLogs?.child({ ...bindings, component: "AgentService" }) : undefined;
+    const runnerLogger = bindings ? this.runLogs?.child({ ...bindings, component: "AgentRunner" }) : undefined;
+    const pino = bindings ? this.appLogger?.child(bindings) : undefined;
     try {
+      pino?.info("Run started");
+      void logger?.info("Run started").catch(() => undefined);
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         if (storedRun) {
@@ -387,6 +402,20 @@ export class AgentService {
             }
           : {}),
         ...(this.config.glassboxDemoFailure === "timeout" ? { timeoutMs: 3_000 } : {}),
+        ...(bindings
+          ? {
+              logger: {
+                info: (message: string) => {
+                  pino?.info(message);
+                  void runnerLogger?.info(message).catch(() => undefined);
+                },
+                error: (message: string, error?: unknown) => {
+                  pino?.error(error, message);
+                  void runnerLogger?.error(message, error === undefined ? undefined : String(error)).catch(() => undefined);
+                },
+              },
+            }
+          : {}),
       });
       const completedAt = now();
       await this.store.mutate((database) => {
@@ -428,10 +457,15 @@ export class AgentService {
         });
         service.end("ok", { type: "agent_service.run.completed" });
       }
+      pino?.info("Run completed");
+      void logger?.info("Run completed").catch(() => undefined);
     } catch (error) {
       const completedAt = now();
       const cancelled = error instanceof RunCancelledError;
       const message = error instanceof Error ? error.message : String(error);
+      const logMessage = /timed out/i.test(message) ? "Runner timed out" : "Runner failed";
+      pino?.error(error, logMessage);
+      void runnerLogger?.error(logMessage, message).catch(() => undefined);
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);

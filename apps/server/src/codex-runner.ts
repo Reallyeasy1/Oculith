@@ -6,6 +6,7 @@ import { RunCancelledError } from "./errors.js";
 import { CodexStreamObserver, type CodexStreamSink } from "./glassbox/codex-observer.js";
 import { createDefaultEmitter, type ObservationEmitter } from "./glassbox/emitter.js";
 import { newId } from "./glassbox/schema.js";
+import { redactText } from "./glassbox/redact.js";
 import type {
   AgentRunner,
   RunUsage,
@@ -210,6 +211,7 @@ export class CodexRunner implements AgentRunner {
     };
     let stdout = "";
     let stderr = "";
+    let stderrBytes = 0;
     let totalBytes = 0;
 
     const consume = (chunk: Buffer, target: "stdout" | "stderr") => {
@@ -227,6 +229,7 @@ export class CodexRunner implements AgentRunner {
           parseCodexEventLine(line, parsed, observer);
         }
       } else {
+        stderrBytes += chunk.byteLength;
         stderr += chunk.toString("utf8");
         if (stderr.length > 16_384) {
           stderr = stderr.slice(-16_384);
@@ -267,12 +270,17 @@ export class CodexRunner implements AgentRunner {
         ...(child.exitCode !== null ? { exitCode: child.exitCode } : {}),
         ...(child.signalCode ? { terminationSignal: child.signalCode } : {}),
         ...(observer?.sessionId ? { sessionId: observer.sessionId } : {}),
+        stderrBytes,
       };
+      const stderrSummary = this.emitter.capturePolicy === "safe_summary" && stderr.trim()
+        ? { summary: { text: redactText(stderr).text.slice(-2_048), policy: "safe_summary" as const } }
+        : {};
       if (active.cancelled) {
         span?.end("cancelled", {
           type: "runtime.codex.failed",
           attributes: endAttrs,
           error: { type: "cancelled", message: "Run cancelled" },
+          ...stderrSummary,
         });
         throw new RunCancelledError();
       }
@@ -282,6 +290,7 @@ export class CodexRunner implements AgentRunner {
           type: "runtime.codex.failed",
           attributes: endAttrs,
           error: { type: "timeout", message },
+          ...stderrSummary,
         });
         throw new Error(message);
       }
@@ -306,18 +315,19 @@ export class CodexRunner implements AgentRunner {
           type: "runtime.codex.failed",
           attributes: endAttrs,
           error: { type: "output_cap", message },
+          ...stderrSummary,
         });
         throw new Error(message);
       }
       if (exitCode !== 0) {
         // Bounded: raw stderr is up to 16 KB and error.message is capped at 2048 by the schema — an
         // oversized message would get the whole span end quarantined and the terminal evidence lost.
-        const detail = ((parsed.errors.at(-1) ?? stderr.trim()) || "No error detail").slice(0, 1024);
-        const message = "Codex exited with code " + exitCode + ": " + detail;
+        const message = "Codex exited with code " + exitCode;
         span?.end("error", {
           type: "runtime.codex.failed",
           attributes: endAttrs,
           error: { type: "exit_code", message },
+          ...stderrSummary,
         });
         throw new Error(message);
       }
@@ -327,6 +337,7 @@ export class CodexRunner implements AgentRunner {
           type: "runtime.codex.failed",
           attributes: endAttrs,
           error: { type: "no_output", message },
+          ...stderrSummary,
         });
         throw new Error(message);
       }
@@ -347,6 +358,9 @@ export class CodexRunner implements AgentRunner {
           type: "runtime.codex.failed",
           error: { type: "spawn_failed", message: String(error).slice(0, 2048) },
         });
+      }
+      if (!(error instanceof RunCancelledError)) {
+        request.logger?.error(active.timedOut ? "Codex runner timed out" : "Codex runner failed", error);
       }
       throw error;
     } finally {
