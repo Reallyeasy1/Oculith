@@ -7,19 +7,18 @@ set -euo pipefail
 gate=1
 if [[ "${1:-}" == "--no-review-gate" ]]; then gate=0; shift; fi
 [[ $# -gt 0 ]] || { echo "usage: merge-prs.sh [--no-review-gate] <pr> [<pr>…]" >&2; exit 1; }
-export OCULITH_MERGE=1
 
 merge_one() {
   local pr=$1 base state head body i dep
-  for i in $(seq 1 30); do
+  for i in $(seq 1 8); do
     read -r base state head < <(gh pr view "$pr" --json baseRefName,mergeStateStatus,headRefName --jq '"\(.baseRefName) \(.mergeStateStatus) \(.headRefName)"')
     [[ "$base" == main && "$state" != UNKNOWN ]] && break
     sleep 4
   done
   [[ "$base" == main ]] || { echo "STOP: PR #$pr base is $base, expected main (merge its parent first)" >&2; exit 1; }
   case "$state" in CLEAN|UNSTABLE|HAS_HOOKS) ;; *) echo "STOP: PR #$pr mergeStateStatus=$state — resolve by merging main into the branch (never rebase a pushed branch)" >&2; exit 1;; esac
-  if [[ $gate == 1 ]] && ! gh pr view "$pr" --json comments,reviews --jq '[.comments[].body, .reviews[].body] | join("\n")' | grep -q '^## Review —'; then
-    echo "STOP: PR #$pr has no '## Review —' comment; run a mergeability review first (or --no-review-gate with a reason)" >&2; exit 1
+  if [[ $gate == 1 ]] && ! gh pr view "$pr" --json comments,reviews --jq '[.comments[].body, .reviews[].body] | join("\n")' | grep -q '^## Review — Mergeable'; then
+    echo "STOP: PR #$pr has no '## Review — Mergeable…' comment; run a mergeability review first (a Blocked review does not count) (or --no-review-gate with a reason)" >&2; exit 1
   fi
   gh pr merge "$pr" --merge --subject "$(gh pr view "$pr" --json title --jq .title) (#$pr)" >/dev/null || { echo "STOP: merge of #$pr failed" >&2; exit 1; }
   for dep in $(gh pr list --state open --base "$head" --json number --jq '.[].number'); do

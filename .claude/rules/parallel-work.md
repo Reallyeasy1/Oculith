@@ -1,22 +1,37 @@
-# Parallel work: one issue = one branch = one worktree = one session
+# Parallel work: claim the issue, own the branch, merge through the script
 
-Several Claude sessions and subagents work on this repo at once. These rules make the races that bit us
-(two sessions in one working tree, a stacked PR closed by a branch deletion, the same fix applied twice)
-mechanically impossible where a hook can enforce them, and explicit where it cannot.
+Several Claude sessions, subagents and teammates work on this repo at once. These rules make the races that bit us
+(two sessions in one working tree, a stacked PR closed by a branch deletion, the same fix applied twice) mechanically
+impossible where a hook can enforce them, and explicit where it cannot.
 
-## Enforced by hooks and scripts
-- **Claim before you branch.** `bash scripts/dev/claim-issue.sh N` assigns you and labels the issue `in-progress`. It refuses closed or already-claimed issues and issues that already have a `feat|fix|chore/N-*` branch on origin — continue on that branch instead of starting a second one. `/start-issue` runs it.
-- **The session that creates a branch owns it.** `git switch -c` / `checkout -b` records `branch → session` in the shared `.git` dir; `git commit` and `git push` on a branch owned by another session are blocked. A controller taking over a *finished* agent branch (folding a review follow-up) prefixes the command with `OCULITH_OWNER_OVERRIDE=1` — never while that agent is still running.
-- **One PR per branch.** `gh pr create` is blocked when the head already has an open PR. `/finish-issue` opens the PR and flips the issue to `in-review`.
-- **Merges only through `bash scripts/dev/merge-prs.sh <pr…>`**, in stack order. It requires a `## Review —` comment, merges with a merge commit, **retargets dependent PRs to `main` before deleting the head branch** (a plain `git push --delete` closes them — the hook blocks it), and clears the claim labels. Manual `gh pr merge`, `git push --delete`, force pushes and pushes to `main` are blocked.
-- **Session start lists what is taken:** claimed issues, open PRs, active worktrees, branch owners. Read it before dispatching.
+## The order of operations for any issue
+1. **Assign it to yourself first:** `bash scripts/dev/claim-issue.sh N`. It sets you as assignee, labels the issue
+   `in-progress`, posts a `claim-token` comment, and backs off if someone else's token won the same round trip. It
+   refuses closed or already-claimed issues and issues that already have a `feat|fix|chore/N-*` branch on origin.
+2. **Then branch:** `git switch -c feat/N-<slug> origin/main`. The hook refuses to create any `feat|fix|chore/N-*`
+   branch unless issue N is `in-progress` **and** assigned to the current `gh` user, and unless no other session on
+   this machine holds N. There is no "I'll claim it after" — the branch does not get created.
+3. Work only on that branch. `git commit` / `git push` on a branch another session created (or first committed to) are
+   blocked. A controller folding a review follow-up onto a *finished* agent branch prefixes `OCULITH_OWNER_OVERRIDE=1`.
+4. **PR via `/finish-issue N`** — one PR per branch (a second `gh pr create` for the same head is blocked); the issue
+   flips to `in-review`.
+5. **Merge only via `bash scripts/dev/merge-prs.sh <pr…>`** in stack order: requires a `## Review — Mergeable…`
+   comment, merges with a merge commit, retargets dependent PRs to `main` **before** deleting the head branch, clears
+   the claim labels. Manual `gh pr merge`, `gh api …/merge`, `git push --delete`, `:branch`, force pushes and pushes
+   to `main` are blocked.
 
-## Enforced by the controller (no hook can see it)
-- **Agents run in worktrees (`.claude/worktrees/`), the main working tree belongs to the controller.** Never dispatch a fixer into the main tree while other agents are running; never run two agents on one branch.
-- **Disjoint file sets per parallel brief.** Two agents that must touch the same file are sequential (stack the second branch on the first) or one agent.
-- **Conflicts are resolved by merging `main` into the branch**, never by rebasing or force-pushing a branch that has an open PR.
-- **Restarting the shared POC instance on :3000, rebuilding `dist/`, or running the E2E lane are controller-only actions** (the lane uses :3100 and its own state root; the instance's wrapper shell must not be killed — an orphaned server cannot spawn Docker).
-- **Stale worktrees:** remove them after merge (`git worktree remove --force`, then delete the local branch). A worktree directory held open by a stray process is harmless but must not be reused.
+## What the hook cannot see (controller discipline)
+- **Agents run in worktrees (`.claude/worktrees/`); the main working tree belongs to the controller.** Never dispatch
+  a fixer into the main tree while other agents run; never run two agents on one branch.
+- **One claim per agent.** When dispatching, the controller claims the issue (the assignee is the team account) and the
+  agent's own session becomes the local owner when it creates the branch; a second agent for the same issue is refused
+  by the hook. Disjoint file sets per parallel brief; anything that must touch the same file is sequential.
+- **Conflicts:** merge `main` into the branch; never rebase or force-push a branch with an open PR.
+- **Shared instance and lane:** restarting the :3000 POC, rebuilding `dist/`, or running the E2E lane are controller
+  actions (the lane uses :3100 and its own state root; killing a server's wrapper shell orphans it).
+- **Stale claims:** if an `in-progress` issue shows no branch activity for a day, the controller releases it
+  (`bash scripts/dev/release-issue.sh N --abort`) and says so on the issue.
 
-## When something is already taken
-Do not "help" on a claimed issue or an owned branch. Report to the controller, take the next unclaimed issue, or wait for the PR. If a claim looks abandoned (>24 h, no branch activity), the controller releases it with `bash scripts/dev/release-issue.sh N --abort` and says so on the issue.
+## Escapes (write down why when you use one)
+`OCULITH_CLAIM_OVERRIDE=1` (offline, cannot reach GitHub) · `OCULITH_OWNER_OVERRIDE=1` (controller takeover of a
+finished branch) · `merge-prs.sh --no-review-gate` (never for a code PR).

@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Claim GitHub issue N for this session before branching: assignee + label `in-progress`.
-# Refuses when the issue is closed, already claimed (in-progress / in-review), assigned to someone else,
-# or a branch for it already exists on origin. Re-reads after labelling so two simultaneous claimers
-# both notice the collision (GitHub has no compare-and-set; the window is one round trip).
+# Claim GitHub issue N for yourself before branching: assignee + label `in-progress` + a claim-token comment.
+# Refuses when the issue is closed, already claimed (in-progress / in-review), assigned to someone else, or a
+# branch for it already exists on origin. GitHub has no compare-and-set, so after labelling we post a random claim
+# token and back off if an earlier claim token from someone else is the first one on the issue — this catches two
+# people (or two sessions sharing one login on different machines) claiming within the same round trip.
+# Same-machine sessions are separated before this script runs: the guard hook records issue → session locally.
 set -euo pipefail
 n="${1:?usage: claim-issue.sh <issue-number>}"
 me="$(gh api user --jq .login)"
@@ -16,11 +18,12 @@ case ",$labels," in *,in-progress,*|*,in-review,*) echo "claim-issue: #$n is alr
 if [[ -n "$assignees" && "$assignees" != "$me" ]]; then echo "claim-issue: #$n is assigned to $assignees" >&2; exit 1; fi
 existing="$(git ls-remote --heads origin "refs/heads/feat/$n-*" "refs/heads/fix/$n-*" "refs/heads/chore/$n-*" | awk '{print $2}' | sed 's|refs/heads/||' | tr '\n' ' ')"
 if [[ -n "$existing" ]]; then echo "claim-issue: a branch for #$n already exists on origin: $existing — continue on it (git switch) instead of starting a second one." >&2; exit 1; fi
+token="$(node -pe 'require("crypto").randomBytes(6).toString("hex")')"
 gh issue edit "$n" --add-assignee "$me" --add-label in-progress >/dev/null
-# Lost a race if someone else is now assigned too.
-after="$(gh issue view "$n" --json assignees --jq '.assignees | map(.login) | join(",")')"
-if [[ "$after" != "$me" ]]; then
-  gh issue edit "$n" --remove-assignee "$me" >/dev/null || true
-  echo "claim-issue: #$n was claimed concurrently by $after — backing off." >&2; exit 1
+gh issue comment "$n" --body "claim-token: $token ($me)" >/dev/null
+first="$(gh issue view "$n" --json comments --jq '[.comments[].body | select(startswith("claim-token: "))][0] // ""')"
+if [[ "$first" != "claim-token: $token ($me)" ]]; then
+  gh issue comment "$n" --body "claim-token: $token released (lost the race to: $first)" >/dev/null || true
+  echo "claim-issue: #$n was claimed concurrently ($first) — backing off. Pick another issue." >&2; exit 1
 fi
-echo "claimed #$n ($title) for $me — label in-progress. Next: git switch -c feat/$n-<slug> origin/main"
+echo "claimed #$n ($title) for $me — label in-progress, token $token. Next: git switch -c feat/$n-<slug> origin/main"
