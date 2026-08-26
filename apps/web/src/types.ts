@@ -10,6 +10,7 @@ export interface Agent {
   workspacePath: string;
   workspaceName?: string;
   workspaceManaged?: boolean;
+  workspaceTemplate?: string;
   codexThreadId: string | null;
   lastError: string | null;
   createdAt: string;

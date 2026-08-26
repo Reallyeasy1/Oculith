@@ -117,12 +117,14 @@ export class AgentService {
       workspacePath,
       workspaceName,
       workspaceManaged: input.workspace === undefined,
+      ...(input.template ? { workspaceTemplate: input.template } : {}),
       codexThreadId: null,
       lastError: null,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    await this.workspaces.create(agent, input.workspace !== undefined);
+    try { await this.workspaces.create(agent, input.workspace !== undefined, input.template); }
+    catch (error) { throw new HttpError(400, error instanceof Error ? error.message : "Unable to create workspace"); }
     await this.store.mutate((database) => database.agents.push(agent));
     return agent;
   }
@@ -181,6 +183,10 @@ export class AgentService {
 
   async listWorkspaces() {
     return this.workspaces.list(this.store.snapshot().agents);
+  }
+
+  async listWorkspaceTemplates() {
+    return this.workspaces.listTemplates();
   }
 
   async startAgent(id: string): Promise<Agent> {

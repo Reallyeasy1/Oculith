@@ -41,6 +41,7 @@ export const api = {
     description: string;
     instructions: string;
     workspace?: string;
+    template?: string;
   }) =>
     request<{ agent: Agent }>("/api/agents", {
       method: "POST",
@@ -59,6 +60,7 @@ export const api = {
       method: "DELETE",
     }),
   listWorkspaces: () => request<{ workspaces: { name: string; path: string; agents: string[]; fileCount: number; lastModified: string; managed: boolean }[] }>("/api/workspaces"),
+  listWorkspaceTemplates: () => request<{ templates: { name: string; fileCount: number; bytes: number }[] }>("/api/workspace-templates"),
   startAgent: (id: string) =>
     request<{ agent: Agent }>("/api/agents/" + id + "/start", {
       method: "POST",

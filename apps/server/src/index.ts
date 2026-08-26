@@ -12,7 +12,7 @@ const config = loadConfig();
 await writeCodexConfig(config);
 
 const store = new JsonStore(path.join(config.dataDirectory, "launchpad.json"));
-const workspaces = new WorkspaceManager(config.workspaceRoot);
+const workspaces = new WorkspaceManager(config.workspaceRoot, config.workspaceTemplatesDirectory);
 
 const glassboxLog = (message: string, meta: Record<string, unknown>) =>
   console.warn("[glassbox]", message, JSON.stringify(meta));
