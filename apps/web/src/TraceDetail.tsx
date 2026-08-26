@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ObservationEvent, RunListItem, Span, TraceStatus, TraceView } from "./types";
+import type { ObservationEvent, RunListItem, Span, TraceView } from "./types";
 import { STATUS_ICON, formatClock, formatDuration, formatUsage } from "./runs-view-model";
 import {
   CATEGORIES,
@@ -7,28 +7,26 @@ import {
   EMPTY_FILTER,
   STATUSES,
   barGeometry,
+  capabilityCopy,
   defaultExpanded,
   formatAttribute,
   indexSpans,
   isFilterActive,
+  spanStatusLabel,
+  timelineTicks,
   visibleRows,
   type TraceFilter,
 } from "./trace-view-model";
 
-// Three capability states (PRD §8): observed | unavailable | unknown. Unknown is absence of evidence,
-// not a capability gap; terminal status supplies the missing context in the long-form title.
-const CAPABILITY_LABEL = { observed: "observed", unavailable: "unavailable", unknown: "not observed" } as const;
-const CAPABILITY_TITLE = {
-  observed: "The runtime emitted events for this layer.",
-  unavailable: "The Run completed but the runtime exposed no events for this layer.",
-} as const;
-
-function CapabilityBadge({ layer, state, status }: { layer: "model" | "tool"; state: keyof typeof CAPABILITY_LABEL; status: TraceStatus }) {
-  const unknownTitle = status === "timeout" || status === "cancelled" || status === "running"
-    ? `No ${layer} evidence — the Run was cut short before calls were observed.`
-    : `No ${layer} calls observed in this Run.`;
-  const title = state === "unknown" ? unknownTitle : CAPABILITY_TITLE[state];
-  return <span className="badge" title={layer + ": " + title}>{layer} {CAPABILITY_LABEL[state]}</span>;
+// Three capability states (PRD §8): observed | unavailable | unknown. Unknown remains pending while a
+// Run is live; only an ended Run can say it was cut short. Short badge copy; long form in `title`.
+function CapabilityBadge({ layer, state, status }: {
+  layer: "model" | "tool";
+  state: "observed" | "unavailable" | "unknown";
+  status: TraceView["summary"]["status"];
+}) {
+  const copy = capabilityCopy(state, status);
+  return <span className="badge" title={layer + ": " + copy.title}>{layer} {copy.label}</span>;
 }
 
 interface Props {
@@ -61,6 +59,7 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
   const redactedSpans = useMemo(() => new Set(view?.events.filter((e) => e.privacy.redacted).map((e) => e.spanId)), [view]);
   const expanded = useMemo(() => expandedState ?? (view ? defaultExpanded(view) : new Set<string>()), [expandedState, view]);
   const rows = useMemo(() => (view ? visibleRows(view.spans, expanded, filter) : []), [view, expanded, filter]);
+  const ticks = useMemo(() => timelineTicks(view?.summary.durationMs), [view?.summary.durationMs]);
   const rovingId = focusId && rows.some((r) => r.span.spanId === focusId) ? focusId : (rows[0]?.span.spanId ?? null);
 
   useEffect(() => {
@@ -146,7 +145,15 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
         <Field label="Start">{formatClock(summary.startedAt)}</Field>
         <Field label="Duration">{formatDuration(summary.durationMs)}{summary.endedReason === "server_restart" ? " observed · interrupted by restart" : ""}</Field>
         <Field label="Events">{summary.eventCount} · {summary.spanCount} spans</Field>
-        <Field label="Usage">{summary.usage ? formatUsage(summary.usage) : <span className="trace-muted">not observed</span>}</Field>
+        <Field label="Usage">{formatUsage(summary.usage)}</Field>
+        <Field label="Metrics">
+          {summary.metrics.toolCalls} tool calls · {summary.metrics.toolFailures} failed · {summary.metrics.modelCalls} model calls
+          {summary.metrics.retries > 0 ? ` · ${summary.metrics.retries} retries` : ""}
+          {summary.metrics.denials > 0 ? ` · ${summary.metrics.denials} denied` : ""}
+        </Field>
+        <Field label="Config hash">
+          <code title={run?.configSnapshot ? JSON.stringify(run.configSnapshot) : undefined}>{summary.configHash ?? run?.configHash ?? "—"}</code>
+        </Field>
         <Field label="Evidence" className="trace-evidence">
           <CapabilityBadge layer="model" state={summary.capabilities.model} status={summary.status} />
           <CapabilityBadge layer="tool" state={summary.capabilities.tool} status={summary.status} />
@@ -160,7 +167,7 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
       {failure && (
         <div className="error-banner trace-banner" aria-live="polite">
           <div>
-            <strong>First actionable {failure.kind}: {failure.name}</strong>
+            <strong>{failure.kind === "denied" ? "First denial" : "First actionable " + failure.kind}: {failure.name}</strong>
             <span className="trace-banner-meta">{failure.category} · {failure.component}{failure.message ? " · " + failure.message : ""}</span>
             <p className="trace-diagnosis">{failure.diagnosis}</p>
           </div>
@@ -195,10 +202,31 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
         )}
       </div>
 
+      {ticks.length > 0 && (
+        <div className="trace-axis" aria-hidden="true">
+          <span className="trace-axis-title">Timeline</span>
+          <span className="trace-axis-scale">
+            {ticks.map((tick, index) => (
+              <span
+                key={tick.milliseconds}
+                className={"trace-axis-tick" + (index === 0 ? " first" : index === ticks.length - 1 ? " last" : "")}
+                style={{ left: tick.percent + "%" }}
+              >
+                <span>{formatDuration(tick.milliseconds)}</span>
+              </span>
+            ))}
+          </span>
+        </div>
+      )}
+
       <div className="trace-tree" role="tree" aria-label="Spans">
         {rows.map((row, index) => {
           const s = row.span;
-          const geo = barGeometry(s, view);
+          const geo = barGeometry(s, view, s.parentSpanId ? byId.get(s.parentSpanId) : undefined);
+          const timingDescription = geo
+            ? `${s.name}: starts ${formatDuration(geo.startOffsetMs)} after Run start; ${geo.instant ? "instant event" : `duration ${formatDuration(geo.durationMs)}`}${geo.openEnded ? "; incomplete and open-ended" : ""}${geo.endsAfterParent ? "; ends after parent" : ""}.`
+            : undefined;
+          const timingId = `span-timing-${s.spanId}`;
           const failing = failure?.spanId === s.spanId;
           return (
             <div
@@ -208,9 +236,10 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
               aria-level={s.depth + 1}
               aria-expanded={row.hasChildren ? row.expanded : undefined}
               aria-selected={openId === s.spanId}
+              aria-describedby={timingDescription ? timingId : undefined}
               tabIndex={rovingId === s.spanId ? 0 : -1}
               className={"trace-row" + (failing ? " failing" : "") + (row.context ? " context" : "") + (openId === s.spanId ? " selected" : "")}
-              style={{ paddingLeft: 12 + s.depth * 18 }}
+              style={{ "--trace-indent": `${s.depth * 18}px` } as React.CSSProperties}
               onClick={() => { setFocusId(s.spanId); setOpenId(s.spanId); }}
               onKeyDown={(e) => onRowKey(e, index)}
             >
@@ -224,7 +253,7 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
               >
                 {row.hasChildren ? (row.expanded ? "▾" : "▸") : "·"}
               </button>
-              <span className={"status status-" + s.status}><span aria-hidden="true">{STATUS_ICON[s.status]}</span>{s.status}</span>
+              <span className={"status status-" + s.status}><span aria-hidden="true">{STATUS_ICON[s.status]}</span>{spanStatusLabel(s, summary.endedReason)}</span>
               <span className="trace-name">{s.name}</span>
               <span className="trace-cat">{s.category}</span>
               <span className="trace-badges">
@@ -232,10 +261,17 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
                 {!s.source.observed && <span className="badge">unavailable</span>}
                 {redactedSpans.has(s.spanId) && <span className="badge">redacted</span>}
               </span>
-              <span className="trace-bar" aria-hidden="true">
-                {geo && <span className={"trace-bar-fill fill-" + s.status} style={{ left: geo.left + "%", width: geo.width + "%" }} />}
+              <span className="trace-bar" title={timingDescription} aria-hidden="true">
+                {geo?.instant && <span className={"trace-bar-marker fill-" + s.status} style={{ left: geo.left + "%" }} />}
+                {geo && !geo.instant && (
+                  <span
+                    className={"trace-bar-fill fill-" + s.status + (geo.openEnded ? " open-ended" : "")}
+                    style={{ left: geo.left + "%", width: geo.width + "%" }}
+                  />
+                )}
               </span>
               <span className="trace-dur">{formatDuration(s.durationMs)}</span>
+              {timingDescription && <span id={timingId} className="sr-only">{timingDescription}</span>}
             </div>
           );
         })}
@@ -289,7 +325,7 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
       </div>
       <dl className="trace-summary">
         <Field label="Status">
-          <span className={"status status-" + span.status}><span aria-hidden="true">{STATUS_ICON[span.status]}</span>{span.status}</span>
+          <span className={"status status-" + span.status}><span aria-hidden="true">{STATUS_ICON[span.status]}</span>{view.summary.endedReason === "server_restart" && span.incomplete ? "interrupted by server restart (never closed)" : span.status}</span>
           {span.incomplete && <span className="badge badge-warn">incomplete</span>}
         </Field>
         <Field label="Span id">{span.spanId}</Field>
