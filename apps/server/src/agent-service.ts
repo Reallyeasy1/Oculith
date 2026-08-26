@@ -186,6 +186,10 @@ export class AgentService {
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
+  allRuns(): AgentRun[] {
+    return this.store.snapshot().runs;
+  }
+
   async sendMessage(
     agentId: string,
     prompt: string,
