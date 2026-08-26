@@ -73,6 +73,7 @@ describe("Agent lifecycle", () => {
 
     await service.updateAgent(agent.id, { instructions: "Skip tests" });
     const changed = (await service.sendMessage(agent.id, "third")).run;
+    await expect.poll(() => service.getRun(changed.id).status).toBe("completed");
     expect(changed.configHash).not.toBe(first.configHash);
     expect(changed.configSnapshot?.instructions).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(changed.configSnapshot?.instructions).not.toContain("Skip tests");
