@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import type { Agent, AgentRun, Message, RunListItem, SystemInfo } from "./types";
+import RunsView from "./RunsView";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -45,6 +46,8 @@ export default function App() {
   const [form, setForm] = useState(emptyForm);
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
+  const [runs, setRuns] = useState<RunListItem[]>([]);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -77,9 +80,14 @@ export default function App() {
     }
   }, []);
 
+  const refreshRuns = useCallback(async () => {
+    const result = await api.listRuns();
+    if (mountedRef.current) setRuns(result.runs);
+  }, []);
+
   const bootstrap = useCallback(async () => {
-    await Promise.all([refreshAgents(), api.system().then(setSystem)]);
-  }, [refreshAgents]);
+    await Promise.all([refreshAgents(), refreshRuns(), api.system().then(setSystem)]);
+  }, [refreshAgents, refreshRuns]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -208,10 +216,10 @@ export default function App() {
       while (mountedRef.current) {
         await new Promise((resolve) => window.setTimeout(resolve, 900));
         if (!mountedRef.current) return;
-        const result = await api.run(runId);
+        const [result] = await Promise.all([api.run(runId), refreshRuns()]);
         if (selectedIdRef.current === agentId) setActiveRun(result.run);
         if (!["queued", "running"].includes(result.run.status)) {
-          await Promise.all([refreshMessages(agentId), refreshAgents()]);
+          await Promise.all([refreshMessages(agentId), refreshAgents(), refreshRuns()]);
           return;
         }
       }
@@ -599,6 +607,17 @@ export default function App() {
               Create your first Agent
             </button>
           </div>
+        )}
+
+        <RunsView runs={runs} selectedRunId={selectedRunId} onOpenTrace={setSelectedRunId} />
+        {selectedRunId && (
+          // ponytail: placeholder until #32 mounts the trace detail here, keyed by selectedRunId
+          <section className="runs-view trace-stub" aria-live="polite">
+            <span className="eyebrow">Trace</span>
+            <h2>
+              <code>{selectedRunId}</code>
+            </h2>
+          </section>
         )}
       </main>
 

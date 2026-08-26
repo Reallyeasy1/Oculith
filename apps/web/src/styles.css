@@ -1096,3 +1096,123 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 }
+
+/* --- GlassBox Runs view (UX-01) --- */
+.runs-view {
+  max-width: 1180px;
+  margin: 18px auto 0;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  box-shadow: 0 12px 36px rgba(43, 42, 38, 0.06);
+  overflow: hidden;
+}
+
+.runs-view h2 {
+  margin: 3px 0 0;
+  font-size: 16px;
+}
+
+.runs-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.runs-filters .button {
+  padding: 5px 10px;
+  font-size: 11px;
+  text-transform: capitalize;
+}
+
+.runs-filters .button[aria-pressed="true"] {
+  background: var(--purple-soft);
+  border-color: var(--purple);
+  color: var(--purple-dark);
+}
+
+.runs-table-wrap {
+  overflow-x: auto;
+}
+
+.runs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.runs-table th,
+.runs-table td {
+  padding: 9px 14px;
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 1px solid #ecebe5;
+}
+
+.runs-table th {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.runs-table tbody tr {
+  cursor: pointer;
+}
+
+.runs-table tbody tr:hover,
+.runs-table tbody tr.selected {
+  background: var(--purple-soft);
+}
+
+.runs-table tbody tr:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: -2px;
+}
+
+.runs-empty {
+  margin: 0;
+  padding: 24px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.status-ok {
+  color: #277756;
+  background: #dcf2e9;
+}
+
+.status-running {
+  color: #5640bc;
+  background: #e8e4fb;
+}
+
+.status-timeout,
+.status-cancelled {
+  color: #8a6d1f;
+  background: #f6ecd2;
+}
+
+.badge {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.badge-warn {
+  color: #8a6d1f;
+  border-color: #e3cf95;
+  background: #f6ecd2;
+}
+
+.trace-stub {
+  padding: 17px 22px;
+}
