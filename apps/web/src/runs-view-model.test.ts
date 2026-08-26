@@ -7,7 +7,7 @@ import { liveRuns, matchesFilter, needsAttention, recoveredFailures, summarizeRu
 function run(status: TraceStatus, degraded = false, agentId = "a", agentName = "A", extra: Partial<RunListItem> = {}): RunListItem {
   return {
     runId: "r", traceId: "t", agentId, agentName, status, eventCount: 0, runtime: "x", model: "y", toolCalls: 0, toolFailures: 0,
-    capabilities: { model: "unknown", tool: "unknown" }, denials: 0, degraded, truncated: false, evicted: false, redacted: false, ...extra,
+    capabilities: { model: "unknown", tool: "unknown" }, denials: 0, actions: 0, degraded, truncated: false, evicted: false, redacted: false, ...extra,
   };
 }
 
@@ -60,6 +60,12 @@ describe("needsAttention", () => {
     expect(needsAttention(run("running", false, "a", "A", { toolFailures: 1 }))).toBe(true);
     expect(matchesFilter(run("ok", false, "a", "A", { toolFailures: 2 }), "attention")).toBe(true);
     expect(matchesFilter(run("ok", false, "a", "A", { toolFailures: 2 }), "failed")).toBe(false);
+  });
+
+  it("includes a denial even when the Run reached an otherwise successful terminal state", () => {
+    const denied = { ...run("ok"), denials: 1 };
+    expect(needsAttention(denied)).toBe(true);
+    expect(matchesFilter(denied, "attention")).toBe(true);
   });
 
   it("keeps the specific filters exact", () => {

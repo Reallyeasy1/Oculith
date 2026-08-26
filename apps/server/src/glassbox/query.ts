@@ -49,7 +49,9 @@ export type Capability = "observed" | "unavailable" | "unknown";
 export interface TraceView { summary: TraceSummary; spans: Span[]; events: ObservationEvent[] }
 
 const CATEGORY_RANK: Record<Category, number> = { tool: 0, model: 1, runtime: 2, workspace: 3, sandbox: 4, policy: 5, infrastructure: 6, control: 7, experience: 8 };
-const AUDIT_CATEGORIES = new Set<Category>(["control", "policy", "sandbox"]);
+// `tool` rows are the agent's own actions (actor agent/<id>, resource = program); without them the audit
+// could never attribute anything to the agent (#135).
+const AUDIT_CATEGORIES = new Set<Category>(["control", "policy", "sandbox", "tool"]);
 
 function auditOutcome(event: ObservationEvent): AuditOutcome {
   if (event.type === "policy.denied") return "denied";
@@ -158,6 +160,11 @@ function pathTo(spans: Map<string, Span>, spanId: string): string[] {
 const DEGRADED_FOCUS: FailureFocus = { kind: "degraded", spanId: "", eventId: "", sequence: -1, name: "telemetry.degraded", category: "control", component: "GlassBox", path: [], diagnosis: "Trace evidence is incomplete: the trace store was unavailable during this Run. The Run's real result is unaffected; some spans may be missing." };
 
 const EXIT_HINTS: Record<number, string> = {
+  2: "usage error, or the interpreter could not find the file",
+  124: "timed out — killed by the timeout wrapper",
+  126: "found but not executable — permissions or wrong interpreter",
+  127: "command not found — the program is missing from the runtime image",
+  130: "interrupted — SIGINT",
   137: "SIGKILL (timeout, cancellation, or out-of-memory termination)",
   3221225794: "process failed to initialise — the runtime CLI could not start; restart the server",
 };

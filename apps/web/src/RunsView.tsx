@@ -138,6 +138,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                   <span>{run.toolCalls}{run.toolFailures > 0 && <> · {run.toolFailures} failed</>}</span>{" "}
                   {run.redacted && <span className="badge">redacted</span>}
                   {run.denials > 0 && <span className="badge badge-warn">denied {run.denials}</span>}
+                  {run.actions > 0 && <span className="badge">actions {run.actions}</span>}
                   {run.degraded && <span className="badge badge-warn">degraded</span>}
                   {run.truncated && <span className="badge badge-warn">truncated</span>}
                   {run.evicted && <span className="badge badge-warn">evicted</span>}
