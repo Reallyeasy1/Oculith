@@ -257,7 +257,27 @@ What the automated suite proves and what it does not: the tests drive `AgentServ
 runner, so they cover the classification (timeout status, terminal event, first-failure focus,
 determinism across two Runs) but not the real process/container teardown. The real-runner span shape
 and its cleanup evidence (`runtime.codex.failed` with `terminationSignal`, `runtime.container.stopped`
-with `cleanup: "rm --force" | "signal"`) are verified by hand against a live Run before the demo.
+with `cleanup: "rm --force" | "signal"`) are covered by the E2E lane below, not by the unit suite.
+
+### Verification (E2E lane)
+
+`npm run test:e2e` (`scripts/e2e/run.sh`, bash) runs the judged configuration end to end: it goes through
+`scripts/start-local-poc.sh` (Docker runtime image, `NODE_ENV=production`, `RUNTIME_PROVIDER=container`,
+`ARK_*` from `.env` or `E2E_ENV_FILE`) with a throwaway state root under the temp dir, `PORT=${E2E_PORT:-3100}`
+and its own `RUNTIME_INSTANCE_ID`, so a live `npm run poc` on :3000 is never touched. The driver
+(`scripts/e2e/driver.cjs`, Playwright against installed Chrome) creates an Agent, runs a real model task, opens
+the trace from the Runs table by keyboard, walks the span tree, the drawer and its focus trap, applies the
+filters, checks export headers and byte-equality with `/trace`, restarts the server with
+`GLASSBOX_DEMO_FAILURE=timeout`, verifies the gated failure (first failing step `codex exec`, capabilities
+`unknown`, `cleanup: "rm --force"`, no `launchpad-*` container left), then sweeps seeded fake Ark/OpenAI/bearer/
+private-key strings (planted in the prompt and the Agent instructions) across every NDJSON file, `/api/runs`,
+`/trace`, `/events`, `/export`, the server log and the rendered GlassBox DOM, and prints append/query p95
+(bounds 200 ms / 500 ms). Playwright is deliberately not a dependency: run `npx -y playwright@1.60.0 --version`
+once and point `PLAYWRIGHT_DIR` at the npx cache directory it created (or set `NODE_PATH`). Expect 2–4 minutes;
+state is kept on failure and its path printed. Two manual steps complete the regression: run
+`npm run check` from a clean clone (`git clone … && npm ci && npm run check`) and the starter-kit acceptance
+flow (`baseline-verifier` agent). On Windows the single allowed `npm run check` failure is the `/tmp` path
+assertion in `container-codex-runner.test.ts` (see the Windows caveat in `CLAUDE.md`).
 
 ## Limitations
 
@@ -266,6 +286,7 @@ with `cleanup: "rm --force" | "signal"`) are verified by hand against a live Run
 - No `workspace.changed` events on this Codex/Ark stack: Ark shells out instead of calling `apply_patch`, so no `file_change` item has ever been observed (see [docs/CODEX_EVENTS.md](docs/CODEX_EVENTS.md)). The mapping exists but stays dormant rather than inventing a diff.
 - Redaction is a key denylist plus a bounded pattern scan. It is exact on structured attributes and best-effort on free text; a novel secret format in a command string can slip past, which is why the default capture policy is `metadata_only`.
 - `capability.unavailable` means "the runtime exposed no tool or model detail for this Run", not "the runtime has no tools". It is suppressed for cancelled and timed-out Runs, where the stream was cut short and its absence proves nothing.
+- The unit suite never runs the built server; the production-mode routes and the real Docker teardown are only proven by the [E2E lane](#verification-e2e-lane), which needs Docker, Chrome and an Ark key.
 
 ## Documentation
 
