@@ -61,7 +61,6 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
 }
 
 describe("Agent lifecycle", () => {
-<<<<<<< HEAD
   it("briefs new and existing Agents about disposable containers and host-side commands", async () => {
     const service = await makeService();
     const agent = await service.createAgent({ name: "Frontend Builder" });
@@ -80,7 +79,8 @@ describe("Agent lifecycle", () => {
     const refreshed = await readFile(instructionsPath, "utf8");
     for (const text of expected) expect(refreshed).toContain(text);
     expect(refreshed).toContain("This file is regenerated when the Agent configuration is updated.");
-=======
+  });
+
   it("stamps stable behavior configuration and changes the hash when instructions change", async () => {
     const service = await makeService();
     const agent = await service.createAgent({ name: "Versioned", instructions: "Run tests" });
@@ -114,7 +114,6 @@ describe("Agent lifecycle", () => {
       instructions: snapshot.instructions,
     } satisfies AgentConfigSnapshot;
     expect(configHash(reordered)).toBe(configHash(snapshot));
->>>>>>> origin/main
   });
 
   it("creates, updates, stops, starts and deletes an Agent", async () => {
