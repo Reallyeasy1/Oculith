@@ -105,7 +105,12 @@ export class MemoryTraceStore extends BaseTraceStore {
 }
 
 export class NdjsonTraceStore extends BaseTraceStore {
-  constructor(private readonly directory: string) { super(); }
+  /** `log` surfaces silently dropped lines: without it a schemaVersion bump would empty every trace
+   * and read as an empty history rather than as a migration the operator still has to do. */
+  constructor(
+    private readonly directory: string,
+    private readonly log?: ((message: string, meta: Record<string, unknown>) => void) | undefined,
+  ) { super(); }
   private file(runId: string): string { return path.join(this.directory, runId.replace(/[^a-zA-Z0-9_-]/g, "_") + ".ndjson"); }
 
   async initialize(): Promise<void> {
@@ -120,14 +125,21 @@ export class NdjsonTraceStore extends BaseTraceStore {
       }
     }
   }
+  /** Unparseable lines and lines that fail the schema are skipped, but never silently: the count is
+   * reported through `log` so a bad write or a schema migration is visible instead of looking empty. */
   private async parseFile(file: string): Promise<ObservationEvent[]> {
     let raw = "";
     try { raw = await readFile(file, "utf8"); } catch { return []; }
     const out: ObservationEvent[] = [];
+    let skipped = 0;
     for (const line of raw.split("\n")) {
       if (!line.trim()) continue;
-      try { const parsed = observationEventSchema.safeParse(JSON.parse(line)); if (parsed.success) out.push(parsed.data); } catch { /* corrupt line: skip */ }
+      try {
+        const parsed = observationEventSchema.safeParse(JSON.parse(line));
+        if (parsed.success) out.push(parsed.data); else skipped++;
+      } catch { skipped++; }
     }
+    if (skipped > 0) this.log?.("trace.lines_skipped", { file, skipped });
     return out;
   }
   protected async persist(event: ObservationEvent, line: string): Promise<void> {

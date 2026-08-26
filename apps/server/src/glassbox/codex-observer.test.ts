@@ -161,7 +161,7 @@ describe("CodexStreamObserver", () => {
     const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner");
     obs.onError("Reconnecting... 1/5");
     obs.onError("unexpected status 401 Unauthorized");
-    obs.finish(true);
+    obs.finish("error");
     await em.flush();
 
     const events = await store.readRun("run-1");
@@ -170,6 +170,20 @@ describe("CodexStreamObserver", () => {
       type: "codex_error",
       message: "unexpected status 401 Unauthorized",
     });
+  });
+
+  it("suppresses capability.unavailable on a run cut short, but still emits it on a normal finish", async () => {
+    const run = async (outcome: "ok" | "timeout" | "cancelled") => {
+      const store = new MemoryTraceStore();
+      const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+      // No tool or model line was ever seen — the only question is whether that is evidence.
+      new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner").finish(outcome);
+      await em.flush();
+      return (await store.readRun("run-1")).map((e) => e.type);
+    };
+    expect(await run("timeout")).toEqual([]);
+    expect(await run("cancelled")).toEqual([]);
+    expect(await run("ok")).toEqual(["capability.unavailable"]);
   });
 
   it("drops the buffered stream error when the run succeeded", async () => {
@@ -191,7 +205,7 @@ const fixtureDir = path.join(process.cwd(), "..", "..", "fixtures", "codex-strea
 const feed = async (
   name: string,
   capturePolicy: "metadata_only" | "safe_summary",
-  failed = false,
+  outcome: "ok" | "error" | "cancelled" | "timeout" = "ok",
 ) => {
   const store = new MemoryTraceStore();
   const em = new ObservationEmitter({ store, capturePolicy });
@@ -200,7 +214,7 @@ const feed = async (
   for (const line of readFileSync(path.join(fixtureDir, name), "utf8").split(/\r?\n/)) {
     if (line.trim()) parseCodexEventLine(line, p, obs);
   }
-  obs.finish(failed);
+  obs.finish(outcome);
   await em.flush();
   return { events: await store.readRun("run-1"), parsed: p, obs };
 };
@@ -232,7 +246,7 @@ describe.skipIf(!existsSync(fixtureDir))("CodexStreamObserver against real captu
   });
 
   it("codex-0.111-turn-failed.jsonl degrades to capability.unavailable plus one error.recorded", async () => {
-    const { events, parsed: p } = await feed("codex-0.111-turn-failed.jsonl", "metadata_only", true);
+    const { events, parsed: p } = await feed("codex-0.111-turn-failed.jsonl", "metadata_only", "error");
     const types = events.map((e) => e.type);
     expect(types).toContain("capability.unavailable");
     expect(types.filter((t) => t === "error.recorded")).toHaveLength(1);

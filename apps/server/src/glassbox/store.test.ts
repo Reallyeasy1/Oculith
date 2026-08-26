@@ -66,12 +66,20 @@ describe("NdjsonTraceStore persistence", () => {
     expect((await b.readRun("run-1")).length).toBe(2);
     expect(b.listRuns()).toEqual(a.listRuns());
   });
-  it("ignores a corrupt line without losing the rest", async () => {
+  it("ignores a corrupt line without losing the rest, and reports it instead of dropping it silently", async () => {
     const dir = path.join(await tmp(), "traces");
     const a = new NdjsonTraceStore(dir); await a.initialize(); await a.append(ev(1));
     await writeFile(path.join(dir, "run-1.ndjson"), (await readFile(path.join(dir, "run-1.ndjson"), "utf8")) + "{not json\n");
-    const b = new NdjsonTraceStore(dir); await b.initialize();
+    const logged: Array<[string, Record<string, unknown>]> = [];
+    const b = new NdjsonTraceStore(dir, (message, meta) => logged.push([message, meta]));
+    await b.initialize();
+    expect(logged).toHaveLength(1);
+    expect(logged[0]![0]).toBe("trace.lines_skipped");
+    expect(logged[0]![1]).toMatchObject({ skipped: 1 });
+    expect(String(logged[0]![1].file)).toContain("run-1.ndjson");
+    // readRun re-parses the same file, so it reports the skip again rather than hiding it.
     expect((await b.readRun("run-1")).length).toBe(1);
+    expect(logged).toHaveLength(2);
   });
   it("restores the truncated flag on rebuild", async () => {
     const dir = path.join(await tmp(), "traces");
@@ -91,12 +99,14 @@ describe("NdjsonTraceStore persistence", () => {
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ runId: "run:1", traceId: "trc_a" });
   });
-  it("append p95 stays under 20ms for 100 events", async () => {
+  it("append p95 stays under 200ms for 100 events", async () => {
+    // Regression guard against an O(n) or fsync-per-event regression, not a latency SLO: the
+    // threshold is deliberately loose so a loaded parallel suite on a slow disk can't turn it red.
     const store = new NdjsonTraceStore(path.join(await tmp(), "traces")); await store.initialize();
     const times: number[] = [];
     for (let i = 1; i <= 100; i++) { const t = performance.now(); await store.append(ev(i)); times.push(performance.now() - t); }
     times.sort((x, y) => x - y);
-    expect(times[Math.floor(times.length * 0.95)]!).toBeLessThan(20);
+    expect(times[Math.floor(times.length * 0.95)]!).toBeLessThan(200);
   });
 });
 

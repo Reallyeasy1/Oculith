@@ -14,12 +14,14 @@ await writeCodexConfig(config);
 const store = new JsonStore(path.join(config.dataDirectory, "launchpad.json"));
 const workspaces = new WorkspaceManager(config.workspaceRoot);
 
-const traceStore = new NdjsonTraceStore(config.traceDirectory);
+const glassboxLog = (message: string, meta: Record<string, unknown>) =>
+  console.warn("[glassbox]", message, JSON.stringify(meta));
+const traceStore = new NdjsonTraceStore(config.traceDirectory, glassboxLog);
 await traceStore.initialize();
 const emitter = new ObservationEmitter({
   store: traceStore,
   capturePolicy: config.glassboxCapturePolicy,
-  log: (message, meta) => console.warn("[glassbox]", message, JSON.stringify(meta)),
+  log: glassboxLog,
 });
 // Resume sequence numbering across a restart so a trace file stays monotonic.
 for (const entry of traceStore.listRuns()) emitter.seedSequence(entry.traceId, entry.lastSequence);

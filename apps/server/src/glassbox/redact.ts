@@ -10,6 +10,12 @@ export interface RedactOptions {
 // word to end the key (so "total_tokens"/"input_tokens" survive while "access_token"/"x-api-key" don't).
 const DENY_KEY = /^(?:[a-z0-9]+[_-])*(authorization|api[_-]?key|token|secret|password|cookie|private[_-]?key)$/i;
 
+/** camelCase keys carry the same words without a separator, so the prefix alternation above can't see
+ * the boundary ("accessToken" is one word to the regex). Testing the snake_cased form as well catches
+ * them without loosening the rule: "inputTokens" still splits to "input_tokens" and survives (plural). */
+const isDenied = (key: string): boolean =>
+  DENY_KEY.test(key) || DENY_KEY.test(key.replace(/([a-z0-9])([A-Z])/g, "$1_$2"));
+
 const PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
   // No trailing "|$" alternative would miss a PEM body truncated before its END marker (e.g. by output caps);
   // falling back to end-of-string keeps the body from shipping in cleartext.
@@ -45,7 +51,7 @@ export function redactEvent(event: ObservationEvent, options: RedactOptions): Ob
   const extra = options.extraPatterns ?? [];
   const attributes: ObservationEvent["attributes"] = {};
   for (const [key, value] of Object.entries(event.attributes)) {
-    if (DENY_KEY.test(key)) { rules.add("denylist_key"); continue; }
+    if (isDenied(key)) { rules.add("denylist_key"); continue; }
     if (typeof value === "string") {
       const r = redactText(value, extra); r.rules.forEach((x) => rules.add(x)); attributes[key] = r.text;
     } else attributes[key] = value;

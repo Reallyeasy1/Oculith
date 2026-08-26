@@ -253,9 +253,14 @@ export class CodexRunner implements AgentRunner {
         parseCodexEventLine(stdout.trim(), parsed, observer);
       }
       const output = parsed.messages.at(-1)?.trim();
-      const failed =
-        active.cancelled || active.timedOut || active.outputExceeded || exitCode !== 0 || !output;
-      observer?.finish(failed);
+      const outcome = active.cancelled
+        ? "cancelled"
+        : active.timedOut
+          ? "timeout"
+          : active.outputExceeded || exitCode !== 0 || !output
+            ? "error"
+            : "ok";
+      observer?.finish(outcome);
       spanEnded = span !== undefined;
       // Observed only: the real exit code (null when a signal killed it) and the real signal.
       const endAttrs = {
@@ -335,7 +340,7 @@ export class CodexRunner implements AgentRunner {
     } catch (error) {
       // Only reached when the spawn itself failed (the branches above end the span first).
       if (span && !spanEnded) {
-        observer?.finish(true);
+        observer?.finish("error");
         span.end("error", {
           type: "runtime.codex.failed",
           error: { type: "spawn_failed", message: String(error).slice(0, 2048) },

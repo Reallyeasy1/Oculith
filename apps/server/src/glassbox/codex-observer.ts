@@ -161,11 +161,14 @@ export class CodexStreamObserver implements CodexStreamSink {
     this.lastError = message;
   }
 
-  /** Call once when the stream is done. `failed` releases the buffered stream error as one event. */
-  finish(failed = false): void {
+  /** Call once when the stream is done, with the run's real outcome. A non-`ok` outcome releases the
+   * buffered stream error as one event. `capability.unavailable` is only honest for a run that ran to
+   * its own conclusion: a cancelled or timed-out stream was cut short, so the absence of tool/model
+   * evidence says nothing about what the runtime exposes (invariant 3 — never fabricate evidence). */
+  finish(outcome: "ok" | "error" | "cancelled" | "timeout" = "ok"): void {
     if (this.finished) return;
     this.finished = true;
-    if (failed && this.lastError) {
+    if (outcome !== "ok" && this.lastError) {
       this.emitter.emit({
         ...this.base("error.recorded", "codex.error"),
         category: "runtime",
@@ -173,7 +176,7 @@ export class CodexStreamObserver implements CodexStreamSink {
         error: { type: "codex_error", message: this.lastError.slice(0, 2048) },
       });
     }
-    if (!this.sawTool && !this.sawModel) {
+    if (!this.sawTool && !this.sawModel && (outcome === "ok" || outcome === "error")) {
       this.emitter.emit({
         ...this.base("capability.unavailable", "capability.unavailable"),
         category: "runtime",

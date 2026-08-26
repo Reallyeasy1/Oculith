@@ -299,9 +299,14 @@ export class ContainerCodexRunner implements AgentRunner {
       });
       if (stdout.trim()) parseCodexEventLine(stdout.trim(), parsed, observer);
       const output = parsed.messages.at(-1)?.trim();
-      const failed =
-        active.cancelled || active.timedOut || active.outputExceeded || exitCode !== 0 || !output;
-      observer?.finish(failed);
+      const outcome = active.cancelled
+        ? "cancelled"
+        : active.timedOut
+          ? "timeout"
+          : active.outputExceeded || exitCode !== 0 || !output
+            ? "error"
+            : "ok";
+      observer?.finish(outcome);
       if (active.cancelled) {
         endSpans("cancelled", { type: "cancelled", message: "Run cancelled" });
         throw new RunCancelledError();
@@ -345,7 +350,7 @@ export class ContainerCodexRunner implements AgentRunner {
     } catch (error) {
       // Only reached when the engine itself failed to spawn (the branches above end the spans).
       if (span && !spanEnded) {
-        observer?.finish(true);
+        observer?.finish("error");
         endSpans("error", { type: "spawn_failed", message: String(error).slice(0, 2048) });
       }
       throw error;
