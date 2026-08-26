@@ -19,9 +19,11 @@ export interface TraceSummary {
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
   evicted: boolean;
   usage?: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number } | undefined;
-  capabilities: { model: "observed" | "unavailable"; tool: "observed" | "unavailable" };
+  /** `unknown` = no evidence either way (run cut short before the stream said anything) — never claim `unavailable` from absence. */
+  capabilities: { model: Capability; tool: Capability };
   firstFailingStep?: string | undefined; failure?: FailureFocus | undefined;
 }
+export type Capability = "observed" | "unavailable" | "unknown";
 export interface TraceView { summary: TraceSummary; spans: Span[]; events: ObservationEvent[] }
 
 const CATEGORY_RANK: Record<Category, number> = { tool: 0, model: 1, runtime: 2, workspace: 3, sandbox: 4, policy: 5, infrastructure: 6, control: 7, experience: 8 };
@@ -153,6 +155,7 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
   const truncated = opts.truncated === true || events.some((e) => e.type === "trace.truncated");
   const evicted = events.some(isEvictionMarker);
   const failure = focusFailure(events, spans, status, degraded, durationMs);
+  const declaredUnavailable = events.some((e) => e.type === "capability.unavailable");
   const summary: TraceSummary = {
     schemaVersion: SCHEMA_VERSION, capturePolicy: opts.capturePolicy,
     runId: first?.runId ?? "", traceId: first?.traceId ?? "", agentId: first?.agentId ?? "",
@@ -160,7 +163,7 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
     status, startedAt, endedAt, durationMs, eventCount: events.length, spanCount: flat.length,
     incompleteSpans: flat.filter((s) => s.incomplete).length, redactedEvents: events.filter((e) => e.privacy.redacted).length,
     degraded, truncated, evicted, usage,
-    capabilities: { model: events.some((e) => e.category === "model") ? "observed" : "unavailable", tool: events.some((e) => e.category === "tool") ? "observed" : "unavailable" },
+    capabilities: { model: events.some((e) => e.category === "model") ? "observed" : declaredUnavailable ? "unavailable" : "unknown", tool: events.some((e) => e.category === "tool") ? "observed" : declaredUnavailable ? "unavailable" : "unknown" },
     firstFailingStep: failure && failure.kind !== "degraded" ? failure.name : undefined, failure,
   };
   return { summary, spans: tree, events };

@@ -91,6 +91,16 @@ describe("buildTrace", () => {
     expect(summary.failure?.kind).toBe("degraded");
     expect(summary.firstFailingStep).toBeUndefined();
   });
+  it("cut short before any stream event => capabilities unknown, never unavailable (invariant 3)", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "runtime.codex.failed", category: "runtime", spanId: "rt", phase: "end", status: "timeout", error: { type: "timeout", message: "Runtime timed out after 3000 ms" } }),
+      ev({ type: "run.timed_out", category: "control", spanId: "rd", parentSpanId: "svc", status: "timeout" })];
+    const v = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(v.summary.status).toBe("timeout");
+    expect(v.summary.capabilities).toEqual({ model: "unknown", tool: "unknown" });
+  });
+
   it("no model/tool events => capabilities unavailable; degraded flag surfaces", () => {
     seq = 0;
     const events = [root(), svcStart(), rtStart(),

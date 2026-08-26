@@ -15,6 +15,9 @@ import {
   type TraceFilter,
 } from "./trace-view-model";
 
+// "unknown" = the run was cut short before the stream said anything; it is not a capability gap.
+const CAPABILITY_LABEL = { observed: "observed", unavailable: "unavailable", unknown: "not observed" } as const;
+
 interface Props {
   runId: string;
   /** Runs-list row for this Run (agent name, runtime, model live there, not on TraceSummary). */
@@ -129,8 +132,8 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
         <Field label="Events">{summary.eventCount} · {summary.spanCount} spans</Field>
         <Field label="Usage">{formatUsage(summary.usage)}</Field>
         <Field label="Trust">
-          <span className="badge">model {summary.capabilities.model}</span>
-          <span className="badge">tool {summary.capabilities.tool}</span>
+          <span className="badge">model {CAPABILITY_LABEL[summary.capabilities.model]}</span>
+          <span className="badge">tool {CAPABILITY_LABEL[summary.capabilities.tool]}</span>
           {summary.redactedEvents > 0 && <span className="badge">redacted {summary.redactedEvents}</span>}
           {summary.truncated && <span className="badge badge-warn">truncated</span>}
           {summary.degraded && <span className="badge badge-warn">degraded</span>}

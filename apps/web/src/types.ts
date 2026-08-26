@@ -116,7 +116,7 @@ export interface TraceSummary {
     cachedInputTokens?: number;
     outputTokens?: number;
   };
-  capabilities: { model: "observed" | "unavailable"; tool: "observed" | "unavailable" };
+  capabilities: { model: "observed" | "unavailable" | "unknown"; tool: "observed" | "unavailable" | "unknown" };
   firstFailingStep?: string;
   failure?: FailureFocus;
 }
