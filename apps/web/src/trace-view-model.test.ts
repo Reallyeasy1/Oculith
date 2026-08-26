@@ -3,7 +3,7 @@
 // (vitest is hoisted from the server workspace — no new dependency.)
 import { describe, expect, it } from "vitest";
 import type { Span, TraceView } from "./types";
-import { EMPTY_FILTER, barGeometry, defaultExpanded, matchesSpan, visibleRows } from "./trace-view-model";
+import { EMPTY_FILTER, barGeometry, defaultExpanded, matchesSpan, spanStatusLabel, visibleRows } from "./trace-view-model";
 
 const t0 = "2026-08-26T10:00:00.000Z";
 const at = (ms: number) => new Date(Date.parse(t0) + ms).toISOString();
@@ -61,5 +61,11 @@ describe("trace-view-model", () => {
   it("bar geometry is relative to the run duration", () => {
     expect(barGeometry(a1, view)).toEqual({ left: 50, width: 20 });
     expect(barGeometry(root, { ...view, summary: { ...view.summary, durationMs: undefined } })).toBeUndefined();
+  });
+
+  it("labels only restart-incomplete spans as interrupted", () => {
+    expect(spanStatusLabel({ status: "running", incomplete: true }, "server_restart")).toBe("interrupted");
+    expect(spanStatusLabel({ status: "running", incomplete: true })).toBe("running");
+    expect(spanStatusLabel({ status: "cancelled", incomplete: false }, "server_restart")).toBe("cancelled");
   });
 });

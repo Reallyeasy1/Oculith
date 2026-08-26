@@ -37,6 +37,7 @@ export interface AgentRun {
   } | null;
   createdAt: string;
   traceId?: string;
+  traceParentSpanId?: string;
 }
 
 // --- GlassBox query types (mirrors apps/server/src/glassbox/{schema,query}.ts) ---

@@ -19,6 +19,10 @@ export const STATUSES: TraceStatus[] = ["running", "ok", "error", "cancelled", "
 
 export const DRAWER_EVENT_CAP = 200;
 
+export function spanStatusLabel(span: Pick<Span, "status" | "incomplete">, endedReason?: "server_restart"): string {
+  return endedReason === "server_restart" && span.incomplete ? "interrupted" : span.status;
+}
+
 export function isFilterActive(f: TraceFilter): boolean {
   return f.category !== "" || f.status !== "" || f.text.trim() !== "" || f.errorsOnly;
 }

@@ -11,6 +11,7 @@ import {
   formatAttribute,
   indexSpans,
   isFilterActive,
+  spanStatusLabel,
   visibleRows,
   type TraceFilter,
 } from "./trace-view-model";
@@ -221,7 +222,7 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
               >
                 {row.hasChildren ? (row.expanded ? "▾" : "▸") : "·"}
               </button>
-              <span className={"status status-" + s.status}><span aria-hidden="true">{STATUS_ICON[s.status]}</span>{s.status}</span>
+              <span className={"status status-" + s.status}><span aria-hidden="true">{STATUS_ICON[s.status]}</span>{spanStatusLabel(s, summary.endedReason)}</span>
               <span className="trace-name">{s.name}</span>
               <span className="trace-cat">{s.category}</span>
               <span className="trace-badges">
@@ -286,7 +287,7 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
       </div>
       <dl className="trace-summary">
         <Field label="Status">
-          <span className={"status status-" + span.status}><span aria-hidden="true">{STATUS_ICON[span.status]}</span>{span.status}</span>
+          <span className={"status status-" + span.status}><span aria-hidden="true">{STATUS_ICON[span.status]}</span>{view.summary.endedReason === "server_restart" && span.incomplete ? "interrupted by server restart (never closed)" : span.status}</span>
           {span.incomplete && <span className="badge badge-warn">incomplete</span>}
         </Field>
         <Field label="Span id">{span.spanId}</Field>
