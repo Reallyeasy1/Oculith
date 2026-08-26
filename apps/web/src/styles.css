@@ -392,6 +392,13 @@ button {
   margin: 0;
 }
 
+.runtime-connecting {
+  max-width: 1180px;
+  margin: 0 auto 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .config-banner p {
   font-size: 10px;
   margin-top: 2px;
@@ -1176,6 +1183,11 @@ textarea:focus {
   padding: 24px;
   color: var(--muted);
   font-size: 13px;
+}
+
+.runs-empty-action {
+  margin-left: 8px;
+  padding: 4px 8px;
 }
 
 .status-ok {
