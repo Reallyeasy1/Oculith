@@ -9,6 +9,7 @@ import { JsonStore } from "../store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "../types.js";
 import { WorkspaceManager } from "../workspace.js";
 import { ObservationEmitter } from "./emitter.js";
+import { newId } from "./schema.js";
 import { NdjsonTraceStore, type TraceStore } from "./store.js";
 
 // Runtime-built fakes — never commit key-shaped literals (GitHub push protection scans file contents).
@@ -164,8 +165,12 @@ describe("FR-11 gated failure fixture", () => {
 
 describe("AC-06 restart", () => {
   it("rebuilds the index and the interrupted Run reads as cancelled with incomplete spans", async () => {
+    // Opens a runtime span like the real runners do, then never returns — the restart must cut it off.
     const hang: AgentRunner = {
-      run: () => new Promise<RunnerResult>(() => undefined),
+      run: (request) => {
+        h.emitter.startSpan({ ...request.trace!, spanId: newId("spn"), type: "runtime.codex.started", category: "runtime", name: "codex exec", source: { component: "AgentRunner", observed: true } });
+        return new Promise<RunnerResult>(() => undefined);
+      },
       async cancel() { return false; },
       async isAvailable() { return true; },
     };
@@ -195,6 +200,16 @@ describe("AC-06 restart", () => {
     expect(view.summary.incompleteSpans).toBeGreaterThan(0);
     expect(view.events.at(-1).attributes.reason).toBe("server_restart");
     expect(view.events.map((e: { sequence: number }) => e.sequence)).toEqual([...view.events.keys()]);
+    // Focus lands on the runtime span the restart cut off, not the synthetic cancel; the clock stops at the last observed event.
+    expect(view.summary.failure.name).toBe("codex exec");
+    expect(view.summary.failure.category).toBe("runtime");
+    expect(view.summary.failure.path.at(-1)).toBe(view.summary.failure.spanId);
+    expect(view.summary.failure.path.length).toBeGreaterThan(1);
+    expect(view.summary.firstFailingStep).toBe("codex exec");
+    expect(view.summary.failure.diagnosis).toContain("interrupted by a server restart");
+    expect(view.summary.endedReason).toBe("server_restart");
+    expect(view.summary.endedAt).toBe(view.events.at(-1).timestamp);
+    expect(view.summary.durationMs).toBe(Date.parse(view.events.at(-2).timestamp) - Date.parse(view.events[0].timestamp));
     await app2.close();
   });
 });
