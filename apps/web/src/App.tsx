@@ -73,6 +73,14 @@ export default function App() {
   selectedRunIdRef.current = selectedRunId;
   viewRef.current = view;
 
+  const closeTrace = useCallback(() => {
+    const runId = selectedRunIdRef.current;
+    setSelectedRunId(null);
+    if (runId) {
+      requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-run-id="${runId}"]`)?.focus());
+    }
+  }, []);
+
   const selected = useMemo(
     () => agents.find((agent) => agent.id === selectedId) ?? null,
     [agents, selectedId],
@@ -697,7 +705,7 @@ export default function App() {
             runId={selectedRunId}
             run={runs.find((run) => run.runId === selectedRunId)}
             view={trace}
-            onClose={() => setSelectedRunId(null)}
+            onClose={closeTrace}
           />
         )}
         {/* runs are server-scoped already; the filter only keeps another Agent's rows out of the DOM across a switch */}

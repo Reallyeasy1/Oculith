@@ -70,6 +70,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
             {visible.map((run) => (
               <tr
                 key={run.runId}
+                data-run-id={run.runId}
                 tabIndex={0}
                 role="button"
                 className={run.runId === selectedRunId ? "selected" : undefined}
