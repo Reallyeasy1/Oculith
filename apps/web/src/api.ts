@@ -78,9 +78,9 @@ export const api = {
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
-  listRuns: () =>
+  listRuns: (options: { agentId?: string; limit?: number } = {}) =>
     request<{ schemaVersion: string; capturePolicy: CapturePolicy; runs: RunListItem[] }>(
-      "/api/runs?limit=100",
+      "/api/runs?" + new URLSearchParams({ limit: String(options.limit ?? 100), ...(options.agentId ? { agentId: options.agentId } : {}) }),
     ),
   trace: (runId: string) => request<TraceView>("/api/runs/" + runId + "/trace"),
 };

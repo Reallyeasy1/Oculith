@@ -13,6 +13,32 @@ export function needsAttention(run: RunListItem): boolean {
   return run.degraded || run.status === "error" || run.status === "timeout" || run.status === "cancelled";
 }
 
+export interface RunsSummary {
+  total: number;
+  ok: number;
+  attention: number;
+  running: number;
+  agents: { agentId: string; name: string; count: number; attention: number }[];
+}
+
+/** Overview strip (#70): pure counts over the API's `status`/`degraded` — nothing is inferred client-side. */
+export function summarizeRuns(runs: RunListItem[]): RunsSummary {
+  const byAgent = new Map<string, RunsSummary["agents"][number]>();
+  const summary: RunsSummary = { total: runs.length, ok: 0, attention: 0, running: 0, agents: [] };
+  for (const run of runs) {
+    const bad = needsAttention(run);
+    if (run.status === "ok") summary.ok++;
+    if (run.status === "running") summary.running++;
+    if (bad) summary.attention++;
+    const agent = byAgent.get(run.agentId) ?? { agentId: run.agentId, name: run.agentName || run.agentId, count: 0, attention: 0 };
+    agent.count++;
+    if (bad) agent.attention++;
+    byAgent.set(run.agentId, agent);
+  }
+  summary.agents = [...byAgent.values()].sort((a, b) => a.name.localeCompare(b.name));
+  return summary;
+}
+
 // Text glyphs so status never relies on colour alone.
 export const STATUS_ICON: Record<TraceStatus, string> = {
   running: "◌",

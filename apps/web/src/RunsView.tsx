@@ -16,9 +16,13 @@ interface Props {
   runs: RunListItem[];
   selectedRunId: string | null;
   onOpenTrace: (runId: string) => void;
+  /** Agent column; off in the per-Agent view where every row belongs to the same Agent (#70). */
+  showAgent?: boolean;
+  title?: string;
+  emptyText?: string;
 }
 
-export default function RunsView({ runs, selectedRunId, onOpenTrace }: Props) {
+export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent = true, title = "Runs", emptyText = "No Runs observed yet." }: Props) {
   const [filter, setFilter] = useState<QuickFilter>("attention");
   const visible = useMemo(
     () => sortNewestFirst(runs).filter((run) => matchesFilter(run, filter)),
@@ -30,7 +34,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace }: Props) {
       <div className="playground-topbar">
         <div>
           <span className="eyebrow">GlassBox</span>
-          <h2 id="runs-heading">Runs</h2>
+          <h2 id="runs-heading">{title}</h2>
         </div>
         <div className="runs-filters" role="group" aria-label="Quick filters">
           {QUICK_FILTERS.map((item) => (
@@ -51,7 +55,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace }: Props) {
           <thead>
             <tr>
               <th scope="col">Status</th>
-              <th scope="col">Agent</th>
+              {showAgent && <th scope="col">Agent</th>}
               <th scope="col">Start</th>
               <th scope="col">Duration</th>
               <th scope="col">First failing step</th>
@@ -83,7 +87,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace }: Props) {
                     {run.status}
                   </span>
                 </td>
-                <td>{run.agentName || run.agentId}</td>
+                {showAgent && <td>{run.agentName || run.agentId}</td>}
                 <td>{formatClock(run.startedAt)}</td>
                 <td>{formatDuration(run.durationMs)}{run.endedReason === "server_restart" ? " until restart" : ""}</td>
                 <td>{run.firstFailingStep ?? "—"}</td>
@@ -103,7 +107,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace }: Props) {
         </table>
         {visible.length === 0 && (
           <p className="runs-empty">
-            {runs.length === 0 ? "No Runs observed yet." : filter === "attention" ? "Nothing needs attention." : "No Runs match this filter."}
+            {runs.length === 0 ? emptyText : filter === "attention" ? "Nothing needs attention." : "No Runs match this filter."}
           </p>
         )}
       </div>
