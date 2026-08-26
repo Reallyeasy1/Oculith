@@ -1225,6 +1225,46 @@ textarea:focus {
   background: #f6ecd2;
 }
 
+.badge-recovered {
+  margin-left: 6px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* "Live now" strip (#131): running Runs above the table, whatever the quick filter says. */
+.live-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.live-run {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--purple);
+  border-radius: 12px;
+  background: var(--purple-soft);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.live-run:hover,
+.live-run.selected {
+  background: #e8e4fb;
+}
+
+.live-run:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: 2px;
+}
+
 .badge-error {
   color: #ac4343;
   border-color: #e8b4ae;

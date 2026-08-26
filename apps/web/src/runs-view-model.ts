@@ -8,9 +8,19 @@ export const QUICK_FILTERS: QuickFilter[] = ["attention", "all", "failed", "runn
 
 export const FILTER_LABEL: Partial<Record<QuickFilter, string>> = { attention: "Needs attention", timeout: "Timed out" };
 
-/** error ∪ timeout ∪ cancelled ∪ degraded ∪ denial — the default Runs filter (issue #35). */
+/** Tool failures + denials an ok Run worked around (#131); 0 unless the Run ended ok. */
+export function recoveredFailures(run: RunListItem): number {
+  return run.status === "ok" ? run.toolFailures + run.denials : 0;
+}
+
+/** error ∪ timeout ∪ cancelled ∪ degraded ∪ any tool failure/denial — the default Runs filter (#35, #131). */
 export function needsAttention(run: RunListItem): boolean {
-  return run.denials > 0 || run.degraded || run.status === "error" || run.status === "timeout" || run.status === "cancelled";
+  return run.degraded || run.toolFailures > 0 || run.denials > 0 || run.status === "error" || run.status === "timeout" || run.status === "cancelled";
+}
+
+/** Running Runs, newest first — the "Live now" strip, independent of the quick filter (#131). */
+export function liveRuns(runs: RunListItem[]): RunListItem[] {
+  return sortNewestFirst(runs.filter((run) => run.status === "running"));
 }
 
 export interface RunsSummary {
@@ -18,17 +28,20 @@ export interface RunsSummary {
   ok: number;
   attention: number;
   running: number;
+  /** ok Runs that had tool failures or denials along the way. */
+  recovered: number;
   agents: { agentId: string; name: string; count: number; attention: number }[];
 }
 
 /** Overview strip (#70): pure counts over the API's `status`/`degraded` — nothing is inferred client-side. */
 export function summarizeRuns(runs: RunListItem[]): RunsSummary {
   const byAgent = new Map<string, RunsSummary["agents"][number]>();
-  const summary: RunsSummary = { total: runs.length, ok: 0, attention: 0, running: 0, agents: [] };
+  const summary: RunsSummary = { total: runs.length, ok: 0, attention: 0, running: 0, recovered: 0, agents: [] };
   for (const run of runs) {
     const bad = needsAttention(run);
     if (run.status === "ok") summary.ok++;
     if (run.status === "running") summary.running++;
+    if (recoveredFailures(run) > 0) summary.recovered++;
     if (bad) summary.attention++;
     const agent = byAgent.get(run.agentId) ?? { agentId: run.agentId, name: run.agentName || run.agentId, count: 0, attention: 0 };
     agent.count++;
