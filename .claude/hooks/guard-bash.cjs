@@ -93,8 +93,10 @@ process.stdin.on("end", () => {
       /* best effort */
     }
   };
-  const ownerOverride = /OCULITH_OWNER_OVERRIDE=1/.test(cmd);
-  const claimOverride = /OCULITH_CLAIM_OVERRIDE=1/.test(cmd);
+  // Overrides count only as leading env assignments (`OCULITH_OWNER_OVERRIDE=1 git commit …`), never when the token
+  // merely appears later in the command (a comment, an echo, a commit message).
+  const ownerOverride = /^\s*(?:\w+=\S+\s+)*OCULITH_OWNER_OVERRIDE=1\s+/.test(cmd);
+  const claimOverride = /^\s*(?:\w+=\S+\s+)*OCULITH_CLAIM_OVERRIDE=1\s+/.test(cmd);
   const now = new Date().toISOString();
   const issueOf = (branch) => branch?.match(/^(?:feat|fix|chore)\/(\d+)-/)?.[1];
 

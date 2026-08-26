@@ -42,6 +42,8 @@ expect 2 "$(run B 'git push origin HEAD:feat/1-thing')" "other session may not p
 expect 2 "$(run B 'git -C . commit -m x -- file')" "git -C prefix does not bypass ownership"
 expect 0 "$(run B 'OCULITH_OWNER_OVERRIDE=1 git commit -m x -- file')" "controller override is honoured"
 expect 2 "$(run B 'git switch -c feat/1-thing')" "other session may not recreate an owned branch"
+expect 2 "$(run B 'git commit -m \"OCULITH_OWNER_OVERRIDE=1 in a message\" -- file')" "override token inside the command text does not count"
+expect 2 "$(run B 'echo OCULITH_OWNER_OVERRIDE=1; git commit -m x -- file')" "override token in an earlier statement does not count"
 git -C "$tmp" switch -q -c chore/9-unowned
 expect 0 "$(run B 'git commit -m x -- file')" "first touch of an ownerless branch claims it"
 expect 2 "$(run A 'git commit -m x -- file')" "…and the previous session is now excluded"
