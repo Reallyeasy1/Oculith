@@ -78,6 +78,8 @@ Governing rule: **ship evidence before control.** Never cut redaction, real back
 
 Workflow per issue — **one issue = one branch = one PR**: `/start-issue N` (branches `feat/N-slug` from `origin/main`, or from the parent issue's branch when the work depends on it) → failing tests → implement → `npm run check` → privacy review if under the invariants rule → commits `Refs #N` / `Closes #N` (pathspec commits only, never `--amend`, never `git add -A`) → `/finish-issue N [--base <parent-branch>]` pushes the branch and opens the PR with `Closes #N`. Dependent issues stack their PRs on the parent branch; GitHub retargets them to `main` as parents merge (merge in order). Never push `main` directly; merging is the user's call. In a multi-agent sprint the controller opens each PR right after that task's review is clean, not at the end.
 
+Parallel sessions/agents (rule: `.claude/rules/parallel-work.md`): claim an issue before branching (`bash scripts/dev/claim-issue.sh N` → label `in-progress` + assignee; refuses claimed/closed/branch-exists), one issue = one branch = one worktree = one session (the hook records the creating session as the branch owner and blocks commits/pushes from any other session — `OCULITH_OWNER_OVERRIDE=1` only for a controller taking over a finished agent branch), PRs only via `/finish-issue` (blocked if the head already has a PR), merges only via `bash scripts/dev/merge-prs.sh <pr…>` (review-comment gate, retargets dependents before deleting the head branch; manual `gh pr merge` and `git push --delete` are blocked).
+
 ## Conventions worth knowing
 
 - Server TS is strict with `noUncheckedIndexedAccess` + `exactOptionalPropertyTypes` — optional fields are typed `x?: T | undefined` deliberately.
