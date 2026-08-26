@@ -62,6 +62,12 @@ expect 0 "$(run A 'bash scripts/dev/claim-issue.sh 7')" "session A claims issue 
 expect 2 "$(run B 'bash scripts/dev/claim-issue.sh 7')" "session B is blocked while A holds 7"
 expect 0 "$(run A 'bash scripts/dev/release-issue.sh 7 --abort')" "session A aborts 7"
 expect 0 "$(run B 'bash scripts/dev/claim-issue.sh 7')" "session B may claim 7 after the abort"
+expect 2 "$(run A 'bash scripts/dev/release-issue.sh 7 --abort')" "non-holder abort without override does not release"
+expect 0 "$(run A 'OCULITH_CLAIM_OVERRIDE=1 bash scripts/dev/release-issue.sh 7 --abort')" "controller override-abort is recognised with a leading env assignment"
+expect 0 "$(run A 'bash scripts/dev/claim-issue.sh 7')" "…and the issue is free again"
+expect 0 "$(run A "bash $tmp/scripts/dev/claim-issue.sh 8")" "absolute-path invocation counts as a claim"
+expect 0 "$(run A 'git rev-parse --git-dir 2>/dev/null')" "git rev-parse --git-dir is not a re-pointing form"
+expect 2 "$(run B 'git --no-pager -C wt commit -m x -- file')" "--no-pager -C does not bypass worktree ownership"
 # Merge discipline
 expect 2 "$(run A 'git push origin --delete feat/1-thing')" "manual remote branch delete is blocked"
 expect 2 "$(run A 'git push origin :feat/1-thing')" "refspec delete is blocked"

@@ -28,7 +28,7 @@ process.stdin.on("end", () => {
   let gitCwd = cwd;
   const cdTo = cmd.match(/^\s*cd\s+["']?([^\s"';&|]+)["']?\s*(?:&&|;)/)?.[1];
   if (cdTo) gitCwd = path.resolve(cwd, cdTo);
-  const dashC = cmd.match(/git\s+-C\s+["']?([^\s"';&|]+)/)?.[1];
+  const dashC = cmd.match(/git\s+(?:--no-pager\s+)?-C\s+["']?([^\s"';&|]+)/)?.[1];
   if (dashC) gitCwd = path.resolve(gitCwd, dashC);
   if (!fs.existsSync(gitCwd)) gitCwd = cwd;
   const skipGh = !!process.env.OCULITH_GUARD_SKIP_GH;
@@ -51,7 +51,7 @@ process.stdin.on("end", () => {
   const GIT = String.raw`git(?:\s+(?:-[cC]\s+\S+|--no-pager|--git-dir=\S+|--work-tree=\S+))*`;
   const sub = (name) => new RegExp(`${GIT}\\s+${name}\\b`);
   // Forms that re-point git at another repo defeat the ownership lookup; refuse them outright.
-  if (/(^|[\s;&|])GIT_DIR=|--git-dir[\s=]|--work-tree[\s=]/.test(cmd)) block("GIT_DIR / --git-dir / --work-tree re-point git at another repo; use `cd <path> &&` or `git -C <path>` so the guard can see which branch you touch.");
+  if (/(^|[\s;&|])GIT_DIR=|git\s+(?:--no-pager\s+)?--(?:git-dir|work-tree)[\s=]/.test(cmd)) block("GIT_DIR / --git-dir / --work-tree re-point git at another repo; use `cd <path> &&` or `git -C <path>` so the guard can see which branch you touch.");
 
   // ---- unsafe git / secrets in the transcript --------------------------------------------------------------
   if (sub("push").test(cmd) && /(\s--force\b|\s-f\b|\s--force-with-lease\b|\s\+[\w./-]+)/.test(cmd)) block("force push rewrites shared history; open an issue and ask the user instead.");
@@ -112,7 +112,7 @@ process.stdin.on("end", () => {
 
   // Claiming an issue: same-machine sessions share the GitHub login, so GitHub cannot tell them apart — we can.
   // Only an invocation counts (statement start, optional `bash `), never a `cat`/`grep` of the script.
-  const claiming = cmd.match(/(?:^|[;&|]\s*)(?:bash\s+)?(?:[\w./-]*\/)?claim-issue\.sh\s+(\d+)/)?.[1];
+  const claiming = cmd.match(/(?:^(?:\s*\w+=\S+\s+)*|[;&|]\s*)(?:bash\s+)?(?:[\w.:/-]*\/)?claim-issue\.sh\s+(\d+)/)?.[1];
   if (stateFile && claiming) {
     const s = readState();
     const cur = s.issues[claiming];
@@ -122,7 +122,7 @@ process.stdin.on("end", () => {
   }
 
   // Releasing a claim (--abort) frees the local lock too; --review keeps it (the claim is the lock until the issue closes).
-  const releasing = cmd.match(/(?:^|[;&|]\s*)(?:bash\s+)?(?:[\w./-]*\/)?release-issue\.sh\s+(\d+)\s+--abort/)?.[1];
+  const releasing = cmd.match(/(?:^(?:\s*\w+=\S+\s+)*|[;&|]\s*)(?:bash\s+)?(?:[\w.:/-]*\/)?release-issue\.sh\s+(\d+)\s+--abort/)?.[1];
   if (stateFile && releasing) {
     const s = readState();
     if (s.issues[releasing]?.session === session || claimOverride) { delete s.issues[releasing]; writeState(s); }
