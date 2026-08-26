@@ -31,21 +31,50 @@ export function flattenSpans(spans: Span[]): Span[] {
 function reconstructSpans(events: ObservationEvent[]): Map<string, Span> {
   const spans = new Map<string, Span>();
   for (const e of events) {
-    let span = spans.get(e.spanId);
-    if (!span) {
-      span = { spanId: e.spanId, parentSpanId: e.parentSpanId, name: e.name, category: e.category, status: e.phase === "start" ? "running" : e.status,
-        startedAt: e.timestamp, incomplete: e.phase === "start", sequence: e.sequence, source: e.source, attributes: { ...e.attributes },
+    const existing = spans.get(e.spanId);
+    if (e.phase === "start") {
+      if (!existing) {
+        spans.set(e.spanId, { spanId: e.spanId, parentSpanId: e.parentSpanId, name: e.name, category: e.category, status: "running",
+          startedAt: e.timestamp, incomplete: true, sequence: e.sequence, source: e.source, attributes: { ...e.attributes },
+          summary: e.summary, error: e.error, events: [], children: [], depth: 0 });
+        continue;
+      }
+      // A `start` event is authoritative for timing even when it arrives after the matching `end` (out-of-order
+      // delivery): always (re)establish startedAt/sequence from it, and once both phases have been observed,
+      // close the span for real (recompute durationMs, clear incomplete).
+      existing.startedAt = e.timestamp;
+      existing.sequence = e.sequence;
+      if (existing.endedAt !== undefined) {
+        existing.durationMs = Math.max(0, Date.parse(existing.endedAt) - Date.parse(e.timestamp));
+        existing.incomplete = false;
+      } else {
+        existing.events.push(e);
+      }
+      continue;
+    }
+    if (!existing) {
+      const span: Span = { spanId: e.spanId, parentSpanId: e.parentSpanId, name: e.name, category: e.category, status: e.status,
+        startedAt: e.timestamp, incomplete: e.phase === "end", sequence: e.sequence, source: e.source, attributes: { ...e.attributes },
         summary: e.summary, error: e.error, events: [], children: [], depth: 0 };
-      if (e.phase === "instant") { span.endedAt = e.timestamp; span.durationMs = e.durationMs ?? 0; }
+      if (e.phase === "instant") {
+        span.endedAt = e.timestamp; span.durationMs = e.durationMs ?? 0;
+      } else {
+        // `end` arrived with no `start` yet seen: derive a provisional startedAt from durationMs (else fall back
+        // to the end timestamp) but stay `incomplete: true` — honest per invariant #7 — until a real `start`
+        // event corrects it above. Never guess a span closed.
+        span.endedAt = e.timestamp;
+        span.durationMs = e.durationMs;
+        span.startedAt = e.durationMs !== undefined ? new Date(Date.parse(e.timestamp) - e.durationMs).toISOString() : e.timestamp;
+      }
       spans.set(e.spanId, span);
     } else if (e.phase === "end") {
-      span.endedAt = e.timestamp; span.status = e.status; span.incomplete = false; span.name = span.name === span.spanId ? e.name : span.name;
-      span.durationMs = e.durationMs ?? Math.max(0, Date.parse(e.timestamp) - Date.parse(span.startedAt));
-      Object.assign(span.attributes, e.attributes); if (e.error) span.error = e.error; if (e.summary) span.summary = e.summary;
+      existing.endedAt = e.timestamp; existing.status = e.status; existing.incomplete = false;
+      existing.name = existing.name === existing.spanId ? e.name : existing.name;
+      existing.durationMs = e.durationMs ?? Math.max(0, Date.parse(e.timestamp) - Date.parse(existing.startedAt));
+      Object.assign(existing.attributes, e.attributes); if (e.error) existing.error = e.error; if (e.summary) existing.summary = e.summary;
     } else {
-      span.events.push(e);
+      existing.events.push(e);
     }
-    if (e.spanId !== span.spanId) span.events.push(e);
   }
   return spans;
 }
@@ -59,8 +88,13 @@ function buildTree(spans: Map<string, Span>): Span[] {
 }
 
 function pathTo(spans: Map<string, Span>, spanId: string): string[] {
-  const path: string[] = []; let cur = spans.get(spanId);
-  while (cur) { path.unshift(cur.spanId); cur = cur.parentSpanId ? spans.get(cur.parentSpanId) : undefined; }
+  const path: string[] = []; const visited = new Set<string>(); let cur = spans.get(spanId);
+  // Guard against a parentSpanId cycle (two spans referencing each other): stop the first time a spanId repeats
+  // instead of walking forever.
+  while (cur && !visited.has(cur.spanId)) {
+    visited.add(cur.spanId); path.unshift(cur.spanId);
+    cur = cur.parentSpanId ? spans.get(cur.parentSpanId) : undefined;
+  }
   return path;
 }
 
@@ -102,7 +136,14 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
   const durationMs = startedAt && endedAt ? Math.max(0, Date.parse(endedAt) - Date.parse(startedAt)) : undefined;
   const usageEvents = events.filter((e) => e.type === "model.completed");
   const sum = (k: string) => usageEvents.reduce((n, e) => n + (typeof e.attributes[k] === "number" ? (e.attributes[k] as number) : 0), 0);
-  const usage = usageEvents.length ? { ...(sum("inputTokens") ? { inputTokens: sum("inputTokens") } : {}), ...(sum("cachedInputTokens") ? { cachedInputTokens: sum("cachedInputTokens") } : {}), ...(sum("outputTokens") ? { outputTokens: sum("outputTokens") } : {}) } : undefined;
+  // Presence-based, not truthiness-based: include a usage field whenever ANY model.completed event carries it
+  // numerically, even if the total happens to sum to 0.
+  const hasNumeric = (k: string) => usageEvents.some((e) => typeof e.attributes[k] === "number");
+  const usage = usageEvents.length
+    ? { ...(hasNumeric("inputTokens") ? { inputTokens: sum("inputTokens") } : {}),
+        ...(hasNumeric("cachedInputTokens") ? { cachedInputTokens: sum("cachedInputTokens") } : {}),
+        ...(hasNumeric("outputTokens") ? { outputTokens: sum("outputTokens") } : {}) }
+    : undefined;
   const degraded = opts.degraded === true || events.some((e) => e.type === "telemetry.degraded");
   const truncated = opts.truncated === true || events.some((e) => e.type === "trace.truncated");
   const failure = focusFailure(events, spans, status, degraded, durationMs);

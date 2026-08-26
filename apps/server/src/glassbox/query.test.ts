@@ -78,6 +78,50 @@ describe("buildTrace", () => {
     expect(v.summary.capabilities).toEqual({ model: "unavailable", tool: "unavailable" });
     expect(v.summary.degraded).toBe(true);
     expect(v.summary.status).toBe("ok");
+    expect(v.summary.failure).toMatchObject({ kind: "degraded", component: "GlassBox", path: [] });
+    expect(v.summary.failure!.diagnosis).toMatch(/trace store was unavailable/i);
+  });
+  it("guards against a span-parent cycle: pathTo terminates and visits each id once", () => {
+    seq = 0;
+    const events = [
+      root(),
+      ev({ type: "tool.call.started", category: "tool", spanId: "x", parentSpanId: "y", phase: "start" }),
+      ev({ type: "tool.call.started", category: "tool", spanId: "y", parentSpanId: "x", phase: "start" }),
+      ev({ type: "tool.call.failed", category: "tool", spanId: "x", phase: "end", status: "error", error: { type: "exit", message: "boom" } }),
+      ev({ type: "run.failed", category: "control", spanId: "rf", parentSpanId: "root" }),
+    ];
+    const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(summary.status).toBe("error");
+    expect(summary.failure?.spanId).toBe("x");
+    const path = summary.failure!.path;
+    expect(new Set(path).size).toBe(path.length);
+    expect(path).toEqual(expect.arrayContaining(["x", "y"]));
+  });
+  it("end-before-start: a later start event corrects the provisional span and closes it", () => {
+    seq = 0;
+    const events = [
+      ev({ type: "runtime.codex.completed", category: "runtime", spanId: "rt", phase: "end", status: "ok" }),
+      ev({ type: "runtime.codex.started", category: "runtime", spanId: "rt", phase: "start", status: "running" }),
+    ];
+    const { spans } = buildTrace(events, { capturePolicy: "metadata_only" });
+    const rt = flattenSpans(spans).find((s) => s.spanId === "rt")!;
+    expect(rt.incomplete).toBe(false);
+    expect(rt.startedAt).toBe(events[1]!.timestamp);
+    expect(rt.durationMs).toBeGreaterThanOrEqual(0);
+  });
+  it("focuses an error.recorded event when it's the only failure candidate", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "error.recorded", category: "runtime", spanId: "rt", status: "error", error: { type: "panic", message: "unexpected null" } }),
+      ev({ type: "runtime.codex.completed", category: "runtime", spanId: "rt", phase: "end", status: "ok" }),
+      ev({ type: "run.failed", category: "control", spanId: "rf", parentSpanId: "svc" }),
+      ev({ type: "agent_service.run.failed", category: "control", spanId: "svc", phase: "end" }),
+      ev({ type: "http.request.completed", category: "control", spanId: "root", phase: "end", status: "ok" })];
+    const errEvent = events[3]!;
+    const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(summary.status).toBe("error");
+    expect(summary.failure).toMatchObject({ kind: "error", eventId: errEvent.eventId });
+    expect(summary.failure!.path.at(-1)).toBe("rt");
   });
   it("empty input yields an honest empty view", () => {
     const v = buildTrace([], { capturePolicy: "metadata_only" });
