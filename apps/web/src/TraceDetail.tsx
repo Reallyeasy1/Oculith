@@ -144,6 +144,9 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
         <Field label="Duration">{formatDuration(summary.durationMs)}{summary.endedReason === "server_restart" ? " until restart" : ""}</Field>
         <Field label="Events">{summary.eventCount} · {summary.spanCount} spans</Field>
         <Field label="Usage">{formatUsage(summary.usage)}</Field>
+        <Field label="Config hash">
+          <code title={run?.configSnapshot ? JSON.stringify(run.configSnapshot) : undefined}>{summary.configHash ?? run?.configHash ?? "—"}</code>
+        </Field>
         <Field label="Trust">
           <CapabilityBadge layer="model" state={summary.capabilities.model} />
           <CapabilityBadge layer="tool" state={summary.capabilities.tool} />
