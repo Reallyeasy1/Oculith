@@ -19,6 +19,33 @@ export const STATUSES: TraceStatus[] = ["running", "ok", "error", "cancelled", "
 
 export const DRAWER_EVENT_CAP = 200;
 
+export function refreshIntervalMs(status: TraceStatus | undefined): number {
+  return status === "running" ? 1_500 : 5_000;
+}
+
+export function capabilityCopy(
+  state: "observed" | "unavailable" | "unknown",
+  runStatus: TraceStatus,
+): { label: string; title: string } {
+  if (state === "observed") {
+    return { label: "observed", title: "The runtime emitted events for this layer." };
+  }
+  if (state === "unavailable") {
+    return { label: "unavailable", title: "The Run completed but the runtime exposed no events for this layer." };
+  }
+  if (runStatus === "running") {
+    return { label: "pending", title: "The Run is still in progress; capability evidence may arrive on a later refresh." };
+  }
+  return {
+    label: "no evidence — run cut short",
+    title: "The Run was cancelled, timed out, or its stream never started, so nothing was said about this layer; absence proves nothing.",
+  };
+}
+
+export function spanStatusLabel(span: Pick<Span, "status" | "incomplete">, endedReason?: "server_restart"): string {
+  return endedReason === "server_restart" && span.incomplete ? "interrupted" : span.status;
+}
+
 export function isFilterActive(f: TraceFilter): boolean {
   return f.category !== "" || f.status !== "" || f.text.trim() !== "" || f.errorsOnly;
 }
@@ -90,14 +117,69 @@ export function visibleRows(spans: Span[], expanded: Set<string>, filter: TraceF
   return out;
 }
 
-/** Bar geometry as percentages of the run's duration; undefined when the run has no usable duration. */
-export function barGeometry(span: Span, view: TraceView): { left: number; width: number } | undefined {
+export interface TimelineTick {
+  milliseconds: number;
+  percent: number;
+}
+
+/** Four to six human-scale ticks, always including the exact Run end. */
+export function timelineTicks(total: number | undefined): TimelineTick[] {
+  if (!total || !Number.isFinite(total) || total <= 0) return [];
+  const rawStep = total / 4;
+  const magnitude = 10 ** Math.floor(Math.log10(rawStep));
+  const normalized = rawStep / magnitude;
+  const nice = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 2.5 ? 2.5 : normalized <= 5 ? 5 : 10;
+  const step = nice * magnitude;
+  const values: number[] = [];
+  for (let value = 0; value < total; value += step) values.push(value);
+  values.push(total);
+  return values.map((milliseconds) => ({ milliseconds, percent: (milliseconds / total) * 100 }));
+}
+
+export interface BarGeometry {
+  left: number;
+  width: number;
+  startOffsetMs: number;
+  durationMs: number | undefined;
+  instant: boolean;
+  openEnded: boolean;
+  endsAfterParent: boolean;
+}
+
+function observedEnd(span: Span): number | undefined {
+  const explicit = span.endedAt ? Date.parse(span.endedAt) : NaN;
+  if (!Number.isNaN(explicit)) return explicit;
+  const start = Date.parse(span.startedAt);
+  return Number.isNaN(start) || span.durationMs === undefined ? undefined : start + span.durationMs;
+}
+
+/** Bar geometry as percentages of the Run duration; undefined when the timeline is unusable. */
+export function barGeometry(span: Span, view: TraceView, parent?: Span): BarGeometry | undefined {
   const total = view.summary.durationMs;
   const start = view.summary.startedAt ? Date.parse(view.summary.startedAt) : NaN;
-  if (!total || Number.isNaN(start)) return undefined;
-  const left = Math.min(100, Math.max(0, ((Date.parse(span.startedAt) - start) / total) * 100));
-  const width = Math.max(0.5, Math.min(100 - left, ((span.durationMs ?? 0) / total) * 100));
-  return { left, width };
+  const spanStart = Date.parse(span.startedAt);
+  if (!total || !Number.isFinite(total) || total <= 0 || Number.isNaN(start) || Number.isNaN(spanStart)) return undefined;
+  const startOffsetMs = spanStart - start;
+  const left = Math.min(100, Math.max(0, (startOffsetMs / total) * 100));
+  const durationMs = span.durationMs;
+  const instant = durationMs === 0 && !span.incomplete;
+  const openEnded = span.incomplete;
+  const width = openEnded
+    ? 100 - left
+    : instant
+      ? 0
+      : Math.max(0.5, Math.min(100 - left, ((durationMs ?? 0) / total) * 100));
+  const spanEnd = observedEnd(span);
+  const parentEnd = parent ? observedEnd(parent) : undefined;
+  return {
+    left,
+    width,
+    startOffsetMs,
+    durationMs,
+    instant,
+    openEnded,
+    endsAfterParent: spanEnd !== undefined && parentEnd !== undefined && spanEnd > parentEnd,
+  };
 }
 
 export function formatAttribute(value: string | number | boolean | null): string {

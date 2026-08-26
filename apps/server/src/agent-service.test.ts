@@ -1,12 +1,12 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentService } from "./agent-service.js";
+import { AgentService, configHash, configSnapshot } from "./agent-service.js";
 import { RunCancelledError } from "./errors.js";
 import { loadConfig } from "./config.js";
 import { JsonStore } from "./store.js";
-import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
+import type { AgentConfigSnapshot, AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 import { createTraceContext } from "./glassbox/context.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
@@ -61,6 +61,61 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
 }
 
 describe("Agent lifecycle", () => {
+  it("briefs new and existing Agents about disposable containers and host-side commands", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Frontend Builder" });
+    const instructionsPath = path.join(agent.workspacePath, "AGENTS.md");
+    const expected = [
+      "no process you start survives this turn",
+      "Never tell the user to open a localhost URL you started",
+      "leave build output in the workspace",
+      "state the exact command the user runs on their own machine",
+    ];
+    const initial = await readFile(instructionsPath, "utf8");
+    for (const text of expected) expect(initial).toContain(text);
+
+    await writeFile(instructionsPath, "stale platform instructions", "utf8");
+    await service.initialize();
+    const refreshed = await readFile(instructionsPath, "utf8");
+    for (const text of expected) expect(refreshed).toContain(text);
+    expect(refreshed).toContain("This file is regenerated when the Agent configuration is updated.");
+  });
+
+  it("stamps stable behavior configuration and changes the hash when instructions change", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Versioned", instructions: "Run tests" });
+    const first = (await service.sendMessage(agent.id, "first")).run;
+    await expect.poll(() => service.getRun(first.id).status).toBe("completed");
+    const second = (await service.sendMessage(agent.id, "second")).run;
+    await expect.poll(() => service.getRun(second.id).status).toBe("completed");
+    expect(second.configHash).toBe(first.configHash);
+    expect(second.configSnapshot).toEqual(first.configSnapshot);
+
+    await service.updateAgent(agent.id, { instructions: "Skip tests" });
+    const changed = (await service.sendMessage(agent.id, "third")).run;
+    await expect.poll(() => service.getRun(changed.id).status).toBe("completed");
+    expect(changed.configHash).not.toBe(first.configHash);
+    expect(changed.configSnapshot?.instructions).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(changed.configSnapshot?.instructions).not.toContain("Skip tests");
+    expect(JSON.stringify(changed.configSnapshot)).not.toMatch(/apiKey|token|secret|password/i);
+  });
+
+  it("hashes canonical configuration independently of object key insertion order", () => {
+    const agent = { id: "a", name: "A", description: "", instructions: "Run tests", status: "ready", workspacePath: ".", codexThreadId: null, lastError: null, createdAt: "", updatedAt: "" } as const;
+    const config = loadConfig({ NODE_ENV: "test", ARK_API_KEY: "secret", ARK_MODEL: "model" });
+    const snapshot = configSnapshot(agent, config);
+    const reordered = {
+      capturePolicy: snapshot.capturePolicy,
+      containerRuntimeImage: snapshot.containerRuntimeImage,
+      runtimeProvider: snapshot.runtimeProvider,
+      codexSandboxMode: snapshot.codexSandboxMode,
+      model: snapshot.model,
+      modelProvider: snapshot.modelProvider,
+      instructions: snapshot.instructions,
+    } satisfies AgentConfigSnapshot;
+    expect(configHash(reordered)).toBe(configHash(snapshot));
+  });
+
   it("creates, updates, stops, starts and deletes an Agent", async () => {
     const service = await makeService();
     const agent = await service.createAgent({ name: "Builder" });
@@ -189,10 +244,12 @@ describe("GlassBox control-plane adapter", () => {
       "run.created",
       "agent_service.run.started",
       "run.started",
+      "workspace.changed",
       "run.completed",
       "agent_service.run.completed",
     ]);
     expect(events[1]!.parentSpanId).toBe(ctx.rootSpanId);
+    expect(events[1]!.attributes.configHash).toBe(service.getRun(run.id).configHash);
     expect(events[2]!.parentSpanId).toBe(ctx.rootSpanId);
     expect(events.every((e) => e.traceId === ctx.traceId && e.requestId === "req-1")).toBe(true);
     expect(events.find((e) => e.type === "run.completed")!.attributes).toMatchObject({
@@ -200,6 +257,22 @@ describe("GlassBox control-plane adapter", () => {
       outputTokens: 5,
     });
     expect(JSON.stringify(events)).not.toContain("hello"); // prompt text is never stored
+  });
+
+  it("observes workspace path changes without storing file contents", async () => {
+    const { service, store, emitter } = await makeTraced(new (class extends FakeRunner {
+      override async run(request: RunnerRequest): Promise<RunnerResult> {
+        await writeFile(path.join(request.workspacePath, "result.txt"), "secret file contents", "utf8");
+        return super.run(request);
+      }
+    })());
+    const agent = await service.createAgent({ name: "workspace observer" });
+    const { run } = await service.sendMessage(agent.id, "write a result");
+    await settle(service, run.id);
+    await emitter.flush();
+    const changed = (await store.readRun(run.id)).find((event) => event.type === "workspace.changed");
+    expect(changed).toMatchObject({ attributes: { added: 1, modified: 0, removed: 0, paths: "result.txt" } });
+    expect(JSON.stringify(changed)).not.toContain("secret file contents");
   });
 
   it("emits run.started only once the Run is really running", async () => {
@@ -258,12 +331,14 @@ describe("GlassBox control-plane adapter", () => {
     await restarted.initialize();
     await emitter.flush();
     const events = await store.readRun(run.id);
+    const serviceSpan = events.find((event) => event.type === "agent_service.run.started");
     expect(events.at(-1)).toMatchObject({
       type: "run.cancelled",
       status: "cancelled",
       actorId: "server",
       actorType: "service",
       attributes: { reason: "server_restart" },
+      parentSpanId: serviceSpan?.spanId,
     });
   });
 });

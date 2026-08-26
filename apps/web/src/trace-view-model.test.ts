@@ -3,7 +3,7 @@
 // (vitest is hoisted from the server workspace — no new dependency.)
 import { describe, expect, it } from "vitest";
 import type { Span, TraceView } from "./types";
-import { EMPTY_FILTER, barGeometry, defaultExpanded, matchesSpan, visibleRows } from "./trace-view-model";
+import { EMPTY_FILTER, barGeometry, capabilityCopy, defaultExpanded, matchesSpan, refreshIntervalMs, spanStatusLabel, timelineTicks, visibleRows } from "./trace-view-model";
 
 const t0 = "2026-08-26T10:00:00.000Z";
 const at = (ms: number) => new Date(Date.parse(t0) + ms).toISOString();
@@ -29,7 +29,7 @@ const view: TraceView = {
   summary: {
     schemaVersion: "1.0", capturePolicy: "metadata_only", runId: "r", traceId: "t", agentId: "ag", status: "error",
     startedAt: t0, durationMs: 1000, eventCount: 0, spanCount: 6, incompleteSpans: 0, redactedEvents: 0, degraded: false,
-    truncated: false, evicted: false, capabilities: { model: "unavailable", tool: "unavailable" },
+    denials: 0, truncated: false, evicted: false, metrics: { terminalStatus: "error", toolCalls: 0, toolFailures: 0, modelCalls: 0, retries: 0, denials: 0 }, capabilities: { model: "unavailable", tool: "unavailable" },
     failure: { kind: "error", spanId: "a1", eventId: "e", sequence: 3, name: "a1", category: "runtime", component: "test", path: ["root", "a", "a1"], diagnosis: "x" },
   },
   spans: [root],
@@ -59,7 +59,55 @@ describe("trace-view-model", () => {
   });
 
   it("bar geometry is relative to the run duration", () => {
-    expect(barGeometry(a1, view)).toEqual({ left: 50, width: 20 });
+    expect(barGeometry(a1, view, a)).toEqual({
+      left: 50,
+      width: 20,
+      startOffsetMs: 500,
+      durationMs: 200,
+      instant: false,
+      openEnded: false,
+      endsAfterParent: true,
+    });
     expect(barGeometry(root, { ...view, summary: { ...view.summary, durationMs: undefined } })).toBeUndefined();
+  });
+
+  it("keeps unknown capabilities pending until a Run has ended", () => {
+    expect(capabilityCopy("unknown", "running").label).toBe("pending");
+    expect(capabilityCopy("unknown", "cancelled").label).toBe("no evidence — run cut short");
+    expect(capabilityCopy("observed", "running").label).toBe("observed");
+  });
+
+  it("refreshes a live trace faster than terminal or unopened traces", () => {
+    expect(refreshIntervalMs("running")).toBe(1_500);
+    expect(refreshIntervalMs("ok")).toBe(5_000);
+    expect(refreshIntervalMs(undefined)).toBe(5_000);
+  });
+
+  it("labels only restart-incomplete spans as interrupted", () => {
+    expect(spanStatusLabel({ status: "running", incomplete: true }, "server_restart")).toBe("interrupted");
+    expect(spanStatusLabel({ status: "running", incomplete: true })).toBe("running");
+    expect(spanStatusLabel({ status: "cancelled", incomplete: false }, "server_restart")).toBe("cancelled");
+  });
+
+  it("computes readable ticks including the exact Run duration", () => {
+    expect(timelineTicks(1000)).toEqual([
+      { milliseconds: 0, percent: 0 },
+      { milliseconds: 250, percent: 25 },
+      { milliseconds: 500, percent: 50 },
+      { milliseconds: 750, percent: 75 },
+      { milliseconds: 1000, percent: 100 },
+    ]);
+    const uneven = timelineTicks(1234);
+    expect(uneven).toHaveLength(4);
+    expect(uneven.at(-1)).toEqual({ milliseconds: 1234, percent: 100 });
+    expect(timelineTicks(undefined)).toEqual([]);
+  });
+
+  it("renders incomplete spans to the timeline end and zero-duration spans as instants", () => {
+    const incomplete = span("open", { startedAt: at(400), durationMs: 100, incomplete: true });
+    expect(barGeometry(incomplete, view)).toMatchObject({ left: 40, width: 60, openEnded: true, instant: false });
+
+    const instant = span("instant", { startedAt: at(250), durationMs: 0 });
+    expect(barGeometry(instant, view)).toMatchObject({ left: 25, width: 0, openEnded: false, instant: true });
   });
 });
