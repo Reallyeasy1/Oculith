@@ -40,7 +40,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace }: Props) {
               aria-pressed={filter === item}
               onClick={() => setFilter(item)}
             >
-              {item}
+              {item === "timeout" ? "Timed out" : item}
             </button>
           ))}
         </div>
@@ -49,16 +49,16 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace }: Props) {
         <table className="runs-table">
           <thead>
             <tr>
-              <th>Status</th>
-              <th>Agent</th>
-              <th>Start</th>
-              <th>Duration</th>
-              <th>First failing step</th>
-              <th>Events</th>
-              <th>Runtime / model</th>
-              <th>Usage</th>
-              <th>Trust</th>
-              <th>Last event</th>
+              <th scope="col">Status</th>
+              <th scope="col">Agent</th>
+              <th scope="col">Start</th>
+              <th scope="col">Duration</th>
+              <th scope="col">First failing step</th>
+              <th scope="col">Events</th>
+              <th scope="col">Runtime / model</th>
+              <th scope="col">Usage</th>
+              <th scope="col">Trust</th>
+              <th scope="col">Last event</th>
             </tr>
           </thead>
           <tbody>

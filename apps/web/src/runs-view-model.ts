@@ -47,7 +47,10 @@ export function formatUsage(usage: RunListItem["usage"]): string {
   return (usage.inputTokens ?? 0) + " in · " + (usage.outputTokens ?? 0) + " out";
 }
 
+const clock = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
 export function formatClock(value: string | undefined): string {
   if (!value) return "—";
-  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(value));
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "—" : clock.format(date);
 }

@@ -81,8 +81,12 @@ export default function App() {
   }, []);
 
   const refreshRuns = useCallback(async () => {
-    const result = await api.listRuns();
-    if (mountedRef.current) setRuns(result.runs);
+    try {
+      const result = await api.listRuns();
+      if (mountedRef.current) setRuns(result.runs);
+    } catch {
+      // ponytail: runs table goes stale, baseline keeps working (invariant 12)
+    }
   }, []);
 
   const bootstrap = useCallback(async () => {
@@ -609,16 +613,16 @@ export default function App() {
           </div>
         )}
 
-        <RunsView runs={runs} selectedRunId={selectedRunId} onOpenTrace={setSelectedRunId} />
         {selectedRunId && (
           // ponytail: placeholder until #32 mounts the trace detail here, keyed by selectedRunId
-          <section className="runs-view trace-stub" aria-live="polite">
+          <section className="runs-view trace-stub">
             <span className="eyebrow">Trace</span>
             <h2>
               <code>{selectedRunId}</code>
             </h2>
           </section>
         )}
+        <RunsView runs={runs} selectedRunId={selectedRunId} onOpenTrace={setSelectedRunId} />
       </main>
 
       {showCreate && (
