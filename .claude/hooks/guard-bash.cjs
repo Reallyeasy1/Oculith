@@ -125,7 +125,9 @@ process.stdin.on("end", () => {
   const releasing = cmd.match(/(?:^(?:\s*\w+=\S+\s+)*|[;&|]\s*)(?:bash\s+)?(?:[\w.:/-]*\/)?release-issue\.sh\s+(\d+)\s+--abort/)?.[1];
   if (stateFile && releasing) {
     const s = readState();
-    if (s.issues[releasing]?.session === session || claimOverride) { delete s.issues[releasing]; writeState(s); }
+    const holder = s.issues[releasing];
+    if (holder && holder.session !== session && !claimOverride) block(`issue #${releasing} is claimed by another session on this machine (${holder.session.slice(0, 8)}…); only the holder can abort it — a controller releasing an abandoned claim prefixes OCULITH_CLAIM_OVERRIDE=1.`);
+    delete s.issues[releasing]; writeState(s);
   }
 
   // Creating a branch: the issue must be claimed (GitHub: label in-progress + assignee = me; local: this session).
