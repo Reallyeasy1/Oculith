@@ -119,6 +119,25 @@ function pathTo(spans: Map<string, Span>, spanId: string): string[] {
 
 const DEGRADED_FOCUS: FailureFocus = { kind: "degraded", spanId: "", eventId: "", sequence: -1, name: "telemetry.degraded", category: "control", component: "GlassBox", path: [], diagnosis: "Trace evidence is incomplete: the trace store was unavailable during this Run. The Run's real result is unaffected; some spans may be missing." };
 
+const EXIT_HINTS: Record<number, string> = {
+  137: "SIGKILL (timeout, cancellation, or out-of-memory termination)",
+  3221225794: "process failed to initialise — the runtime CLI could not start; restart the server",
+};
+
+export function formatExitCode(code: number): string {
+  const decimal = String(code);
+  const hex = Number.isInteger(code) && code >= 0x80000000 && code <= 0xffffffff
+    ? ` (0x${code.toString(16).toUpperCase().padStart(8, "0")})`
+    : "";
+  const hint = EXIT_HINTS[code];
+  return decimal + hex + (hint ? ` — ${hint}` : "");
+}
+
+const formatFailureMessage = (message: string | undefined): string | undefined => {
+  // Matches the observer's bare "exit code N" and the runners' "Codex exited with code N: detail".
+  return message?.replace(/\b((?:exited with|exit) code )(\d+)/i, (_, prefix: string, code: string) => prefix + formatExitCode(Number(code)));
+};
+
 function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, status: TraceStatus, degraded: boolean, durationMs: number | undefined): FailureFocus | undefined {
   const denial = events.find((e) => e.type === "policy.denied");
   // A handled ordinary tool error is not actionable after an ok terminal, but a policy decision is:
@@ -140,7 +159,7 @@ function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, stat
     : undefined;
   const target = open
     ? { spanId: open.spanId, eventId: events.find((e) => e.spanId === open.spanId)?.eventId ?? first.eventId, sequence: open.sequence, name: open.name, category: open.category, component: open.source.component, message: undefined }
-    : { spanId: first.spanId, eventId: first.eventId, sequence: first.sequence, name: first.name, category: first.category, component: first.source.component, message: first.error?.message };
+    : { spanId: first.spanId, eventId: first.eventId, sequence: first.sequence, name: first.name, category: first.category, component: first.source.component, message: formatFailureMessage(first.error?.message) };
   const path = pathTo(spans, target.spanId);
   const secs = durationMs === undefined ? "an unknown duration" : (durationMs / 1000).toFixed(1) + " s";
   const cleanup = events.find((e) => e.type === "runtime.container.stopped" || (e.type === "runtime.codex.failed" && e.attributes.terminationSignal));
@@ -150,8 +169,8 @@ function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, stat
       ? `sandbox declined \`${String(first.attributes.program || first.name)}\``
       : isRestartCancel(first)
       ? `Run interrupted by a server restart after ${secs} of observed activity; ${open ? `the ${open.category} span ${open.name} never closed` : "no open span was recorded"}.`
-      : `Run ${status} in ${first.source.component} after ${secs}. First actionable ${kind}: ${first.name}${first.error ? " — " + first.error.message : ""}.`,
-    cleanup ? `Cleanup evidence: ${cleanup.name}${cleanup.attributes.exitCode !== undefined ? " (exit " + String(cleanup.attributes.exitCode) + ")" : ""}${cleanup.attributes.terminationSignal ? " via " + String(cleanup.attributes.terminationSignal) : ""}.` : "",
+      : `Run ${status} in ${first.source.component} after ${secs}. First actionable ${kind}: ${first.name}${target.message ? " — " + target.message : ""}.`,
+    cleanup ? `Cleanup evidence: ${cleanup.name}${typeof cleanup.attributes.exitCode === "number" ? " (exit " + formatExitCode(cleanup.attributes.exitCode) + ")" : ""}${cleanup.attributes.terminationSignal ? " via " + String(cleanup.attributes.terminationSignal) : ""}.` : "",
     capability ? "No model/tool-level details were available from the runtime." : "",
     degraded ? "Trace store was degraded during this Run; evidence may be incomplete." : "",
   ].filter(Boolean).join(" ");

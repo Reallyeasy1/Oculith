@@ -13,6 +13,13 @@ import {
   type QuickFilter,
 } from "./runs-view-model";
 
+function noEvidenceTitle(run: RunListItem): string {
+  const layers = [run.capabilities.model === "unknown" ? "model" : "", run.capabilities.tool === "unknown" ? "tool" : ""].filter(Boolean).join(" and ");
+  return run.status === "timeout" || run.status === "cancelled" || run.status === "running"
+    ? `No ${layers} evidence — the Run was cut short before calls were observed.`
+    : `No ${layers} calls observed in this Run.`;
+}
+
 interface Props {
   runs: RunListItem[];
   selectedRunId: string | null;
@@ -92,7 +99,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 </td>
                 {showAgent && <td>{run.agentName || run.agentId}</td>}
                 <td>{formatClock(run.startedAt)}</td>
-                <td>{formatDuration(run.durationMs)}{run.endedReason === "server_restart" ? " until restart" : ""}</td>
+                <td>{formatDuration(run.durationMs)}{run.endedReason === "server_restart" ? " · interrupted" : ""}</td>
                 <td>{run.firstFailingStep ?? "—"}</td>
                 <td>{run.eventCount}</td>
                 <td title={run.configSnapshot ? JSON.stringify(run.configSnapshot) : undefined}>
@@ -106,6 +113,10 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                   {run.denials > 0 && <span className="badge badge-warn">denied {run.denials}</span>}
                   {run.degraded && <span className="badge badge-warn">degraded</span>}
                   {run.truncated && <span className="badge badge-warn">truncated</span>}
+                  {run.evicted && <span className="badge badge-warn">evicted</span>}
+                  {(run.capabilities.model === "unknown" || run.capabilities.tool === "unknown") && (
+                    <span className="badge" title={noEvidenceTitle(run)}>no evidence</span>
+                  )}
                 </td>
                 <td>{formatClock(run.lastEventAt)}</td>
               </tr>

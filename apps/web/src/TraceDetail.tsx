@@ -140,10 +140,10 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
       <dl className="trace-summary">
         <Field label="Trace">{summary.traceId || "—"}</Field>
         <Field label="Agent">{run?.agentName || summary.agentId || "—"}</Field>
-        <Field label="Runtime / model">{run ? run.runtime + " · " + run.model : "—"}</Field>
-        <Field label="Session">{summary.sessionId ?? "—"}</Field>
+        <Field label="Runtime / model" className="trace-runtime"><span title={run ? run.runtime + " · " + run.model : undefined}>{run ? run.runtime + " · " + run.model : "—"}</span></Field>
+        <Field label="Session">{summary.sessionId ?? <span className="trace-muted">not observed</span>}</Field>
         <Field label="Start">{formatClock(summary.startedAt)}</Field>
-        <Field label="Duration">{formatDuration(summary.durationMs)}{summary.endedReason === "server_restart" ? " until restart" : ""}</Field>
+        <Field label="Duration">{formatDuration(summary.durationMs)}{summary.endedReason === "server_restart" ? " observed · interrupted by restart" : ""}</Field>
         <Field label="Events">{summary.eventCount} · {summary.spanCount} spans</Field>
         <Field label="Usage">{formatUsage(summary.usage)}</Field>
         <Field label="Metrics">
@@ -154,7 +154,7 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
         <Field label="Config hash">
           <code title={run?.configSnapshot ? JSON.stringify(run.configSnapshot) : undefined}>{summary.configHash ?? run?.configHash ?? "—"}</code>
         </Field>
-        <Field label="Trust">
+        <Field label="Evidence" className="trace-evidence">
           <CapabilityBadge layer="model" state={summary.capabilities.model} status={summary.status} />
           <CapabilityBadge layer="tool" state={summary.capabilities.tool} status={summary.status} />
           {summary.redactedEvents > 0 && <span className="badge">redacted {summary.redactedEvents}</span>}
@@ -195,7 +195,7 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
         </label>
         <label className="trace-check">
           <input type="checkbox" checked={filter.errorsOnly} onChange={(e) => setFilter({ ...filter, errorsOnly: e.target.checked })} />
-          errors only
+          Errors only
         </label>
         {isFilterActive(filter) && (
           <button type="button" className="button button-ghost" onClick={() => setFilter(EMPTY_FILTER)}>Clear</button>
@@ -285,9 +285,9 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
   return (
-    <div>
+    <div className={className}>
       <dt>{label}</dt>
       <dd>{children}</dd>
     </div>

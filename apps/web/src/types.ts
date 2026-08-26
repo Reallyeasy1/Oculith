@@ -85,6 +85,7 @@ export interface RunListItem {
     cachedInputTokens?: number;
     outputTokens?: number;
   };
+  capabilities: { model: "observed" | "unavailable" | "unknown"; tool: "observed" | "unavailable" | "unknown" };
   toolCalls: number;
   toolFailures: number;
   tokens?: { output?: number };
