@@ -61,6 +61,23 @@ Both runners share `buildCodexArgs` and `parseCodexEventLine` (exported from `co
 
 **Web:** single `App.tsx` (~670 lines) + `styles.css`; `apps/web/src/types.ts` duplicates the server's public types by hand — keep them in sync when changing `Agent`/`AgentRun`/`Message`. In production the server serves `apps/web/dist` with an SPA fallback; in dev CORS is opened for `localhost:5173`.
 
+## The project: LaunchGuard (Track 1 middleware)
+
+This repo is the team's TechJam 2026 Track 1 submission. The middleware being built is **LaunchGuard** — run-scoped capability leases, a deterministic policy gateway (`allow | deny | approval_required`), one-time approvals, revocation, and a redacted evidence timeline, with an `agentctl` adapter in the Runtime image as the only path to a protected mock resource. Spec: `docs/PRD.md`. Work is tracked as GitHub issues #1–#19 under epic #20 (milestones = hackathon days).
+
+Governing rule: **no approval UI, timeline polish or stretch work until one protected action is denied by the backend and a test proves the fixture unchanged.** Security invariants live in `.claude/rules/launchguard-invariants.md` and are not negotiable.
+
+## Claude Code setup in this repo (`.claude/`)
+
+- **Hooks** (`settings.json` → `hooks/*.cjs`, Node so they run on Windows and Linux): block edits to `.env*`, lockfiles, runtime state and pristine fixtures; block force-push/`--no-verify`/destructive git/`cat .env`; scan staged diffs for API keys and canaries before every `git commit`; typecheck the touched workspace after every TS edit; print branch + open P0 issues at session start.
+- **Rules** (`rules/`): path-scoped conventions for server, web, and the LaunchGuard invariants.
+- **Agents** (`agents/`): `launchguard-security-reviewer` (adversarial, read-only — run before merging security-bearing code), `negative-test-writer` (table-driven denial/bypass tests), `baseline-verifier` (starter-kit acceptance flow over the API + `npm run check`).
+- **Skills**: `/start-issue N` (branch + test plan mapped to seams), `/run-poc` (judged Docker path with the Windows quirks handled).
+- **MCP** (`.mcp.json`): `context7` for Fastify/Vite/Codex docs, `playwright` for driving the UI in E2E checks and demo screenshots.
+- Permissions pre-allow read-only git/gh/npm-check commands and deny reading `.env`, `.local/`, `codex-home/`.
+
+Workflow per issue: `/start-issue N` → failing tests → implement → `npm run check` → security review if under the invariants rule → commit `Refs #N` / `Closes #N` → push.
+
 ## Conventions worth knowing
 
 - Server TS is strict with `noUncheckedIndexedAccess` + `exactOptionalPropertyTypes` — optional fields are typed `x?: T | undefined` deliberately.
