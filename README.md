@@ -242,6 +242,10 @@ terraform fmt -check -recursive deploy/volcengine
 docker compose config
 ```
 
+### Controlled failure (demo)
+
+Set `GLASSBOX_DEMO_FAILURE=timeout` and restart the server. The next Run goes through the real Runner with a 3 s timeout, producing a `runtime.codex.failed` (timeout) span, cleanup evidence and a `run.timed_out` terminal event. Open `GET /api/runs/<runId>/trace` — `summary.failure.diagnosis` names the failing span. Unset the variable to return to normal. The fixture is off by default and never enabled by `npm run poc`.
+
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)

@@ -38,7 +38,9 @@ describe.each([
     expect(await store.append(ev(9002, { type: "run.failed", category: "control", status: "error" }))).toEqual({ stored: true });
     expect(ALWAYS_KEEP_TYPES.has("run.failed")).toBe(true);
     expect((await store.readRun("run-1")).length).toBe(TRACE_CAPS.maxEventsPerRun + 1);
-  });
+    // 1000 real appendFile round-trips: durable-per-event is the design (AC-06 restart depends on it),
+    // so this is I/O-bound and needs more than vitest's 5 s default under a loaded suite.
+  }, 30_000);
   it("serialises concurrent appends to one run so the events cap can't be exceeded", async () => {
     const store = await make(); await store.initialize();
     const results = await Promise.all(
@@ -49,7 +51,7 @@ describe.each([
     expect(stored.length).toBe(TRACE_CAPS.maxEventsPerRun);
     expect(capped).toEqual(Array.from({ length: 5 }, () => ({ stored: false, reason: "cap_events" })));
     expect((await store.readRun("run-1")).length).toBe(TRACE_CAPS.maxEventsPerRun);
-  });
+  }, 30_000);
 });
 
 describe("NdjsonTraceStore persistence", () => {
