@@ -21,9 +21,21 @@ export interface TraceSummary {
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
   evicted: boolean;
   usage?: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number } | undefined;
+  metrics: TraceMetrics;
   /** `unknown` = no evidence either way (run cut short before the stream said anything) — never claim `unavailable` from absence. */
   capabilities: { model: Capability; tool: Capability };
   firstFailingStep?: string | undefined; failure?: FailureFocus | undefined;
+}
+
+export interface TraceMetrics {
+  durationMs?: number | undefined;
+  terminalStatus: TraceStatus;
+  toolCalls: number;
+  toolFailures: number;
+  modelCalls: number;
+  tokens?: { input?: number | undefined; cachedInput?: number | undefined; output?: number | undefined } | undefined;
+  retries: number;
+  denials: number;
 }
 export type Capability = "observed" | "unavailable" | "unknown";
 export interface TraceView { summary: TraceSummary; spans: Span[]; events: ObservationEvent[] }
@@ -167,6 +179,32 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
         ...(hasNumeric("cachedInputTokens") ? { cachedInputTokens: sum("cachedInputTokens") } : {}),
         ...(hasNumeric("outputTokens") ? { outputTokens: sum("outputTokens") } : {}) }
     : undefined;
+  const toolSpans = flat.filter((span) =>
+    span.category === "tool" && events.some((event) => event.spanId === span.spanId && event.type.startsWith("tool.call.")),
+  );
+  const modelSpans = flat.filter((span) =>
+    span.category === "model" && events.some((event) => event.spanId === span.spanId && event.type.startsWith("model.")),
+  );
+  const retrySpans = new Set(events.filter((event) => event.attempt > 1).map((event) => event.spanId));
+  const metrics: TraceMetrics = {
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    terminalStatus: status,
+    toolCalls: toolSpans.length,
+    toolFailures: toolSpans.filter((span) =>
+      span.status === "error" || span.status === "timeout" || span.status === "cancelled" ||
+      events.some((event) => event.spanId === span.spanId && event.type === "tool.call.failed"),
+    ).length,
+    modelCalls: modelSpans.length,
+    ...(usage && (usage.inputTokens !== undefined || usage.cachedInputTokens !== undefined || usage.outputTokens !== undefined)
+      ? { tokens: {
+          ...(usage.inputTokens !== undefined ? { input: usage.inputTokens } : {}),
+          ...(usage.cachedInputTokens !== undefined ? { cachedInput: usage.cachedInputTokens } : {}),
+          ...(usage.outputTokens !== undefined ? { output: usage.outputTokens } : {}),
+        } }
+      : {}),
+    retries: retrySpans.size,
+    denials: events.filter((event) => event.type === "policy.denied").length,
+  };
   const degraded = opts.degraded === true || events.some((e) => e.type === "telemetry.degraded");
   const truncated = opts.truncated === true || events.some((e) => e.type === "trace.truncated");
   const evicted = events.some(isEvictionMarker);
@@ -178,7 +216,7 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
     sessionId: events.find((e) => e.sessionId)?.sessionId,
     status, startedAt, endedAt, durationMs, endedReason: restart ? "server_restart" : undefined, eventCount: events.length, spanCount: flat.length,
     incompleteSpans: flat.filter((s) => s.incomplete).length, redactedEvents: events.filter((e) => e.privacy.redacted).length,
-    degraded, truncated, evicted, usage,
+    degraded, truncated, evicted, usage, metrics,
     capabilities: { model: events.some((e) => e.category === "model") ? "observed" : declaredUnavailable ? "unavailable" : "unknown", tool: events.some((e) => e.category === "tool") ? "observed" : declaredUnavailable ? "unavailable" : "unknown" },
     firstFailingStep: failure && failure.kind !== "degraded" ? failure.name : undefined, failure,
   };

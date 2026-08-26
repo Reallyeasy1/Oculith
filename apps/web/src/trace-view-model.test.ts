@@ -29,7 +29,7 @@ const view: TraceView = {
   summary: {
     schemaVersion: "1.0", capturePolicy: "metadata_only", runId: "r", traceId: "t", agentId: "ag", status: "error",
     startedAt: t0, durationMs: 1000, eventCount: 0, spanCount: 6, incompleteSpans: 0, redactedEvents: 0, degraded: false,
-    truncated: false, evicted: false, capabilities: { model: "unavailable", tool: "unavailable" },
+    truncated: false, evicted: false, metrics: { terminalStatus: "error", toolCalls: 0, toolFailures: 0, modelCalls: 0, retries: 0, denials: 0 }, capabilities: { model: "unavailable", tool: "unavailable" },
     failure: { kind: "error", spanId: "a1", eventId: "e", sequence: 3, name: "a1", category: "runtime", component: "test", path: ["root", "a", "a1"], diagnosis: "x" },
   },
   spans: [root],

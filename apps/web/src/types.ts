@@ -72,6 +72,9 @@ export interface RunListItem {
     cachedInputTokens?: number;
     outputTokens?: number;
   };
+  toolCalls: number;
+  toolFailures: number;
+  tokens?: { output?: number };
   degraded: boolean;
   truncated: boolean;
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
@@ -118,6 +121,16 @@ export interface TraceSummary {
     inputTokens?: number;
     cachedInputTokens?: number;
     outputTokens?: number;
+  };
+  metrics: {
+    durationMs?: number;
+    terminalStatus: TraceStatus;
+    toolCalls: number;
+    toolFailures: number;
+    modelCalls: number;
+    tokens?: { input?: number; cachedInput?: number; output?: number };
+    retries: number;
+    denials: number;
   };
   capabilities: { model: "observed" | "unavailable" | "unknown"; tool: "observed" | "unavailable" | "unknown" };
   firstFailingStep?: string;

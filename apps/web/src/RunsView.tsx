@@ -62,7 +62,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
               <th scope="col">Events</th>
               <th scope="col">Runtime / model</th>
               <th scope="col">Usage</th>
-              <th scope="col">Trust</th>
+              <th scope="col">Tool calls</th>
               <th scope="col">Last event</th>
             </tr>
           </thead>
@@ -95,10 +95,10 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 <td>{run.runtime} · {run.model}</td>
                 <td>{formatUsage(run.usage)}</td>
                 <td>
+                  <span>{run.toolCalls}{run.toolFailures > 0 && <> · {run.toolFailures} failed</>}</span>{" "}
                   {run.redacted && <span className="badge">redacted</span>}
                   {run.degraded && <span className="badge badge-warn">degraded</span>}
                   {run.truncated && <span className="badge badge-warn">truncated</span>}
-                  {!run.redacted && !run.degraded && !run.truncated && "—"}
                 </td>
                 <td>{formatClock(run.lastEventAt)}</td>
               </tr>
