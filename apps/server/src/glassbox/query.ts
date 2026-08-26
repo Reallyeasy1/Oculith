@@ -49,7 +49,9 @@ export type Capability = "observed" | "unavailable" | "unknown";
 export interface TraceView { summary: TraceSummary; spans: Span[]; events: ObservationEvent[] }
 
 const CATEGORY_RANK: Record<Category, number> = { tool: 0, model: 1, runtime: 2, workspace: 3, sandbox: 4, policy: 5, infrastructure: 6, control: 7, experience: 8 };
-const AUDIT_CATEGORIES = new Set<Category>(["control", "policy", "sandbox"]);
+// `tool` rows are the agent's own actions (actor agent/<id>, resource = program); without them the audit
+// could never attribute anything to the agent (#135).
+const AUDIT_CATEGORIES = new Set<Category>(["control", "policy", "sandbox", "tool"]);
 
 function auditOutcome(event: ObservationEvent): AuditOutcome {
   if (event.type === "policy.denied") return "denied";
