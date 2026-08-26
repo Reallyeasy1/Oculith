@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { AppConfig } from "./config.js";
 import { isModelConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
@@ -12,6 +12,7 @@ import { newId, type TraceStatus } from "./glassbox/schema.js";
 import { JsonStore } from "./store.js";
 import type {
   Agent,
+  AgentConfigSnapshot,
   AgentRun,
   AgentRunner,
   CreateAgentInput,
@@ -19,8 +20,36 @@ import type {
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import { boundedChangedPaths, diffWorkspace, snapshotWorkspace } from "./workspace-snapshot.js";
 
 const now = () => new Date().toISOString();
+
+export function configSnapshot(agent: Agent, config: AppConfig): AgentConfigSnapshot {
+  return {
+    instructions: "sha256:" + createHash("sha256").update(agent.instructions).digest("hex"),
+    modelProvider: config.modelProvider,
+    model: config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default",
+    codexSandboxMode: config.codexSandboxMode,
+    runtimeProvider: config.runtimeProvider,
+    containerRuntimeImage: config.containerRuntimeImage,
+    capturePolicy: config.glassboxCapturePolicy,
+  };
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
+  if (value !== null && typeof value === "object") {
+    return "{" + Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => JSON.stringify(key) + ":" + canonicalJson(entry))
+      .join(",") + "}";
+  }
+  return JSON.stringify(value);
+}
+
+export function configHash(snapshot: AgentConfigSnapshot): string {
+  return createHash("sha256").update(canonicalJson(snapshot)).digest("hex").slice(0, 16);
+}
 
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
@@ -65,12 +94,18 @@ export class AgentService {
         }
       }
     });
+    // AGENTS.md is platform-owned. Refresh every existing workspace at boot so newly introduced
+    // safety/runtime guidance reaches Agents created by earlier versions too.
+    for (const agent of this.store.snapshot().agents) {
+      await this.workspaces.writeInstructions(agent);
+    }
     for (const run of interrupted) {
       if (!run.traceId) continue;
       // The server itself cancelled this Run, not the local user: say so in the actor fields.
       this.emitter.emit({
         traceId: run.traceId,
         spanId: newId("spn"),
+        ...(run.traceParentSpanId ? { parentSpanId: run.traceParentSpanId } : {}),
         runId: run.id,
         agentId: run.agentId,
         actorId: "server",
@@ -210,6 +245,7 @@ export class AgentService {
     const run: AgentRun = {
       id: runId,
       traceId: ctx.traceId,
+      traceParentSpanId: ctx.rootSpanId,
       agentId,
       status: "queued",
       prompt,
@@ -239,6 +275,8 @@ export class AgentService {
       if (storedAgent.status === "busy") {
         throw new HttpError(409, "This Agent is already running");
       }
+      run.configSnapshot = configSnapshot(storedAgent, this.config);
+      run.configHash = configHash(run.configSnapshot);
       database.runs.push(run);
       database.messages.push(message);
       const snapshot = structuredClone(storedAgent);
@@ -282,7 +320,7 @@ export class AgentService {
       name: "run.created",
       status: "ok",
       source: { component: "AgentService", observed: true },
-      attributes: { promptBytes: Buffer.byteLength(prompt, "utf8") },
+      attributes: { promptBytes: Buffer.byteLength(prompt, "utf8"), configHash: run.configHash! },
     });
     this.spans.set(runId, {
       traceId: ctx.traceId,
@@ -356,6 +394,12 @@ export class AgentService {
             })
           : undefined;
       if (link) link.service = service;
+      if (service) {
+        await this.store.mutate((database) => {
+          const storedRun = database.runs.find((item) => item.id === run.id);
+          if (storedRun) storedRun.traceParentSpanId = service!.spanId;
+        });
+      }
       if (ids && service) {
         this.emitter.emit({
           ...ids,
@@ -368,6 +412,8 @@ export class AgentService {
           source: { component: "AgentService", observed: true },
         });
       }
+      const workspaceBefore = await snapshotWorkspace(agentAtStart.workspacePath).catch(() => undefined);
+      // Last look before handing off to the runner: a stop that arrived during the snapshot must still win.
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
@@ -388,6 +434,30 @@ export class AgentService {
           : {}),
         ...(this.config.glassboxDemoFailure === "timeout" ? { timeoutMs: 3_000 } : {}),
       });
+      if (workspaceBefore && ids && service) {
+        const workspaceAfter = await snapshotWorkspace(agentAtStart.workspacePath).catch(() => undefined);
+        if (workspaceAfter) {
+          const changes = diffWorkspace(workspaceBefore, workspaceAfter);
+          this.emitter.emit({
+            ...ids,
+            spanId: newId("spn"),
+            parentSpanId: service.spanId,
+            type: "workspace.changed",
+            category: "workspace",
+            name: "workspace.changed",
+            status: "ok",
+            source: { component: "AgentService", adapter: "WorkspaceSnapshot", observed: true },
+            attributes: {
+              added: changes.added.length,
+              modified: changes.modified.length,
+              removed: changes.removed.length,
+              bytesDelta: changes.bytesDelta,
+              truncated: changes.truncated,
+              paths: boundedChangedPaths(changes),
+            },
+          });
+        }
+      }
       const completedAt = now();
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
