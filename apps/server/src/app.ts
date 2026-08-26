@@ -218,10 +218,18 @@ export async function createApp(
       return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, runs: items };
     });
     app.get("/api/runs/:runId/trace", async (request) => { const { runId } = z.object({ runId: z.string().min(1) }).parse(request.params); service.getRun(runId); return viewFor(runId); });
-    app.get("/api/traces/:traceId", async (request) => { const { traceId } = z.object({ traceId: z.string().min(1) }).parse(request.params); const runId = glassbox.store.runIdForTrace(traceId); if (!runId) throw new HttpError(404, "Trace not found"); return viewFor(runId); });
+    const traceParams = z.object({ traceId: z.string().min(1) });
+    const runIdFor = (traceId: string): string => { const runId = glassbox.store.runIdForTrace(traceId); if (!runId) throw new HttpError(404, "Trace not found"); return runId; };
+    app.get("/api/traces/:traceId", async (request) => viewFor(runIdFor(traceParams.parse(request.params).traceId)));
+    app.get("/api/traces/:traceId/export", async (request, reply) => {
+      // FR-12: same builder as the trace route, so the export can never carry anything the API would not.
+      const { traceId } = traceParams.parse(request.params); const view = await viewFor(runIdFor(traceId));
+      reply.header("content-disposition", `attachment; filename="trace-${traceId}.json"`);
+      return { schemaVersion: SCHEMA_VERSION, exportedAt: new Date().toISOString(), ...view };
+    });
     app.get("/api/traces/:traceId/events", async (request) => {
-      const { traceId } = z.object({ traceId: z.string().min(1) }).parse(request.params); const q = eventsQuery.parse(request.query);
-      const runId = glassbox.store.runIdForTrace(traceId); if (!runId) throw new HttpError(404, "Trace not found");
+      const { traceId } = traceParams.parse(request.params); const q = eventsQuery.parse(request.query);
+      const runId = runIdFor(traceId);
       const events = (await glassbox.store.readRun(runId)).filter((e) => (!q.category || e.category === q.category) && (!q.status || e.status === q.status) && (!q.q || (e.name + " " + (e.error?.message ?? "")).toLowerCase().includes(q.q.toLowerCase())));
       return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, events };
     });
