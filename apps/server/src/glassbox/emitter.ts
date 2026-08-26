@@ -42,14 +42,10 @@ export class ObservationEmitter {
       this.quarantine(input, issue ? issue.path.join(".") + ": " + issue.message : "invalid");
       return null;
     }
-    const event = this.build(parsed.data);
-    let safe: ObservationEvent;
-    try { safe = redactEvent(event, { policy: this.capturePolicy, extraPatterns: this.extraPatterns }); }
-    catch (error) { safe = failClosed(event); this.log("redaction_failed_closed", { runId: event.runId, error: String(error) }); }
-    const final = observationEventSchema.safeParse(safe);
-    if (!final.success) { this.quarantine(input, "post-redaction: " + final.error.issues[0]?.message); return null; }
-    this.enqueue(final.data);
-    return final.data;
+    const final = this.finalize(parsed.data);
+    if (!final) { this.quarantine(input, "post-redaction: invalid"); return null; }
+    this.enqueue(final);
+    return final;
   }
 
   startSpan(input: Omit<EventInput, "phase" | "status">): SpanHandle {
@@ -61,7 +57,7 @@ export class ObservationEmitter {
       end: (status, extra = {}) => this.emit({
         ...input, spanId, phase: "end", status,
         type: extra.type ?? input.type, name: extra.name ?? input.name,
-        durationMs: Date.now() - startedAt,
+        durationMs: Math.max(0, Date.now() - startedAt),
         attributes: { ...(input.attributes ?? {}), ...(extra.attributes ?? {}) },
         ...(extra.error ? { error: extra.error } : {}), ...(extra.summary ? { summary: extra.summary } : {}),
       }),
@@ -78,15 +74,34 @@ export class ObservationEmitter {
     });
   }
 
+  /** build -> redact (fail-closed on redactor throw) -> re-validate. Shared by emit(), quarantine()
+   * and the truncation/degraded system events so nothing reaches the store without passing redaction. */
+  private finalize(data: ReturnType<typeof eventInputSchema.parse>): ObservationEvent | null {
+    const event = this.build(data);
+    let safe: ObservationEvent;
+    try { safe = redactEvent(event, { policy: this.capturePolicy, extraPatterns: this.extraPatterns }); }
+    catch (error) { safe = failClosed(event); this.log("redaction_failed_closed", { runId: event.runId, error: String(error) }); }
+    const final = observationEventSchema.safeParse(safe);
+    return final.success ? final.data : null;
+  }
+
   private quarantine(input: EventInput, reason: string): void {
-    const ids = { traceId: String((input as { traceId?: unknown }).traceId ?? "unknown"), runId: String((input as { runId?: unknown }).runId ?? "unknown"), agentId: String((input as { agentId?: unknown }).agentId ?? "unknown") };
-    if (ids.traceId === "unknown" || ids.runId === "unknown") { this.log("quarantine_dropped", { reason }); return; }
+    // `?? "unknown"` alone would miss an explicit empty string (still not a usable id); `|| "unknown"`
+    // catches both undefined and "".
+    const rawType = String((input as { type?: unknown }).type ?? "unknown");
+    const traceId = String((input as { traceId?: unknown }).traceId ?? "unknown") || "unknown";
+    const runId = String((input as { runId?: unknown }).runId ?? "unknown") || "unknown";
+    const agentId = String((input as { agentId?: unknown }).agentId ?? "unknown") || "unknown";
+    if (traceId === "unknown" || runId === "unknown") { this.log("quarantine_dropped", { reason }); return; }
     const fallback = eventInputSchema.safeParse({
-      ...ids, spanId: newId("spn"), type: "error.recorded", category: "control", name: "error.recorded", status: "error",
+      traceId, runId, agentId, spanId: newId("spn"), type: "error.recorded", category: "control", name: "error.recorded", status: "error",
       source: { component: "GlassBox", observed: true },
-      attributes: { quarantinedType: String((input as { type?: unknown }).type ?? "unknown"), reason: reason.slice(0, 200) },
+      attributes: { quarantinedType: rawType, reason: reason.slice(0, 200) },
     });
-    if (fallback.success) this.enqueue(this.build(fallback.data));
+    if (!fallback.success) { this.log("quarantine_dropped", { reason, quarantinedType: rawType }); return; }
+    const final = this.finalize(fallback.data);
+    if (final) this.enqueue(final);
+    else this.log("quarantine_dropped", { reason, quarantinedType: rawType });
   }
 
   private enqueue(event: ObservationEvent): void {
@@ -96,12 +111,20 @@ export class ObservationEmitter {
         if (!result.stored && (result.reason === "cap_events" || result.reason === "cap_bytes") && !this.truncatedRuns.has(event.runId)) {
           this.truncatedRuns.add(event.runId); this.store.markTruncated(event.runId);
           const t = eventInputSchema.parse({ traceId: event.traceId, runId: event.runId, agentId: event.agentId, spanId: newId("spn"), type: "trace.truncated", category: "control", name: "trace.truncated", status: "unset", source: { component: "GlassBox", observed: true }, attributes: { reason: result.reason } });
-          await this.store.append(this.build(t));
+          const finalT = this.finalize(t);
+          if (finalT) await this.store.append(finalT);
         }
       } catch (error) {
         if (!this.degradedRuns.has(event.runId)) {
           this.degradedRuns.add(event.runId);
           this.log("telemetry.degraded", { runId: event.runId, traceId: event.traceId, error: String(error).slice(0, 200) });
+          // Best-effort: persist a durable marker so degraded mode survives a process restart. Swallow
+          // failures here — we already logged above, and this must never surface as a second failure.
+          try {
+            const degraded = eventInputSchema.parse({ traceId: event.traceId, runId: event.runId, agentId: event.agentId, spanId: newId("spn"), type: "telemetry.degraded", category: "control", name: "telemetry.degraded", status: "error", source: { component: "GlassBox", observed: true }, attributes: { error: String(error).slice(0, 200) } });
+            const finalDegraded = this.finalize(degraded);
+            if (finalDegraded) await this.store.append(finalDegraded);
+          } catch { /* best-effort only */ }
         }
       }
     });

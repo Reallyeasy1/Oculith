@@ -58,4 +58,70 @@ describe("ObservationEmitter", () => {
     const em = createDefaultEmitter(); em.seedSequence("trc_1", 41);
     expect(em.emit(base)!.sequence).toBe(42);
   });
+  it("logs and drops a quarantine when ids are empty, instead of silently discarding", async () => {
+    const store = new MemoryTraceStore();
+    const logs: Array<{ message: string; meta: Record<string, unknown> }> = [];
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only", log: (message, meta) => logs.push({ message, meta }) });
+    const out = em.emit({ ...base, traceId: "" });
+    expect(out).toBeNull();
+    await em.flush();
+    expect(await store.readRun("run-1")).toEqual([]);
+    expect(logs.filter((l) => l.message === "quarantine_dropped")).toHaveLength(1);
+  });
+  it("redacts the quarantined error.recorded event before storing it", async () => {
+    const store = new MemoryTraceStore(); const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const secret = "Bearer abcdefghijklmnopqrstuvwxyz";
+    const out = em.emit({ ...base, status: secret as never });
+    expect(out).toBeNull();
+    await em.flush();
+    const stored = await store.readRun("run-1");
+    expect(stored).toHaveLength(1);
+    expect(stored[0]!.type).toBe("error.recorded");
+    expect(String(stored[0]!.attributes.reason)).not.toContain(secret);
+  });
+  it("persists exactly one telemetry.degraded event on first store failure", async () => {
+    const inner = new MemoryTraceStore();
+    const store: TraceStore = {
+      initialize: () => inner.initialize(),
+      append: (event) => (event.type === "telemetry.degraded" ? inner.append(event) : Promise.reject(new Error("boom"))),
+      readRun: (runId) => inner.readRun(runId),
+      runIdForTrace: (traceId) => inner.runIdForTrace(traceId),
+      listRuns: () => inner.listRuns(),
+      markTruncated: (runId) => inner.markTruncated(runId),
+    };
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    em.emit(base);
+    em.emit({ ...base, spanId: "spn_2" });
+    await em.flush();
+    expect(em.isDegraded("run-1")).toBe(true);
+    const stored = await store.readRun("run-1");
+    expect(stored.filter((e) => e.type === "telemetry.degraded")).toHaveLength(1);
+  });
+  it("never throws and stays degraded even when the best-effort persist also fails", async () => {
+    const store: TraceStore = { async initialize() {}, async append() { throw new Error("EACCES"); }, async readRun() { return []; }, runIdForTrace() { return undefined; }, listRuns() { return []; }, markTruncated() {} };
+    const logs: string[] = [];
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only", log: (m) => logs.push(m) });
+    expect(() => em.emit(base)).not.toThrow();
+    await em.flush();
+    expect(em.isDegraded("run-1")).toBe(true);
+    expect(logs.filter((l) => l === "telemetry.degraded")).toHaveLength(1);
+  });
+  it("keeps processing the queue after a rejected append", async () => {
+    const inner = new MemoryTraceStore();
+    let first = true;
+    const store: TraceStore = {
+      initialize: () => inner.initialize(),
+      append: (event) => { if (first) { first = false; return Promise.reject(new Error("boom")); } return inner.append(event); },
+      readRun: (runId) => inner.readRun(runId),
+      runIdForTrace: (traceId) => inner.runIdForTrace(traceId),
+      listRuns: () => inner.listRuns(),
+      markTruncated: (runId) => inner.markTruncated(runId),
+    };
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    em.emit(base);
+    em.emit({ ...base, spanId: "spn_2" });
+    await em.flush();
+    const stored = await store.readRun("run-1");
+    expect(stored.some((e) => e.spanId === "spn_2")).toBe(true);
+  });
 });
