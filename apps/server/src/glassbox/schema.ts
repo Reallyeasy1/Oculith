@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
-export const SCHEMA_VERSION = "1.0" as const;
+export const SCHEMA_VERSION = "1.1" as const;
 export const REDACTION_RULESET_VERSION = "1" as const;
 
 export const STATUSES = ["running", "ok", "error", "cancelled", "timeout", "unset"] as const;
@@ -14,6 +14,7 @@ export const EVENT_TYPES = [
   "agent_service.run.started", "agent_service.run.completed", "agent_service.run.failed",
   "runtime.container.started", "runtime.container.stopped",
   "runtime.codex.started", "runtime.codex.completed", "runtime.codex.failed",
+  "runtime.postcheck.started", "runtime.postcheck.completed", "runtime.postcheck.failed",
   "model.request", "model.completed",
   "tool.call.started", "tool.call.completed", "tool.call.failed",
   "workspace.changed", "policy.denied", "redaction.applied", "limit.exceeded",

@@ -94,7 +94,7 @@ export interface FailureFocus {
 }
 
 export interface TraceSummary {
-  schemaVersion: "1.0";
+  schemaVersion: "1.1";
   capturePolicy: CapturePolicy;
   runId: string;
   traceId: string;
@@ -125,7 +125,7 @@ export interface TraceSummary {
 }
 
 export interface ObservationEvent {
-  schemaVersion: "1.0";
+  schemaVersion: "1.1";
   eventId: string;
   sequence: number;
   traceId: string;
