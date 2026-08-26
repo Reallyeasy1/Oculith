@@ -88,7 +88,7 @@ xdg-open http://localhost:3000   # Linux desktop
 In the Web UI:
 
 1. Select **Create Agent**.
-2. Enter a name, description, and workspace instructions.
+2. Enter a name, description, instructions, and optionally choose or name a workspace.
 3. Select **Create Agent** again.
 4. Enter a task in the Playground, for example:
 
@@ -232,6 +232,7 @@ flowchart LR
 
 The first turn uses `codex exec`; later turns resume the stored Codex thread.
 Deleting an Agent archives its workspace under `workspaces/.deleted/`.
+Named workspaces may be shared by multiple Agents and are never archived by Agent deletion. To seed one before creating an Agent, create a directly nested directory such as `workspaces/repo-doctor`; the Create Agent workspace field will list it after startup. Switching an Agent's workspace clears its Codex thread so later turns cannot retain references to the previous project.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for component and extension
 boundaries.

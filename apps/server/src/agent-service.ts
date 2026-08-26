@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import type { AppConfig } from "./config.js";
 import { isModelConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
@@ -102,19 +103,26 @@ export class AgentService {
   async createAgent(input: CreateAgentInput): Promise<Agent> {
     const timestamp = now();
     const id = randomUUID();
+    if (input.workspace !== undefined && input.workspace.trim() === "") throw new HttpError(400, "Invalid workspace name");
+    const workspaceName = input.workspace?.trim() ?? id;
+    let workspacePath: string;
+    try { workspacePath = this.workspaces.pathForName(workspaceName); }
+    catch { throw new HttpError(400, "Invalid workspace name"); }
     const agent: Agent = {
       id,
       name: input.name.trim(),
       description: input.description?.trim() ?? "",
       instructions: input.instructions?.trim() ?? "",
       status: "ready",
-      workspacePath: this.workspaces.workspacePath(id),
+      workspacePath,
+      workspaceName,
+      workspaceManaged: input.workspace === undefined,
       codexThreadId: null,
       lastError: null,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    await this.workspaces.create(agent);
+    await this.workspaces.create(agent, input.workspace !== undefined);
     await this.store.mutate((database) => database.agents.push(agent));
     return agent;
   }
@@ -123,6 +131,14 @@ export class AgentService {
     const current = this.getAgent(id);
     if (current.status === "busy") {
       throw new HttpError(409, "Stop the active run before editing this Agent");
+    }
+    let nextWorkspacePath: string | undefined;
+    if (input.workspace !== undefined) {
+      try { nextWorkspacePath = this.workspaces.pathForName(input.workspace.trim()); }
+      catch { throw new HttpError(400, "Invalid workspace name"); }
+      if (nextWorkspacePath !== current.workspacePath) {
+        await this.workspaces.create({ ...current, workspacePath: nextWorkspacePath }, true);
+      }
     }
     const updated = await this.store.mutate((database) => {
       const agent = database.agents.find((item) => item.id === id);
@@ -135,6 +151,12 @@ export class AgentService {
       if (input.name !== undefined) agent.name = input.name.trim();
       if (input.description !== undefined) agent.description = input.description.trim();
       if (input.instructions !== undefined) agent.instructions = input.instructions.trim();
+      if (input.workspace !== undefined && nextWorkspacePath !== undefined && nextWorkspacePath !== agent.workspacePath) {
+        agent.workspacePath = nextWorkspacePath;
+        agent.workspaceName = input.workspace.trim();
+        agent.workspaceManaged = false;
+        agent.codexThreadId = null;
+      }
       agent.lastError = null;
       agent.updatedAt = now();
       return structuredClone(agent);
@@ -146,13 +168,19 @@ export class AgentService {
   async deleteAgent(id: string): Promise<{ archivedWorkspace: string }> {
     const agent = this.getAgent(id);
     await this.cancelExecution(id);
-    const archivedWorkspace = await this.workspaces.archive(agent);
+    const others = this.store.snapshot().agents.filter((item) => item.id !== id && path.resolve(item.workspacePath) === path.resolve(agent.workspacePath));
+    const managed = agent.workspaceManaged ?? path.basename(agent.workspacePath) === agent.id;
+    const archivedWorkspace = managed && others.length === 0 ? await this.workspaces.archive(agent) : "";
     await this.store.mutate((database) => {
       database.agents = database.agents.filter((item) => item.id !== id);
       database.messages = database.messages.filter((item) => item.agentId !== id);
       database.runs = database.runs.filter((item) => item.agentId !== id);
     });
     return { archivedWorkspace };
+  }
+
+  async listWorkspaces() {
+    return this.workspaces.list(this.store.snapshot().agents);
   }
 
   async startAgent(id: string): Promise<Agent> {
@@ -239,6 +267,9 @@ export class AgentService {
       if (storedAgent.status === "busy") {
         throw new HttpError(409, "This Agent is already running");
       }
+      const workspaceBusy = database.agents.some((candidate) =>
+        candidate.id !== storedAgent.id && candidate.status === "busy" && path.resolve(candidate.workspacePath) === path.resolve(storedAgent.workspacePath));
+      if (workspaceBusy) throw new HttpError(409, "Workspace is busy");
       database.runs.push(run);
       database.messages.push(message);
       const snapshot = structuredClone(storedAgent);
@@ -282,7 +313,7 @@ export class AgentService {
       name: "run.created",
       status: "ok",
       source: { component: "AgentService", observed: true },
-      attributes: { promptBytes: Buffer.byteLength(prompt, "utf8") },
+      attributes: { promptBytes: Buffer.byteLength(prompt, "utf8"), workspace: agentAtStart.workspaceName ?? path.basename(agentAtStart.workspacePath) },
     });
     this.spans.set(runId, {
       traceId: ctx.traceId,
@@ -371,6 +402,9 @@ export class AgentService {
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
+      // Shared workspaces can serve different Agents sequentially. Refresh the platform-managed
+      // instructions immediately before execution so the active Agent never inherits another's prompt.
+      await this.workspaces.writeInstructions(agentAtStart);
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         workspacePath: agentAtStart.workspacePath,

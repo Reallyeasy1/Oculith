@@ -9,6 +9,8 @@ export interface Agent {
   instructions: string;
   status: AgentStatus;
   workspacePath: string;
+  workspaceName?: string | undefined;
+  workspaceManaged?: boolean | undefined;
   codexThreadId: string | null;
   lastError: string | null;
   createdAt: string;
@@ -55,12 +57,14 @@ export interface CreateAgentInput {
   name: string;
   description?: string | undefined;
   instructions?: string | undefined;
+  workspace?: string | undefined;
 }
 
 export interface UpdateAgentInput {
   name?: string | undefined;
   description?: string | undefined;
   instructions?: string | undefined;
+  workspace?: string | undefined;
 }
 
 export interface RunnerResult {

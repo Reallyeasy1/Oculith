@@ -1,4 +1,4 @@
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Agent } from "./types.js";
 
@@ -6,7 +6,14 @@ export class WorkspaceManager {
   constructor(private readonly root: string) {}
 
   workspacePath(agentId: string): string {
-    return path.join(this.root, agentId);
+    return this.pathForName(agentId);
+  }
+
+  pathForName(name: string): string {
+    if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(name)) throw new Error("Invalid workspace name");
+    const resolved = path.resolve(this.root, name);
+    if (path.dirname(resolved) !== path.resolve(this.root)) throw new Error("Workspace must be directly under AGENT_WORKSPACE_ROOT");
+    return resolved;
   }
 
   async initialize(): Promise<void> {
@@ -14,9 +21,13 @@ export class WorkspaceManager {
     await mkdir(path.join(this.root, ".deleted"), { recursive: true });
   }
 
-  async create(agent: Agent): Promise<void> {
-    await mkdir(agent.workspacePath, { recursive: false });
+  async create(agent: Agent, allowExisting = false): Promise<void> {
+    let exists = true;
+    try { await stat(agent.workspacePath); } catch { exists = false; }
+    if (exists && !allowExisting) throw new Error("Workspace already exists");
+    if (!exists) await mkdir(agent.workspacePath, { recursive: false });
     await this.writeInstructions(agent);
+    if (exists) return;
     await writeFile(
       path.join(agent.workspacePath, ".gitignore"),
       [".codex/", "node_modules/", "dist/", ".env", "*.log", ""].join("\n"),
@@ -33,6 +44,37 @@ export class WorkspaceManager {
       ].join("\n"),
       "utf8",
     );
+  }
+
+  async list(agents: Agent[]): Promise<{ name: string; path: string; agents: string[]; fileCount: number; lastModified: string; managed: boolean }[]> {
+    const entries = await readdir(this.root, { withFileTypes: true });
+    const output = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name === ".deleted") continue;
+      const workspacePath = this.pathForName(entry.name);
+      let fileCount = 0;
+      let latest = (await stat(workspacePath)).mtimeMs;
+      const walk = async (directory: string): Promise<void> => {
+        for (const child of await readdir(directory, { withFileTypes: true })) {
+          const childPath = path.join(directory, child.name);
+          const info = await stat(childPath);
+          latest = Math.max(latest, info.mtimeMs);
+          if (child.isDirectory()) await walk(childPath);
+          else fileCount++;
+        }
+      };
+      await walk(workspacePath);
+      const attached = agents.filter((agent) => path.resolve(agent.workspacePath) === workspacePath);
+      output.push({
+        name: entry.name,
+        path: workspacePath,
+        agents: attached.map((agent) => agent.id),
+        fileCount,
+        lastModified: new Date(latest).toISOString(),
+        managed: attached.length === 1 && (attached[0]!.workspaceManaged ?? entry.name === attached[0]!.id),
+      });
+    }
+    return output.sort((left, right) => left.name.localeCompare(right.name));
   }
 
   async writeInstructions(agent: Agent): Promise<void> {

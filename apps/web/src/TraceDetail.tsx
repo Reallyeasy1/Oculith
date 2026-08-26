@@ -138,6 +138,7 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
       <dl className="trace-summary">
         <Field label="Trace">{summary.traceId || "—"}</Field>
         <Field label="Agent">{run?.agentName || summary.agentId || "—"}</Field>
+        <Field label="Workspace">{summary.workspace ?? run?.workspace ?? "—"}</Field>
         <Field label="Runtime / model">{run ? run.runtime + " · " + run.model : "—"}</Field>
         <Field label="Session">{summary.sessionId ?? "—"}</Field>
         <Field label="Start">{formatClock(summary.startedAt)}</Field>

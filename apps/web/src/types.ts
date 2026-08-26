@@ -8,6 +8,8 @@ export interface Agent {
   instructions: string;
   status: AgentStatus;
   workspacePath: string;
+  workspaceName?: string;
+  workspaceManaged?: boolean;
   codexThreadId: string | null;
   lastError: string | null;
   createdAt: string;
@@ -59,6 +61,7 @@ export interface RunListItem {
   traceId: string;
   agentId: string;
   agentName: string;
+  workspace?: string;
   status: TraceStatus;
   startedAt?: string;
   durationMs?: number;
@@ -100,6 +103,7 @@ export interface TraceSummary {
   traceId: string;
   agentId: string;
   sessionId?: string;
+  workspace?: string;
   status: TraceStatus;
   startedAt?: string;
   endedAt?: string;
