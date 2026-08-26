@@ -6,13 +6,14 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
-import type { AgentService } from "./agent-service.js";
+import { configHash, configSnapshot, type AgentService } from "./agent-service.js";
 import { createTraceContext, type TraceContext } from "./glassbox/context.js";
 import type { ObservationEmitter } from "./glassbox/emitter.js";
 import { buildTrace, type TraceView } from "./glassbox/query.js";
 import { CATEGORIES, SCHEMA_VERSION, STATUSES } from "./glassbox/schema.js";
 import type { RunIndexEntry, TraceStore } from "./glassbox/store.js";
 import { caseFromRun, regressionCaseInput } from "./eval/cases.js";
+import { EvalRunner } from "./eval/runner.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -36,6 +37,7 @@ const updateAgentBody = createAgentBody.partial().refine(
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
 });
+const evalRunBody = z.object({ agentId: z.string().uuid(), caseIds: z.array(z.string().uuid()).min(1).max(20).refine((ids) => new Set(ids).size === ids.length, "caseIds must be unique") });
 
 export async function createApp(
   config: AppConfig,
@@ -223,6 +225,8 @@ export async function createApp(
     const regressionCase = await service.createRegressionCase({ ...body });
     return reply.code(201).send({ regressionCase });
   });
+  app.get("/api/eval-runs", async () => ({ evalRuns: service.listEvalRuns() }));
+  app.get("/api/eval-runs/:id", async (request) => ({ evalRun: service.getEvalRun(z.object({ id: z.string().uuid() }).parse(request.params).id) }));
 
   if (glassbox) {
     const runsQuery = z.object({ status: z.enum(STATUSES).optional(), agentId: z.string().uuid().optional(), from: z.string().datetime().optional(), to: z.string().datetime().optional(), limit: z.coerce.number().int().min(1).max(200).default(50) });
@@ -234,6 +238,17 @@ export async function createApp(
       const found = entry ?? glassbox.store.listRuns().find((r) => r.runId === runId);
       return buildTrace(events, { capturePolicy: glassbox.emitter.capturePolicy, degraded: glassbox.emitter.isDegraded(runId), truncated: found?.truncated });
     };
+    app.post("/api/eval-runs", async (request, reply) => {
+      const body = evalRunBody.parse(request.body);
+      const agent = service.getAgent(body.agentId);
+      body.caseIds.forEach((id) => service.getRegressionCase(id));
+      const snapshot = configSnapshot(agent, config);
+      const evalRun = await service.createEvalRun({ caseIds: body.caseIds, target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } });
+      void new EvalRunner(service, glassbox).execute(evalRun.id).catch(async (error) => {
+        await service.updateEvalRun(evalRun.id, (item) => { item.status = "failed"; item.completedAt = new Date().toISOString(); item.results.push({ caseId: "", results: [], error: error instanceof Error ? error.message : String(error) }); });
+      });
+      return reply.code(202).send({ evalRun });
+    });
     app.post("/api/runs/:id/regression-case", async (request, reply) => {
       const run = service.getRun(runIdParams.parse(request.params).id);
       const template = service.getAgent(run.agentId).workspaceTemplate;

@@ -72,12 +72,24 @@ export interface RegressionCase {
   createdAt: string;
 }
 
+export interface EvalRun {
+  id: string;
+  caseIds: string[];
+  target: { agentId: string; configHash: string; snapshot: AgentConfigSnapshot };
+  runIds: string[];
+  results: { caseId: string; runId?: string | undefined; results: import("./eval/evaluators.js").EvalResult[]; error?: string | undefined }[];
+  status: "running" | "completed" | "failed";
+  createdAt: string;
+  completedAt?: string | undefined;
+}
+
 export interface Database {
   version: 1;
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
   regressionCases: RegressionCase[];
+  evalRuns: EvalRun[];
 }
 
 export interface CreateAgentInput {

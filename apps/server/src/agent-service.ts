@@ -15,6 +15,7 @@ import type {
   Agent,
   AgentConfigSnapshot,
   AgentRun,
+  EvalRun,
   AgentRunner,
   CreateAgentInput,
   Message,
@@ -299,6 +300,21 @@ export class AgentService {
       if (!database.regressionCases.some((item) => item.id === id)) throw new HttpError(404, "Regression case not found");
       database.regressionCases = database.regressionCases.filter((item) => item.id !== id);
     });
+  }
+
+  listEvalRuns(): EvalRun[] { return this.store.snapshot().evalRuns.sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }
+  getEvalRun(id: string): EvalRun {
+    const item = this.store.snapshot().evalRuns.find((candidate) => candidate.id === id);
+    if (!item) throw new HttpError(404, "Eval Run not found");
+    return item;
+  }
+  async createEvalRun(input: Omit<EvalRun, "id" | "createdAt" | "runIds" | "results" | "status">): Promise<EvalRun> {
+    const item: EvalRun = { ...input, id: randomUUID(), runIds: [], results: [], status: "running", createdAt: now() };
+    await this.store.mutate((database) => database.evalRuns.push(item));
+    return item;
+  }
+  async updateEvalRun(id: string, update: (item: EvalRun) => void): Promise<void> {
+    await this.store.mutate((database) => { const item = database.evalRuns.find((candidate) => candidate.id === id); if (!item) throw new HttpError(404, "Eval Run not found"); update(item); });
   }
 
   async sendMessage(
