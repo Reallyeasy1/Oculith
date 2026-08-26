@@ -9,6 +9,7 @@ import {
   formatUsage,
   matchesFilter,
   sortNewestFirst,
+  summarizeRuns,
   type QuickFilter,
 } from "./runs-view-model";
 
@@ -28,6 +29,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
     () => sortNewestFirst(runs).filter((run) => matchesFilter(run, filter)),
     [runs, filter],
   );
+  const okCount = summarizeRuns(runs).ok;
 
   return (
     <section className="runs-view" aria-labelledby="runs-heading">
@@ -60,9 +62,10 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
               <th scope="col">Duration</th>
               <th scope="col">First failing step</th>
               <th scope="col">Events</th>
+              <th scope="col">Config</th>
               <th scope="col">Runtime / model</th>
               <th scope="col">Usage</th>
-              <th scope="col">Trust</th>
+              <th scope="col">Tool calls</th>
               <th scope="col">Last event</th>
             </tr>
           </thead>
@@ -92,13 +95,17 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 <td>{formatDuration(run.durationMs)}{run.endedReason === "server_restart" ? " until restart" : ""}</td>
                 <td>{run.firstFailingStep ?? "—"}</td>
                 <td>{run.eventCount}</td>
+                <td title={run.configSnapshot ? JSON.stringify(run.configSnapshot) : undefined}>
+                  <code>{run.configHash?.slice(0, 8) ?? "—"}</code>
+                </td>
                 <td>{run.runtime} · {run.model}</td>
                 <td>{formatUsage(run.usage)}</td>
                 <td>
+                  <span>{run.toolCalls}{run.toolFailures > 0 && <> · {run.toolFailures} failed</>}</span>{" "}
                   {run.redacted && <span className="badge">redacted</span>}
+                  {run.denials > 0 && <span className="badge badge-warn">denied {run.denials}</span>}
                   {run.degraded && <span className="badge badge-warn">degraded</span>}
                   {run.truncated && <span className="badge badge-warn">truncated</span>}
-                  {!run.redacted && !run.degraded && !run.truncated && "—"}
                 </td>
                 <td>{formatClock(run.lastEventAt)}</td>
               </tr>
@@ -106,9 +113,14 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
           </tbody>
         </table>
         {visible.length === 0 && (
-          <p className="runs-empty">
-            {runs.length === 0 ? emptyText : filter === "attention" ? "Nothing needs attention." : "No Runs match this filter."}
-          </p>
+          <div className="runs-empty">
+            {runs.length === 0 ? emptyText : filter === "attention" ? (
+              <>
+                Nothing needs attention · {okCount} ok {okCount === 1 ? "Run" : "Runs"}
+                <button type="button" className="button button-ghost runs-empty-action" onClick={() => setFilter("all")}>Show all</button>
+              </>
+            ) : "No Runs match this filter."}
+          </div>
         )}
       </div>
     </section>

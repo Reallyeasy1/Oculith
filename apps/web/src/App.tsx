@@ -65,6 +65,8 @@ export default function App() {
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
   const messageEnd = useRef<HTMLDivElement>(null);
+  // undefined means this Agent's history has not loaded yet; null is a loaded, empty history.
+  const lastMessageIdRef = useRef<string | null | undefined>(undefined);
   const selectedIdRef = useRef<string | null>(null);
   const selectedRunIdRef = useRef<string | null>(null);
   const viewRef = useRef(view);
@@ -89,9 +91,10 @@ export default function App() {
     );
   }, []);
 
-  const refreshMessages = useCallback(async (agentId: string) => {
+  const refreshMessages = useCallback(async (agentId: string, establishBaseline = false) => {
     const result = await api.messages(agentId);
     if (mountedRef.current && selectedIdRef.current === agentId) {
+      if (establishBaseline) lastMessageIdRef.current = result.messages.at(-1)?.id ?? null;
       setMessages(result.messages);
     }
   }, []);
@@ -152,11 +155,12 @@ export default function App() {
   useEffect(() => {
     setActiveRun(null);
     setShowSettings(false);
+    lastMessageIdRef.current = undefined;
     if (!selectedId) {
       setMessages([]);
       return;
     }
-    void Promise.all([refreshMessages(selectedId), api.runs(selectedId)])
+    void Promise.all([refreshMessages(selectedId, true), api.runs(selectedId)])
       .then(([, result]) => {
         if (selectedIdRef.current !== selectedId) return;
         const latest = result.runs[0] ?? null;
@@ -183,8 +187,13 @@ export default function App() {
   }, [selected]);
 
   useEffect(() => {
-    messageEnd.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, activeRun]);
+    const lastMessageId = messages.at(-1)?.id ?? null;
+    const previous = lastMessageIdRef.current;
+    lastMessageIdRef.current = lastMessageId;
+    if (previous !== undefined && lastMessageId !== null && lastMessageId !== previous) {
+      messageEnd.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [messages]);
 
   const createAgent = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -465,13 +474,15 @@ export default function App() {
       </aside>
 
       <main className="main">
-        {!system?.modelConfigured || !system?.codexAvailable ? (
+        {system === null ? (
+          <p className="runtime-connecting" role="status">Connecting to runtime…</p>
+        ) : !system.modelConfigured || !system.codexAvailable ? (
           <div className="config-banner">
             <span>!</span>
             <div>
               <strong>Runtime configuration needed</strong>
               <p>
-                {!system?.modelConfigured
+                {!system.modelConfigured
                   ? "Set MODEL_PROVIDER and its credentials in .env (ARK_API_KEY + ARK_MODEL, or OPENAI_API_KEY) before using the Playground."
                   : system.runtimeProvider === "container"
                     ? "The local container engine or Agent Runtime image is unavailable. Rerun npm run poc."
