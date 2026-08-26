@@ -271,7 +271,7 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
                   />
                 )}
               </span>
-              <span className="trace-dur">{formatDuration(s.durationMs)}</span>
+              <span className="trace-dur">{geo?.instant ? "instant" : formatDuration(s.durationMs)}</span>
               {timingDescription && <span id={timingId} className="sr-only">{timingDescription}</span>}
             </div>
           );
@@ -335,7 +335,7 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
         <Field label="Source">{span.source.component}{span.source.adapter ? " / " + span.source.adapter : ""} <span className="badge">{span.source.observed ? "observed" : "unavailable"}</span></Field>
         <Field label="Started">{span.startedAt}</Field>
         <Field label="Ended">{span.endedAt ?? "—"}</Field>
-        <Field label="Duration">{formatDuration(span.durationMs)}</Field>
+        <Field label="Duration">{span.durationMs === 0 && !span.incomplete ? "instant" : formatDuration(span.durationMs)}</Field>
         <Field label="Attempt">{attempt ?? "—"}</Field>
         <Field label="Sequence">{span.sequence}</Field>
       </dl>
