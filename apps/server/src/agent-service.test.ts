@@ -2,11 +2,11 @@ import { mkdtemp } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentService } from "./agent-service.js";
+import { AgentService, configHash, configSnapshot } from "./agent-service.js";
 import { RunCancelledError } from "./errors.js";
 import { loadConfig } from "./config.js";
 import { JsonStore } from "./store.js";
-import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
+import type { AgentConfigSnapshot, AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 import { createTraceContext } from "./glassbox/context.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
@@ -61,6 +61,41 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
 }
 
 describe("Agent lifecycle", () => {
+  it("stamps stable behavior configuration and changes the hash when instructions change", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Versioned", instructions: "Run tests" });
+    const first = (await service.sendMessage(agent.id, "first")).run;
+    await expect.poll(() => service.getRun(first.id).status).toBe("completed");
+    const second = (await service.sendMessage(agent.id, "second")).run;
+    await expect.poll(() => service.getRun(second.id).status).toBe("completed");
+    expect(second.configHash).toBe(first.configHash);
+    expect(second.configSnapshot).toEqual(first.configSnapshot);
+
+    await service.updateAgent(agent.id, { instructions: "Skip tests" });
+    const changed = (await service.sendMessage(agent.id, "third")).run;
+    await expect.poll(() => service.getRun(changed.id).status).toBe("completed");
+    expect(changed.configHash).not.toBe(first.configHash);
+    expect(changed.configSnapshot?.instructions).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(changed.configSnapshot?.instructions).not.toContain("Skip tests");
+    expect(JSON.stringify(changed.configSnapshot)).not.toMatch(/apiKey|token|secret|password/i);
+  });
+
+  it("hashes canonical configuration independently of object key insertion order", () => {
+    const agent = { id: "a", name: "A", description: "", instructions: "Run tests", status: "ready", workspacePath: ".", codexThreadId: null, lastError: null, createdAt: "", updatedAt: "" } as const;
+    const config = loadConfig({ NODE_ENV: "test", ARK_API_KEY: "secret", ARK_MODEL: "model" });
+    const snapshot = configSnapshot(agent, config);
+    const reordered = {
+      capturePolicy: snapshot.capturePolicy,
+      containerRuntimeImage: snapshot.containerRuntimeImage,
+      runtimeProvider: snapshot.runtimeProvider,
+      codexSandboxMode: snapshot.codexSandboxMode,
+      model: snapshot.model,
+      modelProvider: snapshot.modelProvider,
+      instructions: snapshot.instructions,
+    } satisfies AgentConfigSnapshot;
+    expect(configHash(reordered)).toBe(configHash(snapshot));
+  });
+
   it("creates, updates, stops, starts and deletes an Agent", async () => {
     const service = await makeService();
     const agent = await service.createAgent({ name: "Builder" });
@@ -193,6 +228,7 @@ describe("GlassBox control-plane adapter", () => {
       "agent_service.run.completed",
     ]);
     expect(events[1]!.parentSpanId).toBe(ctx.rootSpanId);
+    expect(events[1]!.attributes.configHash).toBe(service.getRun(run.id).configHash);
     expect(events[2]!.parentSpanId).toBe(ctx.rootSpanId);
     expect(events.every((e) => e.traceId === ctx.traceId && e.requestId === "req-1")).toBe(true);
     expect(events.find((e) => e.type === "run.completed")!.attributes).toMatchObject({

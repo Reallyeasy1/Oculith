@@ -134,24 +134,27 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
   it("lists runs and serves a trace with schemaVersion and capturePolicy", async () => {
     const store = new MemoryTraceStore(); const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
     const ids = { traceId: "trc_9", runId: "run-9", agentId: "agt-9" };
+    const configSnapshot = { instructions: "sha256:" + "a".repeat(64), modelProvider: "ark", model: "model", codexSandboxMode: "workspace-write", runtimeProvider: "container", containerRuntimeImage: "runtime:test", capturePolicy: "metadata_only" } as const;
     emitter.emit({ ...ids, spanId: "root", type: "http.request.received", category: "control", name: "POST", phase: "start", status: "running", source: { component: "Fastify", observed: true } });
+    emitter.emit({ ...ids, spanId: "created", parentSpanId: "root", type: "run.created", category: "control", name: "run.created", status: "ok", attributes: { configHash: "0123456789abcdef" }, source: { component: "AgentService", observed: true } });
     emitter.emit({ ...ids, spanId: "rt", parentSpanId: "root", type: "runtime.codex.started", category: "runtime", name: "codex", phase: "start", status: "running", source: { component: "AgentRunner", observed: true } });
     emitter.emit({ ...ids, spanId: "rt", type: "runtime.codex.failed", category: "runtime", name: "codex", phase: "end", status: "timeout", error: { type: "timeout", message: "Codex timed out after 3000 ms" }, source: { component: "AgentRunner", observed: true } });
     emitter.emit({ ...ids, spanId: "t", parentSpanId: "root", type: "run.timed_out", category: "control", name: "run.timed_out", status: "timeout", source: { component: "AgentService", observed: true } });
     await emitter.flush();
     const svc = { ...service, getRuns: () => [], listAgents: () => [{ id: "agt-9", name: "Nine" }],
-      getRun: (id: string) => { if (id !== "run-9") throw new HttpError(404, "Run not found"); return { id, agentId: "agt-9", status: "failed", traceId: "trc_9", createdAt: "2026-08-26T00:00:00.000Z" }; },
-      allRuns: () => [{ id: "run-9", agentId: "agt-9", status: "failed", traceId: "trc_9", createdAt: "2026-08-26T00:00:00.000Z" }] } as unknown as AgentService;
+      getRun: (id: string) => { if (id !== "run-9") throw new HttpError(404, "Run not found"); return { id, agentId: "agt-9", status: "failed", traceId: "trc_9", createdAt: "2026-08-26T00:00:00.000Z", configHash: "0123456789abcdef", configSnapshot }; },
+      allRuns: () => [{ id: "run-9", agentId: "agt-9", status: "failed", traceId: "trc_9", createdAt: "2026-08-26T00:00:00.000Z", configHash: "0123456789abcdef", configSnapshot }] } as unknown as AgentService;
     const app = await createApp(config(), svc, { emitter, store });
     const get = (url: string) => app.inject({ method: "GET", url, headers: auth });
     const list = await get("/api/runs?limit=10");
     expect(list.statusCode).toBe(200);
     const body = list.json();
     expect(body.schemaVersion).toBe("1.0"); expect(body.capturePolicy).toBe("metadata_only");
-    expect(body.runs[0]).toMatchObject({ runId: "run-9", agentName: "Nine", status: "timeout", firstFailingStep: "codex", eventCount: 4 });
+    expect(body.runs[0]).toMatchObject({ runId: "run-9", agentName: "Nine", status: "timeout", firstFailingStep: "codex", eventCount: 5, configHash: "0123456789abcdef", configSnapshot });
     const trace = await get("/api/runs/run-9/trace");
+    expect(trace.json().summary.configHash).toBe(body.runs[0].configHash);
     expect(trace.json().summary.failure).toMatchObject({ kind: "timeout", spanId: "rt", path: ["root", "rt"] });
-    expect(trace.json().spans[0].children[0].spanId).toBe("rt");
+    expect(trace.json().spans[0].children.some((span: { spanId: string }) => span.spanId === "rt")).toBe(true);
     expect((await get("/api/traces/trc_9")).json().summary.runId).toBe("run-9");
     const filtered = (await get("/api/traces/trc_9/events?status=timeout")).json();
     expect(filtered.events.map((e: { type: string }) => e.type)).toEqual(["runtime.codex.failed", "run.timed_out"]);
