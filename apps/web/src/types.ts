@@ -84,6 +84,9 @@ export interface RunListItem {
     cachedInputTokens?: number;
     outputTokens?: number;
   };
+  toolCalls: number;
+  toolFailures: number;
+  tokens?: { output?: number };
   denials: number;
   configHash?: string;
   configSnapshot?: AgentConfigSnapshot;
@@ -134,6 +137,16 @@ export interface TraceSummary {
     inputTokens?: number;
     cachedInputTokens?: number;
     outputTokens?: number;
+  };
+  metrics: {
+    durationMs?: number;
+    terminalStatus: TraceStatus;
+    toolCalls: number;
+    toolFailures: number;
+    modelCalls: number;
+    tokens?: { input?: number; cachedInput?: number; output?: number };
+    retries: number;
+    denials: number;
   };
   configHash?: string;
   capabilities: { model: "observed" | "unavailable" | "unknown"; tool: "observed" | "unavailable" | "unknown" };
