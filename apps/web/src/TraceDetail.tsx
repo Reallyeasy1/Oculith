@@ -15,8 +15,18 @@ import {
   type TraceFilter,
 } from "./trace-view-model";
 
-// "unknown" = the run was cut short before the stream said anything; it is not a capability gap.
-const CAPABILITY_LABEL = { observed: "observed", unavailable: "unavailable", unknown: "not observed" } as const;
+// Three capability states (PRD §8): observed | unavailable | unknown. "unknown" = the Run was cut short
+// before the stream said anything; it is not a capability gap. Short badge copy; long form in `title`.
+const CAPABILITY_LABEL = { observed: "observed", unavailable: "unavailable", unknown: "no evidence — run cut short" } as const;
+const CAPABILITY_TITLE = {
+  observed: "The runtime emitted events for this layer.",
+  unavailable: "The Run completed but the runtime exposed no events for this layer.",
+  unknown: "The Run was cancelled, timed out, or its stream never started, so nothing was said about this layer; absence proves nothing.",
+} as const;
+
+function CapabilityBadge({ layer, state }: { layer: "model" | "tool"; state: keyof typeof CAPABILITY_LABEL }) {
+  return <span className="badge" title={layer + ": " + CAPABILITY_TITLE[state]}>{layer} {CAPABILITY_LABEL[state]}</span>;
+}
 
 interface Props {
   runId: string;
@@ -38,6 +48,9 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
   // Bumped whenever focus must move programmatically (keyboard nav, Jump, drawer close); the effect below
   // runs after the target row has rendered, which matters when Jump expands a collapsed path.
   const [focusReq, setFocusReq] = useState(0);
+  // Once per open (App keys this component by runId): bring the header + banner into the first viewport.
+  const sectionRef = useRef<HTMLElement>(null);
+  useEffect(() => { sectionRef.current?.scrollIntoView({ block: "start" }); }, []);
 
   const byId = useMemo(() => (view ? indexSpans(view.spans) : new Map<string, Span>()), [view]);
   // Per-row redaction comes from the full event list: the server only nests intermediate events under
@@ -53,7 +66,7 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
 
   if (!view) {
     return (
-      <section className="runs-view trace-detail" aria-live="polite">
+      <section ref={sectionRef} className="runs-view trace-detail" aria-live="polite">
         <div className="playground-topbar trace-header">
           <div>
             <span className="eyebrow">Trace</span>
@@ -110,7 +123,7 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
   const closeDrawer = () => { const id = openId; setOpenId(null); if (id) focusRow(id); };
 
   return (
-    <section className="runs-view trace-detail" aria-labelledby="trace-heading">
+    <section ref={sectionRef} className="runs-view trace-detail" aria-labelledby="trace-heading">
       <div className="playground-topbar trace-header">
         <div>
           <span className="eyebrow">Trace · schema {summary.schemaVersion} · {summary.capturePolicy}</span>
@@ -132,8 +145,8 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
         <Field label="Events">{summary.eventCount} · {summary.spanCount} spans</Field>
         <Field label="Usage">{formatUsage(summary.usage)}</Field>
         <Field label="Trust">
-          <span className="badge">model {CAPABILITY_LABEL[summary.capabilities.model]}</span>
-          <span className="badge">tool {CAPABILITY_LABEL[summary.capabilities.tool]}</span>
+          <CapabilityBadge layer="model" state={summary.capabilities.model} />
+          <CapabilityBadge layer="tool" state={summary.capabilities.tool} />
           {summary.redactedEvents > 0 && <span className="badge">redacted {summary.redactedEvents}</span>}
           {summary.truncated && <span className="badge badge-warn">truncated</span>}
           {summary.degraded && <span className="badge badge-warn">degraded</span>}

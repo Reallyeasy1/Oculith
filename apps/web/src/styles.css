@@ -1218,6 +1218,27 @@ textarea:focus {
 .trace-detail {
   position: relative;
   padding-bottom: 8px;
+  /* scrollIntoView on open leaves the compact Playground bar visible above the trace header. */
+  scroll-margin-top: 72px;
+}
+
+/* Compact Playground while a trace is open (issue #35): agent name, status, Expand. */
+.playground-bar {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 10px 22px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 17px;
+}
+
+.playground-bar h1 {
+  margin: 0;
+  font-size: 16px;
 }
 
 .trace-header {

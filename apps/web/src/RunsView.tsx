@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { RunListItem } from "./types";
 import {
+  FILTER_LABEL,
   QUICK_FILTERS,
   STATUS_ICON,
   formatClock,
@@ -18,7 +19,7 @@ interface Props {
 }
 
 export default function RunsView({ runs, selectedRunId, onOpenTrace }: Props) {
-  const [filter, setFilter] = useState<QuickFilter>("all");
+  const [filter, setFilter] = useState<QuickFilter>("attention");
   const visible = useMemo(
     () => sortNewestFirst(runs).filter((run) => matchesFilter(run, filter)),
     [runs, filter],
@@ -40,7 +41,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace }: Props) {
               aria-pressed={filter === item}
               onClick={() => setFilter(item)}
             >
-              {item === "timeout" ? "Timed out" : item}
+              {FILTER_LABEL[item] ?? item}
             </button>
           ))}
         </div>
@@ -101,7 +102,9 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace }: Props) {
           </tbody>
         </table>
         {visible.length === 0 && (
-          <p className="runs-empty">{runs.length === 0 ? "No Runs observed yet." : "No Runs match this filter."}</p>
+          <p className="runs-empty">
+            {runs.length === 0 ? "No Runs observed yet." : filter === "attention" ? "Nothing needs attention." : "No Runs match this filter."}
+          </p>
         )}
       </div>
     </section>
