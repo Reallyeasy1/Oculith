@@ -188,7 +188,7 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
         </label>
         <label className="trace-check">
           <input type="checkbox" checked={filter.errorsOnly} onChange={(e) => setFilter({ ...filter, errorsOnly: e.target.checked })} />
-          errors only
+          Errors only
         </label>
         {isFilterActive(filter) && (
           <button type="button" className="button button-ghost" onClick={() => setFilter(EMPTY_FILTER)}>Clear</button>
