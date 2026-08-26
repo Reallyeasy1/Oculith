@@ -8,7 +8,7 @@ Argument: an issue number (e.g. `/start-issue 4`). If missing, run `gh issue lis
 
 ## Steps
 1. `gh issue view $ARGUMENTS --json number,title,body,labels,milestone` — read the whole body, especially **Acceptance criteria** and **Out of scope**.
-2. Sync and branch: `git fetch origin && git switch -c feat/$ARGUMENTS-<slug> origin/main` (slug = 2–4 words from the title). If the branch exists, switch to it.
+2. Sync and branch: `git fetch origin && git switch -c feat/$ARGUMENTS-<slug> origin/main` (slug = 2–4 words from the title; `chore/` for non-feature issues). If the issue depends on an unmerged parent issue, branch from that issue's branch instead and pass it later as `/finish-issue N --base <parent-branch>`. If the branch exists, switch to it.
 3. Restate the acceptance criteria as a numbered **test plan**: each checkbox becomes a test name (vitest) or a manual verification step. Anything untestable → say so and propose the closest automated proxy.
 4. Map to seams — name the exact files you will touch, using CLAUDE.md's architecture section: `types.ts` (contracts), `app.ts` (routes + zod), `agent-service.ts` (Run lifecycle), `codex-runner.ts` / `container-codex-runner.ts` (Runtime boundary, env allow-lists), `store.ts` (persistence), `apps/web/src/App.tsx` + `types.ts` (UI, mirrored types), `apps/server/src/glassbox/` (context, emitter, schema, redact, store, query). Adapters in the seams call the emitter only.
 5. State dependencies on other issues (by number) and whether they are merged on `origin/main`.

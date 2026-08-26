@@ -72,7 +72,7 @@ Governing rule: **ship evidence before control.** Never cut redaction, real back
 - **Hooks** (`settings.json` → `hooks/*.cjs`, Node so they run on Windows and Linux): block edits to `.env*`, lockfiles, runtime state and pristine fixtures; block force-push/`--no-verify`/destructive git/`cat .env`; scan staged diffs for API keys and canaries before every `git commit`; typecheck the touched workspace after every TS edit; print branch + open P0 issues at session start.
 - **Rules** (`rules/`): path-scoped conventions for server, web, and the GlassBox invariants.
 - **Agents** (`agents/`): `glassbox-privacy-reviewer` (adversarial, read-only — run before merging anything that emits, stores, or renders trace data), `negative-test-writer` (table-driven privacy/degradation/rollup tests for AC-02..06), `baseline-verifier` (starter-kit acceptance flow over the API + trace endpoints + `npm run check`).
-- **Skills**: `/start-issue N` (branch + test plan mapped to seams), `/run-poc` (judged Docker path with the Windows quirks handled).
+- **Skills**: `/start-issue N` (branch + test plan mapped to seams), `/finish-issue N [--base]` (verify → push → open the PR), `/run-poc` (judged Docker path with the Windows quirks handled).
 - **MCP** (`.mcp.json`): `context7` for Fastify/Vite/Codex docs, `playwright` for driving the UI in E2E checks and demo screenshots.
 - Permissions pre-allow read-only git/gh/npm-check commands and deny reading `.env`, `.local/`, `codex-home/`.
 
