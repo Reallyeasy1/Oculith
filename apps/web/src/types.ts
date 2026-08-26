@@ -72,6 +72,7 @@ export interface RunListItem {
     cachedInputTokens?: number;
     outputTokens?: number;
   };
+  denials: number;
   degraded: boolean;
   truncated: boolean;
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
@@ -81,7 +82,7 @@ export interface RunListItem {
 }
 
 export interface FailureFocus {
-  kind: "error" | "timeout" | "cancelled" | "degraded";
+  kind: "error" | "timeout" | "cancelled" | "denied" | "degraded";
   spanId: string;
   eventId: string;
   sequence: number;
@@ -110,6 +111,7 @@ export interface TraceSummary {
   spanCount: number;
   incompleteSpans: number;
   redactedEvents: number;
+  denials: number;
   degraded: boolean;
   truncated: boolean;
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
