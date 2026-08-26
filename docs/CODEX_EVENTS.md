@@ -110,8 +110,8 @@ Each block is copied byte-for-byte out of the named fixture (after the scrubbing
 ## Traps found while capturing
 
 1. **`turn.failed` puts the message under `error.message`, not `message`** (E12).
-   `parseCodexEventLine` currently handles top-level `type:"error"` only, so a failed turn's
-   authoritative message is dropped today. Task 8 must read `event.error.message`.
+   `parseCodexEventLine` reads `event.error.message` for `turn.failed` as well as the top-level
+   `message` for `type:"error"`, so the authoritative verdict is the last recorded error.
 2. **`item.type === "error"` is not a run failure** (E8). Both versions emit that line on
    *every* successful run with a non-OpenAI model. Mapping it to a failure would mark every
    Ark run as failed.

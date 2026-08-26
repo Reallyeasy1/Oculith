@@ -122,7 +122,9 @@ describe("Codex stream fixtures", () => {
     expect(parsed.messages).toEqual([]);
     expect(parsed.usage).toBeNull();
     expect(parsed.errors.at(-1)).toContain("401 Unauthorized");
-    // Known gap (docs/CODEX_EVENTS.md trap 1): turn.failed nests its message under
-    // error.message and is not parsed yet — the top-level error events cover it for now.
+    // docs/CODEX_EVENTS.md trap 1: turn.failed nests its message under error.message. The last
+    // recorded error is that verdict, not one of the five preceding "Reconnecting..." notices.
+    expect(parsed.errors.at(-1)).not.toContain("Reconnecting");
+    expect(parsed.errors).toHaveLength(7);
   });
 });

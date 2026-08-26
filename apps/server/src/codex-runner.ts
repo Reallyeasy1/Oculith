@@ -3,7 +3,9 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
+import { CodexStreamObserver, type CodexStreamSink } from "./glassbox/codex-observer.js";
 import { createDefaultEmitter, type ObservationEmitter } from "./glassbox/emitter.js";
+import { newId } from "./glassbox/schema.js";
 import type {
   AgentRunner,
   RunUsage,
@@ -46,7 +48,11 @@ export function buildCodexArgs(
   return args;
 }
 
-export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
+export function parseCodexEventLine(
+  line: string,
+  parsed: ParsedEvents,
+  sink?: CodexStreamSink,
+): void {
   let event: Record<string, unknown>;
   try {
     event = JSON.parse(line) as Record<string, unknown>;
@@ -56,10 +62,12 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
 
   if (event.type === "thread.started" && typeof event.thread_id === "string") {
     parsed.threadId = event.thread_id;
+    sink?.onThreadStarted(event.thread_id);
   }
 
   if (event.type === "item.completed" && event.item && typeof event.item === "object") {
     const item = event.item as Record<string, unknown>;
+    sink?.onItemCompleted(item);
     if (item.type === "agent_message" && typeof item.text === "string") {
       parsed.messages.push(item.text);
     }
@@ -67,6 +75,7 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
 
   if (event.type === "turn.completed" && event.usage && typeof event.usage === "object") {
     const usage = event.usage as Record<string, unknown>;
+    sink?.onTurnCompleted(usage);
     parsed.usage = {
       ...(typeof usage.input_tokens === "number"
         ? { inputTokens: usage.input_tokens }
@@ -80,14 +89,24 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
     };
   }
 
-  if (event.type === "error") {
+  // `error` lines are retry notices; `turn.failed` is the authoritative verdict and nests its
+  // message under `error.message` (docs/CODEX_EVENTS.md trap 1). Both feed parsed.errors so the
+  // runner can attach the last one to a failed span.
+  if (event.type === "error" || event.type === "turn.failed") {
+    const nested =
+      event.error && typeof event.error === "object"
+        ? (event.error as Record<string, unknown>).message
+        : undefined;
     const message =
       typeof event.message === "string"
         ? event.message
-        : typeof event.error === "string"
-          ? event.error
-          : "Codex reported an unknown error";
+        : typeof nested === "string"
+          ? nested
+          : typeof event.error === "string"
+            ? event.error
+            : "Codex reported an unknown error";
     parsed.errors.push(message);
+    sink?.onError(message);
   }
 }
 
@@ -106,7 +125,6 @@ export class CodexRunner implements AgentRunner {
 
   constructor(
     private readonly config: AppConfig,
-    // Unused until the runtime spans land (T8); wired here so the factory has one shape.
     protected readonly emitter: ObservationEmitter = createDefaultEmitter(),
   ) {}
 
@@ -137,6 +155,32 @@ export class CodexRunner implements AgentRunner {
     if (this.active.has(request.agentId)) {
       throw new Error("Agent already has an active Codex process");
     }
+
+    const timeoutMs = request.timeoutMs ?? this.config.codexTimeoutMs;
+    const span = request.trace
+      ? this.emitter.startSpan({
+          traceId: request.trace.traceId,
+          runId: request.trace.runId,
+          agentId: request.trace.agentId,
+          spanId: newId("spn"),
+          parentSpanId: request.trace.parentSpanId,
+          type: "runtime.codex.started",
+          category: "runtime",
+          name: "codex exec",
+          source: { component: "AgentRunner", adapter: "CodexRunner", observed: true },
+          attributes: {
+            sandbox: this.config.codexSandboxMode,
+            resume: request.threadId !== null,
+            timeoutMs,
+            // An explicit per-request timeout only comes from the gated demo failure fixture.
+            ...(request.timeoutMs !== undefined ? { demoFailure: "timeout" } : {}),
+          },
+        })
+      : undefined;
+    const observer =
+      request.trace && span
+        ? new CodexStreamObserver(this.emitter, request.trace, span.spanId, "CodexRunner")
+        : undefined;
 
     const args = buildCodexArgs(request, this.config.codexSandboxMode);
     const child = spawn(this.config.codexBin, args, {
@@ -180,7 +224,7 @@ export class CodexRunner implements AgentRunner {
         const lines = stdout.split(/\r?\n/);
         stdout = lines.pop() ?? "";
         for (const line of lines) {
-          parseCodexEventLine(line, parsed);
+          parseCodexEventLine(line, parsed, observer);
         }
       } else {
         stderr += chunk.toString("utf8");
@@ -196,39 +240,108 @@ export class CodexRunner implements AgentRunner {
     const timeout = setTimeout(() => {
       active.timedOut = true;
       this.terminate(active);
-    }, this.config.codexTimeoutMs);
+    }, timeoutMs);
     timeout.unref();
 
+    let spanEnded = false;
     try {
       const exitCode = await new Promise<number>((resolve, reject) => {
         child.once("error", reject);
         child.once("close", (code) => resolve(code ?? 1));
       });
       if (stdout.trim()) {
-        parseCodexEventLine(stdout.trim(), parsed);
+        parseCodexEventLine(stdout.trim(), parsed, observer);
       }
+      const output = parsed.messages.at(-1)?.trim();
+      const failed =
+        active.cancelled || active.timedOut || active.outputExceeded || exitCode !== 0 || !output;
+      observer?.finish(failed);
+      spanEnded = span !== undefined;
+      // Observed only: the real exit code (null when a signal killed it) and the real signal.
+      const endAttrs = {
+        ...(child.exitCode !== null ? { exitCode: child.exitCode } : {}),
+        ...(child.signalCode ? { terminationSignal: child.signalCode } : {}),
+        ...(observer?.sessionId ? { sessionId: observer.sessionId } : {}),
+      };
       if (active.cancelled) {
+        span?.end("cancelled", {
+          type: "runtime.codex.failed",
+          attributes: endAttrs,
+          error: { type: "cancelled", message: "Run cancelled" },
+        });
         throw new RunCancelledError();
       }
       if (active.timedOut) {
-        throw new Error("Codex timed out after " + this.config.codexTimeoutMs + " ms");
+        const message = "Codex timed out after " + timeoutMs + " ms";
+        span?.end("timeout", {
+          type: "runtime.codex.failed",
+          attributes: endAttrs,
+          error: { type: "timeout", message },
+        });
+        throw new Error(message);
       }
       if (active.outputExceeded) {
-        throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
+        const message = "Codex output exceeded CODEX_MAX_OUTPUT_BYTES";
+        if (request.trace && span) {
+          this.emitter.emit({
+            traceId: request.trace.traceId,
+            runId: request.trace.runId,
+            agentId: request.trace.agentId,
+            spanId: newId("spn"),
+            parentSpanId: span.spanId,
+            type: "limit.exceeded",
+            category: "runtime",
+            name: "output_cap",
+            status: "error",
+            source: { component: "AgentRunner", adapter: "CodexRunner", observed: true },
+            attributes: { limit: "CODEX_MAX_OUTPUT_BYTES", bytes: totalBytes },
+          });
+        }
+        span?.end("error", {
+          type: "runtime.codex.failed",
+          attributes: endAttrs,
+          error: { type: "output_cap", message },
+        });
+        throw new Error(message);
       }
       if (exitCode !== 0) {
         const detail = parsed.errors.at(-1) ?? stderr.trim() ?? "No error detail";
-        throw new Error("Codex exited with code " + exitCode + ": " + detail);
+        const message = "Codex exited with code " + exitCode + ": " + detail;
+        span?.end("error", {
+          type: "runtime.codex.failed",
+          attributes: endAttrs,
+          error: { type: "exit_code", message },
+        });
+        throw new Error(message);
       }
-      const output = parsed.messages.at(-1)?.trim();
       if (!output) {
-        throw new Error("Codex completed without an agent message");
+        const message = "Codex completed without an agent message";
+        span?.end("error", {
+          type: "runtime.codex.failed",
+          attributes: endAttrs,
+          error: { type: "no_output", message },
+        });
+        throw new Error(message);
       }
+      span?.end("ok", {
+        type: "runtime.codex.completed",
+        attributes: { ...endAttrs, outputBytes: Buffer.byteLength(output, "utf8") },
+      });
       return {
         output,
         threadId: parsed.threadId,
         usage: parsed.usage,
       };
+    } catch (error) {
+      // Only reached when the spawn itself failed (the branches above end the span first).
+      if (span && !spanEnded) {
+        observer?.finish(true);
+        span.end("error", {
+          type: "runtime.codex.failed",
+          error: { type: "spawn_failed", message: String(error).slice(0, 2048) },
+        });
+      }
+      throw error;
     } finally {
       clearTimeout(timeout);
       if (active.forceKillTimer) clearTimeout(active.forceKillTimer);
