@@ -90,6 +90,7 @@ export interface RunListItem {
   toolFailures: number;
   tokens?: { output?: number };
   denials: number;
+  actions: number;
   configHash?: string;
   configSnapshot?: AgentConfigSnapshot;
   workspaceChanges?: { added: number; modified: number; removed: number; bytesDelta: number; truncated: boolean };

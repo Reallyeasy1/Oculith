@@ -1225,6 +1225,12 @@ textarea:focus {
   background: #f6ecd2;
 }
 
+.badge-error {
+  color: #ac4343;
+  border-color: #e8b4ae;
+  background: #f6dfdc;
+}
+
 
 /* --- GlassBox Trace detail (UX-02) --- */
 .trace-detail {
@@ -1395,6 +1401,35 @@ textarea:focus {
   margin: 0;
   padding: 0;
   accent-color: var(--purple);
+}
+
+.trace-filters .button[aria-pressed="true"] {
+  background: var(--purple-soft);
+  border-color: var(--purple);
+  color: var(--purple-dark);
+}
+
+.audit-table-wrap {
+  border-top: 1px solid #ecebe5;
+}
+
+.audit-table tbody tr {
+  cursor: pointer;
+}
+
+.audit-table tbody tr:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: -2px;
+}
+
+.audit-evidence {
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid currentColor;
+  background: transparent;
+  color: var(--purple-dark);
+  font: inherit;
+  cursor: pointer;
 }
 
 .trace-tree {
