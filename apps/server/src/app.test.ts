@@ -165,3 +165,15 @@ it("lists runs and serves a trace with schemaVersion and capturePolicy", async (
   expect((await app.inject({ method: "GET", url: "/api/traces/nope/export" })).json()).toEqual({ error: "Trace not found" });
   await app.close();
 });
+
+it("maps validation errors to 400 in production too (static web build served)", async () => {
+  // Regression: `await app.register(fastifyStatic)` sat between the routes and setErrorHandler,
+  // so the judged POC path answered every zod failure with Fastify's default 500.
+  const app = await createApp(loadConfig({ NODE_ENV: "production", APP_AUTH_TOKEN: "uat-token-that-is-long-enough-xx" }), service);
+  const auth = { authorization: "Bearer uat-token-that-is-long-enough-xx" };
+  const bad = await app.inject({ method: "POST", url: "/api/agents", headers: { ...auth, "content-type": "application/json" }, payload: "{}" });
+  expect(bad.statusCode).toBe(400);
+  expect(bad.json()).toHaveProperty("details");
+  expect((await app.inject({ method: "GET", url: "/api/runs/not-a-uuid", headers: auth })).statusCode).toBe(400);
+  await app.close();
+});
