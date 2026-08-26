@@ -128,3 +128,31 @@ it("writes no trace events when the message POST is rejected", async () => {
   expect(store.listRuns()).toEqual([]);
   await app.close();
 });
+
+it("lists runs and serves a trace with schemaVersion and capturePolicy", async () => {
+  const store = new MemoryTraceStore(); const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+  const ids = { traceId: "trc_9", runId: "run-9", agentId: "agt-9" };
+  emitter.emit({ ...ids, spanId: "root", type: "http.request.received", category: "control", name: "POST", phase: "start", status: "running", source: { component: "Fastify", observed: true } });
+  emitter.emit({ ...ids, spanId: "rt", parentSpanId: "root", type: "runtime.codex.started", category: "runtime", name: "codex", phase: "start", status: "running", source: { component: "AgentRunner", observed: true } });
+  emitter.emit({ ...ids, spanId: "rt", type: "runtime.codex.failed", category: "runtime", name: "codex", phase: "end", status: "timeout", error: { type: "timeout", message: "Codex timed out after 3000 ms" }, source: { component: "AgentRunner", observed: true } });
+  emitter.emit({ ...ids, spanId: "t", parentSpanId: "root", type: "run.timed_out", category: "control", name: "run.timed_out", status: "timeout", source: { component: "AgentService", observed: true } });
+  await emitter.flush();
+  const svc = { ...service, getRuns: () => [], listAgents: () => [{ id: "agt-9", name: "Nine" }],
+    getRun: (id: string) => { if (id !== "run-9") throw new HttpError(404, "Run not found"); return { id, agentId: "agt-9", status: "failed", traceId: "trc_9", createdAt: "2026-08-26T00:00:00.000Z" }; },
+    allRuns: () => [{ id: "run-9", agentId: "agt-9", status: "failed", traceId: "trc_9", createdAt: "2026-08-26T00:00:00.000Z" }] } as unknown as AgentService;
+  const app = await createApp(loadConfig({ NODE_ENV: "test" }), svc, { emitter, store });
+  const list = await app.inject({ method: "GET", url: "/api/runs?limit=10" });
+  expect(list.statusCode).toBe(200);
+  const body = list.json();
+  expect(body.schemaVersion).toBe("1.0"); expect(body.capturePolicy).toBe("metadata_only");
+  expect(body.runs[0]).toMatchObject({ runId: "run-9", agentName: "Nine", status: "timeout", firstFailingStep: "codex", eventCount: 4 });
+  const trace = await app.inject({ method: "GET", url: "/api/runs/run-9/trace" });
+  expect(trace.json().summary.failure).toMatchObject({ kind: "timeout", spanId: "rt", path: ["root", "rt"] });
+  expect(trace.json().spans[0].children[0].spanId).toBe("rt");
+  expect((await app.inject({ method: "GET", url: "/api/traces/trc_9" })).json().summary.runId).toBe("run-9");
+  const filtered = (await app.inject({ method: "GET", url: "/api/traces/trc_9/events?status=timeout" })).json();
+  expect(filtered.events.map((e: { type: string }) => e.type)).toEqual(["runtime.codex.failed", "run.timed_out"]);
+  expect((await app.inject({ method: "GET", url: "/api/runs/nope/trace" })).statusCode).toBe(404);
+  expect((await app.inject({ method: "GET", url: "/api/runs?limit=9999" })).statusCode).toBe(400);
+  await app.close();
+});

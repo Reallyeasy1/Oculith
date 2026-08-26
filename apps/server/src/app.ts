@@ -9,6 +9,8 @@ import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import { createTraceContext, type TraceContext } from "./glassbox/context.js";
 import type { ObservationEmitter } from "./glassbox/emitter.js";
+import { buildTrace, type TraceView } from "./glassbox/query.js";
+import { CATEGORIES, SCHEMA_VERSION, STATUSES } from "./glassbox/schema.js";
 import type { TraceStore } from "./glassbox/store.js";
 
 declare module "fastify" {
@@ -177,6 +179,42 @@ export async function createApp(
     const { id } = runIdParams.parse(request.params);
     return { run: service.getRun(id) };
   });
+
+  if (glassbox) {
+    const runsQuery = z.object({ status: z.enum(STATUSES).optional(), agentId: z.string().uuid().optional(), from: z.string().datetime().optional(), to: z.string().datetime().optional(), limit: z.coerce.number().int().min(1).max(200).default(50) });
+    const eventsQuery = z.object({ category: z.enum(CATEGORIES).optional(), status: z.enum(STATUSES).optional(), q: z.string().max(200).optional() });
+    const viewFor = async (runId: string): Promise<TraceView> => {
+      const events = await glassbox.store.readRun(runId);
+      const entry = glassbox.store.listRuns().find((r) => r.runId === runId);
+      return buildTrace(events, { capturePolicy: glassbox.emitter.capturePolicy, degraded: glassbox.emitter.isDegraded(runId), truncated: entry?.truncated });
+    };
+    app.get("/api/runs", async (request) => {
+      const q = runsQuery.parse(request.query);
+      const agents = new Map(service.listAgents().map((a) => [a.id, a.name]));
+      const runs = service.allRuns().filter((r) => (!q.agentId || r.agentId === q.agentId) && (!q.from || r.createdAt >= q.from) && (!q.to || r.createdAt <= q.to))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, q.limit * 2);
+      const items = [];
+      for (const run of runs) {
+        const view = await viewFor(run.id);
+        const status = view.summary.eventCount ? view.summary.status : run.status === "completed" ? "ok" : run.status === "failed" ? "error" : run.status === "cancelled" ? "cancelled" : "running";
+        if (q.status && status !== q.status) continue;
+        const s = view.summary;
+        items.push({ runId: run.id, traceId: run.traceId ?? s.traceId, agentId: run.agentId, agentName: agents.get(run.agentId) ?? "", status, startedAt: s.startedAt ?? run.createdAt, durationMs: s.durationMs,
+          firstFailingStep: s.firstFailingStep, eventCount: s.eventCount, runtime: config.runtimeProvider, model: config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default",
+          usage: s.usage, degraded: s.degraded, truncated: s.truncated, redacted: s.redactedEvents > 0, lastEventAt: view.events.at(-1)?.timestamp });
+        if (items.length >= q.limit) break;
+      }
+      return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, runs: items };
+    });
+    app.get("/api/runs/:runId/trace", async (request) => { const { runId } = z.object({ runId: z.string().min(1) }).parse(request.params); service.getRun(runId); return viewFor(runId); });
+    app.get("/api/traces/:traceId", async (request) => { const { traceId } = z.object({ traceId: z.string().min(1) }).parse(request.params); const runId = glassbox.store.runIdForTrace(traceId); if (!runId) throw new HttpError(404, "Trace not found"); return viewFor(runId); });
+    app.get("/api/traces/:traceId/events", async (request) => {
+      const { traceId } = z.object({ traceId: z.string().min(1) }).parse(request.params); const q = eventsQuery.parse(request.query);
+      const runId = glassbox.store.runIdForTrace(traceId); if (!runId) throw new HttpError(404, "Trace not found");
+      const events = (await glassbox.store.readRun(runId)).filter((e) => (!q.category || e.category === q.category) && (!q.status || e.status === q.status) && (!q.q || (e.name + " " + (e.error?.message ?? "")).toLowerCase().includes(q.q.toLowerCase())));
+      return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, events };
+    });
+  }
 
   if (config.nodeEnv === "production") {
     const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
