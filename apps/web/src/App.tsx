@@ -3,6 +3,7 @@ import { api, ApiError, setAuthToken } from "./api";
 import type { Agent, AgentRun, Message, RunListItem, SystemInfo, TraceView } from "./types";
 import RunsView from "./RunsView";
 import TraceDetail from "./TraceDetail";
+import Overview from "./Overview";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -50,12 +51,14 @@ export default function App() {
   const [runs, setRuns] = useState<RunListItem[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [trace, setTrace] = useState<TraceView | null>(null);
+  // "agent" = the selected Agent's Runs under its Playground; "overview" = All runs across Agents (#70).
+  const [view, setView] = useState<"overview" | "agent">("agent");
   // Opening a trace collapses the Playground to a bar so the trace header sits in the first viewport;
   // "Expand" re-opens it for this trace, "Close trace" restores it.
   const [playgroundExpanded, setPlaygroundExpanded] = useState(false);
   const playgroundCollapsed = selectedRunId !== null && !playgroundExpanded;
-  // Switching Agents closes the open trace: the bar must never show one Agent above another's trace.
-  useEffect(() => { setSelectedRunId(null); }, [selectedId]);
+  // Switching Agents or views closes the open trace: the bar must never show one Agent above another's trace.
+  useEffect(() => { setSelectedRunId(null); }, [selectedId, view]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -63,10 +66,12 @@ export default function App() {
   const messageEnd = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
   const selectedRunIdRef = useRef<string | null>(null);
+  const viewRef = useRef(view);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
   selectedIdRef.current = selectedId;
   selectedRunIdRef.current = selectedRunId;
+  viewRef.current = view;
 
   const selected = useMemo(
     () => agents.find((agent) => agent.id === selectedId) ?? null,
@@ -90,14 +95,23 @@ export default function App() {
     }
   }, []);
 
+  // Scoped to whatever is on screen: the selected Agent's Runs, or every Agent's in the overview (#70).
+  // Reads refs so the poll loop and the overview interval always fetch for the current view.
   const refreshRuns = useCallback(async () => {
+    const overview = viewRef.current === "overview";
+    const agentId = selectedIdRef.current;
+    const scope = overview ? "overview" : agentId;
+    if (!scope) { setRuns([]); return; }
     try {
-      const result = await api.listRuns();
-      if (mountedRef.current) setRuns(result.runs);
+      const result = await api.listRuns(overview ? { limit: 200 } : { agentId: agentId!, limit: 100 });
+      const stillCurrent = (viewRef.current === "overview" ? "overview" : selectedIdRef.current) === scope;
+      if (mountedRef.current && stillCurrent) setRuns(result.runs);
     } catch {
       // ponytail: runs table goes stale, baseline keeps working (invariant 12)
     }
   }, []);
+
+  useEffect(() => { setRuns([]); void refreshRuns(); }, [refreshRuns, view, selectedId]); // clear the previous scope so the strip/table never show another scope for a round trip
 
   // No-op unless `runId` is the trace currently open, so the poll loop can call it on every tick
   // (poll-tick refreshes fail soft — invariant 12; only the initial open surfaces an error).
@@ -179,6 +193,7 @@ export default function App() {
       const { agent } = await api.createAgent(form);
       await refreshAgents();
       setSelectedId(agent.id);
+      setView("agent");
       setShowCreate(false);
       setForm(emptyForm);
     } catch (reason) {
@@ -369,6 +384,20 @@ export default function App() {
           <span>＋</span> Create Agent
         </button>
 
+        <nav className="agent-list overview-nav" aria-label="Overview">
+          <button
+            className={"agent-card " + (view === "overview" ? "selected" : "")}
+            aria-current={view === "overview" ? "page" : undefined}
+            onClick={() => setView("overview")}
+          >
+            <div className="agent-avatar">◎</div>
+            <div className="agent-card-copy">
+              <strong>All runs</strong>
+              <span>GlassBox · every Agent</span>
+            </div>
+          </button>
+        </nav>
+
         <div className="sidebar-label">
           <span>Your Agents</span>
           <span>{agents.length}</span>
@@ -376,9 +405,10 @@ export default function App() {
         <nav className="agent-list">
           {agents.map((agent) => (
             <button
-              className={"agent-card " + (agent.id === selectedId ? "selected" : "")}
+              className={"agent-card " + (view === "agent" && agent.id === selectedId ? "selected" : "")}
+              aria-current={view === "agent" && agent.id === selectedId ? "page" : undefined}
               key={agent.id}
-              onClick={() => setSelectedId(agent.id)}
+              onClick={() => { setSelectedId(agent.id); setView("agent"); }}
             >
               <div className="agent-avatar">{agent.name.slice(0, 1).toUpperCase()}</div>
               <div className="agent-card-copy">
@@ -430,7 +460,9 @@ export default function App() {
           </div>
         )}
 
-        {selected ? playgroundCollapsed ? (
+        {view === "overview" ? (
+          <Overview runs={runs} onRefresh={refreshRuns} />
+        ) : selected ? playgroundCollapsed ? (
           <div className="playground-bar">
             <div className="header-title-row">
               <h1>{selected.name}</h1>
@@ -663,10 +695,15 @@ export default function App() {
             onClose={() => setSelectedRunId(null)}
           />
         )}
+        {/* runs are server-scoped already; the filter only keeps another Agent's rows out of the DOM across a switch */}
         <RunsView
-          runs={runs}
+          key={view}
+          runs={view === "agent" && selectedId ? runs.filter((run) => run.agentId === selectedId) : runs}
           selectedRunId={selectedRunId}
           onOpenTrace={(runId) => { setSelectedRunId(runId); setPlaygroundExpanded(false); }}
+          showAgent={view === "overview"}
+          title={view === "agent" && selected ? "Runs · " + selected.name : "Runs"}
+          emptyText={view === "agent" && selected ? "No Runs for this Agent yet." : "No Runs observed yet."}
         />
       </main>
 

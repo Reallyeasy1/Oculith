@@ -47,7 +47,7 @@ function loadPlaywright() {
 
 // ---- server lifecycle -------------------------------------------------------------------------------------------
 const api = async (url, init = {}) => {
-  const res = await fetch(BASE + url, { ...init, headers: { authorization: "Bearer " + TOKEN, "content-type": "application/json", ...(init.headers || {}) } });
+  const res = await fetch(BASE + url, { ...init, headers: { authorization: "Bearer " + TOKEN, ...(init.body ? { "content-type": "application/json" } : {}), ...(init.headers || {}) } });
   const text = await res.text();
   return { status: res.status, headers: res.headers, text, json: () => JSON.parse(text) };
 };
@@ -191,7 +191,8 @@ let server = null;
   page.on("pageerror", (e) => pageErrors.push(e.message));
   page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); });
   await openApp(page);
-  ok((await page.locator(".runs-table tbody tr").first().innerText()).includes("E2E GlassBox"), "Runs table shows the new run");
+  ok((await page.locator("#runs-heading").innerText()).includes("E2E GlassBox"), "Runs table is scoped to the selected Agent");
+  eq(await page.locator(".runs-table th", { hasText: /^Agent$/ }).count(), 0, "Agent column is hidden in the Agent view");
   await openTraceByKeyboard(page, okRun.run.id);
   await drawerRoundTrip(page);
   await errorsOnly(page).check();
@@ -208,6 +209,41 @@ let server = null;
   sweep("DOM (ok trace)", await glassboxText(page));
   await page.locator("button", { hasText: "Close trace" }).click();
   eq(await page.locator(".trace-detail").count(), 0, "Close trace returns to the Runs table");
+
+  console.log("\n[4b] UI: Runs follow the selected Agent; All runs spans Agents with the summary strip (#70)");
+  const rows = () => page.locator(".runs-table tbody tr");
+  await page.locator(".create-button").click();
+  await page.locator(".modal input[placeholder='Frontend Builder']").fill("E2E Empty");
+  await page.locator(".modal .button-primary").click();
+  await page.locator(".agent-header h1", { hasText: "E2E Empty" }).waitFor({ timeout: 10_000 });
+  await page.locator(".runs-empty", { hasText: "No Runs for this Agent yet." }).waitFor({ timeout: 10_000 });
+  eq(await rows().count(), 0, "new Agent under 'All': no rows from the other Agent");
+  const pressedFilter = () => page.locator(".runs-filters button[aria-pressed=true]").textContent(); // textContent: CSS capitalises innerText
+  eq(await pressedFilter(), "all", "quick filter stays on 'All' across the Agent switch");
+  await page.locator(".agent-card", { hasText: "E2E GlassBox" }).click();
+  await rows().first().waitFor({ timeout: 10_000 });
+  eq(await rows().count(), 1, "first Agent again: exactly its one Run");
+  eq(await page.locator(".agent-card[aria-current=page] strong").textContent(), "E2E GlassBox", "sidebar marks the selected Agent aria-current=page");
+  const allRuns = page.locator(".agent-card", { hasText: "All runs" });
+  await allRuns.focus();
+  await page.keyboard.press("Enter");
+  await page.locator(".summary-strip").waitFor({ timeout: 10_000 });
+  eq(await allRuns.getAttribute("aria-current"), "page", "Enter on 'All runs' selects the overview (aria-current=page)");
+  eq(await pressedFilter(), "Needs attention", "overview opens on 'Needs attention'");
+  await page.locator(".runs-filters").getByRole("button", { name: /^all$/i }).click();
+  await rows().first().waitFor({ timeout: 10_000 });
+  eq(await page.locator(".runs-table th", { hasText: /^Agent$/ }).count(), 1, "overview shows the Agent column");
+  ok((await rows().first().innerText()).includes("E2E GlassBox"), "overview row names its Agent");
+  const strip = Object.fromEntries(await page.locator(".summary-strip > div").evaluateAll((els) => els.map((el) => [el.querySelector("dt").textContent, Number(el.querySelector("dd").textContent)])));
+  const statuses = await rows().locator(".status").allTextContents(); // textContent: the pill is CSS-uppercased
+  eq(strip.Total, statuses.length, "summary Total equals the rows under 'All'");
+  eq(strip.Ok, statuses.filter((s) => s.includes("ok")).length, "summary Ok equals the ok rows");
+  eq(strip["Needs attention"] + strip.Running, statuses.filter((s) => !s.includes("ok")).length, "summary Needs attention + Running cover the non-ok rows");
+  ok((await page.locator(".summary-agents").innerText()).includes("E2E GlassBox · " + statuses.length + " · "), "per-Agent line shows the first Agent's count");
+  if (process.env.E2E_SCREENSHOT) { await page.setViewportSize({ width: 1366, height: 768 }); await page.screenshot({ path: process.env.E2E_SCREENSHOT }); await page.setViewportSize({ width: 1400, height: 1000 }); }
+  sweep("DOM (overview)", await glassboxText(page));
+  // Newest updatedAt wins the reload's auto-select; archive the empty Agent so steps 5–6 keep their baseline.
+  eq((await api("/api/agents/" + (await api("/api/agents")).json().agents.find((a) => a.name === "E2E Empty").id, { method: "DELETE" })).status, 200, "empty Agent archived (delete-archive still works)");
 
   console.log("\n[5] restart with GLASSBOX_DEMO_FAILURE=timeout (gated fixture through the real runner)");
   await stopServer(server);
