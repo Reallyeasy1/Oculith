@@ -1,0 +1,10 @@
+{"type":"thread.started","thread_id":"01a03bf9-47b6-7a21-8b3d-9d8d332c25dd"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `deepseek-v4-flash-ga-260731` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
+{"type":"turn.started"}
+{"type":"error","message":"Reconnecting... 1/5 (unexpected status 401 Unauthorized: The API key format is incorrect. Request id: REDACTED-REQUEST-ID, url: https://ark.ap-southeast.bytepluses.com/api/v3/responses, request id: REDACTED-REQUEST-ID)"}
+{"type":"error","message":"Reconnecting... 2/5 (unexpected status 401 Unauthorized: The API key format is incorrect. Request id: REDACTED-REQUEST-ID, url: https://ark.ap-southeast.bytepluses.com/api/v3/responses, request id: REDACTED-REQUEST-ID)"}
+{"type":"error","message":"Reconnecting... 3/5 (unexpected status 401 Unauthorized: The API key format is incorrect. Request id: REDACTED-REQUEST-ID, url: https://ark.ap-southeast.bytepluses.com/api/v3/responses, request id: REDACTED-REQUEST-ID)"}
+{"type":"error","message":"Reconnecting... 4/5 (unexpected status 401 Unauthorized: The API key format is incorrect. Request id: REDACTED-REQUEST-ID, url: https://ark.ap-southeast.bytepluses.com/api/v3/responses, request id: REDACTED-REQUEST-ID)"}
+{"type":"error","message":"Reconnecting... 5/5 (unexpected status 401 Unauthorized: The API key format is incorrect. Request id: REDACTED-REQUEST-ID, url: https://ark.ap-southeast.bytepluses.com/api/v3/responses, request id: REDACTED-REQUEST-ID)"}
+{"type":"error","message":"unexpected status 401 Unauthorized: The API key format is incorrect. Request id: REDACTED-REQUEST-ID, url: https://ark.ap-southeast.bytepluses.com/api/v3/responses, request id: REDACTED-REQUEST-ID"}
+{"type":"turn.failed","error":{"message":"unexpected status 401 Unauthorized: The API key format is incorrect. Request id: REDACTED-REQUEST-ID, url: https://ark.ap-southeast.bytepluses.com/api/v3/responses, request id: REDACTED-REQUEST-ID"}}
