@@ -284,7 +284,7 @@ let server = null;
   const auditTable = page.locator(".audit-table");
   await auditTable.waitFor({ timeout: 5_000 });
   eq(await auditTable.locator("tbody tr").count(), badAudit.length, "Audit table renders every API audit row for the gated Run");
-  ok((await auditTable.innerText()).includes("timeout"), "Audit table shows the timeout outcome as text");
+  ok(/timeout/i.test(await auditTable.innerText()), "Audit table shows the timeout outcome as text");
   const auditRow = auditTable.locator("tbody tr").first();
   await auditRow.focus();
   eq(await page.evaluate(() => document.activeElement && document.activeElement.tagName), "TR", "Audit row takes focus");
