@@ -9,6 +9,7 @@ import {
   formatUsage,
   matchesFilter,
   sortNewestFirst,
+  summarizeRuns,
   type QuickFilter,
 } from "./runs-view-model";
 
@@ -28,6 +29,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
     () => sortNewestFirst(runs).filter((run) => matchesFilter(run, filter)),
     [runs, filter],
   );
+  const okCount = summarizeRuns(runs).ok;
 
   return (
     <section className="runs-view" aria-labelledby="runs-heading">
@@ -111,9 +113,14 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
           </tbody>
         </table>
         {visible.length === 0 && (
-          <p className="runs-empty">
-            {runs.length === 0 ? emptyText : filter === "attention" ? "Nothing needs attention." : "No Runs match this filter."}
-          </p>
+          <div className="runs-empty">
+            {runs.length === 0 ? emptyText : filter === "attention" ? (
+              <>
+                Nothing needs attention · {okCount} ok {okCount === 1 ? "Run" : "Runs"}
+                <button type="button" className="button button-ghost runs-empty-action" onClick={() => setFilter("all")}>Show all</button>
+              </>
+            ) : "No Runs match this filter."}
+          </div>
         )}
       </div>
     </section>
