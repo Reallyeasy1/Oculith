@@ -11,8 +11,7 @@ const DENY_KEY = /^(authorization|api[_-]?key|token|secret|password|cookie|priva
 const PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
   ["private_key", /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g],
   ["bearer", /Bearer\s+[A-Za-z0-9._~+/-]{16,}=*/g],
-  // Trailing (?:\s+\S+)? also swallows one adjacent word (e.g. "sk-... here") — erring toward over-redaction.
-  ["openai_key", /sk-(?:proj-)?[A-Za-z0-9_-]{20,}(?:\s+\S+)?/g],
+  ["openai_key", /sk-(?:proj-)?[A-Za-z0-9_-]{20,}/g],
   ["ark_key", /ark-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:-[0-9a-f]+)?/g],
   ["volc_ak", /AKLT[A-Za-z0-9]{20,}/g],
   // Matches the whole credentialed URL (scheme://user:pass@host/path), not just the userinfo — the host can be sensitive too.

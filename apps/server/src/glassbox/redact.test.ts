@@ -4,6 +4,10 @@ import { SCHEMA_VERSION, type ObservationEvent } from "./schema.js";
 
 // Built at runtime so no key-shaped literal is ever committed (GitHub push protection scans file contents).
 const FAKE_ARK = ["ark", "0f0f0f0f", "1a1a", "4b4b", "8c8c", "d0d0d0d0d0d0", "0abc1"].join("-");
+const OAI = "sk-proj-" + "abcdefghijklmnopqrstuvwxyz0123456789";
+const BEARER_TOKEN = "abcdefghijklmnopqrstuvwxyz.123456";
+const VOLC_AK = "AKLT" + "abcdefghijklmnopqrstuvwxyz12";
+const ENV_VALUE = "abc123def456";
 const ev = (over: Partial<ObservationEvent>): ObservationEvent => ({
   schemaVersion: SCHEMA_VERSION, eventId: "evt_1", sequence: 1, traceId: "trc_1", spanId: "spn_1",
   runId: "r", agentId: "a", actorId: "local-user", actorType: "human", attempt: 1,
@@ -14,17 +18,17 @@ const ev = (over: Partial<ObservationEvent>): ObservationEvent => ({
 
 describe("redactText", () => {
   it.each([
-    ["openai key", "token sk-proj-abcdefghijklmnopqrstuvwxyz0123456789 here", "openai_key"],
-    ["ark key", "ARK " + FAKE_ARK, "ark_key"],
-    ["bearer", "Authorization: Bearer abcdefghijklmnopqrstuvwxyz.123456", "bearer"],
-    ["volc ak", "AKLTabcdefghijklmnopqrstuvwxyz12", "volc_ak"],
-    ["private key", "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----", "private_key"],
-    ["credential url", "postgres://user:hunter2@db.internal/x", "credential_url"],
-    ["env assignment", "OPENAI_API_KEY=abc123def456", "env_assignment"],
-  ])("redacts %s", (_n, input, rule) => {
+    ["openai key", "token " + OAI + " here", OAI, "openai_key"],
+    ["ark key", "ARK " + FAKE_ARK, FAKE_ARK, "ark_key"],
+    ["bearer", "Authorization: Bearer " + BEARER_TOKEN, BEARER_TOKEN, "bearer"],
+    ["volc ak", VOLC_AK, VOLC_AK, "volc_ak"],
+    ["private key", "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----", "MIIE", "private_key"],
+    ["credential url", "postgres://user:hunter2@db.internal/x", "hunter2", "credential_url"],
+    ["env assignment", "OPENAI_API_KEY=" + ENV_VALUE, ENV_VALUE, "env_assignment"],
+  ])("redacts %s", (_n, input, secret, rule) => {
     const out = redactText(input);
     expect(out.rules).toContain(rule);
-    expect(out.text).not.toContain(input.split(/\s+/).at(-1)!.slice(-8));
+    expect(out.text).not.toContain(secret.slice(-8));
     expect(out.text).toContain("[REDACTED:" + rule + "]");
   });
   it("leaves near misses alone", () => {
