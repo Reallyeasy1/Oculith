@@ -111,7 +111,7 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => { void refreshRuns(); }, [refreshRuns, view, selectedId]);
+  useEffect(() => { setRuns([]); void refreshRuns(); }, [refreshRuns, view, selectedId]); // clear the previous scope so the strip/table never show another scope for a round trip
 
   // No-op unless `runId` is the trace currently open, so the poll loop can call it on every tick
   // (poll-tick refreshes fail soft — invariant 12; only the initial open surfaces an error).
@@ -703,7 +703,7 @@ export default function App() {
           onOpenTrace={(runId) => { setSelectedRunId(runId); setPlaygroundExpanded(false); }}
           showAgent={view === "overview"}
           title={view === "agent" && selected ? "Runs · " + selected.name : "Runs"}
-          emptyText={view === "agent" ? "No Runs for this Agent yet." : "No Runs observed yet."}
+          emptyText={view === "agent" && selected ? "No Runs for this Agent yet." : "No Runs observed yet."}
         />
       </main>
 

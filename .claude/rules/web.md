@@ -5,7 +5,7 @@ paths:
 
 # Web conventions (`@launchpad/web`)
 
-- **Stay inside the existing shell.** `App.tsx` is one component file by design; add the policy panel, approval card and evidence list as small components in `apps/web/src/` and mount them in the existing Agent detail / Run areas. No new routes, navigation, or dashboards.
+- **Stay inside the existing shell.** `App.tsx` is one component file by design; add the policy panel, approval card and evidence list as small components in `apps/web/src/` and mount them in the existing Agent detail / Run areas. No new routes or routing library. The only navigation beyond Agent cards is the **All runs** overview entry (#70) — GlassBox's cross-Agent view; anything else stays inside the Agent detail.
 - **No new dependencies.** React 19 + Vite + plain CSS. Reuse `styles.css` tokens and existing class patterns (`config-banner`, `error-banner`, etc.).
 - **All API calls go through `api.ts`'s `request()`** so the bearer token and error mapping apply. Add typed methods there.
 - **`types.ts` mirrors the server's public types by hand** — change both sides in the same commit.
