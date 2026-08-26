@@ -37,6 +37,9 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
   const [focusReq, setFocusReq] = useState(0);
 
   const byId = useMemo(() => (view ? indexSpans(view.spans) : new Map<string, Span>()), [view]);
+  // Per-row redaction comes from the full event list: the server only nests intermediate events under
+  // `span.events`, and redaction usually lands on the span's own start/end event.
+  const redactedSpans = useMemo(() => new Set(view?.events.filter((e) => e.privacy.redacted).map((e) => e.spanId)), [view]);
   const expanded = useMemo(() => expandedState ?? (view ? defaultExpanded(view) : new Set<string>()), [expandedState, view]);
   const rows = useMemo(() => (view ? visibleRows(view.spans, expanded, filter) : []), [view, expanded, filter]);
   const rovingId = focusId && rows.some((r) => r.span.spanId === focusId) ? focusId : (rows[0]?.span.spanId ?? null);
@@ -48,9 +51,12 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
   if (!view) {
     return (
       <section className="runs-view trace-detail" aria-live="polite">
-        <div className="trace-header">
-          <span className="eyebrow">Trace</span>
-          <h2>Loading trace for <code>{runId}</code>…</h2>
+        <div className="playground-topbar trace-header">
+          <div>
+            <span className="eyebrow">Trace</span>
+            <h2>Loading trace for <code>{runId}</code>…</h2>
+          </div>
+          <button type="button" className="button button-ghost" onClick={onClose}>Close trace</button>
         </div>
       </section>
     );
@@ -69,7 +75,10 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
     if (!failure || !failingSpan) return;
     setFilter(EMPTY_FILTER);
     setExpanded((prev) => { const next = new Set(prev ?? expanded); failure.path.forEach((id) => next.add(id)); return next; });
-    focusRow(failure.spanId);
+    // Open the drawer too: row click → Jump lands on status/duration/error/summary in 2 interactions (PRD §64).
+    // The drawer's own focus effect takes focus; closeDrawer hands it back to this row.
+    setFocusId(failure.spanId);
+    setOpenId(failure.spanId);
   };
 
   const onRowKey = (event: React.KeyboardEvent, index: number) => {
@@ -137,7 +146,7 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
             <p className="trace-diagnosis">{failure.diagnosis}</p>
           </div>
           {failingSpan && (
-            <button type="button" className="button button-primary" onClick={jump}>Jump to failing span</button>
+            <button type="button" className="button button-primary" onClick={jump} autoFocus>Jump to failing span</button>
           )}
         </div>
       )}
@@ -202,7 +211,7 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
               <span className="trace-badges">
                 {s.incomplete && <span className="badge badge-warn">incomplete</span>}
                 {!s.source.observed && <span className="badge">unavailable</span>}
-                {s.events.some((e) => e.privacy.redacted) && <span className="badge">redacted</span>}
+                {redactedSpans.has(s.spanId) && <span className="badge">redacted</span>}
               </span>
               <span className="trace-bar" aria-hidden="true">
                 {geo && <span className={"trace-bar-fill fill-" + s.status} style={{ left: geo.left + "%", width: geo.width + "%" }} />}

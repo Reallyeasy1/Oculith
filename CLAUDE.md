@@ -16,7 +16,7 @@ cp .env.example .env            # loaded by the server dev script via --env-file
 npm run dev                     # server (tsx watch, :3000) + web (vite, :5173, proxies /api → :3000)
 npm run check                   # typecheck + test + build — run before claiming done
 npm run typecheck               # tsc across both workspaces
-npm run test                    # vitest, server only (web has no tests)
+npm run test                    # vitest: server suite, then web view-model unit tests (apps/web/src/*.test.ts)
 npm run build                   # web first, then server → apps/*/dist
 npm run poc                     # scripts/start-local-poc.sh: bash-only, builds runtime image, RUNTIME_PROVIDER=container
 ```
