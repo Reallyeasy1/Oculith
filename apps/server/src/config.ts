@@ -48,6 +48,9 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().optional(),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  GLASSBOX_CAPTURE_POLICY: z.enum(["metadata_only", "safe_summary"]).default("metadata_only"),
+  GLASSBOX_DEMO_FAILURE: z.enum(["off", "timeout"]).default("off"),
+  GLASSBOX_TRACE_DIR: z.string().optional(),
 });
 
 export type AppConfig = ReturnType<typeof loadConfig>;
@@ -94,6 +97,11 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     openaiApiKey: env.OPENAI_API_KEY?.trim() ?? "",
     openaiModel: env.OPENAI_MODEL?.trim() ?? "",
     nodeEnv: env.NODE_ENV,
+    glassboxCapturePolicy: env.GLASSBOX_CAPTURE_POLICY,
+    glassboxDemoFailure: env.GLASSBOX_DEMO_FAILURE,
+    traceDirectory: path.resolve(
+      env.GLASSBOX_TRACE_DIR ?? path.join(env.APP_DATA_DIR, "traces"),
+    ),
   };
 }
 

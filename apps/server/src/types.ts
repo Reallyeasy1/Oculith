@@ -41,6 +41,7 @@ export interface AgentRun {
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;
+  traceId?: string | undefined;
 }
 
 export interface Database {
@@ -68,11 +69,20 @@ export interface RunnerResult {
   usage: RunUsage | null;
 }
 
+export interface RunnerTraceContext {
+  traceId: string;
+  runId: string;
+  agentId: string;
+  parentSpanId: string;
+}
+
 export interface RunnerRequest {
   agentId: string;
   workspacePath: string;
   prompt: string;
   threadId: string | null;
+  trace?: RunnerTraceContext | undefined;
+  timeoutMs?: number | undefined;
 }
 
 export interface AgentRunner {

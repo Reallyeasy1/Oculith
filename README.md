@@ -209,6 +209,9 @@ cp deploy/volcengine/terraform.tfvars.example \
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
 | `LOCAL_POC_DATA_ROOT` | Platform-specific | Local metadata, workspace, and session directory. |
+| `GLASSBOX_CAPTURE_POLICY` | `metadata_only` | `metadata_only` or `safe_summary`; raw capture is not implemented. |
+| `GLASSBOX_DEMO_FAILURE` | `off` | `timeout` forces a 3 s runtime timeout for the demo's controlled failure. |
+| `GLASSBOX_TRACE_DIR` | `$APP_DATA_DIR/traces` | Directory for per-Run NDJSON trace files. |
 
 See [.env.example](.env.example) for all Runtime and resource-limit options.
 
