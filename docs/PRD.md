@@ -78,9 +78,9 @@ We hit this ourselves during baseline testing: a 10-minute timeout that looked l
 
 | ID | Requirement | Acceptance |
 |---|---|---|
-| FR-01 | **Create trace** at the Fastify boundary (`POST /api/agents/:id/messages`); bind `requestId, runId, agentId, sessionId, actorId, schemaVersion, capturePolicy` | Every Run record carries `traceId`; `run.created` is the root span |
+| FR-01 | **Create trace** at the Fastify boundary (`POST /api/agents/:id/messages`); bind `requestId, runId, agentId, sessionId, actorId, schemaVersion, capturePolicy` | Every Run record carries `traceId`; `http.request.received` is the root span with `run.created` as its child (see §7) |
 | FR-02 | **Propagate context** through `AgentService.sendMessage/executeRun`, `AgentRunner.run`, both runners, async callbacks, store, query responses | `traceId`/`spanId` present on every event; runner events have the service span as parent |
-| FR-03 | **Emit spans/events** at seams: start/end/error/cancel/timeout with monotonic `sequence` + wall clock | Success Run yields ≥ 6 observed spans across categories `control`, `runtime`, `workspace` |
+| FR-03 | **Emit spans/events** at seams: start/end/error/cancel/timeout with monotonic `sequence` + wall clock | Success Run yields ≥ 6 observed spans across categories `control` and `runtime` (`workspace` only when the runtime exposes file changes — not observed on the Codex/Ark stack, see docs/CODEX_EVENTS.md) |
 | FR-04 | **Normalise & validate** every event against the zod schema; quarantine malformed fields without corrupting the Run | Malformed adapter event ⇒ `error.recorded` + quarantine, Run continues |
 | FR-05 | **Redact before storage**: allowlist operational fields → structured key denylist (`authorization, apiKey, token, secret, password, cookie, privateKey`, case-insensitive) → bounded pattern scan (bearer, `sk-`, `ark-`, AK/SK, private-key blocks, credential URLs, seeded fixtures) → truncation; same serializer for disk, API, export, logs | AC-03; on redactor error persist metadata only with `privacy.reason = redaction_failed_closed` |
 | FR-06 | **Persist locally**: append-only NDJSON per Run under `APP_DATA_DIR/traces/<runId>.ndjson`; in-memory summary index rebuilt at start; `TraceStore` interface | Round-trip + rebuild test; atomic append |
@@ -88,7 +88,7 @@ We hit this ourselves during baseline testing: a 10-minute timeout that looked l
 | FR-08 | **List Runs**: `GET /api/runs?status&agentId&from&to&cursor&limit`, newest first, bounded pagination | 400 on malformed filters |
 | FR-09 | **Read trace**: `GET /api/runs/:runId/trace` (+ `/api/traces/:traceId`, `/api/traces/:traceId/events`) returns spans, events, capability + privacy metadata, `schemaVersion`, `capturePolicy` | 404 on unknown id; never raw secrets/provider payloads |
 | FR-10 | **Focus failure**: first actionable error + causal path; differentiate failure / timeout / cancellation / observability degradation | AC-02; deterministic diagnosis text built only from stored facts (no LLM) |
-| FR-11 | **Controlled failure fixture**: deterministic, gated (`GLASSBOX_DEMO_FAILURE=timeout|runner_error`), traverses the *same* Run/instrumentation path; disabled by default | AC-02 reproducible twice in a row; fixture off ⇒ baseline unchanged |
+| FR-11 | **Controlled failure fixture**: deterministic, gated (`GLASSBOX_DEMO_FAILURE=timeout`; MVP ships `timeout` only — one deterministic failure is enough, `runner_error` dropped), traverses the *same* Run/instrumentation path; disabled by default | AC-02 reproducible twice in a row; fixture off ⇒ baseline unchanged |
 | UX-01 | **Runs view**: columns status, Agent, start, duration, first failing step, event count, runtime/model, usage, redaction/degraded indicators; quick filters failed/running/cancelled/timed-out/degraded; keyboard-navigable rows; status as text + icon | Newest first; polling marks last observed event time |
 | UX-02 | **Trace detail**: summary header; nested tree with duration bars, root + error path expanded by default; local filters (category/status/text/errors-only); span drawer; persistent first-error banner with *Jump to failing span*; trust badges (observed/unavailable/redacted), schema version, incomplete marker | Operator reaches failing span in ≤ 2 interactions |
 | V-01 | **Verification**: unit (IDs, schema, ordering, span reconstruction, rollups, redaction, truncation, duplicates, incomplete), integration (Fastify→Service→Runner→store on success/timeout/error/cancel/restart/degraded store), privacy, E2E, regression, performance | All AC-01..07 automated where possible; `npm run check` green |
@@ -150,7 +150,7 @@ ObservationEmitter ──► validate (zod) ──► RedactionPipeline ──�
   "traceId": "trc_…", "spanId": "spn_…", "parentSpanId": "spn_…",
   "runId": "…", "agentId": "…", "sessionId": "…",
   "timestamp": "2026-08-25T10:15:22.531Z", "type": "runtime.codex.completed",
-  "category": "runtime", "status": "ok", "durationMs": 18420,
+  "category": "runtime", "phase": "end", "status": "ok", "durationMs": 18420,
   "source": { "component": "AgentRunner", "adapter": "CodexRunner", "observed": true },
   "attributes": { "attempt": 1, "exitCode": 0 },
   "summary": { "text": "Codex process completed", "policy": "safe_summary" },
@@ -158,11 +158,15 @@ ObservationEmitter ──► validate (zod) ──► RedactionPipeline ──�
 }
 ```
 
+**Phase:** `start | end | instant` — required on every event; the query layer reconstructs spans by pairing `start`/`end` on one `spanId` (an `instant` event is a point in time, and an unpaired `start` stays *incomplete*).
+
 **Status:** `running | ok | error | cancelled | timeout | unset`. A parent becomes `error` only when an unhandled descendant error reaches the Run; handled failures stay events on an `ok` parent. Incomplete spans are *marked*, never guessed closed.
 
 **Categories:** `experience, control, runtime, model, tool, workspace, sandbox, policy, infrastructure`.
 
-**Minimum taxonomy:** `run.created/started/completed/failed/cancelled/timed_out` · `http.request.received/completed` · `agent_service.run.started/completed/failed` · `runtime.container.started/stopped` · `runtime.codex.started/completed/failed` · `model.request/completed`, `tool.call.started/completed/failed` (when available) · `workspace.changed`, `policy.denied`, `redaction.applied`, `limit.exceeded` · `error.recorded`, `telemetry.degraded`, `trace.truncated`, `capability.unavailable`.
+**Minimum taxonomy:** `run.created/started/completed/failed/cancelled/timed_out` · `http.request.received/completed` · `agent_service.run.started/completed/failed` · `runtime.container.started/stopped` · `runtime.codex.started/completed/failed` · `model.request/completed`, `tool.call.started/completed/failed` (when available) · `workspace.changed`, `policy.denied`, `limit.exceeded` · `error.recorded`, `telemetry.degraded`, `trace.truncated`, `capability.unavailable`.
+
+**Redaction is not an event.** There is no `redaction.applied` event: every event records its own redaction outcome inline on its `privacy` block (`redacted`, `rulesetVersion`, `rules`, `reason`, `originalBytes`/`storedBytes`), so evidence and its treatment can never drift apart.
 
 **Capture policy:** `metadata_only` (default: IDs, timing, status, names, counts, codes, sizes, flags) · `safe_summary` (opt-in: bounded, filtered, redacted summaries) · `full/raw` (**not implemented**).
 
