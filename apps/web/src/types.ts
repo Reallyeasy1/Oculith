@@ -92,6 +92,7 @@ export interface RunListItem {
   denials: number;
   configHash?: string;
   configSnapshot?: AgentConfigSnapshot;
+  workspaceChanges?: { added: number; modified: number; removed: number; bytesDelta: number; truncated: boolean };
   degraded: boolean;
   truncated: boolean;
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
@@ -152,6 +153,7 @@ export interface TraceSummary {
   };
   configHash?: string;
   capabilities: { model: "observed" | "unavailable" | "unknown"; tool: "observed" | "unavailable" | "unknown" };
+  workspaceChanges?: { added: number; modified: number; removed: number; bytesDelta: number; truncated: boolean };
   firstFailingStep?: string;
   failure?: FailureFocus;
 }

@@ -117,6 +117,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                   {(run.capabilities.model === "unknown" || run.capabilities.tool === "unknown") && (
                     <span className="badge" title={noEvidenceTitle(run)}>no evidence</span>
                   )}
+                  {run.workspaceChanges && <span className="badge">{run.workspaceChanges.added + run.workspaceChanges.modified + run.workspaceChanges.removed} files changed</span>}
                 </td>
                 <td>{formatClock(run.lastEventAt)}</td>
               </tr>

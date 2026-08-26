@@ -20,6 +20,7 @@ import type {
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import { boundedChangedPaths, diffWorkspace, snapshotWorkspace } from "./workspace-snapshot.js";
 
 const now = () => new Date().toISOString();
 
@@ -411,6 +412,8 @@ export class AgentService {
           source: { component: "AgentService", observed: true },
         });
       }
+      const workspaceBefore = await snapshotWorkspace(agentAtStart.workspacePath).catch(() => undefined);
+      // Last look before handing off to the runner: a stop that arrived during the snapshot must still win.
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
@@ -431,6 +434,30 @@ export class AgentService {
           : {}),
         ...(this.config.glassboxDemoFailure === "timeout" ? { timeoutMs: 3_000 } : {}),
       });
+      if (workspaceBefore && ids && service) {
+        const workspaceAfter = await snapshotWorkspace(agentAtStart.workspacePath).catch(() => undefined);
+        if (workspaceAfter) {
+          const changes = diffWorkspace(workspaceBefore, workspaceAfter);
+          this.emitter.emit({
+            ...ids,
+            spanId: newId("spn"),
+            parentSpanId: service.spanId,
+            type: "workspace.changed",
+            category: "workspace",
+            name: "workspace.changed",
+            status: "ok",
+            source: { component: "AgentService", adapter: "WorkspaceSnapshot", observed: true },
+            attributes: {
+              added: changes.added.length,
+              modified: changes.modified.length,
+              removed: changes.removed.length,
+              bytesDelta: changes.bytesDelta,
+              truncated: changes.truncated,
+              paths: boundedChangedPaths(changes),
+            },
+          });
+        }
+      }
       const completedAt = now();
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);

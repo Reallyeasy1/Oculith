@@ -161,6 +161,7 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
           {summary.truncated && <span className="badge badge-warn">truncated</span>}
           {summary.degraded && <span className="badge badge-warn">degraded</span>}
           {summary.incompleteSpans > 0 && <span className="badge badge-warn">{summary.incompleteSpans} incomplete</span>}
+          {summary.workspaceChanges && <span className="badge">{summary.workspaceChanges.added + summary.workspaceChanges.modified + summary.workspaceChanges.removed} files changed</span>}
         </Field>
       </dl>
 
@@ -301,6 +302,7 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
   const events = useMemo(() => view.events.filter((e) => e.spanId === span.spanId), [view, span]);
   const attempt = events[0]?.attempt;
   const shown = events.slice(0, DRAWER_EVENT_CAP);
+  const workspaceChange = view.events.find((event) => event.type === "workspace.changed" && event.parentSpanId === span.spanId);
 
   useEffect(() => { ref.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus(); }, [span.spanId]);
 
@@ -348,6 +350,13 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
         <>
           <h4>Safe summary <span className="badge">{span.summary.policy}</span></h4>
           <p className="span-summary">{span.summary.text}</p>
+        </>
+      )}
+
+      {workspaceChange && (
+        <>
+          <h4>Changed paths</h4>
+          <pre className="span-summary">{String(workspaceChange.attributes.paths || "No paths changed")}</pre>
         </>
       )}
 

@@ -244,6 +244,7 @@ describe("GlassBox control-plane adapter", () => {
       "run.created",
       "agent_service.run.started",
       "run.started",
+      "workspace.changed",
       "run.completed",
       "agent_service.run.completed",
     ]);
@@ -256,6 +257,22 @@ describe("GlassBox control-plane adapter", () => {
       outputTokens: 5,
     });
     expect(JSON.stringify(events)).not.toContain("hello"); // prompt text is never stored
+  });
+
+  it("observes workspace path changes without storing file contents", async () => {
+    const { service, store, emitter } = await makeTraced(new (class extends FakeRunner {
+      override async run(request: RunnerRequest): Promise<RunnerResult> {
+        await writeFile(path.join(request.workspacePath, "result.txt"), "secret file contents", "utf8");
+        return super.run(request);
+      }
+    })());
+    const agent = await service.createAgent({ name: "workspace observer" });
+    const { run } = await service.sendMessage(agent.id, "write a result");
+    await settle(service, run.id);
+    await emitter.flush();
+    const changed = (await store.readRun(run.id)).find((event) => event.type === "workspace.changed");
+    expect(changed).toMatchObject({ attributes: { added: 1, modified: 0, removed: 0, paths: "result.txt" } });
+    expect(JSON.stringify(changed)).not.toContain("secret file contents");
   });
 
   it("emits run.started only once the Run is really running", async () => {
