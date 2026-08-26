@@ -37,9 +37,10 @@ const p95 = (times) => { const s = [...times].sort((x, y) => x - y); return s[Ma
 
 function loadPlaywright() {
   const dir = process.env.PLAYWRIGHT_DIR;
-  try { return require(dir ? require.resolve("playwright", { paths: [dir] }) : "playwright"); } catch {}
+  let cause = "";
+  try { return require(dir ? require.resolve("playwright", { paths: [dir] }) : "playwright"); } catch (e) { cause = " (" + String(e && e.message ? e.message : e).slice(0, 200) + ")"; }
   throw new Error(
-    "playwright is not resolvable. Set PLAYWRIGHT_DIR to a directory whose node_modules holds playwright " +
+    "playwright is not resolvable" + cause + ". Set PLAYWRIGHT_DIR to a directory whose node_modules holds playwright " +
     "(e.g. the npx cache created by `npx -y playwright@1.60.0 --version`), or NODE_PATH. It is deliberately not in package.json.",
   );
 }
@@ -57,6 +58,7 @@ async function startServer(extraEnv) {
   const fd = fs.openSync(LOG, "a");
   const child = spawn(process.execPath, [path.join(REPO, "apps/server/dist/index.js")], { cwd: REPO, env: { ...process.env, ...extraEnv }, stdio: ["ignore", fd, fd] });
   fs.closeSync(fd);
+  server = child; // owned from the moment it exists, so a failed health wait still gets stopped
   for (let i = 0; i < 120; i++) {
     if (child.exitCode !== null) throw new Error("server exited early (" + child.exitCode + "); see " + LOG);
     if (await fetch(BASE + "/api/health").then((r) => r.ok, () => false)) return child;
@@ -232,6 +234,7 @@ let server = null;
   eq(await dialog.locator("#span-drawer-title").innerText(), "codex exec", "Jump opens the drawer on `codex exec`");
   ok((await dialog.innerText()).includes("timeout"), "drawer shows the timeout status");
   ok(await page.evaluate(() => !!(document.activeElement && document.activeElement.closest("[role=dialog]"))), "Jump moves focus into the drawer");
+  sweep("DOM (drawer)", await dialog.innerText());
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached", timeout: 5_000 });
   eq(await page.locator(".trace-row.failing").count(), 1, "failing span row is highlighted");
