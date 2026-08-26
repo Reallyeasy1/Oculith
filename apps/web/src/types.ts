@@ -37,6 +37,7 @@ export interface AgentRun {
   } | null;
   createdAt: string;
   traceId?: string;
+  traceParentSpanId?: string;
   configHash?: string;
   configSnapshot?: AgentConfigSnapshot;
 }

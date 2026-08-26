@@ -314,12 +314,14 @@ describe("GlassBox control-plane adapter", () => {
     await restarted.initialize();
     await emitter.flush();
     const events = await store.readRun(run.id);
+    const serviceSpan = events.find((event) => event.type === "agent_service.run.started");
     expect(events.at(-1)).toMatchObject({
       type: "run.cancelled",
       status: "cancelled",
       actorId: "server",
       actorType: "service",
       attributes: { reason: "server_restart" },
+      parentSpanId: serviceSpan?.spanId,
     });
   });
 });

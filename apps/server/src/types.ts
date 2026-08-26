@@ -52,6 +52,8 @@ export interface AgentRun {
   completedAt: string | null;
   createdAt: string;
   traceId?: string | undefined;
+  /** Persisted observation parent used to attach restart cancellation after in-memory span handles are lost. */
+  traceParentSpanId?: string | undefined;
   configHash?: string | undefined;
   configSnapshot?: AgentConfigSnapshot | undefined;
 }

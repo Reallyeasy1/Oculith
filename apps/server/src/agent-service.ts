@@ -104,6 +104,7 @@ export class AgentService {
       this.emitter.emit({
         traceId: run.traceId,
         spanId: newId("spn"),
+        ...(run.traceParentSpanId ? { parentSpanId: run.traceParentSpanId } : {}),
         runId: run.id,
         agentId: run.agentId,
         actorId: "server",
@@ -243,6 +244,7 @@ export class AgentService {
     const run: AgentRun = {
       id: runId,
       traceId: ctx.traceId,
+      traceParentSpanId: ctx.rootSpanId,
       agentId,
       status: "queued",
       prompt,
@@ -391,6 +393,12 @@ export class AgentService {
             })
           : undefined;
       if (link) link.service = service;
+      if (service) {
+        await this.store.mutate((database) => {
+          const storedRun = database.runs.find((item) => item.id === run.id);
+          if (storedRun) storedRun.traceParentSpanId = service!.spanId;
+        });
+      }
       if (ids && service) {
         this.emitter.emit({
           ...ids,
