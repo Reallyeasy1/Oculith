@@ -40,6 +40,9 @@ abstract class BaseTraceStore implements TraceStore {
   protected readonly index = new Map<string, RunIndexEntry>();
   protected readonly seen = new Map<string, Set<string>>();
   protected readonly traceToRun = new Map<string, string>();
+  // ponytail: per-runId promise queue, same pattern as JsonStore.mutate (../store.ts) —
+  // serialises admit->persist->track so concurrent appends to one run can't both pass the cap check.
+  private readonly queues = new Map<string, Promise<void>>();
 
   abstract initialize(): Promise<void>;
   protected abstract persist(event: ObservationEvent, line: string): Promise<void>;
@@ -64,18 +67,26 @@ abstract class BaseTraceStore implements TraceStore {
       eventCount: (prev?.eventCount ?? 0) + 1,
       lastSequence: Math.max(prev?.lastSequence ?? -1, event.sequence),
       lastTimestamp: prev && prev.lastTimestamp > event.timestamp ? prev.lastTimestamp : event.timestamp,
-      bytes: (prev?.bytes ?? 0) + bytes, truncated: prev?.truncated ?? false,
+      bytes: (prev?.bytes ?? 0) + bytes,
+      truncated: (prev?.truncated ?? false) || event.type === "trace.truncated",
     });
     this.traceToRun.set(event.traceId, event.runId);
   }
 
   async append(event: ObservationEvent): Promise<AppendResult> {
-    const admitted = this.admit(event);
-    if ("stored" in admitted) return admitted;
-    const line = JSON.stringify(admitted) + "\n";
-    await this.persist(admitted, line);
-    this.track(admitted, Buffer.byteLength(line, "utf8"));
-    return { stored: true };
+    let result!: AppendResult;
+    const prior = this.queues.get(event.runId) ?? Promise.resolve();
+    const operation = prior.then(async () => {
+      const admitted = this.admit(event);
+      if ("stored" in admitted) { result = admitted; return; }
+      const line = JSON.stringify(admitted) + "\n";
+      await this.persist(admitted, line);
+      this.track(admitted, Buffer.byteLength(line, "utf8"));
+      result = { stored: true };
+    });
+    this.queues.set(event.runId, operation.catch(() => undefined));
+    await operation;
+    return result;
   }
   runIdForTrace(traceId: string): string | undefined { return this.traceToRun.get(traceId); }
   listRuns(): RunIndexEntry[] { return [...this.index.values()].sort((a, b) => b.lastTimestamp.localeCompare(a.lastTimestamp)); }
@@ -125,6 +136,7 @@ export class NdjsonTraceStore extends BaseTraceStore {
   async readRun(runId: string): Promise<ObservationEvent[]> {
     const seen = new Set<string>();
     return (await this.parseFile(this.file(runId)))
+      .filter((e) => e.runId === runId) // sanitized filenames can collide across distinct runIds
       .filter((e) => (seen.has(e.eventId) ? false : (seen.add(e.eventId), true)))
       .sort((a, b) => a.sequence - b.sequence);
   }
