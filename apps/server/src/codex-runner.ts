@@ -253,9 +253,14 @@ export class CodexRunner implements AgentRunner {
         parseCodexEventLine(stdout.trim(), parsed, observer);
       }
       const output = parsed.messages.at(-1)?.trim();
-      const failed =
-        active.cancelled || active.timedOut || active.outputExceeded || exitCode !== 0 || !output;
-      observer?.finish(failed);
+      const outcome = active.cancelled
+        ? "cancelled"
+        : active.timedOut
+          ? "timeout"
+          : active.outputExceeded || exitCode !== 0 || !output
+            ? "error"
+            : "ok";
+      observer?.finish(outcome);
       spanEnded = span !== undefined;
       // Observed only: the real exit code (null when a signal killed it) and the real signal.
       const endAttrs = {
@@ -305,7 +310,9 @@ export class CodexRunner implements AgentRunner {
         throw new Error(message);
       }
       if (exitCode !== 0) {
-        const detail = parsed.errors.at(-1) ?? stderr.trim() ?? "No error detail";
+        // Bounded: raw stderr is up to 16 KB and error.message is capped at 2048 by the schema — an
+        // oversized message would get the whole span end quarantined and the terminal evidence lost.
+        const detail = ((parsed.errors.at(-1) ?? stderr.trim()) || "No error detail").slice(0, 1024);
         const message = "Codex exited with code " + exitCode + ": " + detail;
         span?.end("error", {
           type: "runtime.codex.failed",
@@ -335,7 +342,7 @@ export class CodexRunner implements AgentRunner {
     } catch (error) {
       // Only reached when the spawn itself failed (the branches above end the span first).
       if (span && !spanEnded) {
-        observer?.finish(true);
+        observer?.finish("error");
         span.end("error", {
           type: "runtime.codex.failed",
           error: { type: "spawn_failed", message: String(error).slice(0, 2048) },

@@ -67,11 +67,14 @@ export class AgentService {
     });
     for (const run of interrupted) {
       if (!run.traceId) continue;
+      // The server itself cancelled this Run, not the local user: say so in the actor fields.
       this.emitter.emit({
         traceId: run.traceId,
         spanId: newId("spn"),
         runId: run.id,
         agentId: run.agentId,
+        actorId: "server",
+        actorType: "service",
         type: "run.cancelled",
         category: "control",
         name: "run.cancelled",
@@ -331,6 +334,14 @@ export class AgentService {
       : undefined;
     let service: SpanHandle | undefined;
     try {
+      await this.store.mutate((database) => {
+        const storedRun = database.runs.find((item) => item.id === run.id);
+        if (storedRun) {
+          storedRun.status = "running";
+          storedRun.startedAt = now();
+        }
+      });
+      // Only after the Run really is `running` (invariant 3: never emit a fact that didn't happen yet).
       service =
         ids && link
           ? this.emitter.startSpan({
@@ -357,13 +368,6 @@ export class AgentService {
           source: { component: "AgentService", observed: true },
         });
       }
-      await this.store.mutate((database) => {
-        const storedRun = database.runs.find((item) => item.id === run.id);
-        if (storedRun) {
-          storedRun.status = "running";
-          storedRun.startedAt = now();
-        }
-      });
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }

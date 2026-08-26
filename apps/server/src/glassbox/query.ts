@@ -98,14 +98,17 @@ function pathTo(spans: Map<string, Span>, spanId: string): string[] {
   return path;
 }
 
+const DEGRADED_FOCUS: FailureFocus = { kind: "degraded", spanId: "", eventId: "", sequence: -1, name: "telemetry.degraded", category: "control", component: "GlassBox", path: [], diagnosis: "Trace evidence is incomplete: the trace store was unavailable during this Run. The Run's real result is unaffected; some spans may be missing." };
+
 function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, status: TraceStatus, degraded: boolean, durationMs: number | undefined): FailureFocus | undefined {
-  if (status === "ok" && !degraded) return undefined;
+  // An ok Run has no failure to focus: a handled tool error along the way is not "the first failing step".
+  if (status === "ok") return degraded ? DEGRADED_FOCUS : undefined;
   const candidates = events.filter((e) => e.status === "error" || e.status === "timeout" || e.status === "cancelled" || e.type === "error.recorded");
-  if (candidates.length === 0) {
-    if (degraded) return { kind: "degraded", spanId: "", eventId: "", sequence: -1, name: "telemetry.degraded", category: "control", component: "GlassBox", path: [], diagnosis: "Trace evidence is incomplete: the trace store was unavailable during this Run. The Run's real result is unaffected; some spans may be missing." };
-    return undefined;
-  }
-  candidates.sort((a, b) => a.sequence - b.sequence || CATEGORY_RANK[a.category] - CATEGORY_RANK[b.category]);
+  if (candidates.length === 0) return degraded ? DEGRADED_FOCUS : undefined;
+  // The Run's terminal status names the failure kind; rank events that match it first so a handled
+  // tool.call.failed earlier in the stream can't outrank the timeout/cancel that actually ended the Run.
+  const matches = (e: ObservationEvent) => e.status === status || (status === "error" && e.type === "error.recorded");
+  candidates.sort((a, b) => Number(matches(b)) - Number(matches(a)) || a.sequence - b.sequence || CATEGORY_RANK[a.category] - CATEGORY_RANK[b.category]);
   const first = candidates[0]!;
   const kind: FailureFocus["kind"] = first.status === "timeout" ? "timeout" : first.status === "cancelled" ? "cancelled" : "error";
   const path = pathTo(spans, first.spanId);
@@ -155,7 +158,7 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
     incompleteSpans: flat.filter((s) => s.incomplete).length, redactedEvents: events.filter((e) => e.privacy.redacted).length,
     degraded, truncated, usage,
     capabilities: { model: events.some((e) => e.category === "model") ? "observed" : "unavailable", tool: events.some((e) => e.category === "tool") ? "observed" : "unavailable" },
-    firstFailingStep: failure?.name, failure,
+    firstFailingStep: failure && failure.kind !== "degraded" ? failure.name : undefined, failure,
   };
   return { summary, spans: tree, events };
 }

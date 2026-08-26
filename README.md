@@ -242,6 +242,29 @@ terraform fmt -check -recursive deploy/volcengine
 docker compose config
 ```
 
+### Controlled failure (demo)
+
+Set `GLASSBOX_DEMO_FAILURE=timeout` and restart the server. The fixture adds no failure path of its
+own: it only overrides `CODEX_TIMEOUT_MS` to 3 s for the next Run, which then takes the ordinary real
+runner timeout — SIGTERM→SIGKILL for `local-process`, `docker rm --force` for `container` — and ends in
+a `run.timed_out` terminal event. Open `GET /api/runs/<runId>/trace`: `summary.failure.diagnosis` names
+the failing span. Unset the variable to return to normal. The fixture is off by default and never
+enabled by `npm run poc`.
+
+What the automated suite proves and what it does not: the tests drive `AgentService` through a fake
+runner, so they cover the classification (timeout status, terminal event, first-failure focus,
+determinism across two Runs) but not the real process/container teardown. The real-runner span shape
+and its cleanup evidence (`runtime.codex.failed` with `terminationSignal`, `runtime.container.stopped`
+with `cleanup: "rm --force" | "signal"`) are verified by hand against a live Run before the demo.
+
+## Limitations
+
+- Single process. `JsonStore` and the NDJSON trace store are in-memory-plus-file with no cross-process locking; run one server.
+- Local NDJSON trace store only — no external backend, no retention policy, no query engine beyond the in-memory index.
+- No `workspace.changed` events on this Codex/Ark stack: Ark shells out instead of calling `apply_patch`, so no `file_change` item has ever been observed (see [docs/CODEX_EVENTS.md](docs/CODEX_EVENTS.md)). The mapping exists but stays dormant rather than inventing a diff.
+- Redaction is a key denylist plus a bounded pattern scan. It is exact on structured attributes and best-effort on free text; a novel secret format in a command string can slip past, which is why the default capture policy is `metadata_only`.
+- `capability.unavailable` means "the runtime exposed no tool or model detail for this Run", not "the runtime has no tools". It is suppressed for cancelled and timed-out Runs, where the stream was cut short and its absence proves nothing.
+
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)

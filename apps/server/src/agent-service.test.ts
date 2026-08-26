@@ -10,7 +10,7 @@ import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 import { createTraceContext } from "./glassbox/context.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
-import { MemoryTraceStore } from "./glassbox/store.js";
+import { MemoryTraceStore, type TraceStore } from "./glassbox/store.js";
 
 class FakeRunner implements AgentRunner {
   async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -142,8 +142,7 @@ class TimeoutRunner extends FakeRunner {
   }
 }
 
-async function makeTraced(runner: AgentRunner = new FakeRunner()) {
-  const store = new MemoryTraceStore();
+async function makeTraced(runner: AgentRunner = new FakeRunner(), store: TraceStore = new MemoryTraceStore()) {
   const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
   temporaryDirectories.push(root);
@@ -203,6 +202,34 @@ describe("GlassBox control-plane adapter", () => {
     expect(JSON.stringify(events)).not.toContain("hello"); // prompt text is never stored
   });
 
+  it("emits run.started only once the Run is really running", async () => {
+    // The emitter appends on the microtask queue, i.e. before any disk write settles, so the Run
+    // status seen at append time is the status at emit time.
+    const seen: Record<string, string> = {};
+    let service!: AgentService;
+    const inner = new MemoryTraceStore();
+    const store: TraceStore = {
+      initialize: () => inner.initialize(),
+      append: (event) => {
+        seen[event.type] = service.getRun(event.runId).status;
+        return inner.append(event);
+      },
+      readRun: (runId) => inner.readRun(runId),
+      runIdForTrace: (traceId) => inner.runIdForTrace(traceId),
+      listRuns: () => inner.listRuns(),
+      markTruncated: (runId) => inner.markTruncated(runId),
+    };
+    const traced = await makeTraced(new FakeRunner(), store);
+    service = traced.service;
+    const agent = await service.createAgent({ name: "order" });
+    const { run } = await service.sendMessage(agent.id, "x");
+    await settle(service, run.id);
+    await traced.emitter.flush();
+    expect(seen["run.created"]).toBe("queued");
+    expect(seen["agent_service.run.started"]).toBe("running");
+    expect(seen["run.started"]).toBe("running");
+  });
+
   it("classifies a runner timeout as timeout", async () => {
     const { service, store, emitter } = await makeTraced(new TimeoutRunner());
     const agent = await service.createAgent({ name: "t" });
@@ -234,6 +261,8 @@ describe("GlassBox control-plane adapter", () => {
     expect(events.at(-1)).toMatchObject({
       type: "run.cancelled",
       status: "cancelled",
+      actorId: "server",
+      actorType: "service",
       attributes: { reason: "server_restart" },
     });
   });

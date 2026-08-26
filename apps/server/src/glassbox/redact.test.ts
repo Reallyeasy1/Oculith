@@ -67,12 +67,17 @@ describe("redactEvent", () => {
     expect(out.privacy.redacted).toBe(true);
     expect(out.privacy.rules).toEqual(expect.arrayContaining(["denylist_key", "bearer"]));
   });
-  it("denylist is boundary-aware: prefixed key names drop, plural/suffixed ones survive", () => {
-    const out = redactEvent(ev({ attributes: { access_token: "a", "x-api-key": "b", total_tokens: 5, input_tokens: 7 } }), { policy: "metadata_only" });
-    expect(out.attributes).not.toHaveProperty("access_token");
-    expect(out.attributes).not.toHaveProperty("x-api-key");
-    expect(out.attributes.total_tokens).toBe(5);
-    expect(out.attributes.input_tokens).toBe(7);
+  // Boundary-aware in both spellings: a prefixed sensitive word drops, a plural/suffixed one survives,
+  // and camelCase is checked via its snake_cased form so "accessToken" can't slip past "access_token".
+  it.each([
+    ["access_token", true], ["x-api-key", true], ["total_tokens", false], ["input_tokens", false],
+    ["accessToken", true], ["authToken", true], ["apiSecret", true], ["sessionCookie", true], ["xApiKey", true],
+    ["inputTokens", false], ["cachedInputTokens", false], ["exitCode", false],
+    ["secret_key", true], ["aws_secret_access_key", true], ["SecretKey", true], ["password_hash", true],
+    ["http.request.header.authorization", true], ["tokens_total", false],
+  ] as const)("denylist: %s dropped=%s", (key, dropped) => {
+    const out = redactEvent(ev({ attributes: { [key]: 7 } }), { policy: "metadata_only" });
+    expect(Object.hasOwn(out.attributes, key)).toBe(!dropped);
   });
   it("metadata_only strips summary entirely; safe_summary truncates and counts bytes", () => {
     const long = "x".repeat(5000);

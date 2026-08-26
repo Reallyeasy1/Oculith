@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ZodError } from "zod";
 import {
   CATEGORIES, EVENT_TYPES, SCHEMA_VERSION, STATUSES,
   eventInputSchema, newId, observationEventSchema,
@@ -26,6 +27,16 @@ describe("ObservationEvent schema", () => {
     expect(() => observationEventSchema.parse({ ...base, status: "done" })).toThrow();
     expect(() => observationEventSchema.parse({ ...base, traceId: "" })).toThrow();
     expect(() => observationEventSchema.parse({ ...base, attributes: { nested: { a: 1 } } })).toThrow();
+  });
+  it("bounds ids, attribute key count and privacy fields", () => {
+    expect(() => observationEventSchema.parse({ ...base, traceId: "t".repeat(129) })).toThrow(ZodError);
+    expect(() => observationEventSchema.parse({ ...base, traceId: "t".repeat(128) })).not.toThrow();
+    const many: Record<string, number> = {}; for (let i = 0; i < 65; i++) many["k" + i] = i;
+    expect(() => observationEventSchema.parse({ ...base, attributes: many })).toThrow(ZodError);
+    delete many.k64;
+    expect(() => observationEventSchema.parse({ ...base, attributes: many })).not.toThrow();
+    expect(() => observationEventSchema.parse({ ...base, privacy: { redacted: true, rulesetVersion: "v".repeat(65) } })).toThrow(ZodError);
+    expect(() => observationEventSchema.parse({ ...base, privacy: { ...base.privacy, rules: Array.from({ length: 33 }, () => "r") } })).toThrow(ZodError);
   });
   it("every taxonomy type and category is accepted", () => {
     for (const type of EVENT_TYPES) expect(() => observationEventSchema.parse({ ...base, type })).not.toThrow();

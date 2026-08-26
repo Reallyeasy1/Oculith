@@ -68,6 +68,29 @@ describe("buildTrace", () => {
     expect(c.summary.failure?.kind).toBe("cancelled");
     expect(flattenSpans(c.spans).every((s) => s.spanId === "rc" || s.incomplete)).toBe(true);
   });
+  it("handled tool failure then timeout: focuses the timeout span, not the earlier handled error", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "tool.call.failed", category: "tool", spanId: "t", parentSpanId: "rt", status: "error", error: { type: "exit_code", message: "exit code 1" } }),
+      ev({ type: "runtime.codex.failed", category: "runtime", spanId: "rt", phase: "end", status: "timeout", error: { type: "timeout", message: "Codex timed out after 3000 ms" }, source: { component: "AgentRunner", observed: true } }),
+      ev({ type: "run.timed_out", category: "control", spanId: "rto", parentSpanId: "svc", status: "timeout" }),
+      ev({ type: "agent_service.run.failed", category: "control", spanId: "svc", phase: "end", status: "timeout" })];
+    const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(summary.status).toBe("timeout");
+    expect(summary.failure).toMatchObject({ kind: "timeout", spanId: "rt", name: "runtime.codex.failed" });
+    expect(summary.firstFailingStep).toBe("runtime.codex.failed");
+  });
+  it("ok + degraded with a handled tool failure: kind degraded, no firstFailingStep", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "tool.call.failed", category: "tool", spanId: "t", parentSpanId: "rt", status: "error", error: { type: "exit_code", message: "exit code 1" } }),
+      ev({ type: "runtime.codex.completed", category: "runtime", spanId: "rt", phase: "end", status: "ok" }),
+      ev({ type: "run.completed", category: "control", spanId: "rd", parentSpanId: "svc", status: "ok" })];
+    const { summary } = buildTrace(events, { capturePolicy: "metadata_only", degraded: true });
+    expect(summary.status).toBe("ok");
+    expect(summary.failure?.kind).toBe("degraded");
+    expect(summary.firstFailingStep).toBeUndefined();
+  });
   it("no model/tool events => capabilities unavailable; degraded flag surfaces", () => {
     seq = 0;
     const events = [root(), svcStart(), rtStart(),

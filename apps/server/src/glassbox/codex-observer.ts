@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { RunnerTraceContext } from "../types.js";
 import type { ObservationEmitter } from "./emitter.js";
 import { newId, type EventInput, type EventType } from "./schema.js";
@@ -34,6 +35,7 @@ const USAGE_KEYS: Record<string, string> = {
  */
 export class CodexStreamObserver implements CodexStreamSink {
   sessionId: string | undefined;
+  private sawAnyEvent = false;
   private sawTool = false;
   private sawModel = false;
   private finished = false;
@@ -61,10 +63,12 @@ export class CodexStreamObserver implements CodexStreamSink {
   }
 
   onThreadStarted(threadId: string): void {
+    this.sawAnyEvent = true;
     this.sessionId = threadId;
   }
 
   onItemCompleted(item: Record<string, unknown>): void {
+    this.sawAnyEvent = true;
     const kind = str(item.type);
     if (kind === "command_execution") {
       this.commandExecution(item);
@@ -91,7 +95,9 @@ export class CodexStreamObserver implements CodexStreamSink {
     const exitCode = num(item.exit_code);
     const declined = str(item.status) === "declined";
     const failed = declined || (exitCode !== undefined && exitCode !== 0);
-    const program = (command.trim().split(/\s+/)[0] ?? "").slice(0, 40);
+    // win32.basename strips both "/" and "\\" on every platform, so an absolute exe path (which on
+    // Windows carries the user profile) never reaches the store.
+    const program = path.win32.basename(command.trim().split(/\s+/)[0] ?? "").slice(0, 40);
     this.emitter.emit({
       ...this.base(failed ? "tool.call.failed" : "tool.call.completed", "shell:" + program),
       category: "tool",
@@ -140,6 +146,7 @@ export class CodexStreamObserver implements CodexStreamSink {
   }
 
   onTurnCompleted(usage: Record<string, unknown>): void {
+    this.sawAnyEvent = true;
     this.sawModel = true;
     // Usage keys differ across Codex versions (E9 has no reasoning_output_tokens, E10 does), so
     // every field is optional and only the ones actually present are recorded.
@@ -158,14 +165,20 @@ export class CodexStreamObserver implements CodexStreamSink {
 
   /** Buffers only: a stream `error` line is a retry notice until the run actually fails (trap 3). */
   onError(message: string): void {
+    this.sawAnyEvent = true;
     this.lastError = message;
   }
 
-  /** Call once when the stream is done. `failed` releases the buffered stream error as one event. */
-  finish(failed = false): void {
+  /** Call once when the stream is done, with the run's real outcome. A non-`ok` outcome releases the
+   * buffered stream error as one event. `capability.unavailable` is only honest for a run that ran to
+   * its own conclusion: a cancelled or timed-out stream was cut short, so the absence of tool/model
+   * evidence says nothing about what the runtime exposes (invariant 3 — never fabricate evidence).
+   * Likewise a stream that produced nothing at all (spawn failure, output-cap abort before the first
+   * line) is no evidence about capabilities either. */
+  finish(outcome: "ok" | "error" | "cancelled" | "timeout" = "ok"): void {
     if (this.finished) return;
     this.finished = true;
-    if (failed && this.lastError) {
+    if (outcome !== "ok" && this.lastError) {
       this.emitter.emit({
         ...this.base("error.recorded", "codex.error"),
         category: "runtime",
@@ -173,7 +186,7 @@ export class CodexStreamObserver implements CodexStreamSink {
         error: { type: "codex_error", message: this.lastError.slice(0, 2048) },
       });
     }
-    if (!this.sawTool && !this.sawModel) {
+    if (this.sawAnyEvent && !this.sawTool && !this.sawModel && (outcome === "ok" || outcome === "error")) {
       this.emitter.emit({
         ...this.base("capability.unavailable", "capability.unavailable"),
         category: "runtime",

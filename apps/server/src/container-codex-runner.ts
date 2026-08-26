@@ -23,6 +23,8 @@ interface ActiveContainer {
   outputExceeded: boolean;
   settled: Promise<void>;
   termination: Promise<void> | null;
+  /** How the container was actually torn down — set from the real outcome of `rm --force`. */
+  cleanup?: "rm --force" | "signal" | undefined;
 }
 
 interface ParsedEvents {
@@ -135,8 +137,9 @@ export class ContainerCodexRunner implements AgentRunner {
         ["rm", "--force", active.containerName],
         { timeout: 8_000, env: this.childEnvironment() },
       )
-        .then(() => undefined)
+        .then(() => { active.cleanup = "rm --force"; })
         .catch(() => {
+          active.cleanup = "signal";
           active.child.kill("SIGTERM");
           const forceKill = setTimeout(() => active.child.kill("SIGKILL"), 3_000);
           forceKill.unref();
@@ -286,7 +289,7 @@ export class ContainerCodexRunner implements AgentRunner {
         type: "runtime.container.stopped",
         attributes: {
           ...(child.exitCode !== null ? { exitCode: child.exitCode } : {}),
-          removed: active.termination !== null,
+          ...(active.cleanup ? { cleanup: active.cleanup } : {}),
         },
         ...(error ? { error } : {}),
       });
@@ -297,11 +300,18 @@ export class ContainerCodexRunner implements AgentRunner {
         child.once("error", reject);
         child.once("close", (code) => resolve(code ?? 1));
       });
+      // The child can close before `rm --force` reports back; wait so the span records the real cleanup.
+      if (active.termination) await active.termination;
       if (stdout.trim()) parseCodexEventLine(stdout.trim(), parsed, observer);
       const output = parsed.messages.at(-1)?.trim();
-      const failed =
-        active.cancelled || active.timedOut || active.outputExceeded || exitCode !== 0 || !output;
-      observer?.finish(failed);
+      const outcome = active.cancelled
+        ? "cancelled"
+        : active.timedOut
+          ? "timeout"
+          : active.outputExceeded || exitCode !== 0 || !output
+            ? "error"
+            : "ok";
+      observer?.finish(outcome);
       if (active.cancelled) {
         endSpans("cancelled", { type: "cancelled", message: "Run cancelled" });
         throw new RunCancelledError();
@@ -329,7 +339,8 @@ export class ContainerCodexRunner implements AgentRunner {
         throw new Error(message);
       }
       if (exitCode !== 0) {
-        const detail = parsed.errors.at(-1) ?? stderr.trim() ?? "No error detail";
+        // Bounded: see CodexRunner — an oversized error.message would quarantine the span end.
+        const detail = ((parsed.errors.at(-1) ?? stderr.trim()) || "No error detail").slice(0, 1024);
         const message =
           this.config.containerEngine + " Runtime exited with code " + exitCode + ": " + detail;
         endSpans("error", { type: "exit_code", message });
@@ -345,7 +356,7 @@ export class ContainerCodexRunner implements AgentRunner {
     } catch (error) {
       // Only reached when the engine itself failed to spawn (the branches above end the spans).
       if (span && !spanEnded) {
-        observer?.finish(true);
+        observer?.finish("error");
         endSpans("error", { type: "spawn_failed", message: String(error).slice(0, 2048) });
       }
       throw error;

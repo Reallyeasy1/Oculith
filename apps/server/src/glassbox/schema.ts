@@ -27,19 +27,21 @@ export const eventTypeSchema = z.enum(EVENT_TYPES);
 export const capturePolicySchema = z.enum(CAPTURE_POLICIES);
 
 const primitive = z.union([z.string().max(2048), z.number(), z.boolean(), z.null()]);
+// One bound for every identifier: ids are opaque tokens we generate or copy from headers, never content.
+const id = z.string().min(1).max(128);
 
 export const observationEventSchema = z.object({
   schemaVersion: z.literal(SCHEMA_VERSION),
-  eventId: z.string().min(1),
+  eventId: id,
   sequence: z.number().int().nonnegative(),
-  traceId: z.string().min(1),
-  spanId: z.string().min(1),
-  parentSpanId: z.string().min(1).optional(),
-  runId: z.string().min(1),
-  agentId: z.string().min(1),
-  sessionId: z.string().min(1).optional(),
-  requestId: z.string().min(1).optional(),
-  actorId: z.string().min(1).default("local-user"),
+  traceId: id,
+  spanId: id,
+  parentSpanId: id.optional(),
+  runId: id,
+  agentId: id,
+  sessionId: id.optional(),
+  requestId: id.optional(),
+  actorId: id.default("local-user"),
   actorType: z.enum(["human", "service", "agent", "controller"]).default("human"),
   attempt: z.number().int().positive().default(1),
   timestamp: z.string().datetime(),
@@ -54,14 +56,14 @@ export const observationEventSchema = z.object({
     adapter: z.string().min(1).max(64).optional(),
     observed: z.boolean(),
   }),
-  attributes: z.record(z.string().max(64), primitive).default({}),
+  attributes: z.record(z.string().max(64), primitive).refine((a) => Object.keys(a).length <= 64, "attributes: at most 64 keys").default({}),
   summary: z.object({ text: z.string().max(4096), policy: z.literal("safe_summary") }).optional(),
   error: z.object({ type: z.string().max(64), message: z.string().max(2048) }).optional(),
   privacy: z.object({
     redacted: z.boolean(),
-    rulesetVersion: z.string(),
+    rulesetVersion: z.string().max(64),
     reason: z.string().max(64).optional(),
-    rules: z.array(z.string()).optional(),
+    rules: z.array(z.string().max(64)).max(32).optional(),
     originalBytes: z.number().int().nonnegative().optional(),
     storedBytes: z.number().int().nonnegative().optional(),
   }),

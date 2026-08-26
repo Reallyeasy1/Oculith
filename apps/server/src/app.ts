@@ -11,7 +11,7 @@ import { createTraceContext, type TraceContext } from "./glassbox/context.js";
 import type { ObservationEmitter } from "./glassbox/emitter.js";
 import { buildTrace, type TraceView } from "./glassbox/query.js";
 import { CATEGORIES, SCHEMA_VERSION, STATUSES } from "./glassbox/schema.js";
-import type { TraceStore } from "./glassbox/store.js";
+import type { RunIndexEntry, TraceStore } from "./glassbox/store.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -183,19 +183,30 @@ export async function createApp(
   if (glassbox) {
     const runsQuery = z.object({ status: z.enum(STATUSES).optional(), agentId: z.string().uuid().optional(), from: z.string().datetime().optional(), to: z.string().datetime().optional(), limit: z.coerce.number().int().min(1).max(200).default(50) });
     const eventsQuery = z.object({ category: z.enum(CATEGORIES).optional(), status: z.enum(STATUSES).optional(), q: z.string().max(200).optional() });
-    const viewFor = async (runId: string): Promise<TraceView> => {
+    // `entry` lets a caller listing many runs hoist the index lookup out of its loop instead of
+    // re-scanning listRuns() per run; omitted, it falls back to the single-run scan.
+    const viewFor = async (runId: string, entry?: RunIndexEntry | undefined): Promise<TraceView> => {
       const events = await glassbox.store.readRun(runId);
-      const entry = glassbox.store.listRuns().find((r) => r.runId === runId);
-      return buildTrace(events, { capturePolicy: glassbox.emitter.capturePolicy, degraded: glassbox.emitter.isDegraded(runId), truncated: entry?.truncated });
+      const found = entry ?? glassbox.store.listRuns().find((r) => r.runId === runId);
+      return buildTrace(events, { capturePolicy: glassbox.emitter.capturePolicy, degraded: glassbox.emitter.isDegraded(runId), truncated: found?.truncated });
     };
     app.get("/api/runs", async (request) => {
       const q = runsQuery.parse(request.query);
       const agents = new Map(service.listAgents().map((a) => [a.id, a.name]));
+      // One index snapshot per request, not one listRuns() scan per listed run.
+      const index = new Map(glassbox.store.listRuns().map((e) => [e.runId, e]));
+      // Pre-slice at 2x so the status filter below has spare candidates; with a very selective filter
+      // the page can still come back under `limit` even though older matching runs exist.
       const runs = service.allRuns().filter((r) => (!q.agentId || r.agentId === q.agentId) && (!q.from || r.createdAt >= q.from) && (!q.to || r.createdAt <= q.to))
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, q.limit * 2);
       const items = [];
       for (const run of runs) {
-        const view = await viewFor(run.id);
+        const entry = index.get(run.id);
+        // No index entry means no stored events, so skip the NDJSON read entirely: the empty view
+        // falls through to the record-derived status branch below.
+        const view = entry
+          ? await viewFor(run.id, entry)
+          : buildTrace([], { capturePolicy: glassbox.emitter.capturePolicy, degraded: glassbox.emitter.isDegraded(run.id) });
         const status = view.summary.eventCount ? view.summary.status : run.status === "completed" ? "ok" : run.status === "failed" ? "error" : run.status === "cancelled" ? "cancelled" : "running";
         if (q.status && status !== q.status) continue;
         const s = view.summary;
