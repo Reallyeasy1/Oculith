@@ -7,6 +7,9 @@ import { loadConfig } from "./config.js";
 import { JsonStore } from "./store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import { createTraceContext } from "./glassbox/context.js";
+import { ObservationEmitter } from "./glassbox/emitter.js";
+import { MemoryTraceStore } from "./glassbox/store.js";
 
 class FakeRunner implements AgentRunner {
   async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -129,5 +132,108 @@ describe("Agent lifecycle", () => {
 
     finish({ output: "done", threadId: "thread", usage: null });
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+  });
+});
+
+class TimeoutRunner extends FakeRunner {
+  override async run(): Promise<RunnerResult> {
+    throw new Error("Codex timed out after 3000 ms");
+  }
+}
+
+async function makeTraced(runner: AgentRunner = new FakeRunner()) {
+  const store = new MemoryTraceStore();
+  const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+  const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
+  temporaryDirectories.push(root);
+  const config = loadConfig({
+    NODE_ENV: "test",
+    APP_DATA_DIR: path.join(root, "data"),
+    AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+    CODEX_HOME: path.join(root, "codex"),
+    ARK_API_KEY: "test-key",
+    ARK_MODEL: "ep-test",
+  });
+  const jsonStore = new JsonStore(path.join(root, "data", "db.json"));
+  const workspaces = new WorkspaceManager(path.join(root, "workspaces"));
+  const service = new AgentService(config, jsonStore, workspaces, runner, emitter);
+  await service.initialize();
+  return { service, store, emitter, config, jsonStore, workspaces };
+}
+
+const settle = async (service: AgentService, runId: string) => {
+  for (let i = 0; i < 50; i++) {
+    const r = service.getRun(runId);
+    if (["completed", "failed", "cancelled"].includes(r.status)) return r;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("run did not settle");
+};
+
+describe("GlassBox control-plane adapter", () => {
+  it("links the Run to a trace and emits root, control and terminal events in order", async () => {
+    const { service, store, emitter } = await makeTraced();
+    const agent = await service.createAgent({ name: "traced" });
+    const ctx = createTraceContext(
+      { requestId: "req-1", method: "POST", path: "/api/agents/x/messages" },
+      "metadata_only",
+    );
+    const { run } = await service.sendMessage(agent.id, "hello", ctx);
+    expect(ctx.runId).toBe(run.id);
+    expect(service.getRun(run.id).traceId).toBe(ctx.traceId);
+    await settle(service, run.id);
+    await emitter.flush();
+    const events = await store.readRun(run.id);
+    expect(events.map((e) => e.type)).toEqual([
+      "http.request.received",
+      "run.created",
+      "agent_service.run.started",
+      "run.started",
+      "run.completed",
+      "agent_service.run.completed",
+    ]);
+    expect(events[1]!.parentSpanId).toBe(ctx.rootSpanId);
+    expect(events[2]!.parentSpanId).toBe(ctx.rootSpanId);
+    expect(events.every((e) => e.traceId === ctx.traceId && e.requestId === "req-1")).toBe(true);
+    expect(events.find((e) => e.type === "run.completed")!.attributes).toMatchObject({
+      inputTokens: 12,
+      outputTokens: 5,
+    });
+    expect(JSON.stringify(events)).not.toContain("hello"); // prompt text is never stored
+  });
+
+  it("classifies a runner timeout as timeout, and stop as cancelled with actor evidence", async () => {
+    const { service, store, emitter } = await makeTraced(new TimeoutRunner());
+    const agent = await service.createAgent({ name: "t" });
+    const { run } = await service.sendMessage(agent.id, "x");
+    await settle(service, run.id);
+    await emitter.flush();
+    const events = await store.readRun(run.id);
+    expect(events.map((e) => e.type)).toContain("run.timed_out");
+    expect(events.at(-1)).toMatchObject({ type: "agent_service.run.failed", status: "timeout" });
+  });
+
+  it("restart marks interrupted Runs cancelled in the trace", async () => {
+    const { service, store, emitter, config, jsonStore, workspaces } = await makeTraced(
+      new (class extends FakeRunner {
+        override run(): Promise<RunnerResult> {
+          return new Promise(() => undefined);
+        }
+      })(),
+    );
+    const agent = await service.createAgent({ name: "r" });
+    const { run } = await service.sendMessage(agent.id, "x");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await emitter.flush();
+    // a second service on the same store simulates a process restart
+    const restarted = new AgentService(config, jsonStore, workspaces, new FakeRunner(), emitter);
+    await restarted.initialize();
+    await emitter.flush();
+    const events = await store.readRun(run.id);
+    expect(events.at(-1)).toMatchObject({
+      type: "run.cancelled",
+      status: "cancelled",
+      attributes: { reason: "server_restart" },
+    });
   });
 });

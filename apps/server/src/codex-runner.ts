@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
+import { createDefaultEmitter, type ObservationEmitter } from "./glassbox/emitter.js";
 import type {
   AgentRunner,
   RunUsage,
@@ -103,7 +104,11 @@ export class CodexRunner implements AgentRunner {
     }
   >();
 
-  constructor(private readonly config: AppConfig) {}
+  constructor(
+    private readonly config: AppConfig,
+    // Unused until the runtime spans land (T8); wired here so the factory has one shape.
+    protected readonly emitter: ObservationEmitter = createDefaultEmitter(),
+  ) {}
 
   async isAvailable(): Promise<boolean> {
     try {

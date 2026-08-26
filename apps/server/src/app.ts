@@ -7,6 +7,15 @@ import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
+import { createTraceContext, type TraceContext } from "./glassbox/context.js";
+import type { ObservationEmitter } from "./glassbox/emitter.js";
+import type { TraceStore } from "./glassbox/store.js";
+
+declare module "fastify" {
+  interface FastifyRequest {
+    glassbox?: TraceContext | undefined;
+  }
+}
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -26,6 +35,7 @@ const messageBody = z.object({
 export async function createApp(
   config: AppConfig,
   service: AgentService,
+  glassbox?: { emitter: ObservationEmitter; store: TraceStore },
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -62,6 +72,46 @@ export async function createApp(
       return reply.code(401).send({ error: "Authentication required" });
     }
   });
+
+  if (glassbox) {
+    app.addHook("onRequest", async (request) => {
+      if (
+        request.method === "POST" &&
+        /^\/api\/agents\/[^/]+\/messages$/.test(request.url)
+      ) {
+        request.glassbox = createTraceContext(
+          {
+            requestId: request.id,
+            method: request.method,
+            path: "/api/agents/:id/messages",
+          },
+          glassbox.emitter.capturePolicy,
+        );
+      }
+    });
+
+    app.addHook("onResponse", async (request, reply) => {
+      const ctx = request.glassbox;
+      // Only the accepted path has a Run to attach to; a rejected request never opened a trace.
+      if (!ctx?.runId || !ctx.agentId) return;
+      glassbox.emitter.emit({
+        traceId: ctx.traceId,
+        spanId: ctx.rootSpanId,
+        runId: ctx.runId,
+        agentId: ctx.agentId,
+        requestId: ctx.requestId,
+        actorId: ctx.actorId,
+        type: "http.request.completed",
+        category: "control",
+        phase: "end",
+        status: reply.statusCode < 400 ? "ok" : "error",
+        name: (ctx.method ?? "POST") + " /api/agents/:id/messages",
+        durationMs: Math.max(0, Date.now() - Date.parse(ctx.receivedAt)),
+        source: { component: "Fastify", observed: true },
+        attributes: { statusCode: reply.statusCode, method: ctx.method ?? "POST" },
+      });
+    });
+  }
 
   app.get("/api/health", async () => ({
     ok: true,
@@ -119,7 +169,7 @@ export async function createApp(
   app.post("/api/agents/:id/messages", async (request, reply) => {
     const { id } = agentIdParams.parse(request.params);
     const body = messageBody.parse(request.body);
-    const result = await service.sendMessage(id, body.content);
+    const result = await service.sendMessage(id, body.content, request.glassbox);
     return reply.code(202).send(result);
   });
 

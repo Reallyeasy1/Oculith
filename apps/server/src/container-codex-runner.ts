@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
 import { RunCancelledError } from "./errors.js";
+import { createDefaultEmitter, type ObservationEmitter } from "./glassbox/emitter.js";
 import type {
   AgentRunner,
   RunUsage,
@@ -93,7 +94,11 @@ export function buildContainerRunArgs(
 export class ContainerCodexRunner implements AgentRunner {
   private readonly active = new Map<string, ActiveContainer>();
 
-  constructor(private readonly config: AppConfig) {}
+  constructor(
+    private readonly config: AppConfig,
+    // Unused until the runtime spans land (T8); wired here so the factory has one shape.
+    protected readonly emitter: ObservationEmitter = createDefaultEmitter(),
+  ) {}
 
   async isAvailable(): Promise<boolean> {
     try {
