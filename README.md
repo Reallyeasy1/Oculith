@@ -299,7 +299,7 @@ assertion in `container-codex-runner.test.ts` (see the Windows caveat in `CLAUDE
 ## Limitations
 
 - Single process. `JsonStore` and the NDJSON trace store are in-memory-plus-file with no cross-process locking; run one server.
-- Local NDJSON trace store only — no external backend, no retention policy, no query engine beyond the in-memory index.
+- Local NDJSON trace store only — no external backend, no query engine beyond the in-memory index. Retention is a startup-only pass (`GLASSBOX_RETENTION_DAYS` / `GLASSBOX_MAX_DISK_MB`); evicted Runs keep their metadata skeleton and a `trace.truncated` tombstone.
 - No `workspace.changed` events on this Codex/Ark stack: Ark shells out instead of calling `apply_patch`, so no `file_change` item has ever been observed (see [docs/CODEX_EVENTS.md](docs/CODEX_EVENTS.md)). The mapping exists but stays dormant rather than inventing a diff.
 - Redaction is a key denylist plus a bounded pattern scan. It is exact on structured attributes and best-effort on free text; a novel secret format in a command string can slip past, which is why the default capture policy is `metadata_only`.
 - Model/tool capabilities have exactly three states and are never guessed: `observed` (the runtime emitted events for that layer), `unavailable` (the Run completed and the runtime exposed no tool or model detail — not "the runtime has no tools"; this is the only case that emits `capability.unavailable`), and `unknown` (the Run was cancelled, timed out, or its stream never started — including error Runs that died before the first stream event — so nothing was said and its absence proves nothing; the trace header shows "no evidence — run cut short").
