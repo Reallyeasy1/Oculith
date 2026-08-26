@@ -11,6 +11,7 @@ import {
   formatAttribute,
   indexSpans,
   isFilterActive,
+  timelineTicks,
   visibleRows,
   type TraceFilter,
 } from "./trace-view-model";
@@ -58,6 +59,7 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
   const redactedSpans = useMemo(() => new Set(view?.events.filter((e) => e.privacy.redacted).map((e) => e.spanId)), [view]);
   const expanded = useMemo(() => expandedState ?? (view ? defaultExpanded(view) : new Set<string>()), [expandedState, view]);
   const rows = useMemo(() => (view ? visibleRows(view.spans, expanded, filter) : []), [view, expanded, filter]);
+  const ticks = useMemo(() => timelineTicks(view?.summary.durationMs), [view?.summary.durationMs]);
   const rovingId = focusId && rows.some((r) => r.span.spanId === focusId) ? focusId : (rows[0]?.span.spanId ?? null);
 
   useEffect(() => {
@@ -192,10 +194,31 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
         )}
       </div>
 
+      {ticks.length > 0 && (
+        <div className="trace-axis" aria-hidden="true">
+          <span className="trace-axis-title">Timeline</span>
+          <span className="trace-axis-scale">
+            {ticks.map((tick, index) => (
+              <span
+                key={tick.milliseconds}
+                className={"trace-axis-tick" + (index === 0 ? " first" : index === ticks.length - 1 ? " last" : "")}
+                style={{ left: tick.percent + "%" }}
+              >
+                <span>{formatDuration(tick.milliseconds)}</span>
+              </span>
+            ))}
+          </span>
+        </div>
+      )}
+
       <div className="trace-tree" role="tree" aria-label="Spans">
         {rows.map((row, index) => {
           const s = row.span;
-          const geo = barGeometry(s, view);
+          const geo = barGeometry(s, view, s.parentSpanId ? byId.get(s.parentSpanId) : undefined);
+          const timingDescription = geo
+            ? `${s.name}: starts ${formatDuration(geo.startOffsetMs)} after Run start; ${geo.instant ? "instant event" : `duration ${formatDuration(geo.durationMs)}`}${geo.openEnded ? "; incomplete and open-ended" : ""}${geo.endsAfterParent ? "; ends after parent" : ""}.`
+            : undefined;
+          const timingId = `span-timing-${s.spanId}`;
           const failing = failure?.spanId === s.spanId;
           return (
             <div
@@ -205,6 +228,7 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
               aria-level={s.depth + 1}
               aria-expanded={row.hasChildren ? row.expanded : undefined}
               aria-selected={openId === s.spanId}
+              aria-describedby={timingDescription ? timingId : undefined}
               tabIndex={rovingId === s.spanId ? 0 : -1}
               className={"trace-row" + (failing ? " failing" : "") + (row.context ? " context" : "") + (openId === s.spanId ? " selected" : "")}
               style={{ paddingLeft: 12 + s.depth * 18 }}
@@ -229,10 +253,17 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
                 {!s.source.observed && <span className="badge">unavailable</span>}
                 {redactedSpans.has(s.spanId) && <span className="badge">redacted</span>}
               </span>
-              <span className="trace-bar" aria-hidden="true">
-                {geo && <span className={"trace-bar-fill fill-" + s.status} style={{ left: geo.left + "%", width: geo.width + "%" }} />}
+              <span className="trace-bar" title={timingDescription} aria-hidden="true">
+                {geo?.instant && <span className={"trace-bar-marker fill-" + s.status} style={{ left: geo.left + "%" }} />}
+                {geo && !geo.instant && (
+                  <span
+                    className={"trace-bar-fill fill-" + s.status + (geo.openEnded ? " open-ended" : "")}
+                    style={{ left: geo.left + "%", width: geo.width + "%" }}
+                  />
+                )}
               </span>
               <span className="trace-dur">{formatDuration(s.durationMs)}</span>
+              {timingDescription && <span id={timingId} className="sr-only">{timingDescription}</span>}
             </div>
           );
         })}
