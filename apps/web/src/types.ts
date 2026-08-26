@@ -37,6 +37,19 @@ export interface AgentRun {
   } | null;
   createdAt: string;
   traceId?: string;
+  traceParentSpanId?: string;
+  configHash?: string;
+  configSnapshot?: AgentConfigSnapshot;
+}
+
+export interface AgentConfigSnapshot {
+  instructions: string;
+  modelProvider: "ark" | "openai";
+  model: string;
+  codexSandboxMode: "read-only" | "workspace-write" | "danger-full-access";
+  runtimeProvider: "local-process" | "container";
+  containerRuntimeImage: string;
+  capturePolicy: CapturePolicy;
 }
 
 // --- GlassBox query types (mirrors apps/server/src/glassbox/{schema,query}.ts) ---
@@ -72,8 +85,15 @@ export interface RunListItem {
     cachedInputTokens?: number;
     outputTokens?: number;
   };
+  capabilities: { model: "observed" | "unavailable" | "unknown"; tool: "observed" | "unavailable" | "unknown" };
+  toolCalls: number;
+  toolFailures: number;
+  tokens?: { output?: number };
   denials: number;
   actions: number;
+  configHash?: string;
+  configSnapshot?: AgentConfigSnapshot;
+  workspaceChanges?: { added: number; modified: number; removed: number; bytesDelta: number; truncated: boolean };
   degraded: boolean;
   truncated: boolean;
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
@@ -136,7 +156,19 @@ export interface TraceSummary {
     cachedInputTokens?: number;
     outputTokens?: number;
   };
+  metrics: {
+    durationMs?: number;
+    terminalStatus: TraceStatus;
+    toolCalls: number;
+    toolFailures: number;
+    modelCalls: number;
+    tokens?: { input?: number; cachedInput?: number; output?: number };
+    retries: number;
+    denials: number;
+  };
+  configHash?: string;
   capabilities: { model: "observed" | "unavailable" | "unknown"; tool: "observed" | "unavailable" | "unknown" };
+  workspaceChanges?: { added: number; modified: number; removed: number; bytesDelta: number; truncated: boolean };
   firstFailingStep?: string;
   failure?: FailureFocus;
 }

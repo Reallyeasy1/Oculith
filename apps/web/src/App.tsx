@@ -4,6 +4,7 @@ import type { Agent, AgentRun, Message, RunListItem, SystemInfo, TraceView } fro
 import RunsView from "./RunsView";
 import TraceDetail from "./TraceDetail";
 import Overview from "./Overview";
+import { refreshIntervalMs } from "./trace-view-model";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -64,6 +65,8 @@ export default function App() {
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
   const messageEnd = useRef<HTMLDivElement>(null);
+  // undefined means this Agent's history has not loaded yet; null is a loaded, empty history.
+  const lastMessageIdRef = useRef<string | null | undefined>(undefined);
   const selectedIdRef = useRef<string | null>(null);
   const selectedRunIdRef = useRef<string | null>(null);
   const viewRef = useRef(view);
@@ -88,9 +91,10 @@ export default function App() {
     );
   }, []);
 
-  const refreshMessages = useCallback(async (agentId: string) => {
+  const refreshMessages = useCallback(async (agentId: string, establishBaseline = false) => {
     const result = await api.messages(agentId);
     if (mountedRef.current && selectedIdRef.current === agentId) {
+      if (establishBaseline) lastMessageIdRef.current = result.messages.at(-1)?.id ?? null;
       setMessages(result.messages);
     }
   }, []);
@@ -151,11 +155,12 @@ export default function App() {
   useEffect(() => {
     setActiveRun(null);
     setShowSettings(false);
+    lastMessageIdRef.current = undefined;
     if (!selectedId) {
       setMessages([]);
       return;
     }
-    void Promise.all([refreshMessages(selectedId), api.runs(selectedId)])
+    void Promise.all([refreshMessages(selectedId, true), api.runs(selectedId)])
       .then(([, result]) => {
         if (selectedIdRef.current !== selectedId) return;
         const latest = result.runs[0] ?? null;
@@ -182,8 +187,13 @@ export default function App() {
   }, [selected]);
 
   useEffect(() => {
-    messageEnd.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, activeRun]);
+    const lastMessageId = messages.at(-1)?.id ?? null;
+    const previous = lastMessageIdRef.current;
+    lastMessageIdRef.current = lastMessageId;
+    if (previous !== undefined && lastMessageId !== null && lastMessageId !== previous) {
+      messageEnd.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [messages]);
 
   const createAgent = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -272,6 +282,33 @@ export default function App() {
       pollingRunIds.current.delete(runId);
     }
   };
+
+  // The one dashboard refresh timer (#98). It covers both All runs and the selected Agent so Runs
+  // started outside this browser appear without a reload. Trace and poll failures stay soft.
+  useEffect(() => {
+    if (view === "agent" && !selectedId) return;
+    const refreshVisibleRuns = async () => {
+      await refreshRuns();
+      const openRunId = selectedRunIdRef.current;
+      if (openRunId) await refreshTrace(openRunId).catch(() => undefined);
+      const agentId = selectedIdRef.current;
+      if (viewRef.current !== "agent" || !agentId) return;
+      try {
+        const result = await api.runs(agentId);
+        if (selectedIdRef.current !== agentId) return;
+        const latest = result.runs[0] ?? null;
+        setActiveRun(latest);
+        if (latest && ["queued", "running"].includes(latest.status)) {
+          void pollRun(latest.id, agentId).catch(() => undefined);
+        }
+      } catch {
+        // ponytail: keep the last good Agent/run state when a refresh tick fails (invariant 12)
+      }
+    };
+    const intervalMs = refreshIntervalMs(trace?.summary.status);
+    const id = window.setInterval(() => void refreshVisibleRuns(), intervalMs);
+    return () => window.clearInterval(id);
+  }, [selectedId, trace?.summary.status, view]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sendMessage = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -437,13 +474,15 @@ export default function App() {
       </aside>
 
       <main className="main">
-        {!system?.modelConfigured || !system?.codexAvailable ? (
+        {system === null ? (
+          <p className="runtime-connecting" role="status">Connecting to runtime…</p>
+        ) : !system.modelConfigured || !system.codexAvailable ? (
           <div className="config-banner">
             <span>!</span>
             <div>
               <strong>Runtime configuration needed</strong>
               <p>
-                {!system?.modelConfigured
+                {!system.modelConfigured
                   ? "Set MODEL_PROVIDER and its credentials in .env (ARK_API_KEY + ARK_MODEL, or OPENAI_API_KEY) before using the Playground."
                   : system.runtimeProvider === "container"
                     ? "The local container engine or Agent Runtime image is unavailable. Rerun npm run poc."
@@ -461,7 +500,7 @@ export default function App() {
         )}
 
         {view === "overview" ? (
-          <Overview runs={runs} onRefresh={refreshRuns} />
+          <Overview runs={runs} />
         ) : selected ? playgroundCollapsed ? (
           <div className="playground-bar">
             <div className="header-title-row">

@@ -27,9 +27,23 @@ export interface TraceSummary {
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
   evicted: boolean;
   usage?: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number } | undefined;
+  metrics: TraceMetrics;
+  configHash?: string | undefined;
   /** `unknown` = no evidence either way (run cut short before the stream said anything) — never claim `unavailable` from absence. */
   capabilities: { model: Capability; tool: Capability };
+  workspaceChanges?: { added: number; modified: number; removed: number; bytesDelta: number; truncated: boolean } | undefined;
   firstFailingStep?: string | undefined; failure?: FailureFocus | undefined;
+}
+
+export interface TraceMetrics {
+  durationMs?: number | undefined;
+  terminalStatus: TraceStatus;
+  toolCalls: number;
+  toolFailures: number;
+  modelCalls: number;
+  tokens?: { input?: number | undefined; cachedInput?: number | undefined; output?: number | undefined } | undefined;
+  retries: number;
+  denials: number;
 }
 export type Capability = "observed" | "unavailable" | "unknown";
 export interface TraceView { summary: TraceSummary; spans: Span[]; events: ObservationEvent[] }
@@ -143,6 +157,25 @@ function pathTo(spans: Map<string, Span>, spanId: string): string[] {
 
 const DEGRADED_FOCUS: FailureFocus = { kind: "degraded", spanId: "", eventId: "", sequence: -1, name: "telemetry.degraded", category: "control", component: "GlassBox", path: [], diagnosis: "Trace evidence is incomplete: the trace store was unavailable during this Run. The Run's real result is unaffected; some spans may be missing." };
 
+const EXIT_HINTS: Record<number, string> = {
+  137: "SIGKILL (timeout, cancellation, or out-of-memory termination)",
+  3221225794: "process failed to initialise — the runtime CLI could not start; restart the server",
+};
+
+export function formatExitCode(code: number): string {
+  const decimal = String(code);
+  const hex = Number.isInteger(code) && code >= 0x80000000 && code <= 0xffffffff
+    ? ` (0x${code.toString(16).toUpperCase().padStart(8, "0")})`
+    : "";
+  const hint = EXIT_HINTS[code];
+  return decimal + hex + (hint ? ` — ${hint}` : "");
+}
+
+const formatFailureMessage = (message: string | undefined): string | undefined => {
+  // Matches the observer's bare "exit code N" and the runners' "Codex exited with code N: detail".
+  return message?.replace(/\b((?:exited with|exit) code )(\d+)/i, (_, prefix: string, code: string) => prefix + formatExitCode(Number(code)));
+};
+
 function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, status: TraceStatus, degraded: boolean, durationMs: number | undefined): FailureFocus | undefined {
   const denial = events.find((e) => e.type === "policy.denied");
   // A handled ordinary tool error is not actionable after an ok terminal, but a policy decision is:
@@ -164,7 +197,7 @@ function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, stat
     : undefined;
   const target = open
     ? { spanId: open.spanId, eventId: events.find((e) => e.spanId === open.spanId)?.eventId ?? first.eventId, sequence: open.sequence, name: open.name, category: open.category, component: open.source.component, message: undefined }
-    : { spanId: first.spanId, eventId: first.eventId, sequence: first.sequence, name: first.name, category: first.category, component: first.source.component, message: first.error?.message };
+    : { spanId: first.spanId, eventId: first.eventId, sequence: first.sequence, name: first.name, category: first.category, component: first.source.component, message: formatFailureMessage(first.error?.message) };
   const path = pathTo(spans, target.spanId);
   const secs = durationMs === undefined ? "an unknown duration" : (durationMs / 1000).toFixed(1) + " s";
   const cleanup = events.find((e) => e.type === "runtime.container.stopped" || (e.type === "runtime.codex.failed" && e.attributes.terminationSignal));
@@ -174,8 +207,8 @@ function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, stat
       ? `sandbox declined \`${String(first.attributes.program || first.name)}\``
       : isRestartCancel(first)
       ? `Run interrupted by a server restart after ${secs} of observed activity; ${open ? `the ${open.category} span ${open.name} never closed` : "no open span was recorded"}.`
-      : `Run ${status} in ${first.source.component} after ${secs}. First actionable ${kind}: ${first.name}${first.error ? " — " + first.error.message : ""}.`,
-    cleanup ? `Cleanup evidence: ${cleanup.name}${cleanup.attributes.exitCode !== undefined ? " (exit " + String(cleanup.attributes.exitCode) + ")" : ""}${cleanup.attributes.terminationSignal ? " via " + String(cleanup.attributes.terminationSignal) : ""}.` : "",
+      : `Run ${status} in ${first.source.component} after ${secs}. First actionable ${kind}: ${first.name}${target.message ? " — " + target.message : ""}.`,
+    cleanup ? `Cleanup evidence: ${cleanup.name}${typeof cleanup.attributes.exitCode === "number" ? " (exit " + formatExitCode(cleanup.attributes.exitCode) + ")" : ""}${cleanup.attributes.terminationSignal ? " via " + String(cleanup.attributes.terminationSignal) : ""}.` : "",
     capability ? "No model/tool-level details were available from the runtime." : "",
     degraded ? "Trace store was degraded during this Run; evidence may be incomplete." : "",
   ].filter(Boolean).join(" ");
@@ -209,12 +242,48 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
         ...(hasNumeric("cachedInputTokens") ? { cachedInputTokens: sum("cachedInputTokens") } : {}),
         ...(hasNumeric("outputTokens") ? { outputTokens: sum("outputTokens") } : {}) }
     : undefined;
+  const toolSpans = flat.filter((span) =>
+    span.category === "tool" && events.some((event) => event.spanId === span.spanId && event.type.startsWith("tool.call.")),
+  );
+  const modelSpans = flat.filter((span) =>
+    span.category === "model" && events.some((event) => event.spanId === span.spanId && event.type.startsWith("model.")),
+  );
+  const retrySpans = new Set(events.filter((event) => event.attempt > 1).map((event) => event.spanId));
+  const metrics: TraceMetrics = {
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    terminalStatus: status,
+    toolCalls: toolSpans.length,
+    toolFailures: toolSpans.filter((span) =>
+      span.status === "error" || span.status === "timeout" || span.status === "cancelled" ||
+      events.some((event) => event.spanId === span.spanId && event.type === "tool.call.failed"),
+    ).length,
+    modelCalls: modelSpans.length,
+    ...(usage && (usage.inputTokens !== undefined || usage.cachedInputTokens !== undefined || usage.outputTokens !== undefined)
+      ? { tokens: {
+          ...(usage.inputTokens !== undefined ? { input: usage.inputTokens } : {}),
+          ...(usage.cachedInputTokens !== undefined ? { cachedInput: usage.cachedInputTokens } : {}),
+          ...(usage.outputTokens !== undefined ? { output: usage.outputTokens } : {}),
+        } }
+      : {}),
+    retries: retrySpans.size,
+    denials: events.filter((event) => event.type === "policy.denied").length,
+  };
+  const createdConfigHash = events.find((event) => event.type === "run.created")?.attributes.configHash;
+  const configHash = typeof createdConfigHash === "string" ? createdConfigHash : undefined;
   const degraded = opts.degraded === true || events.some((e) => e.type === "telemetry.degraded");
   const truncated = opts.truncated === true || events.some((e) => e.type === "trace.truncated");
   const evicted = events.some(isEvictionMarker);
   const failure = focusFailure(events, spans, status, degraded, durationMs);
   const auditRows = projectAudit(events);
   const declaredUnavailable = events.some((e) => e.type === "capability.unavailable");
+  const workspaceEvent = events.find((event) => event.type === "workspace.changed");
+  const workspaceChanges = workspaceEvent ? {
+    added: Number(workspaceEvent.attributes.added ?? 0),
+    modified: Number(workspaceEvent.attributes.modified ?? 0),
+    removed: Number(workspaceEvent.attributes.removed ?? 0),
+    bytesDelta: Number(workspaceEvent.attributes.bytesDelta ?? 0),
+    truncated: workspaceEvent.attributes.truncated === true,
+  } : undefined;
   const summary: TraceSummary = {
     schemaVersion: SCHEMA_VERSION, capturePolicy: opts.capturePolicy,
     runId: first?.runId ?? "", traceId: first?.traceId ?? "", agentId: first?.agentId ?? "",
@@ -227,7 +296,7 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
       denials: auditRows.filter((row) => row.outcome === "denied").length,
       actors: [...new Set(auditRows.map((row) => row.actor.type + "/" + row.actor.id))].sort(),
     },
-    degraded, truncated, evicted, usage,
+    degraded, truncated, evicted, usage, metrics, configHash, workspaceChanges,
     capabilities: { model: events.some((e) => e.category === "model") ? "observed" : declaredUnavailable ? "unavailable" : "unknown", tool: events.some((e) => e.category === "tool") ? "observed" : declaredUnavailable ? "unavailable" : "unknown" },
     firstFailingStep: failure && failure.kind !== "degraded" ? failure.name : undefined, failure,
   };
