@@ -4,10 +4,10 @@
 |---|---|
 | **Track** | TikTok TechJam 2026 · Track 1 "Agent Launchpad: Design and Build Lightweight Agent Middleware" |
 | **Repo** | github.com/Reallyeasy1/Oculith (built on the RrankPyramid/CodeJam Starter Kit) |
-| **Status** | Draft v2 — 26 Aug 2026 (supersedes the LaunchGuard PRD v1) |
+| **Status** | Draft v3 — 26 Aug 2026 (Observe + Audit + Verify) |
 | **Source** | *GlassBox Observability PRD* (25 Aug 2026) + Track 1 problem statement §1.1–1.12 |
 | **Decision** | **Ship evidence before control.** Single-Run observability and failure diagnosis are the MVP; orchestration is roadmap. |
-| **Horizon** | Six-day build |
+| **Horizon** | Sprint plan S0–S8; see [SPRINTS.md](SPRINTS.md) |
 
 ---
 
@@ -89,8 +89,9 @@ We hit this ourselves during baseline testing: a 10-minute timeout that looked l
 | FR-09 | **Read trace**: `GET /api/runs/:runId/trace` (+ `/api/traces/:traceId`, `/api/traces/:traceId/events`) returns spans, events, capability + privacy metadata, `schemaVersion`, `capturePolicy` | 404 on unknown id; never raw secrets/provider payloads |
 | FR-10 | **Focus failure**: first actionable error + causal path; differentiate failure / timeout / cancellation / observability degradation | AC-02; deterministic diagnosis text built only from stored facts (no LLM) |
 | FR-11 | **Controlled failure fixture**: deterministic, gated (`GLASSBOX_DEMO_FAILURE=timeout`; MVP ships `timeout` only — one deterministic failure is enough, `runner_error` dropped), traverses the *same* Run/instrumentation path; disabled by default | AC-02 reproducible twice in a row; fixture off ⇒ baseline unchanged |
-| UX-01 | **Runs view**: columns status, Agent, start, duration, first failing step, event count, runtime/model, usage, redaction/degraded indicators; quick filters failed/running/cancelled/timed-out/degraded; keyboard-navigable rows; status as text + icon | Newest first; polling marks last observed event time |
-| UX-02 | **Trace detail**: summary header; nested tree with duration bars, root + error path expanded by default; local filters (category/status/text/errors-only); span drawer; persistent first-error banner with *Jump to failing span*; trust badges (model/tool capability `observed | unavailable | unknown`, redacted), schema version, incomplete marker | Operator reaches failing span in ≤ 2 interactions |
+| UX-01 | **Runs views**: per-Agent and All-runs views; columns status, Agent, start, duration, first failing step, event count, runtime/model, usage, and trust indicators; quick filters; keyboard-navigable rows; status as text + icon | Newest first; one polling loop keeps the list and an open trace consistent; All-runs aggregates across Agents |
+| UX-02 | **Trace detail**: fixed summary header; nested tree/timeline; local filters; span drawer; persistent first-error/denial banner with *Jump to failing span*; capability states exactly `observed | unavailable | unknown`; redaction/truncation/degradation/incomplete evidence; `endedReason=server_restart` is explicit | Operator reaches failing evidence in ≤ 2 interactions; no absent evidence is presented as observed |
+| UX-03 | **Reliable demo shell**: truthful disposable-workspace guidance, quiet first load, live refresh, laptop-width layouts, restart wording, deep links and keyboard focus | A cold load never shows a false warning or hides existing Runs; externally started Runs and terminal trace state appear within one polling tick |
 | V-01 | **Verification**: unit (IDs, schema, ordering, span reconstruction, rollups, redaction, truncation, duplicates, incomplete), integration (Fastify→Service→Runner→store on success/timeout/error/cancel/restart/degraded store), privacy, E2E, regression, performance | All AC-01..07 automated where possible; `npm run check` green |
 
 ### 6.2 Nice-to-have (P1)
@@ -211,32 +212,27 @@ ObservationEmitter ──► validate (zod) ──► RedactionPipeline ──�
 - *Engineering:* retention defaults — pick age/disk caps after measuring demo trace volume.
 - *Team:* `sessionId` = Codex thread id is only known after turn 1 — attach on `thread.started`, backfill on the root span.
 
-## 12. Six-day plan
+## 12. Sprint plan
 
-| Day | Theme | Build | Exit gate |
-|---|---|---|---|
-| 1 | Contract & store | baseline run; schema/IDs/statuses (zod); `TraceStore` NDJSON + index rebuild; emitter; unit tests; capture raw Codex stream fixture | synthetic trace round-trips and rebuilds |
-| 2 | Context & control seams | Fastify hook + `AgentService` adapter; link `AgentRun.traceId`; `/api/runs`, `/api/runs/:id/trace`; rollups | real successful Run has root + control spans |
-| 3 | Runtime & privacy | runner adapters (container/Codex envelope, tool/file events if confirmed); redaction pipeline; capability flags; gated failure fixture; privacy tests | success/failure traces are truthful and safe |
-| 4 | Product experience | Runs list; trace tree/timeline; filters; span drawer; failure banner + jump; polling | operator diagnoses failure ≤ 10 s |
-| 5 | Robustness | restart/incomplete, store degradation, duplicates, caps, E2E, baseline regression, perf pass | acceptance suite green |
-| 6 | Freeze & demo | P0 defects only; README, diagram, limitations, seed data, recording; rehearse ×2 | reproducible 3-minute proof |
+The authoritative S0–S8 schedule, issue membership, gates, lanes and critical path live in [docs/SPRINTS.md](SPRINTS.md). S0 is the completed observation plane. S1 pins the Verify contracts before S2–S5 build evidence, starting state, cases, execution and comparison; S6 verifies the complete loop; S7 rehearses; S8 packages the submission.
 
-**Team split (by contract, not layer):** backend contract (schema, store, query, rollup, redaction) · instrumentation (Fastify, AgentService, runners, failure fixture) · experience (Runs list, tree, drawer, filters, a11y) · verification/demo (fixtures, E2E/privacy/perf tests, docs, rehearsal).
+**Team split (by contract, not layer):** runtime/starting state (A) · trace/audit (B) · evaluation (C) · experience (D) · verification/submission (E).
 
-**Cut order if slipping:** live streaming → export/retention UI → model/tool visualisation when unavailable → aggregate charts. **Never cut:** redaction, real backend instrumentation, controlled failure, baseline regression, trace detail path.
+**Cut order if slipping:** #67 → #80 → #89 → #87. **Never cut:** #79 config identity, #81 denial evidence, #84 Regression Cases, #85 EvalRun, #86 comparison, or #92 deterministic demo proof. Existing privacy, real instrumentation, baseline regression and trace-detail guarantees remain non-negotiable.
 
 ## 13. Demo script (3 min)
 
-| Time | Beat | Proof |
-|---|---|---|
-| 0:00–0:20 | Orient | Agent catalog/Playground; select or create one Agent |
-| 0:20–0:55 | Successful Run | real task using runtime + workspace; let the backend finish |
-| 0:55–1:30 | Evidence | open Trace: connected layers, timing, container metadata, workspace change, usage, trust badges |
-| 1:30–1:55 | Controlled failure | set `GLASSBOX_DEMO_FAILURE=timeout` → restart the server → run the gated deterministic failure through the same path → open its trace → set `off` → restart |
-| 1:55–2:25 | Diagnosis | error banner → jump to failing runtime/tool span; cleanup/terminal state |
-| 2:25–2:45 | Privacy proof | seeded fake secret was in the input; absent from persisted/API/UI evidence |
-| 2:45–3:00 | Platform arc | architecture: trace plane today; controller consumes the same facts tomorrow |
+| Time | Step | Beat | Proof |
+|---|---:|---|---|
+| 0:00–0:15 | 1 | Orient | Open the Demo Agent and Repo Doctor starting-state template; the shell is ready without false warnings |
+| 0:15–0:38 | 2 | Run | Submit the repair task through the ordinary AgentService/runtime path |
+| 0:38–0:58 | 3 | Trace | Open the Run: connected control/runtime/tool evidence, timing, usage and trust states |
+| 0:58–1:18 | 4 | Failure and denial | Jump to the failed check and the sandbox's `policy.denied`; diagnosis names the observed cause without raw content |
+| 1:18–1:38 | 5 | Save case | Save this Run as a Regression Case; prompt, template/config identity and deterministic assertions are prefilled |
+| 1:38–1:52 | 6 | Change configuration | Edit the candidate Agent instructions so it skips the expected verification step |
+| 1:52–2:15 | 7 | Rerun | Run the same case through AgentService in a fresh template workspace and fresh thread |
+| 2:15–2:42 | 8 | Compare | Compare baseline and candidate assertion results; evidence links open the exact Runs/traces |
+| 2:42–3:00 | 9 | Regression | Show `REGRESSION` for PASS→FAIL, then close on the Audit → Verify architecture and privacy boundary |
 
 ## 14. Roadmap (why the MVP is not throwaway)
 
@@ -252,6 +248,53 @@ ObservationEmitter ──► validate (zod) ──► RedactionPipeline ──�
 | Demo & reproducibility | 15 % | success → trace → failure → diagnosis → privacy proof, one-command local path |
 
 **Narrative:** *Agents fail in ways logs cannot explain. GlassBox makes every Run auditable and diagnosable today, and turns that evidence into the control substrate for tomorrow's agent plane.*
+
+## 16. Verify: Audit → Regression Case → EvalRun → Comparison
+
+The Verify loop consumes the observation contract; it never creates a second source of runtime truth. A saved case records a bounded task and starting-state reference, a candidate rerun travels through the real AgentService/AgentRunner seams, deterministic evaluators cite observed evidence, and comparison classifies assertion transitions.
+
+| ID | Requirement | Acceptance |
+|---|---|---|
+| FR-12 | **Configuration identity:** compute a deterministic `configHash` from behaviour-affecting Agent/runtime configuration and stamp every `run.created`, Run list row and trace summary | Same effective configuration gives the same hash; a relevant change gives a different hash; secrets and machine-specific paths are excluded (#79) |
+| FR-13 | **Denial evidence:** emit one `policy.denied` alongside a sandbox-declined tool outcome, with service/sandbox actor and bounded metadata; count and focus denials | Audit and trace identify the declined program; no raw command/output under `metadata_only` (#81) |
+| FR-14 | **Audit projection:** derive actor/action/resource/outcome rows from stored control, policy, sandbox and terminal runtime events; every row links to its source event and trace | `GET /api/runs/:id/audit` and trace audit routes return no fabricated rows; summary exposes counts only (#82, #87) |
+| FR-15 | **Per-Run metrics:** derive bounded duration, tool/model/error/denial counts and token usage from the same events used by the trace summary | Metrics are deterministic, visible in list/detail, and equal direct event counts (#74) |
+| FR-16 | **Regression Case and starting state:** save a Run as a case with bounded prompt, baseline Run/config, workspace-template reference and deterministic assertions; named/template workspaces reproduce the same starting state | Save-from-Run pre-fills evidence-backed assertions; reruns never mutate the baseline workspace (#64, #68, #84, #88) |
+| FR-17 | **Deterministic evaluators:** support `terminal_status`, `expected_tool`, `max_tool_calls`, `max_duration_ms`, `post_check`, and `files_changed` only when cheaply observed | Each result is pass/fail/unavailable with evidence references; `post_check` runs in the sandbox, never on the host (#80, #83) |
+| FR-18 | **EvalRun through AgentService:** execute cases serially as ordinary Runs against current candidate configuration in a fresh template workspace and fresh Codex thread | Agent workspace/thread remain untouched; trace carries case/eval identifiers and FR-12 hash; busy and cleanup semantics remain intact (#105, #85) |
+| FR-19 | **Baseline/candidate comparison:** compare per-assertion outcomes and classify PASS→FAIL as `REGRESSION`, FAIL→PASS as improvement, and equal outcomes as unchanged; link both Runs/traces | Comparison table and summary agree; no score is generated by an LLM (#86, #89) |
+
+### 16.1 Acceptance scenario AC-08 — save → rerun → REGRESSION
+
+1. Run the Repo Doctor fixture from its named template and observe a passing baseline with a stable FR-12 hash.
+2. Save the baseline as a Regression Case with an expected tool and post-check assertion.
+3. Change only the candidate Agent instructions so the verification step is skipped.
+4. Start an EvalRun. It provisions a fresh copy of the same template and a fresh thread, then executes through AgentService.
+5. The candidate fails exactly one deterministic assertion; comparison marks PASS→FAIL as `REGRESSION` and links the baseline/candidate evidence.
+6. The integration fixture reproduces the sequence without network/model judgement and the complete path remains covered by `npm run check` (#90, #91, #92).
+
+### 16.2 Verify non-goals
+
+- No LLM judge or probabilistic score.
+- No trace replay: a rerun is new execution from a versioned starting state.
+- No cross-model tournament or model router.
+- No policy engine, approval workflow or control-plane mutation of observation facts.
+
+### 16.3 TechJam MVP traceability
+
+| Requirement | Milestone issues |
+|---|---|
+| FR-01…FR-11, UX-01/02, V-01 | #21–#35, #38, #39, #60, #69, #70, #72, #76, #93 |
+| FR-12 | #79 |
+| FR-13 | #81 |
+| FR-14 | #82, #87 |
+| FR-15 | #74 |
+| FR-16 | #64, #68, #84, #88 |
+| FR-17 | #67, #80, #83 |
+| FR-18 | #85, #105 |
+| FR-19 | #86, #89 |
+| UX-03 | #97, #98, #99, #100, #101, #102, #103 |
+| V-01, AC-08 | #90, #91, #92, #94, #95, #104 |
 
 ## Appendix A — Locked decisions
 MVP centre = single-Run observability + failure diagnosis · storage = NDJSON per Run behind `TraceStore` + rebuildable index · capture = `metadata_only` default, `safe_summary` opt-in, raw prohibited · update model = polling, SSE only after P0 · no Collector/DB/cloud dependency.
