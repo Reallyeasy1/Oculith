@@ -37,6 +37,18 @@ export interface AgentRun {
   } | null;
   createdAt: string;
   traceId?: string;
+  configHash?: string;
+  configSnapshot?: AgentConfigSnapshot;
+}
+
+export interface AgentConfigSnapshot {
+  instructions: string;
+  modelProvider: "ark" | "openai";
+  model: string;
+  codexSandboxMode: "read-only" | "workspace-write" | "danger-full-access";
+  runtimeProvider: "local-process" | "container";
+  containerRuntimeImage: string;
+  capturePolicy: CapturePolicy;
 }
 
 // --- GlassBox query types (mirrors apps/server/src/glassbox/{schema,query}.ts) ---
@@ -72,6 +84,12 @@ export interface RunListItem {
     cachedInputTokens?: number;
     outputTokens?: number;
   };
+  toolCalls: number;
+  toolFailures: number;
+  tokens?: { output?: number };
+  denials: number;
+  configHash?: string;
+  configSnapshot?: AgentConfigSnapshot;
   degraded: boolean;
   truncated: boolean;
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
@@ -81,7 +99,7 @@ export interface RunListItem {
 }
 
 export interface FailureFocus {
-  kind: "error" | "timeout" | "cancelled" | "degraded";
+  kind: "error" | "timeout" | "cancelled" | "denied" | "degraded";
   spanId: string;
   eventId: string;
   sequence: number;
@@ -110,6 +128,7 @@ export interface TraceSummary {
   spanCount: number;
   incompleteSpans: number;
   redactedEvents: number;
+  denials: number;
   degraded: boolean;
   truncated: boolean;
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
@@ -119,6 +138,17 @@ export interface TraceSummary {
     cachedInputTokens?: number;
     outputTokens?: number;
   };
+  metrics: {
+    durationMs?: number;
+    terminalStatus: TraceStatus;
+    toolCalls: number;
+    toolFailures: number;
+    modelCalls: number;
+    tokens?: { input?: number; cachedInput?: number; output?: number };
+    retries: number;
+    denials: number;
+  };
+  configHash?: string;
   capabilities: { model: "observed" | "unavailable" | "unknown"; tool: "observed" | "unavailable" | "unknown" };
   firstFailingStep?: string;
   failure?: FailureFocus;
