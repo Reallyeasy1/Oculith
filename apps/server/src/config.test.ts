@@ -33,3 +33,18 @@ describe("Model provider config", () => {
     expect(isModelConfigured(unset)).toBe(false);
   });
 });
+
+describe("GlassBox retention config", () => {
+  it("defaults to 7 days / 200 MB, accepts 0 as disabled, rejects garbage", () => {
+    const defaults = loadConfig({ NODE_ENV: "test" });
+    expect(defaults.glassboxRetentionDays).toBe(7);
+    expect(defaults.glassboxMaxDiskMb).toBe(200);
+    const off = loadConfig({ NODE_ENV: "test", GLASSBOX_RETENTION_DAYS: "0", GLASSBOX_MAX_DISK_MB: "0" });
+    expect(off.glassboxRetentionDays).toBe(0);
+    expect(off.glassboxMaxDiskMb).toBe(0);
+    expect(loadConfig({ NODE_ENV: "test", GLASSBOX_RETENTION_DAYS: "30", GLASSBOX_MAX_DISK_MB: "1.5" }))
+      .toMatchObject({ glassboxRetentionDays: 30, glassboxMaxDiskMb: 1.5 });
+    expect(() => loadConfig({ NODE_ENV: "test", GLASSBOX_RETENTION_DAYS: "-1" })).toThrow();
+    expect(() => loadConfig({ NODE_ENV: "test", GLASSBOX_MAX_DISK_MB: "lots" })).toThrow();
+  });
+});

@@ -18,6 +18,12 @@ const glassboxLog = (message: string, meta: Record<string, unknown>) =>
   console.warn("[glassbox]", message, JSON.stringify(meta));
 const traceStore = new NdjsonTraceStore(config.traceDirectory, glassboxLog);
 await traceStore.initialize();
+// Retention (FR-14) runs once per boot, before sequences are seeded so tombstones count. Never silent: one summary
+// line always, one debug line per evicted Run.
+const retention = await traceStore.cleanup({ retentionDays: config.glassboxRetentionDays, maxDiskMb: config.glassboxMaxDiskMb });
+console.info("[glassbox] retention", JSON.stringify({ retentionDays: config.glassboxRetentionDays, maxDiskMb: config.glassboxMaxDiskMb,
+  runs: retention.runs, evicted: retention.evicted.length, bytesBefore: retention.bytesBefore, bytesAfter: retention.bytesAfter }));
+for (const e of retention.evicted) console.debug("[glassbox] retention.evicted", JSON.stringify(e));
 const emitter = new ObservationEmitter({
   store: traceStore,
   capturePolicy: config.glassboxCapturePolicy,

@@ -212,6 +212,8 @@ cp deploy/volcengine/terraform.tfvars.example \
 | `GLASSBOX_CAPTURE_POLICY` | `metadata_only` | `metadata_only` or `safe_summary`; raw capture is not implemented. |
 | `GLASSBOX_DEMO_FAILURE` | `off` | `timeout` forces a 3 s runtime timeout for the demo's controlled failure. |
 | `GLASSBOX_TRACE_DIR` | `$APP_DATA_DIR/traces` | Directory for per-Run NDJSON trace files. |
+| `GLASSBOX_RETENTION_DAYS` | `7` | At startup, compact finished Runs whose last event is older than this to terminal events + a `trace.truncated` tombstone. `0` disables. |
+| `GLASSBOX_MAX_DISK_MB` | `200` | At startup, while trace files exceed this, compact the oldest finished Runs first (running Runs are never touched). `0` disables. |
 
 See [.env.example](.env.example) for all Runtime and resource-limit options.
 

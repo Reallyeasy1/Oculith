@@ -51,6 +51,9 @@ const envSchema = z.object({
   GLASSBOX_CAPTURE_POLICY: z.enum(["metadata_only", "safe_summary"]).default("metadata_only"),
   GLASSBOX_DEMO_FAILURE: z.enum(["off", "timeout"]).default("off"),
   GLASSBOX_TRACE_DIR: z.string().optional(),
+  // Retention (FR-14): 0 disables a knob. Defaults are conservative for a single-user demo box.
+  GLASSBOX_RETENTION_DAYS: z.coerce.number().min(0).default(7),
+  GLASSBOX_MAX_DISK_MB: z.coerce.number().min(0).default(200),
 });
 
 export type AppConfig = ReturnType<typeof loadConfig>;
@@ -102,6 +105,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     traceDirectory: path.resolve(
       env.GLASSBOX_TRACE_DIR ?? path.join(env.APP_DATA_DIR, "traces"),
     ),
+    glassboxRetentionDays: env.GLASSBOX_RETENTION_DAYS,
+    glassboxMaxDiskMb: env.GLASSBOX_MAX_DISK_MB,
   };
 }
 

@@ -212,7 +212,7 @@ export async function createApp(
         const s = view.summary;
         items.push({ runId: run.id, traceId: run.traceId ?? s.traceId, agentId: run.agentId, agentName: agents.get(run.agentId) ?? "", status, startedAt: s.startedAt ?? run.createdAt, durationMs: s.durationMs,
           firstFailingStep: s.firstFailingStep, eventCount: s.eventCount, runtime: config.runtimeProvider, model: config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default",
-          usage: s.usage, degraded: s.degraded, truncated: s.truncated, redacted: s.redactedEvents > 0, lastEventAt: view.events.at(-1)?.timestamp });
+          usage: s.usage, degraded: s.degraded, truncated: s.truncated, evicted: s.evicted, redacted: s.redactedEvents > 0, lastEventAt: view.events.at(-1)?.timestamp });
         if (items.length >= q.limit) break;
       }
       return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, runs: items };
