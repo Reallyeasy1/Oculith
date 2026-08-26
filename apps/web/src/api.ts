@@ -1,4 +1,4 @@
-import type { Agent, AgentRun, CapturePolicy, Message, RunListItem, SystemInfo } from "./types";
+import type { Agent, AgentRun, CapturePolicy, Message, RunListItem, SystemInfo, TraceView } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -82,4 +82,5 @@ export const api = {
     request<{ schemaVersion: string; capturePolicy: CapturePolicy; runs: RunListItem[] }>(
       "/api/runs?limit=100",
     ),
+  trace: (runId: string) => request<TraceView>("/api/runs/" + runId + "/trace"),
 };
