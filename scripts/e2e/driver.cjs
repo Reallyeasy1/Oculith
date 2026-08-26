@@ -102,6 +102,11 @@ async function openApp(page) {
   await page.goto(BASE + "/", { waitUntil: "networkidle" });
   await page.locator("input[type=password]").fill(TOKEN);
   await page.locator("button", { hasText: "Open Launchpad" }).click();
+  // The Runs list opens on "Needs attention" (#35); the baseline ok Run is only visible under "All".
+  const attention = page.locator(".runs-filters button", { hasText: "Needs attention" });
+  await attention.waitFor({ timeout: 15_000 });
+  eq(await attention.getAttribute("aria-pressed"), "true", "Runs list opens on the 'Needs attention' filter");
+  await page.locator(".runs-filters").getByRole("button", { name: /^all$/i }).click(); // DOM text is "all"; CSS capitalises it
   await page.locator(".runs-table tbody tr").first().waitFor({ timeout: 15_000 });
 }
 
