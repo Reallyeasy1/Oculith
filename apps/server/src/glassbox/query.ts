@@ -15,6 +15,8 @@ export interface TraceSummary {
   schemaVersion: typeof SCHEMA_VERSION; capturePolicy: CapturePolicy; runId: string; traceId: string; agentId: string;
   sessionId?: string | undefined; status: TraceStatus; startedAt?: string | undefined; endedAt?: string | undefined;
   durationMs?: number | undefined; eventCount: number; spanCount: number; incompleteSpans: number; redactedEvents: number;
+  /** Set when the Run was closed by AgentService.initialize() after a restart: durationMs then stops at the last event observed before the restart. */
+  endedReason?: "server_restart" | undefined;
   degraded: boolean; truncated: boolean;
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
   evicted: boolean;
@@ -115,20 +117,30 @@ function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, stat
   candidates.sort((a, b) => Number(matches(b)) - Number(matches(a)) || a.sequence - b.sequence || CATEGORY_RANK[a.category] - CATEGORY_RANK[b.category]);
   const first = candidates[0]!;
   const kind: FailureFocus["kind"] = first.status === "timeout" ? "timeout" : first.status === "cancelled" ? "cancelled" : "error";
-  const path = pathTo(spans, first.spanId);
+  // A restart-cancel is a synthetic control event with no evidence of its own: point at the span the restart cut
+  // off instead — deepest incomplete runtime span, else deepest incomplete span of any category, else the cancel.
+  const open = isRestartCancel(first)
+    ? [...spans.values()].filter((s) => s.incomplete).sort((a, b) => Number(b.category === "runtime") - Number(a.category === "runtime") || b.depth - a.depth || b.sequence - a.sequence)[0]
+    : undefined;
+  const target = open
+    ? { spanId: open.spanId, eventId: events.find((e) => e.spanId === open.spanId)?.eventId ?? first.eventId, sequence: open.sequence, name: open.name, category: open.category, component: open.source.component, message: undefined }
+    : { spanId: first.spanId, eventId: first.eventId, sequence: first.sequence, name: first.name, category: first.category, component: first.source.component, message: first.error?.message };
+  const path = pathTo(spans, target.spanId);
   const secs = durationMs === undefined ? "an unknown duration" : (durationMs / 1000).toFixed(1) + " s";
   const cleanup = events.find((e) => e.type === "runtime.container.stopped" || (e.type === "runtime.codex.failed" && e.attributes.terminationSignal));
   const capability = events.find((e) => e.type === "capability.unavailable");
   const diagnosis = [
-    `Run ${status} in ${first.source.component} after ${secs}.`,
-    `First actionable ${kind}: ${first.name}${first.error ? " — " + first.error.message : ""}.`,
+    isRestartCancel(first)
+      ? `Run interrupted by a server restart after ${secs} of observed activity; ${open ? `the ${open.category} span ${open.name} never closed` : "no open span was recorded"}.`
+      : `Run ${status} in ${first.source.component} after ${secs}. First actionable ${kind}: ${first.name}${first.error ? " — " + first.error.message : ""}.`,
     cleanup ? `Cleanup evidence: ${cleanup.name}${cleanup.attributes.exitCode !== undefined ? " (exit " + String(cleanup.attributes.exitCode) + ")" : ""}${cleanup.attributes.terminationSignal ? " via " + String(cleanup.attributes.terminationSignal) : ""}.` : "",
     capability ? "No model/tool-level details were available from the runtime." : "",
     degraded ? "Trace store was degraded during this Run; evidence may be incomplete." : "",
   ].filter(Boolean).join(" ");
-  return { kind, spanId: first.spanId, eventId: first.eventId, sequence: first.sequence, name: first.name, category: first.category,
-    component: first.source.component, message: first.error?.message, path, diagnosis };
+  return { kind, ...target, path, diagnosis };
 }
+
+const isRestartCancel = (e: ObservationEvent): boolean => e.type === "run.cancelled" && e.attributes.reason === "server_restart";
 
 export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: CapturePolicy; degraded?: boolean | undefined; truncated?: boolean | undefined }): TraceView {
   const events = [...input].sort((a, b) => a.sequence - b.sequence || a.timestamp.localeCompare(b.timestamp));
@@ -140,7 +152,11 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
   const status: TraceStatus = terminal ? TERMINAL[terminal.type]! : events.length > 0 ? "running" : "unset";
   const startedAt = first?.timestamp;
   const endedAt = terminal?.timestamp ?? (status === "running" ? undefined : events.at(-1)?.timestamp);
-  const durationMs = startedAt && endedAt ? Math.max(0, Date.parse(endedAt) - Date.parse(startedAt)) : undefined;
+  // Interrupted by a restart: endedAt keeps the restart-cancel timestamp (that IS when the Run was closed), but the
+  // clock stops at the last event observed before it — nothing was seen in the gap, so counting it would be fabricated.
+  const restart = terminal !== undefined && isRestartCancel(terminal);
+  const clockEnd = restart ? events[events.indexOf(terminal) - 1]?.timestamp : endedAt;
+  const durationMs = startedAt && clockEnd ? Math.max(0, Date.parse(clockEnd) - Date.parse(startedAt)) : undefined;
   const usageEvents = events.filter((e) => e.type === "model.completed");
   const sum = (k: string) => usageEvents.reduce((n, e) => n + (typeof e.attributes[k] === "number" ? (e.attributes[k] as number) : 0), 0);
   // Presence-based, not truthiness-based: include a usage field whenever ANY model.completed event carries it
@@ -160,7 +176,7 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
     schemaVersion: SCHEMA_VERSION, capturePolicy: opts.capturePolicy,
     runId: first?.runId ?? "", traceId: first?.traceId ?? "", agentId: first?.agentId ?? "",
     sessionId: events.find((e) => e.sessionId)?.sessionId,
-    status, startedAt, endedAt, durationMs, eventCount: events.length, spanCount: flat.length,
+    status, startedAt, endedAt, durationMs, endedReason: restart ? "server_restart" : undefined, eventCount: events.length, spanCount: flat.length,
     incompleteSpans: flat.filter((s) => s.incomplete).length, redactedEvents: events.filter((e) => e.privacy.redacted).length,
     degraded, truncated, evicted, usage,
     capabilities: { model: events.some((e) => e.category === "model") ? "observed" : declaredUnavailable ? "unavailable" : "unknown", tool: events.some((e) => e.category === "tool") ? "observed" : declaredUnavailable ? "unavailable" : "unknown" },

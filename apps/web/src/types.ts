@@ -103,6 +103,8 @@ export interface TraceSummary {
   startedAt?: string;
   endedAt?: string;
   durationMs?: number;
+  /** Run closed by a server restart: durationMs stops at the last event observed before it. */
+  endedReason?: "server_restart";
   eventCount: number;
   spanCount: number;
   incompleteSpans: number;
