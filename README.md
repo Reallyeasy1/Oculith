@@ -204,7 +204,7 @@ cp deploy/volcengine/terraform.tfvars.example \
 | `ARK_BASE_URL` | BytePlus ap-southeast v3 | Ark OpenAI-compatible API URL (TechJam uses BytePlus ModelArk). |
 | `OPENAI_API_KEY` | Required for `openai` | OpenAI API key, passed to Codex CLI as an env var. |
 | `OPENAI_MODEL` | Codex default | Optional model override for the `openai` provider. |
-| `APP_AUTH_TOKEN` | Empty on loopback | Shared demo token; use 24+ random characters remotely. |
+| `APP_AUTH_TOKEN` | Empty (auth off) | Bearer token for every `/api/*` route. Empty disables auth entirely; the demo sets 24+ random characters so "protects API routes" is real, and production refuses to listen beyond loopback with fewer. |
 | `RUNTIME_PROVIDER` | `local-process` | `container` for disposable local Runtime containers. |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
@@ -244,10 +244,27 @@ terraform fmt -check -recursive deploy/volcengine
 docker compose config
 ```
 
+### Demo steps (PRD §13)
+
+Before you start: `.env` sets `APP_AUTH_TOKEN` to 24+ random characters (empty disables auth, and the
+"bearer token protects `/api/*`" beat would be a lie) and `GLASSBOX_DEMO_FAILURE=off`. The server reads
+both once at boot, so every change below needs a restart. `npm run dev` and Compose read `.env`;
+`npm run poc` reads the shell environment (`set -a; . ./.env; set +a` first).
+
+1. Start the server, then seed one ok Run: `bash scripts/seed-demo.sh ok` (creates the **Demo** Agent
+   if missing, sends one real task, waits, prints the run id — never the token).
+2. Set `GLASSBOX_DEMO_FAILURE=timeout` → restart the server → `bash scripts/seed-demo.sh fail` (the
+   second Run times out after 3 s through the real Run path) → open its trace in the browser and check
+   the banner → set `GLASSBOX_DEMO_FAILURE=off` → restart the server.
+3. Rehearse: open <http://localhost:3000>, unlock with the token → select **Demo** → send a real task →
+   the Runs list opens on **Needs attention** with the timeout Run on top → click it (the Playground
+   collapses; **Close trace** restores it) → **Jump to failing span** → trust badges → architecture.
+
 ### Controlled failure (demo)
 
-Set `GLASSBOX_DEMO_FAILURE=timeout` and restart the server. The fixture adds no failure path of its
-own: it only overrides `CODEX_TIMEOUT_MS` to 3 s for the next Run, which then takes the ordinary real
+The sequence is explicit and needs two restarts: set `GLASSBOX_DEMO_FAILURE=timeout` → restart the
+server → run a task → open its trace → set it back to `off` → restart. The fixture adds no failure path
+of its own: it only overrides `CODEX_TIMEOUT_MS` to 3 s for the next Run, which then takes the ordinary real
 runner timeout — SIGTERM→SIGKILL for `local-process`, `docker rm --force` for `container` — and ends in
 a `run.timed_out` terminal event. Open `GET /api/runs/<runId>/trace`: `summary.failure.diagnosis` names
 the failing span. Unset the variable to return to normal. The fixture is off by default and never
@@ -265,7 +282,7 @@ with `cleanup: "rm --force" | "signal"`) are verified by hand against a live Run
 - Local NDJSON trace store only — no external backend, no retention policy, no query engine beyond the in-memory index.
 - No `workspace.changed` events on this Codex/Ark stack: Ark shells out instead of calling `apply_patch`, so no `file_change` item has ever been observed (see [docs/CODEX_EVENTS.md](docs/CODEX_EVENTS.md)). The mapping exists but stays dormant rather than inventing a diff.
 - Redaction is a key denylist plus a bounded pattern scan. It is exact on structured attributes and best-effort on free text; a novel secret format in a command string can slip past, which is why the default capture policy is `metadata_only`.
-- `capability.unavailable` means "the runtime exposed no tool or model detail for this Run", not "the runtime has no tools". It is suppressed for cancelled and timed-out Runs, where the stream was cut short and its absence proves nothing.
+- Model/tool capabilities have exactly three states and are never guessed: `observed` (the runtime emitted events for that layer), `unavailable` (the Run completed and the runtime exposed no tool or model detail — not "the runtime has no tools"; this is the only case that emits `capability.unavailable`), and `unknown` (the Run was cancelled or timed out before the stream said anything, so its absence proves nothing; the trace header shows "no evidence — run cut short").
 
 ## Documentation
 

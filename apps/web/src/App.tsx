@@ -50,6 +50,10 @@ export default function App() {
   const [runs, setRuns] = useState<RunListItem[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [trace, setTrace] = useState<TraceView | null>(null);
+  // Opening a trace collapses the Playground to a bar so the trace header sits in the first viewport;
+  // "Expand" re-opens it for this trace, "Close trace" restores it.
+  const [playgroundExpanded, setPlaygroundExpanded] = useState(false);
+  const playgroundCollapsed = selectedRunId !== null && !playgroundExpanded;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -424,7 +428,17 @@ export default function App() {
           </div>
         )}
 
-        {selected ? (
+        {selected ? playgroundCollapsed ? (
+          <div className="playground-bar">
+            <div className="header-title-row">
+              <h1>{selected.name}</h1>
+              <StatusPill status={selected.status} />
+            </div>
+            <button className="button button-ghost" onClick={() => setPlaygroundExpanded(true)}>
+              Expand Playground
+            </button>
+          </div>
+        ) : (
           <>
             <header className="agent-header">
               <div>
@@ -642,7 +656,11 @@ export default function App() {
             onClose={() => setSelectedRunId(null)}
           />
         )}
-        <RunsView runs={runs} selectedRunId={selectedRunId} onOpenTrace={setSelectedRunId} />
+        <RunsView
+          runs={runs}
+          selectedRunId={selectedRunId}
+          onOpenTrace={(runId) => { setSelectedRunId(runId); setPlaygroundExpanded(false); }}
+        />
       </main>
 
       {showCreate && (

@@ -29,7 +29,7 @@ We hit this ourselves during baseline testing: a 10-minute timeout that looked l
 3. Seeded secrets never appear in persisted or returned trace data.
 4. The Starter Kit flow remains usable and starts with one documented command.
 
-**Principles:** evidence over animation · trace events, not chain-of-thought · redact before persistence · stable contract, flexible adapters · graceful partial visibility (observed / derived / unavailable / redacted / truncated — never invented) · lightweight by default (no Collector, DB, or cloud) · instrument the seams.
+**Principles:** evidence over animation · trace events, not chain-of-thought · redact before persistence · stable contract, flexible adapters · graceful partial visibility (observed / derived / unavailable / unknown / redacted / truncated — never invented) · lightweight by default (no Collector, DB, or cloud) · instrument the seams.
 
 ## 3. Goals
 
@@ -90,7 +90,7 @@ We hit this ourselves during baseline testing: a 10-minute timeout that looked l
 | FR-10 | **Focus failure**: first actionable error + causal path; differentiate failure / timeout / cancellation / observability degradation | AC-02; deterministic diagnosis text built only from stored facts (no LLM) |
 | FR-11 | **Controlled failure fixture**: deterministic, gated (`GLASSBOX_DEMO_FAILURE=timeout`; MVP ships `timeout` only — one deterministic failure is enough, `runner_error` dropped), traverses the *same* Run/instrumentation path; disabled by default | AC-02 reproducible twice in a row; fixture off ⇒ baseline unchanged |
 | UX-01 | **Runs view**: columns status, Agent, start, duration, first failing step, event count, runtime/model, usage, redaction/degraded indicators; quick filters failed/running/cancelled/timed-out/degraded; keyboard-navigable rows; status as text + icon | Newest first; polling marks last observed event time |
-| UX-02 | **Trace detail**: summary header; nested tree with duration bars, root + error path expanded by default; local filters (category/status/text/errors-only); span drawer; persistent first-error banner with *Jump to failing span*; trust badges (observed/unavailable/redacted), schema version, incomplete marker | Operator reaches failing span in ≤ 2 interactions |
+| UX-02 | **Trace detail**: summary header; nested tree with duration bars, root + error path expanded by default; local filters (category/status/text/errors-only); span drawer; persistent first-error banner with *Jump to failing span*; trust badges (model/tool capability `observed | unavailable | unknown`, redacted), schema version, incomplete marker | Operator reaches failing span in ≤ 2 interactions |
 | V-01 | **Verification**: unit (IDs, schema, ordering, span reconstruction, rollups, redaction, truncation, duplicates, incomplete), integration (Fastify→Service→Runner→store on success/timeout/error/cancel/restart/degraded store), privacy, E2E, regression, performance | All AC-01..07 automated where possible; `npm run check` green |
 
 ### 6.2 Nice-to-have (P1)
@@ -170,7 +170,7 @@ ObservationEmitter ──► validate (zod) ──► RedactionPipeline ──�
 
 **Capture policy:** `metadata_only` (default: IDs, timing, status, names, counts, codes, sizes, flags) · `safe_summary` (opt-in: bounded, filtered, redacted summaries) · `full/raw` (**not implemented**).
 
-**Evidence states:** `observed` (emitted by instrumented component) · `derived` (computed deterministically from stored facts) · `unavailable` · `redacted` · `truncated`.
+**Evidence states:** `observed` (emitted by instrumented component) · `derived` (computed deterministically from stored facts) · `unavailable` (the Run completed and the component exposed nothing for that layer) · `unknown` (the Run was cancelled or timed out before that layer's stream said anything — absence proves nothing, so no `capability.unavailable` is emitted) · `redacted` · `truncated`. Per-layer capabilities (`model`, `tool`) take exactly `observed | unavailable | unknown`; the UI renders `unknown` as "no evidence — run cut short".
 
 ## 9. Failure & degraded behaviour
 

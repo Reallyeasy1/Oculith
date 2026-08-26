@@ -2,9 +2,16 @@ import type { RunListItem, TraceStatus } from "./types";
 
 // Pure helpers for RunsView. Render only what the API returned — no client-side status inference.
 
-export type QuickFilter = "all" | "failed" | "running" | "cancelled" | "timeout" | "degraded";
+export type QuickFilter = "attention" | "all" | "failed" | "running" | "cancelled" | "timeout" | "degraded";
 
-export const QUICK_FILTERS: QuickFilter[] = ["all", "failed", "running", "cancelled", "timeout", "degraded"];
+export const QUICK_FILTERS: QuickFilter[] = ["attention", "all", "failed", "running", "cancelled", "timeout", "degraded"];
+
+export const FILTER_LABEL: Partial<Record<QuickFilter, string>> = { attention: "Needs attention", timeout: "Timed out" };
+
+/** error ∪ timeout ∪ cancelled ∪ degraded — the default Runs filter (issue #35). */
+export function needsAttention(run: RunListItem): boolean {
+  return run.degraded || run.status === "error" || run.status === "timeout" || run.status === "cancelled";
+}
 
 // Text glyphs so status never relies on colour alone.
 export const STATUS_ICON: Record<TraceStatus, string> = {
@@ -20,6 +27,8 @@ export function matchesFilter(run: RunListItem, filter: QuickFilter): boolean {
   switch (filter) {
     case "all":
       return true;
+    case "attention":
+      return needsAttention(run);
     case "failed":
       return run.status === "error";
     case "degraded":
