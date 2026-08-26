@@ -1,244 +1,256 @@
-# PRD — LaunchGuard: runtime capability leases with verifiable action evidence
+# PRD — GlassBox: observability-first middleware for Agent Runs
 
 | | |
 |---|---|
 | **Track** | TikTok TechJam 2026 · Track 1 "Agent Launchpad: Design and Build Lightweight Agent Middleware" |
 | **Repo** | github.com/Reallyeasy1/Oculith (built on the RrankPyramid/CodeJam Starter Kit) |
-| **Status** | Draft v1 — 26 Aug 2026 |
-| **Source** | *TikTok TechJam 2026 Track 1 Strategy* (25 Aug 2026) + Track 1 problem statement §1.1–1.12 |
-| **One-liner** | Every Agent side effect should be scoped, explainable, and revocable. |
+| **Status** | Draft v2 — 26 Aug 2026 (supersedes the LaunchGuard PRD v1) |
+| **Source** | *GlassBox Observability PRD* (25 Aug 2026) + Track 1 problem statement §1.1–1.12 |
+| **Decision** | **Ship evidence before control.** Single-Run observability and failure diagnosis are the MVP; orchestration is roadmap. |
+| **Horizon** | Six-day build |
 
 ---
 
 ## 1. Problem statement
 
-An Agent on the Starter Kit can reason, run shell commands, and read or write files, but the platform has **no boundary between what the model *wants* to do and what it is *allowed* to do**. Authority is implicit (whatever the container can reach), attribution collapses three actors into one (the human who started the Run, the Agent, and any downstream credential), and operators cannot reconstruct *why* an action happened from flat logs.
+A Run on the Starter Kit is a black box. The Playground shows a final message or a one-line error ("Codex timed out after 600000 ms"), but nothing connects the HTTP request, `AgentService` state transitions, the `AgentRunner` process/container, Codex's own event stream, workspace changes, and the terminal result into one navigable context. When something fails, operators cannot tell *which layer* failed, whether it was a timeout, cancellation, model error, tool error, or the platform degrading — so they guess or reproduce blindly.
 
-This is the gap Track 1 explicitly leaves open ("intentionally absent: no user identity, trace timeline, audit model, or hardened sandbox policy"). It is also the real-world failure mode behind OWASP's agentic top risks (goal hijack, tool misuse, privilege abuse): a malicious instruction embedded in *data* — an invoice, a web page, a tool result — becomes executable intent, and nothing server-side stops it. We observed this ourselves during baseline testing: asked for "ideas to improve this platform", the Agent walked out of its workspace into `../../src/*.ts` and read the control-plane source, because reads outside the workspace are unrestricted.
+We hit this ourselves during baseline testing: a 10-minute timeout that looked like a model problem was actually every shell command taking 40 s because of a host PowerShell profile. The evidence existed (Codex's rollout JSONL had every timestamp) but nothing in the product surfaced it. Track 1 explicitly leaves "trace timeline" and "audit model" as intentionally absent middleware, and the naive fix — dump everything to a log — turns observability into a secret-leak liability (prompts, keys, headers, environment).
 
-**Cost of not solving it:** the platform cannot be trusted with any protected resource, any human approval step is theatre (UI-only), and a compromised model equals a compromised system.
+**Cost of not solving it:** slow debugging, weak demo evidence, and no factual substrate for any future control (retries, budgets, approvals, routing) — a controller built first would be as opaque as the Runs it controls.
 
 ## 2. Product concept
 
-**LaunchGuard** is a trusted runtime gateway that:
+**GlassBox** is a thin observation plane alongside the existing execution path. It instruments the real seams (Fastify → `AgentService` → `AgentRunner` → runtime/container → Codex → workspace), normalises everything into one versioned `ObservationEvent` contract through a single redaction boundary, persists it locally, and exposes a Runs index and a Trace detail view with first-failure focus.
 
-1. issues each Run a **short-lived capability lease** bound to Agent, Agent version, policy version and expiry;
-2. **evaluates every protected action** (`allow | deny | approval_required`) deterministically, server-side, immediately before execution;
-3. routes exceptional side effects to a **one-time human approval** bound to the exact action hash;
-4. supports **revocation** that takes effect on the next action, not the next Run;
-5. records a **redacted evidence timeline** correlated by Run/trace/decision IDs.
+**MVP outcome**
+1. A successful Run can be followed from the HTTP boundary to the runtime result in one trace.
+2. A failed Run exposes the failing layer and an actionable error within two interactions / ten seconds.
+3. Seeded secrets never appear in persisted or returned trace data.
+4. The Starter Kit flow remains usable and starts with one documented command.
 
-**The promise is not that the model cannot be manipulated. It is that manipulation does not automatically become authority.**
+**Principles:** evidence over animation · trace events, not chain-of-thought · redact before persistence · stable contract, flexible adapters · graceful partial visibility (observed / derived / unavailable / redacted / truncated — never invented) · lightweight by default (no Collector, DB, or cloud) · instrument the seams.
 
 ## 3. Goals
 
 | # | Goal | How we know |
 |---|---|---|
-| G1 | A protected action requested by the Agent is decided by the backend, not the UI or the model | Direct calls to the protected resource from inside the Runtime fail; only gateway-authorised calls succeed |
-| G2 | A prompt-injected request for another tenant's resource is denied with **zero state mutation** | Tenant-B fixture byte-identical before/after the malicious Run; `DecisionEvent` with `reasonCode=wrong_tenant` recorded |
-| G3 | Human approval is narrow and real | A publish action pauses, shows exact target + parameters, executes exactly once after approval; replay of the same grant returns `replay_detected` |
-| G4 | Authority is revocable mid-Run | Revoking the lease between two actions makes the second one fail with `lease_revoked` |
-| G5 | Evidence is safe by construction | Seeded canary secrets never appear in the JSON store, logs, API responses or browser; 100 % of decisions carry `runId` + `traceId` |
-| G6 | Baseline preserved and reproducible | Starter-kit acceptance test still passes; `npm run check` green; one-command local start; demo ≤ 2:45 |
+| G1 | Every real Run correlates into one trace with stable `traceId / spanId / runId / agentId / sessionId / requestId / actorId / sequence` | 100 % of demo Runs create a trace with a terminal status; IDs follow §8 |
+| G2 | Hierarchy, status, timing, errors, cancellation, retries, runtime/container metadata and usage are visible when available | AC-01: success trace shows ingress → service → runner → runtime → workspace → terminal with stable parentage |
+| G3 | Operator finds the first actionable failure fast | AC-02: ≤ 2 interactions and ≤ 10 s from Runs list to the failing span |
+| G4 | Secrets never reach any observation surface | AC-03: seeded fake Ark/OpenAI/bearer/private-key fixtures absent from NDJSON files, API, UI text, export, logs, test snapshots |
+| G5 | Baseline preserved | AC-07: starter-kit acceptance flow passes; `npm run check` green |
+| G6 | Contract can drive future controls without re-instrumenting | Emitters never import UI; `TraceStore` is an interface; a `ControlDecision` slot is reserved in the schema |
 
-## 4. Non-goals
+**Success metrics:** trace coverage 100 % · diagnostic speed ≤ 2 interactions / ≤ 10 s · 0 secrets visible · every required layer has an observed span *or* an explicit `capability.unavailable` · append p95 < 20 ms at 100 events/Run, 500-event query p95 < 500 ms · telemetry-store failure never crashes a Run; redaction fails closed · one documented start command.
+
+## 4. Non-goals (MVP)
 
 | Non-goal | Why |
 |---|---|
-| Production OAuth / SSO / login flow | Brief says mock users suffice; a login screen without server-side authz scores nothing |
-| General-purpose policy DSL | Parser/precedence/bypass risk unrelated to the demo; a fixed JSON schema with two tools is enough |
-| Intercepting arbitrary shell or syscalls | Impossible in 3 days and not the claim; the claim is "the Agent cannot reach *this* protected service except via LaunchGuard" |
-| Hardened multi-tenant sandbox / microVM | Starter kit's container limits remain the baseline safeguard, not our contribution |
-| Prompt-injection *detection* as the guarantee | Probabilistic arms race with a known utility/security trade-off (AgentDojo, ARGUS); we constrain authority instead |
-| OpenTelemetry collector / trace database | A vertical event list in the existing UI is sufficient evidence; OTel-compatible export is a stretch goal |
+| Capturing chain-of-thought, full prompts/completions, raw headers, raw env | Privacy principle; `full/raw` capture policy is *prohibited*, not merely off |
+| Replacing Jaeger/Grafana/Datadog/OTel Collector | Six days; local NDJSON + in-memory index is enough; OTLP mapping is P2 |
+| Multi-tenancy, enterprise identity, hardened authz, compliance archive | Different track; `actorId = local-user` suffices |
+| Scheduler, workflow engine, router, A2A gateway, reconciliation controller | Phase 1–3 roadmap; only work that strengthens *evidence* is accepted |
+| Requiring ECS/cloud | Local POC is the judging path |
+| Guaranteeing model/tool-level events | Only emitted when the runtime genuinely exposes them; otherwise `capability.unavailable` |
 
 ## 5. Users & user stories
 
-**Personas:** Platform operator · Developer debugging a Run · Resource owner (tenant) · Approver.
+**Personas:** Agent developer/operator · Platform maintainer · Hackathon evaluator · Future controller (consumer of facts).
 
-**P0 stories (demo-critical)**
-- As a **platform operator**, I want to assign a policy profile to an Agent so that it can act without holding an open-ended service credential.
-- As a **resource owner (tenant A)**, I want proof that an Agent owned by another tenant cannot read or write my resource, even when the model is tricked into asking.
-- As an **approver**, I want to see the exact tool, operation, normalised target and parameter summary before I authorise a state-changing action, so approval is informed and narrow.
-- As an **approver**, I want my approval to apply exactly once to exactly that action, so a retry or replay cannot reuse it.
-- As a **platform operator**, I want to revoke an Agent's lease during a Run so that the next protected action is denied.
-- As a **developer**, I want a per-Run timeline of decisions with reason codes so I can see why an action was allowed, denied or paused.
+**P0**
+- As an **operator**, I can open a Run and see one connected tree/timeline from request receipt to terminal result.
+- As an **operator**, I can filter to errors and jump to the first failing span with status, duration, error type and a safe summary.
+- As an **operator**, I can distinguish timeout, cancellation, runtime failure, model failure, tool failure and platform degradation.
+- As a **maintainer**, I can add an adapter that emits the same `ObservationEvent` schema without changing the UI contract.
+- As a **maintainer**, I can prove a sensitive fixture was redacted *before* persistence.
+- As an **evaluator**, I can watch one successful Run and one controlled failure while the rest of the platform stays usable.
 
 **P0 edge stories**
-- As a **developer**, when the lease has expired, is revoked, forged, or has the wrong audience, I want a typed denial (not a generic 500) so the Agent can stop or degrade explicitly.
-- As a **resource owner**, I want `../`, encoded traversal, doubled separators and case variants of my resource path to be denied, so the policy cannot be bypassed by string tricks.
-- As a **platform operator**, when the evidence store is unavailable, I want protected *writes* to fail closed so no mutation goes unrecorded.
-
-**P1 stories**
-- As a **developer**, I want the Agent to receive a structured error it can act on (retry safely, ask for approval, or stop) rather than an opaque failure.
-- As a **judge/reviewer**, I want one command to reset fixtures and evidence so the demo is reproducible from a clean state.
+- As an **operator**, when the trace store is down I still get my Run's real result and a visible `telemetry.degraded` gap, not a crash.
+- As an **operator**, after a server restart the in-flight Run shows as cancelled/incomplete with its open spans marked, not silently closed.
+- As a **maintainer**, duplicate `eventId`s (retried appends) never double-count spans, events or usage.
 
 ## 6. Requirements
 
 ### 6.1 Must-have (P0)
 
-| ID | Requirement | Acceptance criteria |
+| ID | Requirement | Acceptance |
 |---|---|---|
-| R1 | **Policy profile per Agent** — JSON profile (`default: deny`, `grants[]`, `limits`) selectable on the Agent; versioned | Agent detail shows profile name + version · backend rejects unknown profile with 400 · profile stored in `launchpad.json` |
-| R2 | **Run-scoped capability lease** — created in `AgentService.sendMessage` when the Run starts; opaque server-generated ID; bound to `agentId`, `agentVersion`, `policyVersion`, `expiresAt` (default 900 s); status `active|expired|revoked` | Run start fails closed if lease creation fails · lease passed to Runtime via env, never the downstream credential · `POST /api/leases/:id/revoke` flips status and the next action is denied |
-| R3 | **ActionRequest / PolicyDecision contract** — Runtime submits `{runId, traceId, leaseId, agentId, agentVersion, tool, operation, resource, parameterSummary, nonce}`; gateway returns `{decisionId, policyVersion, effect, reasonCode, normalizedResource, actionHash, expiresAt}` | Zod-validated at the route · `effect ∈ {allow, deny, approval_required}` · `reasonCode` from Appendix A |
-| R4 | **Deterministic evaluator** — canonicalise target (resolve `..`, decode `%xx`, collapse `//`, lower-case, strip trailing `/`), then match `tool`+`operation`+`resource` glob against grants; missing match ⇒ deny | Table-driven tests: allow, deny, approval, default deny, target mismatch, expiry, revocation, replay, traversal & encoding variants · same input + policy version ⇒ same output |
-| R5 | **Protected adapter (`agentctl`)** — small CLI baked into `Dockerfile.runtime`; the *only* path from the Runtime to the protected mock resource; talks to the gateway over HTTP; downstream credential lives only in the gateway process | `curl` from inside the Runtime container to the resource directly fails (network/credential) · `agentctl resource read tenant-a/invoices/A-1024` succeeds under an `allow` grant |
-| R6 | **Protected mock resource** — seeded local fixtures for tenant A and tenant B (invoices, reports); write operation `report.publish` | Fixture files under a path not bind-mounted into the Runtime · reset script restores them |
-| R7 | **One-time approval** — `approval_required` creates `Approval{pending}`; UI card shows tool, operation, normalised target, parameter summary; `approve` issues a grant bound to `actionHash`; grant consumed on first use | Retried identical action executes once · second identical request ⇒ `replay_detected` · `reject` ⇒ `deny` with `approval_rejected` · pending approval expires with the lease |
-| R8 | **Evidence timeline** — append-only `DecisionEvent`/`ActionResult` records per Run (`run_started, action_requested, policy_decided, approval_requested, approval_resolved, action_started, action_succeeded, action_failed, run_completed`); `GET /api/runs/:id/events`; vertical list in the Run view | Every event carries `runId`, `traceId`, `actorType`, `agentId/version`, `policyVersion`, `reasonCode`, duration · UI shows them in order with status colour |
-| R9 | **Redaction before persistence** — parameter summaries and downstream errors pass through a redactor (secret markers, bearer tokens, env-shaped strings, raw payloads > N chars) | Seeded canary `CANARY-SECRET-…` injected into prompt, tool result, error message and arguments never appears in `launchpad.json`, server log, `/api/runs/:id/events`, or the DOM |
-| R10 | **Typed failure semantics** — denial, expiry, revocation, replay, downstream timeout, audit-store failure each map to a reason code and an explicit Run outcome; no blind retry for non-idempotent writes | Injected evidence-store error on a publish ⇒ action fails, fixture unchanged · downstream timeout ⇒ `action_failed`, fixture unchanged |
-| R11 | **Baseline preserved** — Agent CRUD, Playground, session resume, stop/start, delete-archive unchanged | Starter-kit acceptance test passes · `npm run check` passes |
-| R12 | **Reset script** — `scripts/reset-demo.sh` restores fixtures, clears leases/approvals/events, keeps Agents | Two consecutive demo runs from reset produce identical evidence shape |
+| FR-01 | **Create trace** at the Fastify boundary (`POST /api/agents/:id/messages`); bind `requestId, runId, agentId, sessionId, actorId, schemaVersion, capturePolicy` | Every Run record carries `traceId`; `run.created` is the root span |
+| FR-02 | **Propagate context** through `AgentService.sendMessage/executeRun`, `AgentRunner.run`, both runners, async callbacks, store, query responses | `traceId`/`spanId` present on every event; runner events have the service span as parent |
+| FR-03 | **Emit spans/events** at seams: start/end/error/cancel/timeout with monotonic `sequence` + wall clock | Success Run yields ≥ 6 observed spans across categories `control`, `runtime`, `workspace` |
+| FR-04 | **Normalise & validate** every event against the zod schema; quarantine malformed fields without corrupting the Run | Malformed adapter event ⇒ `error.recorded` + quarantine, Run continues |
+| FR-05 | **Redact before storage**: allowlist operational fields → structured key denylist (`authorization, apiKey, token, secret, password, cookie, privateKey`, case-insensitive) → bounded pattern scan (bearer, `sk-`, `ark-`, AK/SK, private-key blocks, credential URLs, seeded fixtures) → truncation; same serializer for disk, API, export, logs | AC-03; on redactor error persist metadata only with `privacy.reason = redaction_failed_closed` |
+| FR-06 | **Persist locally**: append-only NDJSON per Run under `APP_DATA_DIR/traces/<runId>.ndjson`; in-memory summary index rebuilt at start; `TraceStore` interface | Round-trip + rebuild test; atomic append |
+| FR-07 | **Roll up state** deterministically: status, duration, event count, first error, usage totals, incomplete spans, degraded signals | Same events ⇒ same rollup (pure function test) |
+| FR-08 | **List Runs**: `GET /api/runs?status&agentId&from&to&cursor&limit`, newest first, bounded pagination | 400 on malformed filters |
+| FR-09 | **Read trace**: `GET /api/runs/:runId/trace` (+ `/api/traces/:traceId`, `/api/traces/:traceId/events`) returns spans, events, capability + privacy metadata, `schemaVersion`, `capturePolicy` | 404 on unknown id; never raw secrets/provider payloads |
+| FR-10 | **Focus failure**: first actionable error + causal path; differentiate failure / timeout / cancellation / observability degradation | AC-02; deterministic diagnosis text built only from stored facts (no LLM) |
+| FR-11 | **Controlled failure fixture**: deterministic, gated (`GLASSBOX_DEMO_FAILURE=timeout|runner_error`), traverses the *same* Run/instrumentation path; disabled by default | AC-02 reproducible twice in a row; fixture off ⇒ baseline unchanged |
+| UX-01 | **Runs view**: columns status, Agent, start, duration, first failing step, event count, runtime/model, usage, redaction/degraded indicators; quick filters failed/running/cancelled/timed-out/degraded; keyboard-navigable rows; status as text + icon | Newest first; polling marks last observed event time |
+| UX-02 | **Trace detail**: summary header; nested tree with duration bars, root + error path expanded by default; local filters (category/status/text/errors-only); span drawer; persistent first-error banner with *Jump to failing span*; trust badges (observed/unavailable/redacted), schema version, incomplete marker | Operator reaches failing span in ≤ 2 interactions |
+| V-01 | **Verification**: unit (IDs, schema, ordering, span reconstruction, rollups, redaction, truncation, duplicates, incomplete), integration (Fastify→Service→Runner→store on success/timeout/error/cancel/restart/degraded store), privacy, E2E, regression, performance | All AC-01..07 automated where possible; `npm run check` green |
 
-### 6.2 Nice-to-have (P1, in priority order)
+### 6.2 Nice-to-have (P1)
+- **Usage & safe I/O summaries** (tokens from `turn.completed`, request/result summaries) only under `safe_summary` policy.
+- **Export** `GET /api/traces/:traceId/export` — redacted, schema-versioned JSON identical in policy to the query response.
+- **Capture policy config**: `metadata_only` (default) and `safe_summary` (opt-in local/demo); `full/raw` not implemented.
+- **Bound storage**: caps 1,000 events/Run, 32 KB/event, 10 MB/Run, age cleanup; truncation is observable (`trace.truncated`).
+- **Live update**: 1–2 s polling first; SSE only after P0 is complete.
 
-1. Policy version diff and rollback on the Agent detail view.
-2. Decision export with OpenTelemetry GenAI-compatible attribute names.
-3. Per-Run action budget (`maxExternalWrites`), timeout and concurrency limit enforced by the gateway.
-4. Configurable fail-closed vs degraded-audit mode.
-5. `agentctl` returning structured hints so Codex can self-recover (ask for approval / stop).
+### 6.3 Future (P2 — design for, don't build)
+- OTLP / OTel GenAI semantic-convention mapping via a separate adapter (internal schema stays authoritative).
+- Operational controls (retry, cancel, approval, budget, alert) written as linked `ControlDecision` records — never mutating observation facts.
+- Task graph, routing, reconciliation, multi-agent/A2A spans, delegated identity.
 
-### 6.3 Future considerations (P2 — design for, don't build)
-
-- Second provider adapter behind the same `ActionRequest` contract (e.g. a mock Git or HTTP publish target).
-- HMAC-signed leases (key in process memory only) instead of opaque IDs.
-- Resource provenance hints for high-risk arguments (context-aware authz).
-- Multi-user ownership (User A / User B) layered on the same lease model.
-
-## 7. Architecture & trust boundary
+## 7. Architecture & integration
 
 ```
-Browser (React) ──► Fastify control plane ──► AgentService ──► AgentRunner ──► Codex in disposable container
-   policy panel        /api/actions            RunContext        (lease id      │
-   approval card       /api/approvals          + Lease            in env)        │ agentctl <tool> <op> <resource>
-   evidence list       /api/runs/:id/events         │                            ▼
-                             │                      │                     Policy gateway  ──► Protected adapter ──► Mock resource
-                             ▼                      ▼                     (evaluate, grant,    (holds credential;    (tenant A / B
-                       JSON store  ◄──── DecisionEvent / ActionResult      consume, redact)     executes only          fixtures,
-                       launchpad.json                                                            authorised requests)   outside mounts)
+Browser ── Runs view / Trace detail (evidence only, no control)
+   │  GET /api/runs · /api/runs/:id/trace · /api/traces/:id[/events|/export]
+   ▼
+Fastify ──onRequest hook: TraceContextFactory (requestId, traceId, actor, policy)──► http.request.* events
+   │
+AgentService ──adapter──► agent_service.run.* / run.* events   (sendMessage / executeRun / cancel / initialize)
+   │
+AgentRunner ──adapter──► runtime.container.* / runtime.codex.* / tool.call.* / workspace.changed
+   │   (CodexRunner + ContainerCodexRunner share parseCodexEventLine → richest source of runtime facts)
+   ▼
+ObservationEmitter ──► validate (zod) ──► RedactionPipeline ──► TraceStore (NDJSON/Run + index)
+                                                                    │
+                                                        TraceQueryService (spans, rollup, first-error focus)
 ```
 
-**Trust boundary:** the *gateway process* (Fastify) is trusted; the Runtime container, the model output, workspace files and browser state are untrusted. The protected credential never enters the container's environment (`ContainerCodexRunner` already allow-lists env vars — only the lease ID is added).
-
-| Component | Owns | Fails how |
+| Component | Responsibility | Lives in |
 |---|---|---|
-| React UI | policy selection, approval card, evidence list | UI failure can never turn deny into allow |
-| RunContext (in `AgentService`) | bind user, Agent/version, policy version, traceId, leaseId | Run start fails closed |
-| Policy gateway (new server module) | normalise, evaluate, grant, consume, revoke | typed denial; no downstream call |
-| Protected adapter | credential + execution | typed downstream error; credential never returned |
-| Evidence store (`JsonStore`) | append redacted events | protected writes fail closed |
-| `agentctl` (Runtime image) | stable CLI contract for protected actions | structured error to Codex |
+| `TraceContextFactory` | IDs, capture policy, schema version, actor at ingress | `apps/server/src/glassbox/context.ts` |
+| `ObservationEmitter` | tiny adapter API: timestamp, sequence, validate, forward; **non-blocking, never throws into the Run** | `glassbox/emitter.ts` |
+| Fastify hooks | create/attach context, emit request boundaries | `app.ts` |
+| `AgentService` adapter | lifecycle + Run state facts; links existing `AgentRun` to `traceId` | `agent-service.ts` |
+| `AgentRunner` adapter | container/process/Codex facts, cancellation, timeout, exit, usage, and tool/file events from the Codex JSONL stream | `codex-runner.ts`, `container-codex-runner.ts` |
+| `RedactionPipeline` | allowlist → key denylist → pattern scan → truncate; fail closed | `glassbox/redact.ts` |
+| `TraceStore` | interface; NDJSON-per-Run impl + rebuildable index | `glassbox/store.ts` |
+| `TraceQueryService` | spans from events, rollups, failure focus, filters | `glassbox/query.ts` |
+| Trace UI | Runs index + trace detail | `apps/web/src/` (mounted in existing `App.tsx` shell) |
 
-**Untrusted:** user prompt, invoice text, model output, requested arguments, workspace files, browser state.
-**Trusted:** policy document, lease store, approval record, target canonicaliser, downstream credential, server clock.
+**Integration rules:** preserve public Agent CRUD/lifecycle/Playground/Run behaviour; keep provider keys on the backend; use the existing `AgentService`/`AgentRunner` seams (no parallel demo path); the failure fixture uses the same path and is config-gated; if no model/tool events are exposed, emit `capability.unavailable` once; ECS is infrastructure metadata, never a scoring shortcut.
 
-### Example policy profile
+**Codex event stream (Day-1 confirmation item):** `codex exec --json` already streams JSONL that `parseCodexEventLine` partially consumes (`thread.started`, `item.completed[agent_message]`, `turn.completed.usage`, `error`). The same stream carries `item.started/completed` for `command_execution` (command, exit code, aggregated output), `file_change`, `reasoning` summaries and `turn.failed`. The runner adapter should map these to `tool.call.*`, `workspace.changed`, `model.*` **only after capturing a real stream on Day 1** and confirming field names for the pinned Codex version — never from memory.
 
+## 8. Observability data contract
+
+**Identifiers:** `traceId` (required, one per Run in MVP) · `spanId`/`parentSpanId` (root omits parent) · `runId` (required) · `agentId` (required) / `agentVersionId` (optional) · `sessionId` (= Codex thread id, when available) · `requestId` (required at ingress) · `actorId`/`actorType` (human | service | agent | controller; MVP `local-user`) · `attempt` (default 1) · `sequence` (monotonic per trace, required).
+
+**Envelope**
 ```json
 {
-  "name": "finance-reporter", "version": 1, "default": "deny",
-  "grants": [
-    { "tool": "resource", "operation": "read",    "resource": "tenant-a/invoices/*", "effect": "allow" },
-    { "tool": "report",   "operation": "publish", "resource": "tenant-a/reports/*",  "effect": "approval_required" }
-  ],
-  "limits": { "leaseSeconds": 900, "maxExternalWrites": 1 }
+  "schemaVersion": "1.0", "eventId": "evt_…", "sequence": 17,
+  "traceId": "trc_…", "spanId": "spn_…", "parentSpanId": "spn_…",
+  "runId": "…", "agentId": "…", "sessionId": "…",
+  "timestamp": "2026-08-25T10:15:22.531Z", "type": "runtime.codex.completed",
+  "category": "runtime", "status": "ok", "durationMs": 18420,
+  "source": { "component": "AgentRunner", "adapter": "CodexRunner", "observed": true },
+  "attributes": { "attempt": 1, "exitCode": 0 },
+  "summary": { "text": "Codex process completed", "policy": "safe_summary" },
+  "privacy": { "redacted": false, "rulesetVersion": "1" }
 }
 ```
 
-### Request flow
-1. `POST /api/agents/:id/messages` → `AgentService` creates Run + RunContext + Lease, passes `LAUNCHGUARD_LEASE_ID` and `LAUNCHGUARD_URL` to the Runtime.
-2. Codex runs `agentctl resource read tenant-a/invoices/A-1024` → `POST /api/actions` (ActionRequest).
-3. Gateway validates lease, canonicalises target, computes `actionHash`, evaluates against the pinned policy version, appends `policy_decided`.
-4. `allow` → adapter executes, `action_succeeded`. `deny` → typed error to `agentctl`. `approval_required` → `Approval{pending}` + `approval_requested`; `agentctl` blocks (long-poll) or returns `approval_required` for the Agent to retry.
-5. Operator approves in the UI → one-time grant bound to `actionHash` → the exact action executes once, grant consumed.
+**Status:** `running | ok | error | cancelled | timeout | unset`. A parent becomes `error` only when an unhandled descendant error reaches the Run; handled failures stay events on an `ok` parent. Incomplete spans are *marked*, never guessed closed.
 
-## 8. Threat model (what the demo and tests must prove)
+**Categories:** `experience, control, runtime, model, tool, workspace, sandbox, policy, infrastructure`.
 
-| Threat / failure | Control | Proof |
-|---|---|---|
-| Injected invoice requests tenant B data | tenant-bound resource glob, default deny | denial event; tenant B fixture unchanged |
-| Confused deputy / shared token | audience-bound lease; credential held by gateway only | direct call from Runtime fails |
-| Path / target bypass | canonicalise before match | table tests for `../`, `%2e%2e`, `//`, case |
-| Approval replay | grant bound to `actionHash`, consumed once | second identical request ⇒ `replay_detected` |
-| Revocation race | lease checked per action | revoke between two actions ⇒ second denied |
-| Sensitive evidence | redact before persist | canary absent from store/log/API/DOM |
-| Downstream timeout | typed error, no blind retry for writes | fixture unchanged |
-| Evidence store down | fail closed for protected writes | injected store error blocks mutation |
+**Minimum taxonomy:** `run.created/started/completed/failed/cancelled/timed_out` · `http.request.received/completed` · `agent_service.run.started/completed/failed` · `runtime.container.started/stopped` · `runtime.codex.started/completed/failed` · `model.request/completed`, `tool.call.started/completed/failed` (when available) · `workspace.changed`, `policy.denied`, `redaction.applied`, `limit.exceeded` · `error.recorded`, `telemetry.degraded`, `trace.truncated`, `capability.unavailable`.
 
-## 9. Success metrics
+**Capture policy:** `metadata_only` (default: IDs, timing, status, names, counts, codes, sizes, flags) · `safe_summary` (opt-in: bounded, filtered, redacted summaries) · `full/raw` (**not implemented**).
 
-**Leading (measured in tests / demo)**
-- Unauthorised mutations of protected fixtures: **0** across the full negative suite.
-- Decision-branch and reason-code coverage in evaluator unit tests: **100 %**.
-- Canary secrets persisted or displayed: **0**.
-- Gateway decision overhead (excluding human wait), p95 on local POC: **< 50 ms**.
-- Decisions carrying `runId` + `traceId`: **100 %**.
-- Live demo duration from reset: **≤ 2:45**; `npm run check` passes twice from clean state.
+**Evidence states:** `observed` (emitted by instrumented component) · `derived` (computed deterministically from stored facts) · `unavailable` · `redacted` · `truncated`.
 
-**Lagging (judging rubric alignment)**
-- End-to-end middleware behaviour (40 %): real browser → control plane → Runtime → gateway → mutation/denial → timeline.
-- Technical design (25 %): explicit boundary, lease, deterministic contract, server-held credential, minimal baseline changes.
-- Verification & robustness (20 %): default-deny, cross-tenant, traversal, expiry/revocation/replay, redaction, unchanged-state assertions.
-- Demo & reproducibility (15 %): local fixtures, one-command POC, reset script, README, diagram, stated limitations.
+## 9. Failure & degraded behaviour
 
-## 10. Open questions
+| Condition | Required behaviour |
+|---|---|
+| Runtime timeout (`CODEX_TIMEOUT_MS`) | runtime span `timeout`, Run `timeout`, retain exit/cleanup evidence, focus first timeout |
+| Model/provider error | mark at highest available granularity; never fabricate provider detail |
+| Tool failure | tool span `error` when exposed; parent status follows the real runtime result |
+| Cancellation (`stop`) | record actor, request time, ack, runner termination, terminal `cancelled` |
+| Process restart | reuse `AgentService.initialize` semantics: Run → cancelled/incomplete, rebuild index, mark open spans incomplete |
+| Trace store unavailable | Run continues; best-effort `telemetry.degraded` in memory/log-safe channel; UI shows evidence gap |
+| Redaction failure | drop payload, keep safe metadata + `redaction_failed_closed`; Run continues |
+| Event cap reached | drop content-bearing events first, keep terminal + error metadata, record `trace.truncated` |
 
-**Blocking (answer before Day 1 PM)**
-- *Engineering:* How does `agentctl` inside the container reach the gateway on the host? Docker Desktop offers `host.docker.internal`; Linux needs `--add-host=host.docker.internal:host-gateway` in `ContainerCodexRunner`. Also: `--network bridge` currently gives the container unrestricted egress — do we restrict it, and does that break ModelArk?
-- *Engineering:* Approval as long-poll inside the Codex tool call (Run stays `running`) vs. return-and-retry (Agent re-invokes after approval)? Long-poll is simpler for the model; return-and-retry is safer against `CODEX_TIMEOUT_MS`.
-- *Workshop 28 Aug:* Is modifying `Dockerfile.runtime` to add `agentctl` acceptable? Is a Run pause/approval sub-status an accepted lifecycle extension?
+## 10. Verification plan
+
+| Layer | Coverage |
+|---|---|
+| Unit | ID generation/propagation, schema validation, ordering, span reconstruction, rollups, redaction rules, truncation, duplicate `eventId`, incomplete spans |
+| Integration | Fastify → AgentService → AgentRunner → store on success, timeout, runtime error, cancel, restart, store degradation (real service on `mkdtemp` + `FakeRunner`) |
+| Privacy | seed fake Ark/OpenAI/bearer/private-key fixtures; assert absence across NDJSON, API, export, logs, snapshots, rendered UI text |
+| E2E | create Agent → run task → open trace → expand span → filter errors; controlled failure → jump to failing span |
+| Regression | CRUD, lifecycle, Playground, session/workspace persistence, `npm run check` |
+| Performance | append/query benchmarks at 100/500 events; caps; no unbounded UI render |
+
+**Acceptance scenarios:** AC-01 Success · AC-02 Failure · AC-03 Privacy · AC-04 Partial visibility (`capability.unavailable`, no synthetic model/tool events) · AC-05 Degraded store · AC-06 Restart · AC-07 Baseline.
+
+**Definition of done:** all P0 FRs + AC-01..07 pass locally; demo runs twice consecutively from a documented setup with no manual edits; one-page architecture diagram + README explain seams, schema, redaction, limitations, extension points; no seeded secret in recording, screenshots, fixtures, traces, logs; limitations (single process, local store, partial provider visibility, bounded capture) are explicit.
+
+## 11. Open questions
+
+**Blocking (resolve Day 1)**
+- *Engineering:* exact Codex CLI `--json` event/field names for the pinned version (0.111.0 in Docker, 0.142.x on the Windows host) — capture a raw stream from a real Run and check it in as a fixture before designing `tool.*`/`model.*` mapping.
+- *Engineering:* which controlled failure fixture — deterministic timeout (small `CODEX_TIMEOUT_MS` under a gate), gated runner exception, or invalid tool action? Prefer the one that exercises the most real cleanup code without brittleness.
 
 **Non-blocking**
-- *Engineering:* Does the Codex sandbox fallback to `danger-full-access` (Landlock unavailable under Docker Desktop) matter for the demo narrative? Our claim is scoped to the protected resource, so no — but state it as a limitation.
-- *Team:* Does the demo Agent reliably attempt the injected action live? Keep the scripted `ActionRequest` fixture as fallback (containment is the proof, not model failure).
-- *Team:* Store new records in `launchpad.json` (extend `Database`) or a second JSON file? Extending is fewer moving parts; watch file size from events.
+- *Engineering:* immutable `agentVersionId` on Agent edits in MVP or P1? (Cheap: increment on `updateAgent`.)
+- *Engineering:* retention defaults — pick age/disk caps after measuring demo trace volume.
+- *Team:* `sessionId` = Codex thread id is only known after turn 1 — attach on `thread.started`, backfill on the root span.
 
-## 11. Timeline
+## 12. Six-day plan
 
-| Window | Work | Exit evidence |
+| Day | Theme | Build | Exit gate |
+|---|---|---|---|
+| 1 | Contract & store | baseline run; schema/IDs/statuses (zod); `TraceStore` NDJSON + index rebuild; emitter; unit tests; capture raw Codex stream fixture | synthetic trace round-trips and rebuilds |
+| 2 | Context & control seams | Fastify hook + `AgentService` adapter; link `AgentRun.traceId`; `/api/runs`, `/api/runs/:id/trace`; rollups | real successful Run has root + control spans |
+| 3 | Runtime & privacy | runner adapters (container/Codex envelope, tool/file events if confirmed); redaction pipeline; capability flags; gated failure fixture; privacy tests | success/failure traces are truthful and safe |
+| 4 | Product experience | Runs list; trace tree/timeline; filters; span drawer; failure banner + jump; polling | operator diagnoses failure ≤ 10 s |
+| 5 | Robustness | restart/incomplete, store degradation, duplicates, caps, E2E, baseline regression, perf pass | acceptance suite green |
+| 6 | Freeze & demo | P0 defects only; README, diagram, limitations, seed data, recording; rehearse ×2 | reproducible 3-minute proof |
+
+**Team split (by contract, not layer):** backend contract (schema, store, query, rollup, redaction) · instrumentation (Fastify, AgentService, runners, failure fixture) · experience (Runs list, tree, drawer, filters, a11y) · verification/demo (fixtures, E2E/privacy/perf tests, docs, rehearsal).
+
+**Cut order if slipping:** live streaming → export/retention UI → model/tool visualisation when unavailable → aggregate charts. **Never cut:** redaction, real backend instrumentation, controlled failure, baseline regression, trace detail path.
+
+## 13. Demo script (3 min)
+
+| Time | Beat | Proof |
 |---|---|---|
-| Pre-event (done 26 Aug) | Clone, baseline acceptance in Docker, `npm run check`, BytePlus config | ✅ baseline completes, session resumes, workspace persists |
-| 28 Aug | Track 1 workshop 1:00–1:45 pm SGT — ask the blocking questions above | answers recorded here |
-| Day 1 AM | Contracts (`types.ts`), policy schema, fixtures incl. malicious invoice | contracts reviewed; negative fixture committed |
-| Day 1 PM | Evaluator + canonicaliser + lease store + mock resource + direct-call denial | API test: one real allow, one real deny |
-| Day 2 AM | `agentctl` in Runtime image; RunContext in `AgentService`; events | E2E benign read + denied cross-tenant read |
-| Day 2 PM | Approval pause/resume, one-time grant, revoke, minimal UI (policy panel, approval card, timeline) | approval executes once; replay & revoked lease denied |
-| Day 3 AM | Redaction, timeout/error paths, reset script, unit/table/integration/E2E tests | all green; zero canaries |
-| Day 3 PM | **Feature freeze.** Architecture page, README, limitations, fallback recording, rehearsal | `npm run check` ×2 from clean; demo < 2:45 |
+| 0:00–0:20 | Orient | Agent catalog/Playground; select or create one Agent |
+| 0:20–0:55 | Successful Run | real task using runtime + workspace; let the backend finish |
+| 0:55–1:30 | Evidence | open Trace: connected layers, timing, container metadata, workspace change, usage, trust badges |
+| 1:30–1:55 | Controlled failure | run the gated deterministic failure through the same path |
+| 1:55–2:25 | Diagnosis | error banner → jump to failing runtime/tool span; cleanup/terminal state |
+| 2:25–2:45 | Privacy proof | seeded fake secret was in the input; absent from persisted/API/UI evidence |
+| 2:45–3:00 | Platform arc | architecture: trace plane today; controller consumes the same facts tomorrow |
 
-**Critical-path rule:** no approval UI, trace polish or stretch work until one protected action is denied by the backend and a test proves the resource unchanged.
+## 14. Roadmap (why the MVP is not throwaway)
 
-**Team ownership:** control plane (RunContext, evaluator, lease/approval, evidence API) · Runtime/infra (`agentctl`, adapter, credential boundary, failure fixtures) · frontend + verification/demo (policy panel, approval card, timeline, negative tests, reset, README, rehearsal). One person owns final scope decisions.
+`TraceStore` → event backbone (add DB/stream adapter, emitters unchanged) · rollups → state projection for a controller · failure focus → typed retryability → `RetryDecision` · observed usage → budgets · actor context → approvals/revocation/audit · single Run → task graph (`taskId`, dependency edges, attempts) · single agent → A2A (context propagation across agents). A future controller **never mutates observation facts**; it writes a linked `ControlDecision` (`decisionId, traceId, runId, controller version, evidence refs, policy version, action, alternatives, outcome`) and its action produces new *observed* spans.
 
-## 12. Demo script (3 min)
+## 15. Rubric alignment
 
-| Time | Show | Judge concludes |
+| Dimension | Weight | GlassBox proof |
 |---|---|---|
-| 0:00–0:20 | Select *Finance Reporter*; policy summary + version | authority is explicit before execution |
-| 0:20–0:55 | Run: read invoice A-1024, write local summary, publish | baseline path works; real model + file action |
-| 0:55–1:25 | Publish pauses; approval card shows tenant/target/op/one-time scope; approve | approval is narrow and tied to a real side effect |
-| 1:25–1:45 | Report appears in protected fixture; allow/approval/success events | behaviour is visible and attributable |
-| 1:45–2:25 | Open malicious invoice asking for tenant B; run Agent | untrusted data influences the model, not authority |
-| 2:25–2:45 | Denial event; tenant B fixture unchanged; (optional) revoke → next action denied | failure contained, evidence convincing |
-| 2:45–3:00 | `npm run check` result; architecture page; two limitations | reproducible, focused, honest |
+| End-to-end behaviour | 40 % | real task traverses UI → Fastify → AgentService → AgentRunner → runtime/workspace and returns a connected trace; real controlled failure diagnosed |
+| Design & integration | 25 % | documented seams, baseline preserved, provider-neutral versioned contract, evidence separated from future control |
+| Verification & robustness | 20 % | success/failure/privacy/restart/degradation tests, caps, idempotency, reproducible setup |
+| Demo & reproducibility | 15 % | success → trace → failure → diagnosis → privacy proof, one-command local path |
 
-## Appendix A — Reason codes & events
+**Narrative:** *Agents fail in ways logs cannot explain. GlassBox makes every Run auditable and diagnosable today, and turns that evidence into the control substrate for tomorrow's agent plane.*
 
-- **Effect:** `allow`, `deny`, `approval_required`
-- **Denial reason:** `no_matching_grant`, `wrong_tenant`, `target_mismatch`, `operation_not_allowed`, `lease_expired`, `lease_revoked`, `wrong_audience`, `replay_detected`, `invalid_target`, `approval_rejected`, `audit_unavailable`
-- **Approval status:** `pending`, `approved`, `rejected`, `expired`, `consumed`
-- **Run events:** `run_started`, `action_requested`, `policy_decided`, `approval_requested`, `approval_resolved`, `action_started`, `action_succeeded`, `action_failed`, `run_completed`
-- **Safe to persist:** `runId`, `traceId`, `actorType`, `agentId/version`, `policyVersion`, `tool`, `operation`, normalised target class, `actionHash`, `reasonCode`, duration, result status
-- **Never persist by default:** raw credential, bearer token, full environment, unrestricted prompt/tool payload, secret file contents, unredacted downstream error
+## Appendix A — Locked decisions
+MVP centre = single-Run observability + failure diagnosis · storage = NDJSON per Run behind `TraceStore` + rebuildable index · capture = `metadata_only` default, `safe_summary` opt-in, raw prohibited · update model = polling, SSE only after P0 · no Collector/DB/cloud dependency.
 
 ## Appendix B — Sources
-
-1. TikTok TechJam 2026 Track 1 problem statement (Early Bird), §1.1–1.12.
-2. OWASP Top 10 for Agentic Applications 2026.
-3. NIST AI 100-2e2025, §3.4–3.5 (assume injection remains possible; constrain via defined interfaces).
-4. Debenedetti et al., *AgentDojo*, NeurIPS 2024.
-5. MCP Security Best Practices (2026-07) — token passthrough, confused deputy, audience validation.
-6. OpenTelemetry, *GenAI Observability* (May 2026) — content capture is optional.
-7. He et al., *Progent* (2025); 8. Weng et al., *ARGUS* (May 2026, emerging).
+TechJam 2026 Track 1 brief · Starter Kit `docs/ARCHITECTURE.md`, `docs/HACKATHON_EXTENSION_GUIDE.md` · OpenTelemetry traces, context propagation, GenAI semantic conventions (mapped later; internal schema stays authoritative).

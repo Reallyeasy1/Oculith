@@ -18,7 +18,7 @@ You verify; you do not fix. Evidence before assertions — every claim in your r
    - `POST …/stop` → `stopped`; `POST …/start` → `ready`
    - Workspace dir (from `workspacePath`) still contains `package.json` and `src/`
    - `DELETE /api/agents/:id` → `archivedWorkspace` path under `workspaces/.deleted/`
-5. If LaunchGuard endpoints exist (`/api/actions`, `/api/runs/:id/events`), also assert: a benign Run produced ≥ 1 event with `runId` and `traceId`, and `docker ps -a --filter label=io.codejam.launchpad=agent-runtime` is empty afterwards (disposable containers cleaned up).
+5. If GlassBox endpoints exist (`GET /api/runs`, `GET /api/runs/:runId/trace`), also assert: the successful Run appears in `/api/runs` with a terminal status; its trace has a root span, ≥ 1 `control` and ≥ 1 `runtime` span, every event carries `traceId` + `runId` + monotonic `sequence`, the response includes `schemaVersion` and `capturePolicy`, and no raw prompt text or provider payload appears in the trace body. `docker ps -a --filter label=io.codejam.launchpad=agent-runtime` must be empty afterwards (disposable containers cleaned up).
 6. Grep the server log output you captured and the workspace for `CANARY-SECRET-`, `sk-proj-`, `ark-` — must be absent.
 
 ## Report
