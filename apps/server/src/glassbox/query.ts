@@ -21,6 +21,7 @@ export interface TraceSummary {
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
   evicted: boolean;
   usage?: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number } | undefined;
+  configHash?: string | undefined;
   /** `unknown` = no evidence either way (run cut short before the stream said anything) — never claim `unavailable` from absence. */
   capabilities: { model: Capability; tool: Capability };
   firstFailingStep?: string | undefined; failure?: FailureFocus | undefined;
@@ -172,6 +173,8 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
         ...(hasNumeric("cachedInputTokens") ? { cachedInputTokens: sum("cachedInputTokens") } : {}),
         ...(hasNumeric("outputTokens") ? { outputTokens: sum("outputTokens") } : {}) }
     : undefined;
+  const createdConfigHash = events.find((event) => event.type === "run.created")?.attributes.configHash;
+  const configHash = typeof createdConfigHash === "string" ? createdConfigHash : undefined;
   const degraded = opts.degraded === true || events.some((e) => e.type === "telemetry.degraded");
   const truncated = opts.truncated === true || events.some((e) => e.type === "trace.truncated");
   const evicted = events.some(isEvictionMarker);
@@ -184,7 +187,7 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
     status, startedAt, endedAt, durationMs, endedReason: restart ? "server_restart" : undefined, eventCount: events.length, spanCount: flat.length,
     incompleteSpans: flat.filter((s) => s.incomplete).length, redactedEvents: events.filter((e) => e.privacy.redacted).length,
     denials: events.filter((e) => e.type === "policy.denied").length,
-    degraded, truncated, evicted, usage,
+    degraded, truncated, evicted, usage, configHash,
     capabilities: { model: events.some((e) => e.category === "model") ? "observed" : declaredUnavailable ? "unavailable" : "unknown", tool: events.some((e) => e.category === "tool") ? "observed" : declaredUnavailable ? "unavailable" : "unknown" },
     firstFailingStep: failure && failure.kind !== "degraded" ? failure.name : undefined, failure,
   };

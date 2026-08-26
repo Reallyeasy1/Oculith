@@ -17,7 +17,7 @@ describe("buildTrace", () => {
   it("reconstructs a nested tree with durations and rolls up ok", () => {
     seq = 0;
     const events = [
-      root(), ev({ type: "run.created", category: "control", spanId: "rc", parentSpanId: "root" }), svcStart(), rtStart(),
+      root(), ev({ type: "run.created", category: "control", spanId: "rc", parentSpanId: "root", attributes: { configHash: "0123456789abcdef" } }), svcStart(), rtStart(),
       ev({ type: "tool.call.completed", category: "tool", spanId: "tool1", parentSpanId: "rt", status: "ok", durationMs: 5 }),
       ev({ type: "model.completed", category: "model", spanId: "m1", parentSpanId: "rt", status: "ok", attributes: { inputTokens: 10, outputTokens: 2 } }),
       ev({ type: "runtime.codex.completed", category: "runtime", spanId: "rt", phase: "end", status: "ok" }),
@@ -30,6 +30,7 @@ describe("buildTrace", () => {
     expect(view.summary.spanCount).toBe(7);
     expect(view.summary.incompleteSpans).toBe(0);
     expect(view.summary.usage).toEqual({ inputTokens: 10, outputTokens: 2 });
+    expect(view.summary.configHash).toBe("0123456789abcdef");
     expect(view.summary.capabilities).toEqual({ model: "observed", tool: "observed" });
     expect(view.spans[0]!.spanId).toBe("root");
     const rt = flattenSpans(view.spans).find((s) => s.spanId === "rt")!;

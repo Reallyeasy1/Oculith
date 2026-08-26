@@ -3,7 +3,7 @@
 // (vitest is hoisted from the server workspace — no new dependency.)
 import { describe, expect, it } from "vitest";
 import type { Span, TraceView } from "./types";
-import { EMPTY_FILTER, barGeometry, defaultExpanded, matchesSpan, visibleRows } from "./trace-view-model";
+import { EMPTY_FILTER, barGeometry, defaultExpanded, matchesSpan, timelineTicks, visibleRows } from "./trace-view-model";
 
 const t0 = "2026-08-26T10:00:00.000Z";
 const at = (ms: number) => new Date(Date.parse(t0) + ms).toISOString();
@@ -59,7 +59,37 @@ describe("trace-view-model", () => {
   });
 
   it("bar geometry is relative to the run duration", () => {
-    expect(barGeometry(a1, view)).toEqual({ left: 50, width: 20 });
+    expect(barGeometry(a1, view, a)).toEqual({
+      left: 50,
+      width: 20,
+      startOffsetMs: 500,
+      durationMs: 200,
+      instant: false,
+      openEnded: false,
+      endsAfterParent: true,
+    });
     expect(barGeometry(root, { ...view, summary: { ...view.summary, durationMs: undefined } })).toBeUndefined();
+  });
+
+  it("computes readable ticks including the exact Run duration", () => {
+    expect(timelineTicks(1000)).toEqual([
+      { milliseconds: 0, percent: 0 },
+      { milliseconds: 250, percent: 25 },
+      { milliseconds: 500, percent: 50 },
+      { milliseconds: 750, percent: 75 },
+      { milliseconds: 1000, percent: 100 },
+    ]);
+    const uneven = timelineTicks(1234);
+    expect(uneven).toHaveLength(4);
+    expect(uneven.at(-1)).toEqual({ milliseconds: 1234, percent: 100 });
+    expect(timelineTicks(undefined)).toEqual([]);
+  });
+
+  it("renders incomplete spans to the timeline end and zero-duration spans as instants", () => {
+    const incomplete = span("open", { startedAt: at(400), durationMs: 100, incomplete: true });
+    expect(barGeometry(incomplete, view)).toMatchObject({ left: 40, width: 60, openEnded: true, instant: false });
+
+    const instant = span("instant", { startedAt: at(250), durationMs: 0 });
+    expect(barGeometry(instant, view)).toMatchObject({ left: 25, width: 0, openEnded: false, instant: true });
   });
 });
