@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import type { Agent, AgentRun, Message, RunListItem, SystemInfo, TraceView } from "./types";
+import RunsView from "./RunsView";
+import TraceDetail from "./TraceDetail";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -45,15 +47,20 @@ export default function App() {
   const [form, setForm] = useState(emptyForm);
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
+  const [runs, setRuns] = useState<RunListItem[]>([]);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [trace, setTrace] = useState<TraceView | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
   const messageEnd = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
+  const selectedRunIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
   selectedIdRef.current = selectedId;
+  selectedRunIdRef.current = selectedRunId;
 
   const selected = useMemo(
     () => agents.find((agent) => agent.id === selectedId) ?? null,
@@ -77,9 +84,34 @@ export default function App() {
     }
   }, []);
 
+  const refreshRuns = useCallback(async () => {
+    try {
+      const result = await api.listRuns();
+      if (mountedRef.current) setRuns(result.runs);
+    } catch {
+      // ponytail: runs table goes stale, baseline keeps working (invariant 12)
+    }
+  }, []);
+
+  // No-op unless `runId` is the trace currently open, so the poll loop can call it on every tick
+  // (poll-tick refreshes fail soft — invariant 12; only the initial open surfaces an error).
+  const refreshTrace = useCallback(async (runId: string) => {
+    if (selectedRunIdRef.current !== runId) return;
+    const view = await api.trace(runId);
+    if (mountedRef.current && selectedRunIdRef.current === runId) setTrace(view);
+  }, []);
+
+  useEffect(() => {
+    setTrace(null);
+    if (!selectedRunId) return;
+    void refreshTrace(selectedRunId).catch((reason) =>
+      setError(reason instanceof Error ? reason.message : String(reason)),
+    );
+  }, [refreshTrace, selectedRunId]);
+
   const bootstrap = useCallback(async () => {
-    await Promise.all([refreshAgents(), api.system().then(setSystem)]);
-  }, [refreshAgents]);
+    await Promise.all([refreshAgents(), refreshRuns(), api.system().then(setSystem)]);
+  }, [refreshAgents, refreshRuns]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -208,10 +240,10 @@ export default function App() {
       while (mountedRef.current) {
         await new Promise((resolve) => window.setTimeout(resolve, 900));
         if (!mountedRef.current) return;
-        const result = await api.run(runId);
+        const [result] = await Promise.all([api.run(runId), refreshRuns(), refreshTrace(runId).catch(() => undefined)]);
         if (selectedIdRef.current === agentId) setActiveRun(result.run);
         if (!["queued", "running"].includes(result.run.status)) {
-          await Promise.all([refreshMessages(agentId), refreshAgents()]);
+          await Promise.all([refreshMessages(agentId), refreshAgents(), refreshRuns(), refreshTrace(runId).catch(() => undefined)]);
           return;
         }
       }
@@ -600,6 +632,17 @@ export default function App() {
             </button>
           </div>
         )}
+
+        {selectedRunId && (
+          <TraceDetail
+            key={selectedRunId}
+            runId={selectedRunId}
+            run={runs.find((run) => run.runId === selectedRunId)}
+            view={trace}
+            onClose={() => setSelectedRunId(null)}
+          />
+        )}
+        <RunsView runs={runs} selectedRunId={selectedRunId} onOpenTrace={setSelectedRunId} />
       </main>
 
       {showCreate && (

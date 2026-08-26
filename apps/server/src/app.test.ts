@@ -154,5 +154,14 @@ it("lists runs and serves a trace with schemaVersion and capturePolicy", async (
   expect(filtered.events.map((e: { type: string }) => e.type)).toEqual(["runtime.codex.failed", "run.timed_out"]);
   expect((await app.inject({ method: "GET", url: "/api/runs/nope/trace" })).statusCode).toBe(404);
   expect((await app.inject({ method: "GET", url: "/api/runs?limit=9999" })).statusCode).toBe(400);
+  // FR-12: export = the trace route's body wrapped in { schemaVersion, exportedAt } — same builder, same policy.
+  const exported = await app.inject({ method: "GET", url: "/api/traces/trc_9/export" });
+  expect(exported.statusCode).toBe(200);
+  expect(exported.headers["content-type"]).toMatch(/^application\/json/);
+  expect(exported.headers["content-disposition"]).toBe('attachment; filename="trace-trc_9.json"');
+  const { schemaVersion, exportedAt, ...view } = exported.json();
+  expect(schemaVersion).toBe("1.0"); expect(Number.isNaN(Date.parse(exportedAt))).toBe(false);
+  expect(JSON.stringify(view)).toBe(trace.body);
+  expect((await app.inject({ method: "GET", url: "/api/traces/nope/export" })).json()).toEqual({ error: "Trace not found" });
   await app.close();
 });

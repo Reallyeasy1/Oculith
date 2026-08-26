@@ -16,7 +16,7 @@ cp .env.example .env            # loaded by the server dev script via --env-file
 npm run dev                     # server (tsx watch, :3000) + web (vite, :5173, proxies /api → :3000)
 npm run check                   # typecheck + test + build — run before claiming done
 npm run typecheck               # tsc across both workspaces
-npm run test                    # vitest, server only (web has no tests)
+npm run test                    # vitest: server suite, then web view-model unit tests (apps/web/src/*.test.ts)
 npm run build                   # web first, then server → apps/*/dist
 npm run poc                     # scripts/start-local-poc.sh: bash-only, builds runtime image, RUNTIME_PROVIDER=container
 ```
@@ -72,11 +72,11 @@ Governing rule: **ship evidence before control.** Never cut redaction, real back
 - **Hooks** (`settings.json` → `hooks/*.cjs`, Node so they run on Windows and Linux): block edits to `.env*`, lockfiles, runtime state and pristine fixtures; block force-push/`--no-verify`/destructive git/`cat .env`; scan staged diffs for API keys and canaries before every `git commit`; typecheck the touched workspace after every TS edit; print branch + open P0 issues at session start.
 - **Rules** (`rules/`): path-scoped conventions for server, web, and the GlassBox invariants.
 - **Agents** (`agents/`): `glassbox-privacy-reviewer` (adversarial, read-only — run before merging anything that emits, stores, or renders trace data), `negative-test-writer` (table-driven privacy/degradation/rollup tests for AC-02..06), `baseline-verifier` (starter-kit acceptance flow over the API + trace endpoints + `npm run check`).
-- **Skills**: `/start-issue N` (branch + test plan mapped to seams), `/run-poc` (judged Docker path with the Windows quirks handled).
+- **Skills**: `/start-issue N` (branch + test plan mapped to seams), `/finish-issue N [--base]` (verify → push → open the PR), `/run-poc` (judged Docker path with the Windows quirks handled).
 - **MCP** (`.mcp.json`): `context7` for Fastify/Vite/Codex docs, `playwright` for driving the UI in E2E checks and demo screenshots.
 - Permissions pre-allow read-only git/gh/npm-check commands and deny reading `.env`, `.local/`, `codex-home/`.
 
-Workflow per issue: `/start-issue N` → failing tests → implement → `npm run check` → security review if under the invariants rule → commit `Refs #N` / `Closes #N` → push.
+Workflow per issue — **one issue = one branch = one PR**: `/start-issue N` (branches `feat/N-slug` from `origin/main`, or from the parent issue's branch when the work depends on it) → failing tests → implement → `npm run check` → privacy review if under the invariants rule → commits `Refs #N` / `Closes #N` (pathspec commits only, never `--amend`, never `git add -A`) → `/finish-issue N [--base <parent-branch>]` pushes the branch and opens the PR with `Closes #N`. Dependent issues stack their PRs on the parent branch; GitHub retargets them to `main` as parents merge (merge in order). Never push `main` directly; merging is the user's call. In a multi-agent sprint the controller opens each PR right after that task's review is clean, not at the end.
 
 ## Conventions worth knowing
 

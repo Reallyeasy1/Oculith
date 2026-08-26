@@ -77,12 +77,17 @@ async function harness(runner: AgentRunner, env: Record<string, string> = {}, st
   return { config, service, app, emitter, logs, agent, send, traceStore };
 }
 
-const surfaces = async (h: Awaited<ReturnType<typeof harness>>, runId: string) => [
-  await readFile(path.join(h.config.traceDirectory, runId + ".ndjson"), "utf8"),
-  (await h.app.inject({ method: "GET", url: "/api/runs/" + runId + "/trace" })).body,
-  (await h.app.inject({ method: "GET", url: "/api/runs" })).body,
-  h.logs.join("\n"),
-];
+const surfaces = async (h: Awaited<ReturnType<typeof harness>>, runId: string) => {
+  // A 404 body is trivially secret-free, so every API surface must actually resolve.
+  const ok = async (url: string) => { const res = await h.app.inject({ method: "GET", url }); expect(res.statusCode, url).toBe(200); return res.body; };
+  return [
+    await readFile(path.join(h.config.traceDirectory, runId + ".ndjson"), "utf8"),
+    await ok("/api/runs/" + runId + "/trace"),
+    await ok("/api/runs"),
+    await ok("/api/traces/" + h.service.getRun(runId).traceId + "/export"),
+    h.logs.join("\n"),
+  ];
+};
 
 describe("AC-03 privacy across surfaces", () => {
   it.each([["success", "ok"], ["runner throws", "throw"]] as const)(
