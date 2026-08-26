@@ -71,8 +71,9 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
               <tr
                 key={run.runId}
                 tabIndex={0}
+                role="button"
                 className={run.runId === selectedRunId ? "selected" : undefined}
-                aria-label={"Open trace for " + (run.agentName || run.runId) + ", " + run.status}
+                aria-label={"Open trace for " + (run.agentName || run.runId) + ", " + run.status + ", " + formatClock(run.startedAt)}
                 onClick={() => onOpenTrace(run.runId)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {

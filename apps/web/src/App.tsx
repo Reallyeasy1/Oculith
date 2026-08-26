@@ -488,6 +488,11 @@ export default function App() {
                 <p>{selected.description || "A Codex coding Agent in an isolated workspace."}</p>
               </div>
               <div className="header-actions">
+                {selectedRunId && playgroundExpanded && (
+                  <button className="button button-ghost" onClick={() => setPlaygroundExpanded(false)}>
+                    Collapse Playground
+                  </button>
+                )}
                 <button
                   className="button button-ghost"
                   onClick={() => setShowSettings((value) => !value)}
@@ -697,7 +702,7 @@ export default function App() {
         )}
         {/* runs are server-scoped already; the filter only keeps another Agent's rows out of the DOM across a switch */}
         <RunsView
-          key={view}
+          key={view + ":" + (selectedId ?? "all")}
           runs={view === "agent" && selectedId ? runs.filter((run) => run.agentId === selectedId) : runs}
           selectedRunId={selectedRunId}
           onOpenTrace={(runId) => { setSelectedRunId(runId); setPlaygroundExpanded(false); }}

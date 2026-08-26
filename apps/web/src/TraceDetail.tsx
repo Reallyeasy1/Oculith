@@ -115,6 +115,7 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
         else if (row.span.parentSpanId && byId.has(row.span.parentSpanId)) focusRow(row.span.parentSpanId);
         break;
       case "Enter": case " ": setOpenId(id); break;
+      case "Escape": onClose(); break;
       default: return;
     }
     event.preventDefault();
@@ -159,10 +160,10 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
           <div>
             <strong>First actionable {failure.kind}: {failure.name}</strong>
             <span className="trace-banner-meta">{failure.category} · {failure.component}{failure.message ? " · " + failure.message : ""}</span>
-            <p className="trace-diagnosis">{failure.diagnosis}</p>
+            <p id="trace-diagnosis" className="trace-diagnosis">{failure.diagnosis}</p>
           </div>
           {failingSpan && (
-            <button type="button" className="button button-primary" onClick={jump} autoFocus>Jump to failing span</button>
+            <button type="button" className="button button-primary" onClick={jump} aria-describedby="trace-diagnosis">Jump to failing span</button>
           )}
         </div>
       )}
@@ -259,11 +260,12 @@ const FOCUSABLE = 'button:not([disabled]), [href], input, select, textarea, [tab
 
 function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: TraceView; parentName: string | undefined; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
+  const titleRef = useRef<HTMLHeadingElement>(null);
   const events = useMemo(() => view.events.filter((e) => e.spanId === span.spanId), [view, span]);
   const attempt = events[0]?.attempt;
   const shown = events.slice(0, DRAWER_EVENT_CAP);
 
-  useEffect(() => { ref.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus(); }, [span.spanId]);
+  useEffect(() => { titleRef.current?.focus(); }, [span.spanId]);
 
   const onKeyDown = (event: React.KeyboardEvent) => {
     if (event.key === "Escape") { event.preventDefault(); onClose(); return; }
@@ -271,6 +273,7 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
     const items = Array.from(ref.current.querySelectorAll<HTMLElement>(FOCUSABLE));
     const first = items[0], last = items[items.length - 1];
     if (!first || !last) return;
+    if (event.shiftKey && document.activeElement === titleRef.current) { event.preventDefault(); last.focus(); return; }
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   };
@@ -280,7 +283,7 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
       <div className="span-drawer-head">
         <div>
           <span className="eyebrow">Span · {span.category}</span>
-          <h3 id="span-drawer-title">{span.name}</h3>
+          <h3 ref={titleRef} id="span-drawer-title" tabIndex={-1}>{span.name}</h3>
         </div>
         <button type="button" className="button button-ghost" onClick={onClose} aria-label="Close span details">×</button>
       </div>
