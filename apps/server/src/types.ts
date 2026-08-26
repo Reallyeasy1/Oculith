@@ -30,6 +30,16 @@ export interface RunUsage {
   outputTokens?: number;
 }
 
+export interface AgentConfigSnapshot {
+  instructions: string;
+  modelProvider: "ark" | "openai";
+  model: string;
+  codexSandboxMode: "read-only" | "workspace-write" | "danger-full-access";
+  runtimeProvider: "local-process" | "container";
+  containerRuntimeImage: string;
+  capturePolicy: "metadata_only" | "safe_summary";
+}
+
 export interface AgentRun {
   id: string;
   agentId: string;
@@ -42,6 +52,8 @@ export interface AgentRun {
   completedAt: string | null;
   createdAt: string;
   traceId?: string | undefined;
+  configHash?: string | undefined;
+  configSnapshot?: AgentConfigSnapshot | undefined;
 }
 
 export interface Database {

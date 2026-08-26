@@ -8,13 +8,13 @@ export interface Span {
   error?: ObservationEvent["error"]; events: ObservationEvent[]; children: Span[]; depth: number;
 }
 export interface FailureFocus {
-  kind: "error" | "timeout" | "cancelled" | "degraded"; spanId: string; eventId: string; sequence: number;
+  kind: "error" | "timeout" | "cancelled" | "denied" | "degraded"; spanId: string; eventId: string; sequence: number;
   name: string; category: Category; component: string; message?: string | undefined; path: string[]; diagnosis: string;
 }
 export interface TraceSummary {
   schemaVersion: typeof SCHEMA_VERSION; capturePolicy: CapturePolicy; runId: string; traceId: string; agentId: string;
   sessionId?: string | undefined; status: TraceStatus; startedAt?: string | undefined; endedAt?: string | undefined;
-  durationMs?: number | undefined; eventCount: number; spanCount: number; incompleteSpans: number; redactedEvents: number;
+  durationMs?: number | undefined; eventCount: number; spanCount: number; incompleteSpans: number; redactedEvents: number; denials: number;
   /** Set when the Run was closed by AgentService.initialize() after a restart: durationMs then stops at the last event observed before the restart. */
   endedReason?: "server_restart" | undefined;
   degraded: boolean; truncated: boolean;
@@ -22,6 +22,7 @@ export interface TraceSummary {
   evicted: boolean;
   usage?: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number } | undefined;
   metrics: TraceMetrics;
+  configHash?: string | undefined;
   /** `unknown` = no evidence either way (run cut short before the stream said anything) — never claim `unavailable` from absence. */
   capabilities: { model: Capability; tool: Capability };
   firstFailingStep?: string | undefined; failure?: FailureFocus | undefined;
@@ -119,16 +120,19 @@ function pathTo(spans: Map<string, Span>, spanId: string): string[] {
 const DEGRADED_FOCUS: FailureFocus = { kind: "degraded", spanId: "", eventId: "", sequence: -1, name: "telemetry.degraded", category: "control", component: "GlassBox", path: [], diagnosis: "Trace evidence is incomplete: the trace store was unavailable during this Run. The Run's real result is unaffected; some spans may be missing." };
 
 function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, status: TraceStatus, degraded: boolean, durationMs: number | undefined): FailureFocus | undefined {
-  // An ok Run has no failure to focus: a handled tool error along the way is not "the first failing step".
-  if (status === "ok") return degraded ? DEGRADED_FOCUS : undefined;
+  const denial = events.find((e) => e.type === "policy.denied");
+  // A handled ordinary tool error is not actionable after an ok terminal, but a policy decision is:
+  // the Run may recover while operators still need to know what the sandbox declined.
+  if (status === "ok" && !denial) return degraded ? DEGRADED_FOCUS : undefined;
   const candidates = events.filter((e) => e.status === "error" || e.status === "timeout" || e.status === "cancelled" || e.type === "error.recorded");
   if (candidates.length === 0) return degraded ? DEGRADED_FOCUS : undefined;
   // The Run's terminal status names the failure kind; rank events that match it first so a handled
   // tool.call.failed earlier in the stream can't outrank the timeout/cancel that actually ended the Run.
   const matches = (e: ObservationEvent) => e.status === status || (status === "error" && e.type === "error.recorded");
-  candidates.sort((a, b) => Number(matches(b)) - Number(matches(a)) || a.sequence - b.sequence || CATEGORY_RANK[a.category] - CATEGORY_RANK[b.category]);
+  const denialRank = (e: ObservationEvent) => Number(e.type === "policy.denied" && (status === "ok" || status === "error"));
+  candidates.sort((a, b) => Number(matches(b)) - Number(matches(a)) || denialRank(b) - denialRank(a) || a.sequence - b.sequence || CATEGORY_RANK[a.category] - CATEGORY_RANK[b.category]);
   const first = candidates[0]!;
-  const kind: FailureFocus["kind"] = first.status === "timeout" ? "timeout" : first.status === "cancelled" ? "cancelled" : "error";
+  const kind: FailureFocus["kind"] = first.type === "policy.denied" ? "denied" : first.status === "timeout" ? "timeout" : first.status === "cancelled" ? "cancelled" : "error";
   // A restart-cancel is a synthetic control event with no evidence of its own: point at the span the restart cut
   // off instead — deepest incomplete runtime span, else deepest incomplete span of any category, else the cancel.
   const open = isRestartCancel(first)
@@ -142,7 +146,9 @@ function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, stat
   const cleanup = events.find((e) => e.type === "runtime.container.stopped" || (e.type === "runtime.codex.failed" && e.attributes.terminationSignal));
   const capability = events.find((e) => e.type === "capability.unavailable");
   const diagnosis = [
-    isRestartCancel(first)
+    kind === "denied"
+      ? `sandbox declined \`${String(first.attributes.program || first.name)}\``
+      : isRestartCancel(first)
       ? `Run interrupted by a server restart after ${secs} of observed activity; ${open ? `the ${open.category} span ${open.name} never closed` : "no open span was recorded"}.`
       : `Run ${status} in ${first.source.component} after ${secs}. First actionable ${kind}: ${first.name}${first.error ? " — " + first.error.message : ""}.`,
     cleanup ? `Cleanup evidence: ${cleanup.name}${cleanup.attributes.exitCode !== undefined ? " (exit " + String(cleanup.attributes.exitCode) + ")" : ""}${cleanup.attributes.terminationSignal ? " via " + String(cleanup.attributes.terminationSignal) : ""}.` : "",
@@ -205,6 +211,8 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
     retries: retrySpans.size,
     denials: events.filter((event) => event.type === "policy.denied").length,
   };
+  const createdConfigHash = events.find((event) => event.type === "run.created")?.attributes.configHash;
+  const configHash = typeof createdConfigHash === "string" ? createdConfigHash : undefined;
   const degraded = opts.degraded === true || events.some((e) => e.type === "telemetry.degraded");
   const truncated = opts.truncated === true || events.some((e) => e.type === "trace.truncated");
   const evicted = events.some(isEvictionMarker);
@@ -216,7 +224,8 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
     sessionId: events.find((e) => e.sessionId)?.sessionId,
     status, startedAt, endedAt, durationMs, endedReason: restart ? "server_restart" : undefined, eventCount: events.length, spanCount: flat.length,
     incompleteSpans: flat.filter((s) => s.incomplete).length, redactedEvents: events.filter((e) => e.privacy.redacted).length,
-    degraded, truncated, evicted, usage, metrics,
+    denials: events.filter((e) => e.type === "policy.denied").length,
+    degraded, truncated, evicted, usage, metrics, configHash,
     capabilities: { model: events.some((e) => e.category === "model") ? "observed" : declaredUnavailable ? "unavailable" : "unknown", tool: events.some((e) => e.category === "tool") ? "observed" : declaredUnavailable ? "unavailable" : "unknown" },
     firstFailingStep: failure && failure.kind !== "degraded" ? failure.name : undefined, failure,
   };

@@ -150,9 +150,17 @@ describe("CodexStreamObserver", () => {
     );
     await em.flush();
 
-    const [e] = await store.readRun("run-1");
-    expect(e).toMatchObject({ type: "tool.call.failed", status: "error", error: { type: "denied" } });
-    expect(e!.attributes.exitCode).toBe(-1);
+    const events = await store.readRun("run-1");
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ type: "tool.call.failed", status: "error", error: { type: "denied" } });
+    expect(events[0]!.attributes.exitCode).toBe(-1);
+    expect(events[1]).toMatchObject({
+      type: "policy.denied", category: "policy", status: "error", name: "pwsh",
+      actorId: "sandbox", actorType: "service", source: { component: "Sandbox" },
+      attributes: { program: "pwsh", decision: "sandbox_declined", commandBytes: 9 },
+    });
+    expect(events[1]!.attributes).not.toHaveProperty("command");
+    expect(events[1]!.summary).toBeUndefined();
   });
 
   it("emits one error.recorded from the buffered stream error only when the run failed", async () => {
