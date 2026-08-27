@@ -6,7 +6,7 @@ import type { CapturePolicy, TraceStatus } from "./schema.js";
 import type { RunIndexEntry, TraceStore } from "./store.js";
 
 /** Bump when `summaryFromView` changes shape or meaning; `npm run glassbox:backfill` then rewrites older records. */
-export const ROLLUP_VERSION = 1;
+export const ROLLUP_VERSION = 2;
 
 export type ExecutionStatus = "running" | "completed" | "failed" | "timeout" | "cancelled";
 export type TaskOutcome = "passed" | "failed" | "unknown";
@@ -31,7 +31,7 @@ export interface RunSummary {
   metrics: TraceMetrics; usage?: TraceSummary["usage"]; denials: number; actions: number;
   capabilities: TraceSummary["capabilities"]; workspaceChanges?: TraceSummary["workspaceChanges"];
   degraded: boolean; truncated: boolean; evicted: boolean; redactedEvents: number; eventCount: number;
-  firstFailingStep?: string | undefined; endedReason?: TraceSummary["endedReason"];
+  firstFailingStep?: string | undefined; endedReason?: TraceSummary["endedReason"]; interruptedAfterMs?: number | undefined;
   rollupVersion: number; updatedAt: string;
 }
 
@@ -68,7 +68,7 @@ export function summaryFromView(view: TraceView, extra: { taskOutcome?: TaskOutc
     workspace: s.workspace, sessionId: s.sessionId,
     metrics: s.metrics, usage: s.usage, denials: s.denials, actions: s.audit.actions, capabilities: s.capabilities, workspaceChanges: s.workspaceChanges,
     degraded: s.degraded, truncated: s.truncated, evicted: s.evicted, redactedEvents: s.redactedEvents, eventCount: s.eventCount,
-    firstFailingStep: s.firstFailingStep, endedReason: s.endedReason,
+    firstFailingStep: s.firstFailingStep, endedReason: s.endedReason, interruptedAfterMs: s.interruptedAfterMs,
     rollupVersion: ROLLUP_VERSION, updatedAt: extra.updatedAt ?? new Date().toISOString(),
   };
 }

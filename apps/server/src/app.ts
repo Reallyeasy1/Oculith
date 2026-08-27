@@ -303,7 +303,7 @@ export async function createApp(
           : summaryFromView(await viewFor(run.id, entry));
         const status = s.eventCount ? traceStatusOf(s.executionStatus) : run.status === "completed" ? "ok" : run.status === "failed" ? "error" : run.status === "cancelled" ? "cancelled" : "running";
         if (q.status && status !== q.status) continue;
-        items.push({ runId: run.id, traceId: run.traceId ?? s.traceId, agentId: run.agentId, agentName: agents.get(run.agentId) ?? "", workspace: s.workspace, status, startedAt: s.startedAt ?? run.createdAt, durationMs: s.durationMs, endedReason: s.endedReason,
+        items.push({ runId: run.id, traceId: run.traceId ?? s.traceId, agentId: run.agentId, agentName: agents.get(run.agentId) ?? "", workspace: s.workspace, status, startedAt: s.startedAt ?? run.createdAt, durationMs: s.durationMs, endedReason: s.endedReason, interruptedAfterMs: s.interruptedAfterMs,
           firstFailingStep: s.firstFailingStep, eventCount: s.eventCount, runtime: config.runtimeProvider, model: config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default",
           usage: s.usage, workspaceChanges: s.workspaceChanges, capabilities: s.capabilities, toolCalls: s.metrics.toolCalls, toolFailures: s.metrics.toolFailures,
           tokens: s.metrics.tokens?.output !== undefined ? { output: s.metrics.tokens.output } : undefined,

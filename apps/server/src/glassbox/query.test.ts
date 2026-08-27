@@ -172,13 +172,14 @@ describe("buildTrace", () => {
     expect(view.summary.endedReason).toBe("server_restart");
     expect(view.summary.endedAt).toBe(t(60_000));
     expect(view.summary.durationMs).toBe(30); // codex exec start (t40) - root (t10), not the restart-cancel at t60000
+    expect(view.summary.interruptedAfterMs).toBe(59_990);
     expect(view.summary.failure?.kind).toBe("cancelled");
     expect(view.summary.failure?.spanId).toBe("rt");
     expect(view.summary.failure?.eventId).toBe("evt_4");
     expect(view.summary.failure?.path).toEqual(["root", "svc", "ct", "rt"]);
     expect(view.summary.failure?.component).toBe("AgentRunner");
     expect(view.summary.firstFailingStep).toBe("codex exec");
-    expect(view.summary.failure?.diagnosis).toBe("Run interrupted by a server restart after 0.0 s of observed activity; the runtime span codex exec never closed.");
+    expect(view.summary.failure?.diagnosis).toBe("Run interrupted by a server restart after 60.0 s; last trace evidence was 30 ms after the Run started; the runtime span codex exec never closed.");
   });
   it("user cancel (no reason): still focuses the cancelled codex exec span; no endedReason; full duration", () => {
     seq = 0;
