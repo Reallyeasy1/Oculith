@@ -251,5 +251,17 @@ export interface SystemInfo {
   runtime: string;
 }
 
+export type Assertion =
+  | { type: "terminal_status"; expected: "ok" | "error" | "timeout" | "cancelled" }
+  | { type: "expected_tool"; program: string }
+  | { type: "max_tool_calls"; max: number }
+  | { type: "max_duration_ms"; max: number }
+  | { type: "post_check"; command: string; timeoutMs: number };
+
+export interface RegressionCase {
+  id: string; name: string; prompt: string; workspaceTemplate: string; sourceRunId?: string;
+  baselineConfigHash: string; assertions: Assertion[]; createdAt: string;
+}
+
 // Mirrors WorkspaceManager.listTemplates(): a bad template (symlink, over limits) is reported, not a 500.
 export type WorkspaceTemplate = { name: string; fileCount: number; bytes: number } | { name: string; error: string };

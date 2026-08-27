@@ -61,11 +61,23 @@ export interface AgentRun {
   configSnapshot?: AgentConfigSnapshot | undefined;
 }
 
+export interface RegressionCase {
+  id: string;
+  name: string;
+  prompt: string;
+  workspaceTemplate: string;
+  sourceRunId?: string | undefined;
+  baselineConfigHash: string;
+  assertions: import("./eval/evaluators.js").Assertion[];
+  createdAt: string;
+}
+
 export interface Database {
   version: 1;
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
+  regressionCases: RegressionCase[];
 }
 
 export interface CreateAgentInput {
