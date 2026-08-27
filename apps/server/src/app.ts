@@ -6,12 +6,15 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
-import type { AgentService } from "./agent-service.js";
+import { configHash, configSnapshot, type AgentService } from "./agent-service.js";
 import { createTraceContext, type TraceContext } from "./glassbox/context.js";
 import type { ObservationEmitter } from "./glassbox/emitter.js";
-import { buildTrace, type TraceView } from "./glassbox/query.js";
+import { buildTrace, projectAudit, type TraceView } from "./glassbox/query.js";
 import { CATEGORIES, SCHEMA_VERSION, STATUSES } from "./glassbox/schema.js";
 import type { RunIndexEntry, TraceStore } from "./glassbox/store.js";
+import { caseFromRun, regressionCaseInput } from "./eval/cases.js";
+import { EvalRunner } from "./eval/runner.js";
+import { compareEvalRuns } from "./eval/compare.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -25,6 +28,8 @@ const createAgentBody = z.object({
   name: z.string().trim().min(1).max(80),
   description: z.string().max(500).optional(),
   instructions: z.string().max(10_000).optional(),
+  workspace: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/).optional(),
+  template: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/).optional(),
 });
 const updateAgentBody = createAgentBody.partial().refine(
   (value) => Object.keys(value).length > 0,
@@ -33,6 +38,7 @@ const updateAgentBody = createAgentBody.partial().refine(
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
 });
+const evalRunBody = z.object({ agentId: z.string().uuid(), caseIds: z.array(z.string().uuid()).min(1).max(20).refine((ids) => new Set(ids).size === ids.length, "caseIds must be unique") });
 
 export async function createApp(
   config: AppConfig,
@@ -152,6 +158,9 @@ export async function createApp(
 
   app.get("/api/agents", async () => ({ agents: service.listAgents() }));
 
+  app.get("/api/workspaces", async () => ({ workspaces: await service.listWorkspaces() }));
+  app.get("/api/workspace-templates", async () => ({ templates: await service.listWorkspaceTemplates() }));
+
   app.post("/api/agents", async (request, reply) => {
     const body = createAgentBody.parse(request.body);
     const agent = await service.createAgent(body);
@@ -206,9 +215,27 @@ export async function createApp(
     return { run: service.getRun(id) };
   });
 
+  app.get("/api/regression-cases", async () => ({ cases: service.listRegressionCases() }));
+  app.get("/api/regression-cases/:id", async (request) => ({ regressionCase: service.getRegressionCase(z.object({ id: z.string().uuid() }).parse(request.params).id) }));
+  app.delete("/api/regression-cases/:id", async (request, reply) => {
+    await service.deleteRegressionCase(z.object({ id: z.string().uuid() }).parse(request.params).id);
+    return reply.code(204).send();
+  });
+  app.post("/api/regression-cases", async (request, reply) => {
+    const body = regressionCaseInput.parse(request.body);
+    const regressionCase = await service.createRegressionCase({ ...body });
+    return reply.code(201).send({ regressionCase });
+  });
+  app.get("/api/eval-runs", async () => ({ evalRuns: service.listEvalRuns() }));
+  app.get("/api/eval-runs/:id", async (request) => ({ evalRun: service.getEvalRun(z.object({ id: z.string().uuid() }).parse(request.params).id) }));
+  app.get("/api/eval-runs/:baseline/compare/:candidate", async (request) => {
+    const { baseline, candidate } = z.object({ baseline: z.string().uuid(), candidate: z.string().uuid() }).parse(request.params);
+    return compareEvalRuns(service.getEvalRun(baseline), service.getEvalRun(candidate));
+  });
+
   if (glassbox) {
     const runsQuery = z.object({ status: z.enum(STATUSES).optional(), agentId: z.string().uuid().optional(), from: z.string().datetime().optional(), to: z.string().datetime().optional(), limit: z.coerce.number().int().min(1).max(200).default(50) });
-    const eventsQuery = z.object({ category: z.enum(CATEGORIES).optional(), status: z.enum(STATUSES).optional(), q: z.string().max(200).optional() });
+    const eventsQuery = z.object({ category: z.string().max(200).optional(), status: z.enum(STATUSES).optional(), q: z.string().max(200).optional() });
     // `entry` lets a caller listing many runs hoist the index lookup out of its loop instead of
     // re-scanning listRuns() per run; omitted, it falls back to the single-run scan.
     const viewFor = async (runId: string, entry?: RunIndexEntry | undefined): Promise<TraceView> => {
@@ -216,6 +243,27 @@ export async function createApp(
       const found = entry ?? glassbox.store.listRuns().find((r) => r.runId === runId);
       return buildTrace(events, { capturePolicy: glassbox.emitter.capturePolicy, degraded: glassbox.emitter.isDegraded(runId), truncated: found?.truncated });
     };
+    app.post("/api/eval-runs", async (request, reply) => {
+      const body = evalRunBody.parse(request.body);
+      const agent = service.getAgent(body.agentId);
+      body.caseIds.forEach((id) => service.getRegressionCase(id));
+      const snapshot = configSnapshot(agent, config);
+      const evalRun = await service.createEvalRun({ caseIds: body.caseIds, target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } });
+      void new EvalRunner(service, glassbox).execute(evalRun.id).catch(async (error) => {
+        await service.updateEvalRun(evalRun.id, (item) => { item.status = "failed"; item.completedAt = new Date().toISOString(); item.results.push({ caseId: "", results: [], error: error instanceof Error ? error.message : String(error) }); });
+      });
+      return reply.code(202).send({ evalRun });
+    });
+    app.post("/api/runs/:id/regression-case", async (request, reply) => {
+      const run = service.getRun(runIdParams.parse(request.params).id);
+      const template = service.getAgent(run.agentId).workspaceTemplate;
+      if (!template) throw new HttpError(409, "This Run did not start from a template-backed workspace");
+      let input;
+      try { input = caseFromRun(run, await viewFor(run.id), template); }
+      catch (error) { throw new HttpError(400, error instanceof Error ? error.message : "Unable to create regression case"); }
+      const regressionCase = await service.createRegressionCase({ ...input, sourceRunId: run.id });
+      return reply.code(201).send({ regressionCase });
+    });
     app.get("/api/runs", async (request) => {
       const q = runsQuery.parse(request.query);
       const agents = new Map(service.listAgents().map((a) => [a.id, a.name]));
@@ -236,17 +284,29 @@ export async function createApp(
         const status = view.summary.eventCount ? view.summary.status : run.status === "completed" ? "ok" : run.status === "failed" ? "error" : run.status === "cancelled" ? "cancelled" : "running";
         if (q.status && status !== q.status) continue;
         const s = view.summary;
-        items.push({ runId: run.id, traceId: run.traceId ?? s.traceId, agentId: run.agentId, agentName: agents.get(run.agentId) ?? "", status, startedAt: s.startedAt ?? run.createdAt, durationMs: s.durationMs, endedReason: s.endedReason,
+        items.push({ runId: run.id, traceId: run.traceId ?? s.traceId, agentId: run.agentId, agentName: agents.get(run.agentId) ?? "", workspace: s.workspace, status, startedAt: s.startedAt ?? run.createdAt, durationMs: s.durationMs, endedReason: s.endedReason,
           firstFailingStep: s.firstFailingStep, eventCount: s.eventCount, runtime: config.runtimeProvider, model: config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default",
-          usage: s.usage, degraded: s.degraded, truncated: s.truncated, evicted: s.evicted, redacted: s.redactedEvents > 0, lastEventAt: view.events.at(-1)?.timestamp });
+          usage: s.usage, workspaceChanges: s.workspaceChanges, capabilities: s.capabilities, toolCalls: s.metrics.toolCalls, toolFailures: s.metrics.toolFailures,
+          tokens: s.metrics.tokens?.output !== undefined ? { output: s.metrics.tokens.output } : undefined,
+          denials: s.denials, actions: s.audit.actions, configHash: s.configHash ?? run.configHash, configSnapshot: run.configSnapshot,
+          degraded: s.degraded, truncated: s.truncated, evicted: s.evicted, redacted: s.redactedEvents > 0, lastEventAt: view.events.at(-1)?.timestamp });
         if (items.length >= q.limit) break;
       }
       return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, runs: items };
     });
     app.get("/api/runs/:runId/trace", async (request) => { const { runId } = z.object({ runId: z.string().min(1) }).parse(request.params); service.getRun(runId); return viewFor(runId); });
+    app.get("/api/runs/:runId/audit", async (request) => {
+      const { runId } = z.object({ runId: z.string().min(1) }).parse(request.params); service.getRun(runId);
+      const view = await viewFor(runId);
+      return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, audit: projectAudit(view.events) };
+    });
     const traceParams = z.object({ traceId: z.string().min(1) });
     const runIdFor = (traceId: string): string => { const runId = glassbox.store.runIdForTrace(traceId); if (!runId) throw new HttpError(404, "Trace not found"); return runId; };
     app.get("/api/traces/:traceId", async (request) => viewFor(runIdFor(traceParams.parse(request.params).traceId)));
+    app.get("/api/traces/:traceId/audit", async (request) => {
+      const { traceId } = traceParams.parse(request.params); const view = await viewFor(runIdFor(traceId));
+      return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, audit: projectAudit(view.events) };
+    });
     app.get("/api/traces/:traceId/export", async (request, reply) => {
       // FR-12: same builder as the trace route, so the export can never carry anything the API would not.
       const { traceId } = traceParams.parse(request.params); const view = await viewFor(runIdFor(traceId));
@@ -256,7 +316,8 @@ export async function createApp(
     app.get("/api/traces/:traceId/events", async (request) => {
       const { traceId } = traceParams.parse(request.params); const q = eventsQuery.parse(request.query);
       const runId = runIdFor(traceId);
-      const events = (await glassbox.store.readRun(runId)).filter((e) => (!q.category || e.category === q.category) && (!q.status || e.status === q.status) && (!q.q || (e.name + " " + (e.error?.message ?? "")).toLowerCase().includes(q.q.toLowerCase())));
+      const categories = q.category === undefined ? undefined : z.array(z.enum(CATEGORIES)).min(1).parse(q.category.split(",").map((value) => value.trim()).filter(Boolean));
+      const events = (await glassbox.store.readRun(runId)).filter((e) => (!categories || categories.includes(e.category)) && (!q.status || e.status === q.status) && (!q.q || (e.name + " " + (e.error?.message ?? "")).toLowerCase().includes(q.q.toLowerCase())));
       return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, events };
     });
   }

@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import path from "node:path";
 import type { AppConfig } from "./config.js";
 import { isModelConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
@@ -12,15 +13,63 @@ import { newId, type TraceStatus } from "./glassbox/schema.js";
 import { JsonStore } from "./store.js";
 import type {
   Agent,
+  AgentConfigSnapshot,
   AgentRun,
+  EvalRun,
   AgentRunner,
   CreateAgentInput,
   Message,
+  RegressionCase,
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import { boundedChangedPaths, diffWorkspace, snapshotWorkspace } from "./workspace-snapshot.js";
 
 const now = () => new Date().toISOString();
+
+type ExecutionOptions = {
+  runId?: string;
+  workspacePath?: string;
+  workspaceName?: string;
+  tags?: Record<string, string | number | boolean>;
+  persistMessages?: boolean;
+  persistThread?: boolean;
+  cleanup?: () => Promise<void>;
+};
+
+export interface IsolatedRunInput {
+  agentId: string;
+  workspaceTemplate: string;
+  prompt: string;
+  tags?: Record<string, string | number | boolean>;
+}
+
+export function configSnapshot(agent: Agent, config: AppConfig): AgentConfigSnapshot {
+  return {
+    instructions: "sha256:" + createHash("sha256").update(agent.instructions).digest("hex"),
+    modelProvider: config.modelProvider,
+    model: config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default",
+    codexSandboxMode: config.codexSandboxMode,
+    runtimeProvider: config.runtimeProvider,
+    containerRuntimeImage: config.containerRuntimeImage,
+    capturePolicy: config.glassboxCapturePolicy,
+  };
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
+  if (value !== null && typeof value === "object") {
+    return "{" + Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => JSON.stringify(key) + ":" + canonicalJson(entry))
+      .join(",") + "}";
+  }
+  return JSON.stringify(value);
+}
+
+export function configHash(snapshot: AgentConfigSnapshot): string {
+  return createHash("sha256").update(canonicalJson(snapshot)).digest("hex").slice(0, 16);
+}
 
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
@@ -64,13 +113,26 @@ export class AgentService {
           agent.updatedAt = now();
         }
       }
+      // EvalRunner progress lives only in the in-process promise, so a running EvalRun cannot resume.
+      for (const evalRun of database.evalRuns) {
+        if (evalRun.status !== "running") continue;
+        evalRun.status = "failed";
+        evalRun.completedAt = now();
+        evalRun.results.push({ caseId: "", results: [], error: "Server restarted while this Eval Run was active" });
+      }
     });
+    // AGENTS.md is platform-owned. Refresh every existing workspace at boot so newly introduced
+    // safety/runtime guidance reaches Agents created by earlier versions too.
+    for (const agent of this.store.snapshot().agents) {
+      await this.workspaces.writeInstructions(agent);
+    }
     for (const run of interrupted) {
       if (!run.traceId) continue;
       // The server itself cancelled this Run, not the local user: say so in the actor fields.
       this.emitter.emit({
         traceId: run.traceId,
         spanId: newId("spn"),
+        ...(run.traceParentSpanId ? { parentSpanId: run.traceParentSpanId } : {}),
         runId: run.id,
         agentId: run.agentId,
         actorId: "server",
@@ -102,19 +164,28 @@ export class AgentService {
   async createAgent(input: CreateAgentInput): Promise<Agent> {
     const timestamp = now();
     const id = randomUUID();
+    if (input.workspace !== undefined && input.workspace.trim() === "") throw new HttpError(400, "Invalid workspace name");
+    const workspaceName = input.workspace?.trim() ?? id;
+    let workspacePath: string;
+    try { workspacePath = this.workspaces.pathForName(workspaceName); }
+    catch { throw new HttpError(400, "Invalid workspace name"); }
     const agent: Agent = {
       id,
       name: input.name.trim(),
       description: input.description?.trim() ?? "",
       instructions: input.instructions?.trim() ?? "",
       status: "ready",
-      workspacePath: this.workspaces.workspacePath(id),
+      workspacePath,
+      workspaceName,
+      workspaceManaged: input.workspace === undefined,
+      ...(input.template ? { workspaceTemplate: input.template } : {}),
       codexThreadId: null,
       lastError: null,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    await this.workspaces.create(agent);
+    try { await this.workspaces.create(agent, input.workspace !== undefined, input.template); }
+    catch (error) { throw new HttpError(400, error instanceof Error ? error.message : "Unable to create workspace"); }
     await this.store.mutate((database) => database.agents.push(agent));
     return agent;
   }
@@ -123,6 +194,12 @@ export class AgentService {
     const current = this.getAgent(id);
     if (current.status === "busy") {
       throw new HttpError(409, "Stop the active run before editing this Agent");
+    }
+    let nextWorkspacePath: string | undefined;
+    if (input.workspace !== undefined) {
+      try { nextWorkspacePath = this.workspaces.pathForName(input.workspace.trim()); }
+      catch { throw new HttpError(400, "Invalid workspace name"); }
+      if (nextWorkspacePath !== current.workspacePath) await this.workspaces.create({ ...current, workspacePath: nextWorkspacePath }, true);
     }
     const updated = await this.store.mutate((database) => {
       const agent = database.agents.find((item) => item.id === id);
@@ -135,6 +212,12 @@ export class AgentService {
       if (input.name !== undefined) agent.name = input.name.trim();
       if (input.description !== undefined) agent.description = input.description.trim();
       if (input.instructions !== undefined) agent.instructions = input.instructions.trim();
+      if (input.workspace !== undefined && nextWorkspacePath !== undefined && nextWorkspacePath !== agent.workspacePath) {
+        agent.workspacePath = nextWorkspacePath;
+        agent.workspaceName = input.workspace.trim();
+        agent.workspaceManaged = false;
+        agent.codexThreadId = null;
+      }
       agent.lastError = null;
       agent.updatedAt = now();
       return structuredClone(agent);
@@ -146,13 +229,23 @@ export class AgentService {
   async deleteAgent(id: string): Promise<{ archivedWorkspace: string }> {
     const agent = this.getAgent(id);
     await this.cancelExecution(id);
-    const archivedWorkspace = await this.workspaces.archive(agent);
+    const others = this.store.snapshot().agents.filter((item) => item.id !== id && path.resolve(item.workspacePath) === path.resolve(agent.workspacePath));
+    const managed = agent.workspaceManaged ?? path.basename(agent.workspacePath) === agent.id;
+    const archivedWorkspace = managed && others.length === 0 ? await this.workspaces.archive(agent) : "";
     await this.store.mutate((database) => {
       database.agents = database.agents.filter((item) => item.id !== id);
       database.messages = database.messages.filter((item) => item.agentId !== id);
       database.runs = database.runs.filter((item) => item.agentId !== id);
     });
     return { archivedWorkspace };
+  }
+
+  async listWorkspaces() {
+    return this.workspaces.list(this.store.snapshot().agents);
+  }
+
+  async listWorkspaceTemplates() {
+    return this.workspaces.listTemplates();
   }
 
   async startAgent(id: string): Promise<Agent> {
@@ -193,10 +286,49 @@ export class AgentService {
     return this.store.snapshot().runs;
   }
 
+  listRegressionCases(): RegressionCase[] {
+    return this.store.snapshot().regressionCases.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  getRegressionCase(id: string): RegressionCase {
+    const item = this.store.snapshot().regressionCases.find((candidate) => candidate.id === id);
+    if (!item) throw new HttpError(404, "Regression case not found");
+    return item;
+  }
+
+  async createRegressionCase(input: Omit<RegressionCase, "id" | "createdAt">): Promise<RegressionCase> {
+    const item: RegressionCase = { ...input, id: randomUUID(), createdAt: now() };
+    await this.store.mutate((database) => database.regressionCases.push(item));
+    return item;
+  }
+
+  async deleteRegressionCase(id: string): Promise<void> {
+    await this.store.mutate((database) => {
+      if (!database.regressionCases.some((item) => item.id === id)) throw new HttpError(404, "Regression case not found");
+      database.regressionCases = database.regressionCases.filter((item) => item.id !== id);
+    });
+  }
+
+  listEvalRuns(): EvalRun[] { return this.store.snapshot().evalRuns.sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }
+  getEvalRun(id: string): EvalRun {
+    const item = this.store.snapshot().evalRuns.find((candidate) => candidate.id === id);
+    if (!item) throw new HttpError(404, "Eval Run not found");
+    return item;
+  }
+  async createEvalRun(input: Omit<EvalRun, "id" | "createdAt" | "runIds" | "results" | "status">): Promise<EvalRun> {
+    const item: EvalRun = { ...input, id: randomUUID(), runIds: [], results: [], status: "running", createdAt: now() };
+    await this.store.mutate((database) => database.evalRuns.push(item));
+    return item;
+  }
+  async updateEvalRun(id: string, update: (item: EvalRun) => void): Promise<void> {
+    await this.store.mutate((database) => { const item = database.evalRuns.find((candidate) => candidate.id === id); if (!item) throw new HttpError(404, "Eval Run not found"); update(item); });
+  }
+
   async sendMessage(
     agentId: string,
     prompt: string,
     context?: TraceContext,
+    options: ExecutionOptions = {},
   ): Promise<{ run: AgentRun; message: Message }> {
     if (!isModelConfigured(this.config)) {
       throw new HttpError(
@@ -205,11 +337,12 @@ export class AgentService {
       );
     }
     const timestamp = now();
-    const runId = randomUUID();
+    const runId = options.runId ?? randomUUID();
     const ctx = context ?? createTraceContext({}, this.emitter.capturePolicy);
     const run: AgentRun = {
       id: runId,
       traceId: ctx.traceId,
+      traceParentSpanId: ctx.rootSpanId,
       agentId,
       status: "queued",
       prompt,
@@ -239,13 +372,20 @@ export class AgentService {
       if (storedAgent.status === "busy") {
         throw new HttpError(409, "This Agent is already running");
       }
+      const workspaceBusy = database.agents.some((candidate) =>
+        candidate.id !== storedAgent.id && candidate.status === "busy" && path.resolve(candidate.workspacePath) === path.resolve(storedAgent.workspacePath));
+      if (workspaceBusy) throw new HttpError(409, "Workspace is busy");
+      run.configSnapshot = configSnapshot(storedAgent, this.config);
+      run.configHash = configHash(run.configSnapshot);
       database.runs.push(run);
-      database.messages.push(message);
+      if (options.persistMessages !== false) database.messages.push(message);
       const snapshot = structuredClone(storedAgent);
       storedAgent.status = "busy";
       storedAgent.lastError = null;
       storedAgent.updatedAt = timestamp;
-      return snapshot;
+      return options.workspacePath
+        ? { ...snapshot, workspacePath: options.workspacePath, ...(options.workspaceName ? { workspaceName: options.workspaceName } : {}), codexThreadId: options.persistThread === false ? null : snapshot.codexThreadId }
+        : snapshot;
     });
     // Published only once the Run really exists (invariant 3: never fabricate evidence). A rejected
     // request (404/409) must leave `ctx.runId`/`ctx.agentId` unset, or the ingress `onResponse` hook
@@ -282,7 +422,7 @@ export class AgentService {
       name: "run.created",
       status: "ok",
       source: { component: "AgentService", observed: true },
-      attributes: { promptBytes: Buffer.byteLength(prompt, "utf8") },
+      attributes: { promptBytes: Buffer.byteLength(prompt, "utf8"), configHash: run.configHash!, workspace: agentAtStart.workspaceName ?? path.basename(agentAtStart.workspacePath), ...options.tags },
     });
     this.spans.set(runId, {
       traceId: ctx.traceId,
@@ -290,7 +430,7 @@ export class AgentService {
       agentId,
       requestId: ctx.requestId,
     });
-    const execution = this.executeRun(agentAtStart, run);
+    const execution = this.executeRun(agentAtStart, run, options);
     this.activeExecutions.set(agentId, execution);
     void execution
       .finally(() => {
@@ -300,6 +440,48 @@ export class AgentService {
       })
       .catch(() => undefined);
     return { run, message };
+  }
+
+  /**
+   * Resolve once the Run reaches a terminal status. Awaits the tracked execution when this process owns
+   * it; otherwise (a Run started before a restart) polls the store, bounded by the runner timeout plus grace.
+   */
+  async waitForRun(runId: string): Promise<AgentRun> {
+    const deadline = Date.now() + this.config.codexTimeoutMs + 30_000;
+    while (Date.now() < deadline) {
+      const run = this.getRun(runId);
+      if (run.status !== "queued" && run.status !== "running") return run;
+      const execution = this.activeExecutions.get(run.agentId);
+      if (execution) await execution.catch(() => undefined);
+      else await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error("Run " + runId + " did not finish within " + (this.config.codexTimeoutMs + 30_000) + " ms");
+  }
+
+  /**
+   * Run a prompt from a new template copy and a fresh runner thread. It deliberately does not add
+   * conversation messages or a thread id to the target Agent, while retaining the ordinary Run/trace.
+   */
+  async runIsolated(input: IsolatedRunInput): Promise<{ run: AgentRun; message: Message }> {
+    const runId = randomUUID();
+    const agent = this.getAgent(input.agentId);
+    let materialized = false;
+    try {
+      const workspacePath = await this.workspaces.materializeEvalWorkspace(runId, input.workspaceTemplate, agent);
+      materialized = true;
+      return await this.sendMessage(input.agentId, input.prompt, undefined, {
+        runId,
+        workspacePath,
+        workspaceName: input.workspaceTemplate,
+        ...(input.tags ? { tags: input.tags } : {}),
+        persistMessages: false,
+        persistThread: false,
+        ...(this.config.keepEvalWorkspaces ? {} : { cleanup: () => this.workspaces.removeEvalWorkspace(runId) }),
+      });
+    } catch (error) {
+      if (materialized) await this.workspaces.removeEvalWorkspace(runId);
+      throw error;
+    }
   }
 
   async systemInfo(): Promise<Record<string, unknown>> {
@@ -322,7 +504,7 @@ export class AgentService {
     };
   }
 
-  private async executeRun(agentAtStart: Agent, run: AgentRun): Promise<void> {
+  private async executeRun(agentAtStart: Agent, run: AgentRun, options: ExecutionOptions = {}): Promise<void> {
     const link = this.spans.get(run.id);
     const ids = link
       ? {
@@ -356,6 +538,12 @@ export class AgentService {
             })
           : undefined;
       if (link) link.service = service;
+      if (service) {
+        await this.store.mutate((database) => {
+          const storedRun = database.runs.find((item) => item.id === run.id);
+          if (storedRun) storedRun.traceParentSpanId = service!.spanId;
+        });
+      }
       if (ids && service) {
         this.emitter.emit({
           ...ids,
@@ -368,9 +556,12 @@ export class AgentService {
           source: { component: "AgentService", observed: true },
         });
       }
+      const workspaceBefore = await snapshotWorkspace(agentAtStart.workspacePath).catch(() => undefined);
+      // Last look before handing off to the runner: a stop that arrived during the snapshot must still win.
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
+      await this.workspaces.writeInstructions(agentAtStart);
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         workspacePath: agentAtStart.workspacePath,
@@ -388,6 +579,30 @@ export class AgentService {
           : {}),
         ...(this.config.glassboxDemoFailure === "timeout" ? { timeoutMs: 3_000 } : {}),
       });
+      if (workspaceBefore && ids && service) {
+        const workspaceAfter = await snapshotWorkspace(agentAtStart.workspacePath).catch(() => undefined);
+        if (workspaceAfter) {
+          const changes = diffWorkspace(workspaceBefore, workspaceAfter);
+          this.emitter.emit({
+            ...ids,
+            spanId: newId("spn"),
+            parentSpanId: service.spanId,
+            type: "workspace.changed",
+            category: "workspace",
+            name: "workspace.changed",
+            status: "ok",
+            source: { component: "AgentService", adapter: "WorkspaceSnapshot", observed: true },
+            attributes: {
+              added: changes.added.length,
+              modified: changes.modified.length,
+              removed: changes.removed.length,
+              bytesDelta: changes.bytesDelta,
+              truncated: changes.truncated,
+              paths: boundedChangedPaths(changes),
+            },
+          });
+        }
+      }
       const completedAt = now();
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
@@ -397,16 +612,18 @@ export class AgentService {
         storedRun.output = result.output;
         storedRun.usage = result.usage;
         storedRun.completedAt = completedAt;
-        database.messages.push({
-          id: randomUUID(),
-          agentId: agent.id,
-          runId: run.id,
-          role: "assistant",
-          content: result.output,
-          createdAt: completedAt,
-        });
+        if (options.persistMessages !== false) {
+          database.messages.push({
+            id: randomUUID(),
+            agentId: agent.id,
+            runId: run.id,
+            role: "assistant",
+            content: result.output,
+            createdAt: completedAt,
+          });
+        }
         agent.status = "ready";
-        agent.codexThreadId = result.threadId;
+        if (options.persistThread !== false) agent.codexThreadId = result.threadId;
         agent.lastError = null;
         agent.updatedAt = completedAt;
       });
@@ -483,6 +700,7 @@ export class AgentService {
       }
     } finally {
       this.spans.delete(run.id);
+      await options.cleanup?.();
     }
   }
 

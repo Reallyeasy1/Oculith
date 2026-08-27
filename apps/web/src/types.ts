@@ -8,6 +8,9 @@ export interface Agent {
   instructions: string;
   status: AgentStatus;
   workspacePath: string;
+  workspaceName?: string;
+  workspaceManaged?: boolean;
+  workspaceTemplate?: string;
   codexThreadId: string | null;
   lastError: string | null;
   createdAt: string;
@@ -37,6 +40,19 @@ export interface AgentRun {
   } | null;
   createdAt: string;
   traceId?: string;
+  traceParentSpanId?: string;
+  configHash?: string;
+  configSnapshot?: AgentConfigSnapshot;
+}
+
+export interface AgentConfigSnapshot {
+  instructions: string;
+  modelProvider: "ark" | "openai";
+  model: string;
+  codexSandboxMode: "read-only" | "workspace-write" | "danger-full-access";
+  runtimeProvider: "local-process" | "container";
+  containerRuntimeImage: string;
+  capturePolicy: CapturePolicy;
 }
 
 // --- GlassBox query types (mirrors apps/server/src/glassbox/{schema,query}.ts) ---
@@ -59,6 +75,7 @@ export interface RunListItem {
   traceId: string;
   agentId: string;
   agentName: string;
+  workspace?: string;
   status: TraceStatus;
   startedAt?: string;
   durationMs?: number;
@@ -72,6 +89,15 @@ export interface RunListItem {
     cachedInputTokens?: number;
     outputTokens?: number;
   };
+  capabilities: { model: "observed" | "unavailable" | "unknown"; tool: "observed" | "unavailable" | "unknown" };
+  toolCalls: number;
+  toolFailures: number;
+  tokens?: { output?: number };
+  denials: number;
+  actions: number;
+  configHash?: string;
+  configSnapshot?: AgentConfigSnapshot;
+  workspaceChanges?: { added: number; modified: number; removed: number; bytesDelta: number; truncated: boolean };
   degraded: boolean;
   truncated: boolean;
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
@@ -81,7 +107,7 @@ export interface RunListItem {
 }
 
 export interface FailureFocus {
-  kind: "error" | "timeout" | "cancelled" | "degraded";
+  kind: "error" | "timeout" | "cancelled" | "denied" | "degraded";
   spanId: string;
   eventId: string;
   sequence: number;
@@ -93,6 +119,19 @@ export interface FailureFocus {
   diagnosis: string;
 }
 
+export type AuditOutcome = "allowed" | "denied" | "ok" | "error" | "timeout" | "cancelled";
+export interface AuditRow {
+  at: string;
+  actor: { type: ObservationEvent["actorType"]; id: string };
+  action: string;
+  resource: string;
+  outcome: AuditOutcome;
+  eventId: string;
+  spanId: string;
+  traceId: string;
+  attributes: ObservationEvent["attributes"];
+}
+
 export interface TraceSummary {
   schemaVersion: "1.0";
   capturePolicy: CapturePolicy;
@@ -100,6 +139,7 @@ export interface TraceSummary {
   traceId: string;
   agentId: string;
   sessionId?: string;
+  workspace?: string;
   status: TraceStatus;
   startedAt?: string;
   endedAt?: string;
@@ -110,6 +150,8 @@ export interface TraceSummary {
   spanCount: number;
   incompleteSpans: number;
   redactedEvents: number;
+  denials: number;
+  audit: { actions: number; denials: number; actors: string[] };
   degraded: boolean;
   truncated: boolean;
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
@@ -119,7 +161,19 @@ export interface TraceSummary {
     cachedInputTokens?: number;
     outputTokens?: number;
   };
+  metrics: {
+    durationMs?: number;
+    terminalStatus: TraceStatus;
+    toolCalls: number;
+    toolFailures: number;
+    modelCalls: number;
+    tokens?: { input?: number; cachedInput?: number; output?: number };
+    retries: number;
+    denials: number;
+  };
+  configHash?: string;
   capabilities: { model: "observed" | "unavailable" | "unknown"; tool: "observed" | "unavailable" | "unknown" };
+  workspaceChanges?: { added: number; modified: number; removed: number; bytesDelta: number; truncated: boolean };
   firstFailingStep?: string;
   failure?: FailureFocus;
 }
@@ -196,3 +250,33 @@ export interface SystemInfo {
   containerEngine: string | null;
   runtime: string;
 }
+
+export type Assertion =
+  | { type: "terminal_status"; expected: "ok" | "error" | "timeout" | "cancelled" }
+  | { type: "expected_tool"; program: string }
+  | { type: "max_tool_calls"; max: number }
+  | { type: "max_duration_ms"; max: number }
+  | { type: "post_check"; command: string; timeoutMs: number };
+
+export interface RegressionCase {
+  id: string; name: string; prompt: string; workspaceTemplate: string; sourceRunId?: string;
+  baselineConfigHash: string; assertions: Assertion[]; createdAt: string;
+}
+
+export interface EvalResult {
+  type: Assertion["type"]; pass: boolean; expected: string | number; observed: string | number | null;
+  evidenceEventIds: string[]; message: string;
+}
+export interface EvalRun {
+  id: string; caseIds: string[];
+  target: { agentId: string; configHash: string; snapshot: AgentConfigSnapshot };
+  runIds: string[]; results: { caseId: string; runId?: string; results: EvalResult[]; error?: string }[];
+  status: "running" | "completed" | "failed"; createdAt: string; completedAt?: string;
+}
+export interface EvalComparison {
+  cases: { caseId: string; assertions: { type: string; baseline?: EvalResult; candidate?: EvalResult; delta?: number; regression: boolean }[]; regression: boolean; traceLinks: { baseline?: string; candidate?: string } }[];
+  regressions: number;
+}
+
+// Mirrors WorkspaceManager.listTemplates(): a bad template (symlink, over limits) is reported, not a 500.
+export type WorkspaceTemplate = { name: string; fileCount: number; bytes: number } | { name: string; error: string };
