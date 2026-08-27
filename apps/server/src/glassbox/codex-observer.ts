@@ -12,6 +12,9 @@ export interface CodexStreamSink {
   onError(message: string): void;
 }
 
+/** Runtime/container lifecycle is the runner's own doing, not the user's and not the agent's. */
+export const RUNNER_ACTOR = { actorId: "runner", actorType: "service" } as const;
+
 const num = (v: unknown): number | undefined => (typeof v === "number" ? v : undefined);
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 const bytes = (v: unknown): number => Buffer.byteLength(str(v) ?? "", "utf8");
@@ -57,6 +60,10 @@ export class CodexStreamObserver implements CodexStreamSink {
       parentSpanId: this.parentSpanId,
       type,
       name,
+      // Everything the stream reports is the agent acting (tool, model, workspace); the runtime notices
+      // in finish() and the sandbox denial override this.
+      actorId: this.trace.agentId,
+      actorType: "agent",
       source: { component: "AgentRunner", adapter: this.adapter, observed: true },
       ...(this.sessionId ? { sessionId: this.sessionId } : {}),
     };
@@ -120,6 +127,19 @@ export class CodexStreamObserver implements CodexStreamSink {
           }
         : {}),
     });
+    if (declined) {
+      // Keep this separate from tool.call.failed: consumers need to distinguish a sandbox policy
+      // decision from an ordinary non-zero exit. Only bounded metadata is captured here.
+      this.emitter.emit({
+        ...this.base("policy.denied", program || "shell"),
+        category: "policy",
+        status: "error",
+        actorId: "sandbox",
+        actorType: "service",
+        source: { component: "Sandbox", adapter: this.adapter, observed: true },
+        attributes: { program, decision: "sandbox_declined", commandBytes: Buffer.byteLength(command, "utf8") },
+      });
+    }
   }
 
   private fileChange(changes: Array<Record<string, unknown>>): void {
@@ -181,6 +201,7 @@ export class CodexStreamObserver implements CodexStreamSink {
     if (outcome !== "ok" && this.lastError) {
       this.emitter.emit({
         ...this.base("error.recorded", "codex.error"),
+        ...RUNNER_ACTOR,
         category: "runtime",
         status: "error",
         error: { type: "codex_error", message: this.lastError.slice(0, 2048) },
@@ -189,6 +210,7 @@ export class CodexStreamObserver implements CodexStreamSink {
     if (this.sawAnyEvent && !this.sawTool && !this.sawModel && (outcome === "ok" || outcome === "error")) {
       this.emitter.emit({
         ...this.base("capability.unavailable", "capability.unavailable"),
+        ...RUNNER_ACTOR,
         category: "runtime",
         status: "unset",
         attributes: { model: false, tool: false },

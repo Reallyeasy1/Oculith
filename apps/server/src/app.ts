@@ -9,7 +9,7 @@ import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import { createTraceContext, type TraceContext } from "./glassbox/context.js";
 import type { ObservationEmitter } from "./glassbox/emitter.js";
-import { buildTrace, type TraceView } from "./glassbox/query.js";
+import { buildTrace, projectAudit, type TraceView } from "./glassbox/query.js";
 import { CATEGORIES, SCHEMA_VERSION, STATUSES } from "./glassbox/schema.js";
 import type { RunIndexEntry, TraceStore } from "./glassbox/store.js";
 
@@ -211,7 +211,7 @@ export async function createApp(
 
   if (glassbox) {
     const runsQuery = z.object({ status: z.enum(STATUSES).optional(), agentId: z.string().uuid().optional(), from: z.string().datetime().optional(), to: z.string().datetime().optional(), limit: z.coerce.number().int().min(1).max(200).default(50) });
-    const eventsQuery = z.object({ category: z.enum(CATEGORIES).optional(), status: z.enum(STATUSES).optional(), q: z.string().max(200).optional() });
+    const eventsQuery = z.object({ category: z.string().max(200).optional(), status: z.enum(STATUSES).optional(), q: z.string().max(200).optional() });
     // `entry` lets a caller listing many runs hoist the index lookup out of its loop instead of
     // re-scanning listRuns() per run; omitted, it falls back to the single-run scan.
     const viewFor = async (runId: string, entry?: RunIndexEntry | undefined): Promise<TraceView> => {
@@ -241,15 +241,27 @@ export async function createApp(
         const s = view.summary;
         items.push({ runId: run.id, traceId: run.traceId ?? s.traceId, agentId: run.agentId, agentName: agents.get(run.agentId) ?? "", workspace: s.workspace, status, startedAt: s.startedAt ?? run.createdAt, durationMs: s.durationMs, endedReason: s.endedReason,
           firstFailingStep: s.firstFailingStep, eventCount: s.eventCount, runtime: config.runtimeProvider, model: config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default",
-          usage: s.usage, degraded: s.degraded, truncated: s.truncated, evicted: s.evicted, redacted: s.redactedEvents > 0, lastEventAt: view.events.at(-1)?.timestamp });
+          usage: s.usage, workspaceChanges: s.workspaceChanges, capabilities: s.capabilities, toolCalls: s.metrics.toolCalls, toolFailures: s.metrics.toolFailures,
+          tokens: s.metrics.tokens?.output !== undefined ? { output: s.metrics.tokens.output } : undefined,
+          denials: s.denials, actions: s.audit.actions, configHash: s.configHash ?? run.configHash, configSnapshot: run.configSnapshot,
+          degraded: s.degraded, truncated: s.truncated, evicted: s.evicted, redacted: s.redactedEvents > 0, lastEventAt: view.events.at(-1)?.timestamp });
         if (items.length >= q.limit) break;
       }
       return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, runs: items };
     });
     app.get("/api/runs/:runId/trace", async (request) => { const { runId } = z.object({ runId: z.string().min(1) }).parse(request.params); service.getRun(runId); return viewFor(runId); });
+    app.get("/api/runs/:runId/audit", async (request) => {
+      const { runId } = z.object({ runId: z.string().min(1) }).parse(request.params); service.getRun(runId);
+      const view = await viewFor(runId);
+      return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, audit: projectAudit(view.events) };
+    });
     const traceParams = z.object({ traceId: z.string().min(1) });
     const runIdFor = (traceId: string): string => { const runId = glassbox.store.runIdForTrace(traceId); if (!runId) throw new HttpError(404, "Trace not found"); return runId; };
     app.get("/api/traces/:traceId", async (request) => viewFor(runIdFor(traceParams.parse(request.params).traceId)));
+    app.get("/api/traces/:traceId/audit", async (request) => {
+      const { traceId } = traceParams.parse(request.params); const view = await viewFor(runIdFor(traceId));
+      return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, audit: projectAudit(view.events) };
+    });
     app.get("/api/traces/:traceId/export", async (request, reply) => {
       // FR-12: same builder as the trace route, so the export can never carry anything the API would not.
       const { traceId } = traceParams.parse(request.params); const view = await viewFor(runIdFor(traceId));
@@ -259,7 +271,8 @@ export async function createApp(
     app.get("/api/traces/:traceId/events", async (request) => {
       const { traceId } = traceParams.parse(request.params); const q = eventsQuery.parse(request.query);
       const runId = runIdFor(traceId);
-      const events = (await glassbox.store.readRun(runId)).filter((e) => (!q.category || e.category === q.category) && (!q.status || e.status === q.status) && (!q.q || (e.name + " " + (e.error?.message ?? "")).toLowerCase().includes(q.q.toLowerCase())));
+      const categories = q.category === undefined ? undefined : z.array(z.enum(CATEGORIES)).min(1).parse(q.category.split(",").map((value) => value.trim()).filter(Boolean));
+      const events = (await glassbox.store.readRun(runId)).filter((e) => (!categories || categories.includes(e.category)) && (!q.status || e.status === q.status) && (!q.q || (e.name + " " + (e.error?.message ?? "")).toLowerCase().includes(q.q.toLowerCase())));
       return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, events };
     });
   }

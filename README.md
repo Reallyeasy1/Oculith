@@ -299,6 +299,7 @@ assertion in `container-codex-runner.test.ts` (see the Windows caveat in `CLAUDE
 
 ## Limitations
 
+- Agents run in disposable containers and cannot expose ports to the user's machine; runnable build output stays in the workspace with a host-side command to start it.
 - Single process. `JsonStore` and the NDJSON trace store are in-memory-plus-file with no cross-process locking; run one server.
 - Local NDJSON trace store only — no external backend, no query engine beyond the in-memory index. Retention is a startup-only pass (`GLASSBOX_RETENTION_DAYS` / `GLASSBOX_MAX_DISK_MB`); evicted Runs keep their metadata skeleton and a `trace.truncated` tombstone.
 - No `workspace.changed` events on this Codex/Ark stack: Ark shells out instead of calling `apply_patch`, so no `file_change` item has ever been observed (see [docs/CODEX_EVENTS.md](docs/CODEX_EVENTS.md)). The mapping exists but stays dormant rather than inventing a diff.
@@ -308,6 +309,8 @@ assertion in `container-codex-runner.test.ts` (see the Windows caveat in `CLAUDE
 
 ## Documentation
 
+- [Project brief](docs/PROJECT_BRIEF.md) — concept, what is built, sprint plan, working agreements
+- [Sprint plan](docs/SPRINTS.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)

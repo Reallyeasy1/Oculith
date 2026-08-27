@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
-import { CodexStreamObserver, type CodexStreamSink } from "./glassbox/codex-observer.js";
+import { CodexStreamObserver, RUNNER_ACTOR, type CodexStreamSink } from "./glassbox/codex-observer.js";
 import { createDefaultEmitter, type ObservationEmitter } from "./glassbox/emitter.js";
 import { newId } from "./glassbox/schema.js";
 import type {
@@ -164,6 +164,7 @@ export class CodexRunner implements AgentRunner {
           agentId: request.trace.agentId,
           spanId: newId("spn"),
           parentSpanId: request.trace.parentSpanId,
+          ...RUNNER_ACTOR,
           type: "runtime.codex.started",
           category: "runtime",
           name: "codex exec",
@@ -294,6 +295,7 @@ export class CodexRunner implements AgentRunner {
             agentId: request.trace.agentId,
             spanId: newId("spn"),
             parentSpanId: span.spanId,
+            ...RUNNER_ACTOR,
             type: "limit.exceeded",
             category: "runtime",
             name: "output_cap",
