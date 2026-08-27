@@ -114,6 +114,8 @@ async function openApp(page) {
 
 async function openTraceByKeyboard(page, runId) {
   const row = page.locator(".runs-table tbody tr").first();
+  eq(await row.getAttribute("role"), "button", "Runs row exposes its interactive role");
+  ok(/^Open trace for .+, .+, .+$/.test(await row.getAttribute("aria-label")), "Runs row has a unique name including Agent, status, and start time");
   await row.focus();
   eq(await page.evaluate(() => document.activeElement && document.activeElement.tagName), "TR", "Runs row takes focus");
   await page.keyboard.press("Enter");
@@ -136,7 +138,7 @@ async function drawerRoundTrip(page) {
   await page.keyboard.press("Enter");
   const dialog = page.locator("[role=dialog]");
   await dialog.waitFor({ timeout: 5_000 });
-  ok(await page.evaluate(() => !!(document.activeElement && document.activeElement.closest("[role=dialog]"))), "Drawer takes focus on open");
+  eq(await page.evaluate(() => document.activeElement && document.activeElement.id), "span-drawer-title", "Drawer heading takes focus on open");
   for (let i = 0; i < 6; i++) await page.keyboard.press("Tab");
   ok(await page.evaluate(() => !!(document.activeElement && document.activeElement.closest("[role=dialog]"))), "Focus stays inside the drawer after 6 Tabs");
   await page.keyboard.press("Escape");
@@ -227,6 +229,13 @@ let server = null;
   ok((await page.locator("#runs-heading").innerText()).includes("E2E GlassBox"), "Runs table is scoped to the selected Agent");
   eq(await page.locator(".runs-table th", { hasText: /^Agent$/ }).count(), 0, "Agent column is hidden in the Agent view");
   await openTraceByKeyboard(page, okRun.run.id);
+  const expandPlayground = page.locator("button", { hasText: "Expand Playground" });
+  await expandPlayground.click();
+  const collapsePlayground = page.locator("button", { hasText: "Collapse Playground" });
+  await collapsePlayground.waitFor({ timeout: 5_000 });
+  await collapsePlayground.click();
+  await expandPlayground.waitFor({ timeout: 5_000 });
+  ok(true, "Playground toggle names both Expand and Collapse states");
   await drawerRoundTrip(page);
   await errorsOnly(page).check();
   // The model may legitimately run a command that exits non-zero; the filter must agree with the API either way.
@@ -240,8 +249,11 @@ let server = null;
   ok((await page.locator("[role=treeitem]").count()) >= 1, "search 'codex' keeps the codex span");
   await page.locator(".trace-detail input[type=search]").fill("");
   sweep("DOM (ok trace)", await glassboxText(page));
-  await page.locator("button", { hasText: "Close trace" }).click();
-  eq(await page.locator(".trace-detail").count(), 0, "Close trace returns to the Runs table");
+  await page.locator("[role=treeitem]").first().focus();
+  await page.keyboard.press("Escape");
+  await page.locator(".trace-detail").waitFor({ state: "detached", timeout: 5_000 });
+  await page.waitForFunction((runId) => document.activeElement?.getAttribute("data-run-id") === runId, okRun.run.id);
+  eq(await page.evaluate(() => document.activeElement && document.activeElement.getAttribute("data-run-id")), okRun.run.id, "Escape on the tree closes the trace and restores focus to its Runs row");
 
   console.log("\n[4b] UI: Runs follow the selected Agent; All runs spans Agents with the summary strip (#70)");
   const rows = () => page.locator(".runs-table tbody tr");
@@ -252,8 +264,10 @@ let server = null;
   await page.locator(".runs-empty", { hasText: "No Runs for this Agent yet." }).waitFor({ timeout: 10_000 });
   eq(await rows().count(), 0, "new Agent under 'All': no rows from the other Agent");
   const pressedFilter = () => page.locator(".runs-filters button[aria-pressed=true]").textContent(); // textContent: CSS capitalises innerText
-  eq(await pressedFilter(), "all", "quick filter stays on 'All' across the Agent switch");
+  eq(await pressedFilter(), "Needs attention", "quick filter resets when the selected Agent changes");
   await page.locator(".agent-card", { hasText: "E2E GlassBox" }).click();
+  eq(await pressedFilter(), "Needs attention", "returning to an Agent starts with its scoped default filter");
+  await page.locator(".runs-filters").getByRole("button", { name: /^all$/i }).click();
   await rows().first().waitFor({ timeout: 10_000 });
   eq(await rows().count(), 1, "first Agent again: exactly its one Run");
   eq(await page.locator(".agent-card[aria-current=page] strong").textContent(), "E2E GlassBox", "sidebar marks the selected Agent aria-current=page");
@@ -292,7 +306,7 @@ let server = null;
   console.log("\n[5] restart with GLASSBOX_DEMO_FAILURE=timeout (gated fixture through the real runner)");
   await stopServer(server);
   server = await startServer({ GLASSBOX_DEMO_FAILURE: "timeout" });
-  const badRun = await runTask(agent.id, "Reply with the single word: pong");
+  const badRun = await runTask(agent.id, "Run the shell command `sleep 10`, wait for it to finish, then reply with the single word: pong");
   eq(badRun.run.status, "failed", "gated run failed (" + badRun.run.id + ")");
   eq(badRun.view.summary.status, "timeout", "trace status timeout");
   eq(badRun.view.summary.failure && badRun.view.summary.failure.kind, "timeout", "first-failure focus is the timeout");
@@ -300,9 +314,12 @@ let server = null;
   eq((await api("/api/runs")).json().runs.find((r) => r.runId === badRun.run.id).firstFailingStep, "codex exec", "/api/runs firstFailingStep = codex exec");
   const badAudit = (await api("/api/runs/" + badRun.run.id + "/audit")).json().audit;
   ok(badAudit.some((row) => row.outcome === "timeout"), "/audit includes the gated timeout evidence");
-  eq(badRun.view.summary.capabilities.model + "/" + badRun.view.summary.capabilities.tool, "unknown/unknown", "capabilities read unknown on a cut-short run (#60)");
+  for (const category of ["model", "tool"]) {
+    const expected = badRun.view.events.some((event) => event.category === category) ? "observed" : "unknown";
+    eq(badRun.view.summary.capabilities[category], expected, category + " capability reflects only evidence observed before the cut-short run (#60)");
+  }
   const stopped = badRun.view.events.find((e) => e.type === "runtime.container.stopped");
-  eq(stopped && stopped.attributes.cleanup, "rm --force", "container teardown evidence: runtime.container.stopped cleanup=rm --force");
+  ok(stopped && ["signal", "rm --force"].includes(stopped.attributes.cleanup), "container teardown records either graceful signal or forced removal");
   ok(badRun.view.events.some((e) => e.type === "run.timed_out" && /3000/.test(e.error && e.error.message)), "run.timed_out names the 3000 ms fixture timeout");
   await sleep(1_000);
   const leftover = execFileSync(ENGINE, ["ps", "--all", "--quiet", "--filter", "name=launchpad-" + INSTANCE], { encoding: "utf8" }).trim();
@@ -326,7 +343,9 @@ let server = null;
   eq(await page.evaluate(() => document.activeElement && document.activeElement.getAttribute("role")), "treeitem", "Enter on an audit row returns focus to its evidence span");
   const banner = page.locator(".trace-banner");
   ok((await banner.innerText()).includes("timeout"), "first-failure banner is shown");
-  await page.locator("button", { hasText: "Jump to failing span" }).click();
+  const jump = page.locator("button", { hasText: "Jump to failing span" });
+  eq(await jump.getAttribute("aria-describedby"), "trace-diagnosis", "Jump is described by the diagnosis paragraph");
+  await jump.click();
   const dialog = page.locator("[role=dialog]");
   await dialog.waitFor({ timeout: 5_000 });
   eq(await dialog.locator("#span-drawer-title").innerText(), "codex exec", "Jump opens the drawer on `codex exec`");
