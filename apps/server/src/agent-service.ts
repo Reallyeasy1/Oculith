@@ -15,6 +15,7 @@ import type {
   Agent,
   AgentConfigSnapshot,
   AgentRun,
+  EvalRun,
   AgentRunner,
   CreateAgentInput,
   Message,
@@ -111,6 +112,13 @@ export class AgentService {
           agent.status = "ready";
           agent.updatedAt = now();
         }
+      }
+      // EvalRunner progress lives only in the in-process promise, so a running EvalRun cannot resume.
+      for (const evalRun of database.evalRuns) {
+        if (evalRun.status !== "running") continue;
+        evalRun.status = "failed";
+        evalRun.completedAt = now();
+        evalRun.results.push({ caseId: "", results: [], error: "Server restarted while this Eval Run was active" });
       }
     });
     // AGENTS.md is platform-owned. Refresh every existing workspace at boot so newly introduced
@@ -301,6 +309,21 @@ export class AgentService {
     });
   }
 
+  listEvalRuns(): EvalRun[] { return this.store.snapshot().evalRuns.sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }
+  getEvalRun(id: string): EvalRun {
+    const item = this.store.snapshot().evalRuns.find((candidate) => candidate.id === id);
+    if (!item) throw new HttpError(404, "Eval Run not found");
+    return item;
+  }
+  async createEvalRun(input: Omit<EvalRun, "id" | "createdAt" | "runIds" | "results" | "status">): Promise<EvalRun> {
+    const item: EvalRun = { ...input, id: randomUUID(), runIds: [], results: [], status: "running", createdAt: now() };
+    await this.store.mutate((database) => database.evalRuns.push(item));
+    return item;
+  }
+  async updateEvalRun(id: string, update: (item: EvalRun) => void): Promise<void> {
+    await this.store.mutate((database) => { const item = database.evalRuns.find((candidate) => candidate.id === id); if (!item) throw new HttpError(404, "Eval Run not found"); update(item); });
+  }
+
   async sendMessage(
     agentId: string,
     prompt: string,
@@ -417,6 +440,22 @@ export class AgentService {
       })
       .catch(() => undefined);
     return { run, message };
+  }
+
+  /**
+   * Resolve once the Run reaches a terminal status. Awaits the tracked execution when this process owns
+   * it; otherwise (a Run started before a restart) polls the store, bounded by the runner timeout plus grace.
+   */
+  async waitForRun(runId: string): Promise<AgentRun> {
+    const deadline = Date.now() + this.config.codexTimeoutMs + 30_000;
+    while (Date.now() < deadline) {
+      const run = this.getRun(runId);
+      if (run.status !== "queued" && run.status !== "running") return run;
+      const execution = this.activeExecutions.get(run.agentId);
+      if (execution) await execution.catch(() => undefined);
+      else await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error("Run " + runId + " did not finish within " + (this.config.codexTimeoutMs + 30_000) + " ms");
   }
 
   /**

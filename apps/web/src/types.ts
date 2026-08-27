@@ -263,5 +263,15 @@ export interface RegressionCase {
   baselineConfigHash: string; assertions: Assertion[]; createdAt: string;
 }
 
+export interface EvalResult {
+  type: Assertion["type"]; pass: boolean; expected: string | number; observed: string | number | null;
+  evidenceEventIds: string[]; message: string;
+}
+export interface EvalRun {
+  id: string; caseIds: string[];
+  target: { agentId: string; configHash: string; snapshot: AgentConfigSnapshot };
+  runIds: string[]; results: { caseId: string; runId?: string; results: EvalResult[]; error?: string }[];
+  status: "running" | "completed" | "failed"; createdAt: string; completedAt?: string;
+}
 // Mirrors WorkspaceManager.listTemplates(): a bad template (symlink, over limits) is reported, not a 500.
 export type WorkspaceTemplate = { name: string; fileCount: number; bytes: number } | { name: string; error: string };

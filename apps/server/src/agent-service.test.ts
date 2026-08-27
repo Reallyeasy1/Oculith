@@ -3,6 +3,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentService, configHash, configSnapshot } from "./agent-service.js";
+import { EvalRunner } from "./eval/runner.js";
 import { RunCancelledError } from "./errors.js";
 import { loadConfig } from "./config.js";
 import { JsonStore } from "./store.js";
@@ -261,6 +262,53 @@ const settle = async (service: AgentService, runId: string) => {
 };
 
 describe("GlassBox control-plane adapter", () => {
+  it("runs persisted regression cases serially through isolated ordinary Runs", async () => {
+    const { service, store, emitter, config } = await makeTraced();
+    await mkdir(path.join(config.workspaceTemplatesDirectory, "fixture"), { recursive: true });
+    const agent = await service.createAgent({ name: "Eval target", instructions: "complete the task" });
+    const snapshot = configSnapshot(agent, config);
+    const regressionCase = await service.createRegressionCase({ name: "case", prompt: "do it", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions: [{ type: "terminal_status", expected: "ok" }] });
+    const evalRun = await service.createEvalRun({ caseIds: [regressionCase.id], target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } });
+    await new EvalRunner(service, { emitter, store }).execute(evalRun.id);
+    const finished = service.getEvalRun(evalRun.id);
+    expect(finished).toMatchObject({ status: "completed", runIds: [expect.any(String)] });
+    expect(finished.results[0]).toMatchObject({ caseId: regressionCase.id, runId: finished.runIds[0], results: [expect.objectContaining({ type: "terminal_status", pass: true })] });
+    await emitter.flush();
+    expect((await store.readRun(finished.runIds[0]!)).find((event) => event.type === "run.created")?.attributes).toMatchObject({ evalRunId: evalRun.id, caseId: regressionCase.id });
+  });
+
+  it("records a throwing case and still runs the remaining cases", async () => {
+    let calls = 0;
+    const { service, store, emitter, config } = await makeTraced(
+      new (class extends FakeRunner {
+        override run(request: RunnerRequest): Promise<RunnerResult> {
+          if (calls++ === 0) return Promise.reject(new Error("runner exploded"));
+          return super.run(request);
+        }
+      })(),
+    );
+    await mkdir(path.join(config.workspaceTemplatesDirectory, "fixture"), { recursive: true });
+    const agent = await service.createAgent({ name: "Eval target", instructions: "complete the task" });
+    const snapshot = configSnapshot(agent, config);
+    const assertions = [{ type: "terminal_status" as const, expected: "ok" }];
+    const first = await service.createRegressionCase({ name: "first", prompt: "one", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions });
+    const second = await service.createRegressionCase({ name: "second", prompt: "two", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions });
+    const evalRun = await service.createEvalRun({ caseIds: [first.id, second.id], target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } });
+    await new EvalRunner(service, { emitter, store }).execute(evalRun.id);
+    const finished = service.getEvalRun(evalRun.id);
+    expect(finished.status).toBe("failed");
+    expect(finished.completedAt).toEqual(expect.any(String));
+    expect(finished.results).toHaveLength(2);
+    expect(finished.results[0]).toMatchObject({ caseId: first.id, runId: expect.any(String), error: "runner exploded", results: [expect.objectContaining({ type: "terminal_status", pass: false })] });
+    expect(service.getRun(finished.results[0]!.runId!)).toMatchObject({ status: "failed", error: "runner exploded" });
+    expect(finished.results[1]).toMatchObject({ caseId: second.id, runId: expect.any(String), results: [expect.objectContaining({ type: "terminal_status", pass: true })] });
+    expect(finished.results[1]!.results[0]!.pass).toBe(true);
+    expect(service.getAgent(agent.id).status).not.toBe("busy");
+    // the Agent went error -> ready, so the next ordinary message is still admitted; wait so cleanup does not race the store
+    const { run: next } = await service.sendMessage(agent.id, "still admitted");
+    expect(await service.waitForRun(next.id)).toMatchObject({ status: "completed" });
+  });
+
   it("runs an evaluation in a fresh template workspace and leaves the Agent thread untouched", async () => {
     class CapturingRunner extends FakeRunner {
       requests: RunnerRequest[] = [];
@@ -405,6 +453,8 @@ describe("GlassBox control-plane adapter", () => {
       })(),
     );
     const agent = await service.createAgent({ name: "r" });
+    const snapshot = configSnapshot(agent, config);
+    const evalRun = await service.createEvalRun({ caseIds: [], target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } });
     const { run } = await service.sendMessage(agent.id, "x");
     await runnerReached;
     await emitter.flush();
@@ -412,6 +462,11 @@ describe("GlassBox control-plane adapter", () => {
     const restarted = new AgentService(config, jsonStore, workspaces, new FakeRunner(), emitter);
     await restarted.initialize();
     await emitter.flush();
+    expect(restarted.getEvalRun(evalRun.id)).toMatchObject({
+      status: "failed",
+      completedAt: expect.any(String),
+      results: [{ caseId: "", results: [], error: "Server restarted while this Eval Run was active" }],
+    });
     const events = await store.readRun(run.id);
     const serviceSpan = events.find((event) => event.type === "agent_service.run.started");
     expect(events.at(-1)).toMatchObject({
