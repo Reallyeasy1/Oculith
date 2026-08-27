@@ -23,6 +23,25 @@ Critical path: **S1 → S3 (#64→#68) → S4 (#84) → S5 (#105→#85→#86→#
 
 Cut order: **#67 → #80 → #89 → #87**. Never cut **#79, #81, #84, #85, #86, or #92**.
 
+## Next up (plan after UAT rounds 3–4, 27 August, main `0a1146e`)
+
+Ordered by what the three-minute demo (PRD §13) needs first. Tracks run in parallel across lanes; within a track the order is the dependency order.
+
+| Track | Order | Issues | Why now |
+|---|---|---|---|
+| A — finish the Verify chain (critical path) | 1 | #142 (#85), #144 (#86) — unblock and land | EvalRun and comparison are the demo's steps 6–7; blockers are bounded (real-Run wait, restart close-out, batch test; per-assertion count) |
+| | 2 | #151 (#88, with #158's single create path), #152 (#89) | the demo needs the UI, not the API — #88/#89 raised to P0 |
+| | 3 | #91, #90 | AC-08 inside `npm run check`; lane covers audit, workspace changes, templates, cases |
+| | 4 | #92 | template named as the PRD says, check command declared so `post_check` prefills, a product path to a denial |
+| B — evidence quality | 5 | #130 → #129 → #132 → #156 → #136 | tool identity makes `expected_tool` meaningful (today every assertion says `bash`); model turns explain where time goes; outcome line closes "ok ≠ success" |
+| C — surfacing fixes | 6 | #154, #157, #155, #138, #137; author-blocked #124 #125 #118 | small, batch by area; found in round 4 |
+| D — verification reliability | 7 | #148 then #90 | the driver leak caused every flaky toolchain run on 27 Aug |
+| E — submission | 8 | #35, #93, #94, #95 | after S7's two rehearsals |
+
+Deferred past the demo: #134 baselines (P2, `sprint:S8` stretch), #103, #75, #37, #40, #65, #66, #96.
+
+Label changes made with this plan: #88 and #89 → P0; #148 → `sprint:S6`; #134 → P2 `sprint:S8`; #155 → `sprint:S2`.
+
 Status legend: done = every issue closed; in review = PRs open for every remaining issue; in progress = issues open without PRs. See `docs/PROJECT_BRIEF.md` for the live status board and the 27 August UAT round 3 findings that added the S2 evidence issues.
 
 Lanes: A = runtime/starting state · B = trace/audit · C = evaluation · D = frontend · E = verification/submission.
