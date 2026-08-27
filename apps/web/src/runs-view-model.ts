@@ -1,4 +1,4 @@
-import type { RunListItem, TraceStatus } from "./types";
+import type { AgentRunBaseline, RunListItem, TraceStatus } from "./types";
 
 // Pure helpers for RunsView. Render only what the API returned — no client-side status inference.
 
@@ -92,8 +92,40 @@ export function formatDuration(ms: number | undefined): string {
 
 export function formatUsage(usage: RunListItem["usage"]): string {
   if (!usage || (usage.inputTokens === undefined && usage.outputTokens === undefined)) return "—";
-  const compact = (value: number) => value >= 1000 ? (value / 1000).toFixed(value >= 10_000 ? 0 : 1).replace(/\.0$/, "") + "k" : String(value);
-  return compact(usage.inputTokens ?? 0) + " in · " + compact(usage.outputTokens ?? 0) + " out";
+  return formatCount(usage.inputTokens ?? 0) + " in · " + formatCount(usage.outputTokens ?? 0) + " out";
+}
+
+export function formatCount(value: number | undefined): string {
+  if (value === undefined) return "—";
+  return value >= 1000 ? (value / 1000).toFixed(value >= 10_000 ? 0 : 1).replace(/\.0$/, "") + "k" : String(value);
+}
+
+export interface RunOutlier { durationMultiple?: number; inputTokensMultiple?: number }
+
+/** A baseline is too noisy below three terminal Runs; ratios require a positive median. */
+export function runOutlier(run: RunListItem, baseline: AgentRunBaseline | null | undefined): RunOutlier | undefined {
+  if (!baseline || baseline.sampleCount < 3) return undefined;
+  const durationMultiple = baseline.durationMs.median && run.durationMs !== undefined ? run.durationMs / baseline.durationMs.median : undefined;
+  const inputTokensMultiple = baseline.inputTokens.median && run.usage?.inputTokens !== undefined ? run.usage.inputTokens / baseline.inputTokens.median : undefined;
+  const outlier = {
+    ...(durationMultiple !== undefined && durationMultiple > 3 ? { durationMultiple } : {}),
+    ...(inputTokensMultiple !== undefined && inputTokensMultiple > 3 ? { inputTokensMultiple } : {}),
+  };
+  return Object.keys(outlier).length === 0 ? undefined : outlier;
+}
+
+export function formatCost(value: number | undefined): string {
+  if (value === undefined) return "—";
+  return value < 0.01 ? "$" + value.toFixed(4) : "$" + value.toFixed(2);
+}
+
+function formatMultiple(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+export function outlierLabel(outlier: RunOutlier): string {
+  if (outlier.inputTokensMultiple !== undefined) return `outlier ×${formatMultiple(outlier.inputTokensMultiple)} tokens`;
+  return `outlier ×${formatMultiple(outlier.durationMultiple!)} duration`;
 }
 
 const clock = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });

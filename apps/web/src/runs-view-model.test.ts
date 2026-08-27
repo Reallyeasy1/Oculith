@@ -2,7 +2,7 @@
 //   npx vitest run apps/web/src/runs-view-model.test.ts
 import { describe, expect, it } from "vitest";
 import type { RunListItem, TraceStatus } from "./types";
-import { formatUsage, liveRuns, matchesFilter, needsAttention, recoveredFailures, summarizeRuns } from "./runs-view-model";
+import { formatCost, formatUsage, liveRuns, matchesFilter, needsAttention, outlierLabel, recoveredFailures, runOutlier, summarizeRuns } from "./runs-view-model";
 
 function run(status: TraceStatus, degraded = false, agentId = "a", agentName = "A", extra: Partial<RunListItem> = {}): RunListItem {
   return {
@@ -80,6 +80,28 @@ describe("formatUsage", () => {
   it("keeps small usage exact and compacts wide token counts", () => {
     expect(formatUsage({ inputTokens: 37384, outputTokens: 383 })).toBe("37k in · 383 out");
     expect(formatUsage({ inputTokens: 999, outputTokens: 1200 })).toBe("999 in · 1.2k out");
+  });
+});
+
+describe("runOutlier", () => {
+  const baseline = { sampleCount: 20, windowSize: 20 as const, durationMs: { median: 2_000, p90: 5_000 }, inputTokens: { median: 100 }, toolCalls: { median: 2 }, toolFailures: { median: 0 } };
+
+  it("flags values above three times the median and reports the exact multiple", () => {
+    const outlier = runOutlier(run("ok", false, "a", "A", { durationMs: 6_001, usage: { inputTokens: 1_100 } }), baseline);
+    expect(outlier).toEqual({ durationMultiple: 3.0005, inputTokensMultiple: 11 });
+    expect(outlierLabel(outlier!)).toBe("outlier ×11 tokens");
+  });
+
+  it("shows no chip with fewer than three Runs, missing/zero medians, or exactly three times", () => {
+    expect(runOutlier(run("ok", false, "a", "A", { durationMs: 10_000 }), { ...baseline, sampleCount: 2 })).toBeUndefined();
+    expect(runOutlier(run("ok", false, "a", "A", { durationMs: 6_000 }), baseline)).toBeUndefined();
+    expect(runOutlier(run("ok", false, "a", "A", { durationMs: 10_000 }), { ...baseline, durationMs: { median: 0 } })).toBeUndefined();
+  });
+
+  it("formats optional estimated cost without pretending at high precision", () => {
+    expect(formatCost(0.001234)).toBe("$0.0012");
+    expect(formatCost(1.234)).toBe("$1.23");
+    expect(formatCost(undefined)).toBe("—");
   });
 });
 

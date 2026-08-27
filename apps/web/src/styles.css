@@ -1166,6 +1166,16 @@ textarea:focus {
   scrollbar-color: var(--purple) #ecebe5;
 }
 
+.runs-baseline {
+  margin: 0 0 0.75rem;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.badge-outlier {
+  margin-left: 0.35rem;
+}
+
 .runs-table-wrap-scroll-hint::after {
   content: "Scroll →" / "";
   position: sticky;

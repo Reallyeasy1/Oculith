@@ -1,15 +1,19 @@
 import { useMemo, useState } from "react";
-import type { RunListItem } from "./types";
+import type { AgentRunBaseline, RunListItem } from "./types";
 import {
   FILTER_LABEL,
   QUICK_FILTERS,
   STATUS_ICON,
   formatClock,
+  formatCount,
+  formatCost,
   formatDuration,
   formatUsage,
   liveRuns,
   matchesFilter,
+  outlierLabel,
   recoveredFailures,
+  runOutlier,
   sortNewestFirst,
   summarizeRuns,
   type QuickFilter,
@@ -30,9 +34,10 @@ interface Props {
   showAgent?: boolean;
   title?: string;
   emptyText?: string;
+  baseline?: AgentRunBaseline | null;
 }
 
-export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent = true, title = "Runs", emptyText = "No Runs observed yet." }: Props) {
+export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent = true, title = "Runs", emptyText = "No Runs observed yet.", baseline }: Props) {
   const [filter, setFilter] = useState<QuickFilter>("attention");
   const visible = useMemo(
     () => sortNewestFirst(runs).filter((run) => matchesFilter(run, filter)),
@@ -42,6 +47,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
   // Elapsed is computed at render time: the dashboard poll (#98) replaces `runs` every tick, so it ticks with the poll.
   const live = liveRuns(runs);
   const now = Date.now();
+  const showCost = runs.some((run) => run.estimatedCostUsd !== undefined);
 
   return (
     <section className="runs-view" aria-labelledby="runs-heading">
@@ -64,6 +70,11 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
           ))}
         </div>
       </div>
+      {!showAgent && baseline && baseline.sampleCount > 0 && (
+        <p className="runs-baseline" aria-label={`Baseline over ${baseline.sampleCount} Runs`}>
+          Median {formatDuration(baseline.durationMs.median)} · {formatCount(baseline.inputTokens.median)} in · {formatCount(baseline.toolCalls.median)} tools ({baseline.sampleCount} Runs)
+        </p>
+      )}
       {live.length > 0 && (
         <ul className="live-strip" aria-label="Live now">
           {live.map((run) => (
@@ -97,12 +108,16 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
               <th scope="col">Config</th>
               <th scope="col">Runtime / model</th>
               <th scope="col">Usage</th>
+              {showCost && <th scope="col">Est. cost</th>}
               <th scope="col">Tool calls</th>
               <th scope="col">Last event</th>
             </tr>
           </thead>
           <tbody>
-            {visible.map((run) => (
+            {visible.map((run) => {
+              const outlier = runOutlier(run, baseline);
+              const outlierTitle = outlier ? [outlier.durationMultiple === undefined ? "" : `duration ×${outlier.durationMultiple.toFixed(1)}`, outlier.inputTokensMultiple === undefined ? "" : `tokens ×${outlier.inputTokensMultiple.toFixed(1)}`].filter(Boolean).join(" · ") + ` versus the last ${baseline?.sampleCount ?? 0} terminal Runs` : undefined;
+              return (
               <tr
                 key={run.runId}
                 tabIndex={0}
@@ -124,6 +139,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                   {recoveredFailures(run) > 0 && (
                     <span className="badge badge-warn badge-recovered">recovered after {recoveredFailures(run)} {recoveredFailures(run) === 1 ? "failure" : "failures"}</span>
                   )}
+                  {outlier && <span className="badge badge-warn badge-outlier" title={outlierTitle}>{outlierLabel(outlier)}</span>}
                 </td>
                 {showAgent && <td>{run.agentName || run.agentId}</td>}
                 <td>{run.workspace ?? "—"}</td>
@@ -136,6 +152,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 </td>
                 <td className="runs-runtime" title={run.runtime + " · " + run.model}>{run.runtime} · {run.model}</td>
                 <td>{formatUsage(run.usage)}</td>
+                {showCost && <td>{formatCost(run.estimatedCostUsd)}</td>}
                 <td>
                   <span>{run.toolCalls}{run.toolFailures > 0 && <> · {run.toolFailures} failed</>}</span>{" "}
                   {run.redacted && <span className="badge">redacted</span>}
@@ -151,7 +168,8 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 </td>
                 <td>{formatClock(run.lastEventAt)}</td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
         {visible.length === 0 && (
