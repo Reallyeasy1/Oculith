@@ -59,6 +59,22 @@ describe("buildTrace", () => {
     const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
     expect(summary.failure?.message).toBe("Codex exited with code 137 — SIGKILL (timeout, cancellation, or out-of-memory termination): stderr tail");
   });
+  it("prefers the platform workspace snapshot over the runtime stream's file_change report (#153)", () => {
+    seq = 0;
+    const report = ev({ type: "workspace.changed", category: "workspace", spanId: "wsr", parentSpanId: "rt", status: "ok",
+      source: { component: "AgentRunner", adapter: "ContainerCodexRunner", observed: true }, attributes: { fileCount: 1, added: 0, updated: 1, deleted: 0 } });
+    const snapshot = ev({ type: "workspace.changed", category: "workspace", spanId: "wss", parentSpanId: "svc", status: "ok",
+      source: { component: "AgentService", adapter: "WorkspaceSnapshot", observed: true }, attributes: { added: 0, modified: 1, removed: 0, bytesDelta: 3, truncated: false, paths: "src/invoice.js" } });
+    const done = [ev({ type: "runtime.codex.completed", category: "runtime", spanId: "rt", phase: "end", status: "ok" }),
+      ev({ type: "run.completed", category: "control", spanId: "rdone", parentSpanId: "svc", status: "ok" })];
+    // Stream report first (it arrives mid-Run), snapshot after the runtime closed — the snapshot must win.
+    const both = buildTrace([root(), svcStart(), rtStart(), report, ...done.slice(0, 1), snapshot, done[1]!], { capturePolicy: "metadata_only" });
+    expect(both.summary.workspaceChanges).toEqual({ added: 0, modified: 1, removed: 0, bytesDelta: 3, truncated: false });
+    // Report alone (no snapshot ran): its vocabulary is normalised rather than read as zero.
+    seq = 0;
+    const only = buildTrace([root(), svcStart(), rtStart(), report, ...done], { capturePolicy: "metadata_only" });
+    expect(only.summary.workspaceChanges).toMatchObject({ added: 0, modified: 1, removed: 0 });
+  });
   it("reconstructs a nested tree with durations and rolls up ok", () => {
     seq = 0;
     const events = [

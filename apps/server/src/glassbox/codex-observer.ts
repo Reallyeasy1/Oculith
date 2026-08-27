@@ -33,8 +33,9 @@ const USAGE_KEYS: Record<string, string> = {
  *  - an `item.type === "error"` is a non-fatal notice on every Ark run (E8) and is dropped.
  *  - top-level `error` lines are retry noise (E11); the last one is buffered and only surfaces as a
  *    single `error.recorded` when the run itself fails.
- *  - `file_change` has never been observed (Ark shells out instead of calling apply_patch), so the
- *    branch below is defensive only; a real workspace diff is the honest source for `workspace.changed`.
+ *  - `file_change` is emitted when the model uses apply_patch (observed with deepseek-v4-flash on 2026-08-27); it
+ *    reports { fileCount, added, updated, deleted } only. The platform's disk snapshot (AgentService, adapter
+ *    WorkspaceSnapshot) is the honest source for `workspace.changed`; buildTrace prefers it over this report.
  */
 export class CodexStreamObserver implements CodexStreamSink {
   sessionId: string | undefined;
