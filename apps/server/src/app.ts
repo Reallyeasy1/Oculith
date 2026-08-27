@@ -261,8 +261,8 @@ export async function createApp(
       let input;
       try { input = caseFromRun(run, await viewFor(run.id), template); }
       catch (error) { throw new HttpError(400, error instanceof Error ? error.message : "Unable to create regression case"); }
-      const regressionCase = await service.createRegressionCase({ ...input, sourceRunId: run.id });
-      return reply.code(201).send({ regressionCase });
+      // Prefill is deliberately read-only: the editor owns the single create via POST /api/regression-cases.
+      return reply.code(200).send({ draft: input });
     });
     app.get("/api/runs", async (request) => {
       const q = runsQuery.parse(request.query);
