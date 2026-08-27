@@ -381,7 +381,7 @@ async function closeResources() {
   const rowFlags = await rows().evaluateAll((trs) => trs.map((tr) => {
     const status = tr.querySelector(".status").textContent;
     const badges = [...tr.querySelectorAll(".badge")].map((b) => b.textContent);
-    const flagged = /error|timeout|cancelled/.test(status) || badges.some((b) => /^(recovered|denied|degraded)/.test(b)) || /\d+ failed/.test(tr.children[tr.children.length - 2].textContent);
+    const flagged = /error|timeout|cancelled/.test(status) || badges.some((b) => /^(recovered|denied|degraded|agent reported failure)/.test(b)) || /\d+ failed/.test(tr.children[tr.children.length - 2].textContent);
     return { running: status.includes("running"), recovered: badges.some((b) => b.startsWith("recovered")), flagged };
   }));
   eq(strip.Total, statuses.length, "summary Total equals the rows under 'All'");

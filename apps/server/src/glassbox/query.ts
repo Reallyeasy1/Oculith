@@ -344,7 +344,12 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
   const evicted = events.some(isEvictionMarker);
   const failure = focusFailure(events, spans, status, degraded, durationMs, interruptedAfterMs);
   const auditRows = projectAudit(events);
-  const declaredUnavailable = events.some((e) => e.type === "capability.unavailable");
+  const capabilityDeclaration = events.find((e) => e.type === "capability.unavailable");
+  // Before per-layer declarations, the sole marker carried { model: false, tool: false } while
+  // meaning that both layers were unavailable. Retain that interpretation for persisted traces.
+  const legacyAllUnavailable = capabilityDeclaration?.attributes.model === false && capabilityDeclaration.attributes.tool === false;
+  const declaredUnavailable = (layer: "model" | "tool"): boolean =>
+    legacyAllUnavailable || capabilityDeclaration?.attributes[layer] === true;
   const workspace = events.find((event) => event.type === "run.created" && typeof event.attributes.workspace === "string")?.attributes.workspace;
   // Two emitters share this type: the runtime stream's file_change report ({ fileCount, added, updated, deleted })
   // and the platform's before/after disk snapshot ({ added, modified, removed, bytesDelta, paths }). The snapshot
@@ -379,7 +384,7 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
       actors: [...new Set(auditRows.map((row) => row.actor.type + "/" + row.actor.id))].sort(),
     },
     degraded, truncated, evicted, usage, metrics, configHash, workspaceChanges, outcome,
-    capabilities: { model: events.some((e) => e.category === "model") ? "observed" : declaredUnavailable ? "unavailable" : "unknown", tool: events.some((e) => e.category === "tool") ? "observed" : declaredUnavailable ? "unavailable" : "unknown" },
+    capabilities: { model: events.some((e) => e.category === "model") ? "observed" : declaredUnavailable("model") ? "unavailable" : "unknown", tool: events.some((e) => e.category === "tool") ? "observed" : declaredUnavailable("tool") ? "unavailable" : "unknown" },
     firstFailingStep: failure && failure.kind !== "degraded" ? failure.name : undefined, failure,
   };
   return { summary, spans: tree, events };
