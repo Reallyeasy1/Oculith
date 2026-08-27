@@ -1,23 +1,14 @@
-import { useEffect } from "react";
 import type { RunListItem } from "./types";
 import { summarizeRuns } from "./runs-view-model";
 
 interface Props {
   runs: RunListItem[];
-  onRefresh: () => Promise<void>;
 }
 
 // All-runs overview across Agents (#70): the summary strip. The Runs table and trace detail stay in App below it.
-export default function Overview({ runs, onRefresh }: Props) {
-  // The one sanctioned timer (see .claude/rules/web.md): no Agent is selected here, so nothing else would
-  // surface a Run finishing under another Agent. Scoped to this component's lifetime; onRefresh soft-fails.
-  useEffect(() => {
-    const id = window.setInterval(() => void onRefresh(), 5_000);
-    return () => window.clearInterval(id);
-  }, [onRefresh]);
-
+export default function Overview({ runs }: Props) {
   const s = summarizeRuns(runs);
-  const stats: [string, number][] = [["Total", s.total], ["Ok", s.ok], ["Needs attention", s.attention], ["Running", s.running]];
+  const stats: [string, number][] = [["Total", s.total], ["Ok", s.ok], ["Needs attention", s.attention], ["Recovered", s.recovered], ["Running", s.running]];
   return (
     <header className="agent-header overview" aria-labelledby="overview-heading">
       <div>

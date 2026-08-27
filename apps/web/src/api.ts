@@ -1,4 +1,4 @@
-import type { Agent, AgentRun, CapturePolicy, Message, RunListItem, SystemInfo, TraceView, WorkspaceTemplate } from "./types";
+import type { Agent, AgentRun, AuditRow, CapturePolicy, Message, RunListItem, SystemInfo, TraceView, WorkspaceTemplate } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -87,4 +87,5 @@ export const api = {
       "/api/runs?" + new URLSearchParams({ limit: String(options.limit ?? 100), ...(options.agentId ? { agentId: options.agentId } : {}) }),
     ),
   trace: (runId: string) => request<TraceView>("/api/runs/" + runId + "/trace"),
+  audit: (runId: string) => request<{ schemaVersion: string; capturePolicy: CapturePolicy; audit: AuditRow[] }>("/api/runs/" + runId + "/audit"),
 };

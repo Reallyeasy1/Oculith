@@ -269,9 +269,20 @@ let server = null;
   ok((await rows().first().innerText()).includes("E2E GlassBox"), "overview row names its Agent");
   const strip = Object.fromEntries(await page.locator(".summary-strip > div").evaluateAll((els) => els.map((el) => [el.querySelector("dt").textContent, Number(el.querySelector("dd").textContent)])));
   const statuses = await rows().locator(".status").allTextContents(); // textContent: the pill is CSS-uppercased
+  // Attention rule (#131): non-ok terminal status, or any tool failure/denial/degraded flag — the row shows those as
+  // the `recovered after N failures` chip (ok Runs), the `denied N`/`degraded` badges, or `N failed` in Tool calls.
+  const rowFlags = await rows().evaluateAll((trs) => trs.map((tr) => {
+    const status = tr.querySelector(".status").textContent;
+    const badges = [...tr.querySelectorAll(".badge")].map((b) => b.textContent);
+    const flagged = /error|timeout|cancelled/.test(status) || badges.some((b) => /^(recovered|denied|degraded)/.test(b)) || /\d+ failed/.test(tr.children[tr.children.length - 2].textContent);
+    return { running: status.includes("running"), recovered: badges.some((b) => b.startsWith("recovered")), flagged };
+  }));
   eq(strip.Total, statuses.length, "summary Total equals the rows under 'All'");
   eq(strip.Ok, statuses.filter((s) => s.includes("ok")).length, "summary Ok equals the ok rows");
-  eq(strip["Needs attention"] + strip.Running, statuses.filter((s) => !s.includes("ok")).length, "summary Needs attention + Running cover the non-ok rows");
+  eq(strip["Needs attention"], rowFlags.filter((r) => r.flagged).length, "summary Needs attention equals the rows that are non-ok or carry failures/denials/degraded");
+  eq(strip.Recovered, rowFlags.filter((r) => r.recovered).length, "summary Recovered equals the rows with a `recovered after N failures` chip");
+  eq(strip.Running, rowFlags.filter((r) => r.running).length, "summary Running equals the running rows");
+  eq(await page.locator(".live-strip").count(), rowFlags.some((r) => r.running) ? 1 : 0, "Live now strip is present exactly when a Run is running");
   ok((await page.locator(".summary-agents").innerText()).includes("E2E GlassBox · " + statuses.length + " · "), "per-Agent line shows the first Agent's count");
   if (process.env.E2E_SCREENSHOT) { await page.setViewportSize({ width: 1366, height: 768 }); await page.screenshot({ path: process.env.E2E_SCREENSHOT }); await page.setViewportSize({ width: 1400, height: 1000 }); }
   sweep("DOM (overview)", await glassboxText(page));
@@ -287,6 +298,8 @@ let server = null;
   eq(badRun.view.summary.failure && badRun.view.summary.failure.kind, "timeout", "first-failure focus is the timeout");
   eq(badRun.view.summary.failure.name, "codex exec", "failing span is `codex exec`");
   eq((await api("/api/runs")).json().runs.find((r) => r.runId === badRun.run.id).firstFailingStep, "codex exec", "/api/runs firstFailingStep = codex exec");
+  const badAudit = (await api("/api/runs/" + badRun.run.id + "/audit")).json().audit;
+  ok(badAudit.some((row) => row.outcome === "timeout"), "/audit includes the gated timeout evidence");
   eq(badRun.view.summary.capabilities.model + "/" + badRun.view.summary.capabilities.tool, "unknown/unknown", "capabilities read unknown on a cut-short run (#60)");
   const stopped = badRun.view.events.find((e) => e.type === "runtime.container.stopped");
   eq(stopped && stopped.attributes.cleanup, "rm --force", "container teardown evidence: runtime.container.stopped cleanup=rm --force");
@@ -300,6 +313,17 @@ let server = null;
   await page.locator(".runs-filters button", { hasText: "Timed out" }).click();
   eq(await page.locator(".runs-table tbody tr").count(), 1, "'Timed out' quick filter leaves exactly the gated run");
   await openTraceByKeyboard(page, badRun.run.id);
+  await page.locator(".trace-detail button", { hasText: /^Audit$/ }).click();
+  const auditTable = page.locator(".audit-table");
+  await auditTable.waitFor({ timeout: 5_000 });
+  eq(await auditTable.locator("tbody tr").count(), badAudit.length, "Audit table renders every API audit row for the gated Run");
+  ok(/timeout/i.test(await auditTable.innerText()), "Audit table shows the timeout outcome as text");
+  const auditRow = auditTable.locator("tbody tr").first();
+  await auditRow.focus();
+  eq(await page.evaluate(() => document.activeElement && document.activeElement.tagName), "TR", "Audit row takes focus");
+  await page.keyboard.press("Enter");
+  await page.locator(".trace-tree").waitFor({ timeout: 5_000 });
+  eq(await page.evaluate(() => document.activeElement && document.activeElement.getAttribute("role")), "treeitem", "Enter on an audit row returns focus to its evidence span");
   const banner = page.locator(".trace-banner");
   ok((await banner.innerText()).includes("timeout"), "first-failure banner is shown");
   await page.locator("button", { hasText: "Jump to failing span" }).click();
