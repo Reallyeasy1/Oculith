@@ -11,11 +11,17 @@ export interface FailureFocus {
   kind: "error" | "timeout" | "cancelled" | "denied" | "degraded"; spanId: string; eventId: string; sequence: number;
   name: string; category: Category; component: string; message?: string | undefined; path: string[]; diagnosis: string;
 }
+export type AuditOutcome = "allowed" | "denied" | "ok" | "error" | "timeout" | "cancelled";
+export interface AuditRow {
+  at: string; actor: { type: ObservationEvent["actorType"]; id: string }; action: string; resource: string;
+  outcome: AuditOutcome; eventId: string; spanId: string; traceId: string; attributes: ObservationEvent["attributes"];
+}
 export interface TraceSummary {
   schemaVersion: typeof SCHEMA_VERSION; capturePolicy: CapturePolicy; runId: string; traceId: string; agentId: string;
   sessionId?: string | undefined; status: TraceStatus; startedAt?: string | undefined; endedAt?: string | undefined;
   workspace?: string | undefined;
   durationMs?: number | undefined; eventCount: number; spanCount: number; incompleteSpans: number; redactedEvents: number; denials: number;
+  audit: { actions: number; denials: number; actors: string[] };
   /** Set when the Run was closed by AgentService.initialize() after a restart: durationMs then stops at the last event observed before the restart. */
   endedReason?: "server_restart" | undefined;
   degraded: boolean; truncated: boolean;
@@ -44,6 +50,39 @@ export type Capability = "observed" | "unavailable" | "unknown";
 export interface TraceView { summary: TraceSummary; spans: Span[]; events: ObservationEvent[] }
 
 const CATEGORY_RANK: Record<Category, number> = { tool: 0, model: 1, runtime: 2, workspace: 3, sandbox: 4, policy: 5, infrastructure: 6, control: 7, experience: 8 };
+// `tool` rows are the agent's own actions (actor agent/<id>, resource = program); without them the audit
+// could never attribute anything to the agent (#135).
+const AUDIT_CATEGORIES = new Set<Category>(["control", "policy", "sandbox", "tool"]);
+
+function auditOutcome(event: ObservationEvent): AuditOutcome {
+  if (event.type === "policy.denied") return "denied";
+  if (event.status === "ok") return "ok";
+  if (event.status === "error") return "error";
+  if (event.status === "timeout") return "timeout";
+  if (event.status === "cancelled") return "cancelled";
+  return "allowed";
+}
+
+function isRuntimeTerminal(event: ObservationEvent): boolean {
+  return event.category === "runtime" && event.phase === "end";
+}
+
+/** A derived, linkable audit view. It deliberately introduces no events or storage of its own. */
+export function projectAudit(events: ObservationEvent[]): AuditRow[] {
+  return events
+    .filter((event) => AUDIT_CATEGORIES.has(event.category) || isRuntimeTerminal(event))
+    .map((event) => ({
+      at: event.timestamp,
+      actor: { type: event.actorType, id: event.actorId },
+      action: event.type,
+      resource: typeof event.attributes.program === "string" && event.attributes.program.length > 0 ? event.attributes.program : event.name || event.runId,
+      outcome: auditOutcome(event),
+      eventId: event.eventId,
+      spanId: event.spanId,
+      traceId: event.traceId,
+      attributes: event.attributes,
+    }));
+}
 
 export function flattenSpans(spans: Span[]): Span[] {
   const out: Span[] = []; const walk = (s: Span) => { out.push(s); s.children.forEach(walk); }; spans.forEach(walk); return out;
@@ -122,6 +161,11 @@ function pathTo(spans: Map<string, Span>, spanId: string): string[] {
 const DEGRADED_FOCUS: FailureFocus = { kind: "degraded", spanId: "", eventId: "", sequence: -1, name: "telemetry.degraded", category: "control", component: "GlassBox", path: [], diagnosis: "Trace evidence is incomplete: the trace store was unavailable during this Run. The Run's real result is unaffected; some spans may be missing." };
 
 const EXIT_HINTS: Record<number, string> = {
+  2: "usage error, or the interpreter could not find the file",
+  124: "timed out — killed by the timeout wrapper",
+  126: "found but not executable — permissions or wrong interpreter",
+  127: "command not found — the program is missing from the runtime image",
+  130: "interrupted — SIGINT",
   137: "SIGKILL (timeout, cancellation, or out-of-memory termination)",
   3221225794: "process failed to initialise — the runtime CLI could not start; restart the server",
 };
@@ -238,7 +282,9 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
   const truncated = opts.truncated === true || events.some((e) => e.type === "trace.truncated");
   const evicted = events.some(isEvictionMarker);
   const failure = focusFailure(events, spans, status, degraded, durationMs);
+  const auditRows = projectAudit(events);
   const declaredUnavailable = events.some((e) => e.type === "capability.unavailable");
+  const workspace = events.find((event) => event.type === "run.created" && typeof event.attributes.workspace === "string")?.attributes.workspace;
   const workspaceEvent = events.find((event) => event.type === "workspace.changed");
   const workspaceChanges = workspaceEvent ? {
     added: Number(workspaceEvent.attributes.added ?? 0),
@@ -247,7 +293,6 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
     bytesDelta: Number(workspaceEvent.attributes.bytesDelta ?? 0),
     truncated: workspaceEvent.attributes.truncated === true,
   } : undefined;
-  const workspace = events.find((event) => event.type === "run.created" && typeof event.attributes.workspace === "string")?.attributes.workspace;
   const summary: TraceSummary = {
     schemaVersion: SCHEMA_VERSION, capturePolicy: opts.capturePolicy,
     runId: first?.runId ?? "", traceId: first?.traceId ?? "", agentId: first?.agentId ?? "",
@@ -256,6 +301,11 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
     status, startedAt, endedAt, durationMs, endedReason: restart ? "server_restart" : undefined, eventCount: events.length, spanCount: flat.length,
     incompleteSpans: flat.filter((s) => s.incomplete).length, redactedEvents: events.filter((e) => e.privacy.redacted).length,
     denials: events.filter((e) => e.type === "policy.denied").length,
+    audit: {
+      actions: auditRows.length,
+      denials: auditRows.filter((row) => row.outcome === "denied").length,
+      actors: [...new Set(auditRows.map((row) => row.actor.type + "/" + row.actor.id))].sort(),
+    },
     degraded, truncated, evicted, usage, metrics, configHash, workspaceChanges,
     capabilities: { model: events.some((e) => e.category === "model") ? "observed" : declaredUnavailable ? "unavailable" : "unknown", tool: events.some((e) => e.category === "tool") ? "observed" : declaredUnavailable ? "unavailable" : "unknown" },
     firstFailingStep: failure && failure.kind !== "degraded" ? failure.name : undefined, failure,
