@@ -31,7 +31,24 @@ Cut order: **#67 → #80 → #89 → #87**. Never cut **#79, #81, #84, #85, #86,
 
 Evaluate critical path: **#167 → #168 → #169 → #170 → #171 → #172 → #173 → #174** (E3 feeds S7's rehearsals). Evaluate cut order: **#177 → #175 → #176**; never cut the P0 chain #168–#174 (PRD §13 v4 walks it).
 
-## Next up (plan after UAT rounds 3–4, 27 August, main `0a1146e`)
+## Next up (28 August — observability first, main `189986c`)
+
+Direction locked 28 August: **data → query → aggregation → visualization**. Observation events → Trace Store → *Metric Processor* (objective metrics = the Run summary rollup) and *Batch Evaluator* (semantic metrics = evaluation results) → *Metric Store* (read facade over both) → one bounded metric query → dashboard → Run/trace drill-down. Online observability (trace / audit / metrics) is the main priority; offline semantic evaluation is the fast follow.
+
+| Track | Order | Issues | Why now |
+|---|---|---|---|
+| A — land the Verify chain | 1 | #151 (#88) → #152 (#89) → #178 (#167) → #189 (#168) → #179 (#176) | all reviewed; #152's deep-link blocker fixed; #179 needs a `main` merge after #151 |
+| B — observability core (P0) | 2 | #168 → #190 (metric query + `MetricStore` facade) → #172 (reliability/compare as sugar) → #173 (dashboard, drill-back) | the rollup is the Metric Processor; the query contract is what makes the dashboard queryable, not just drawn |
+| | 3 | #130 → #129 → #132 → #136 | evidence quality feeds the objective metrics (tool identity, model turns, outcome line — #132 raised to P0) |
+| C — storage (P1, started) | 4 | #191 (Postgres phase C: summaries, then evaluation results) | opt-in `GLASSBOX_STORE=postgres`; judged path stays JSON/NDJSON; #175's trace/agents phases → P2 |
+| D — semantic evaluation (P1, fast follow) | 5 | #169 → #170 → #171 → #174 → #192 (user-defined evaluators) | the Batch Evaluator branch; dashboard shows telemetry-only until these land |
+| E — submission | 6 | #92, #35, #93, #94, #95 | unchanged |
+
+Deferred: #193 safety evaluator (P2), #177 recovery quality (P2), #175 phases B/D (P2), #134, #103, #75, #37, #40, #65, #66, #96.
+
+Label changes made with this plan: #169 #170 #171 #174 → P1; #175 → P2; #132 → P0; new #190 (P0, E2), #191 (P1, E3, in progress), #192 (P1, E3), #193 (P2, E3).
+
+## Previous plan (plan after UAT rounds 3–4, 27 August, main `0a1146e`)
 
 Ordered by what the three-minute demo (PRD §13) needs first. Tracks run in parallel across lanes; within a track the order is the dependency order.
 
