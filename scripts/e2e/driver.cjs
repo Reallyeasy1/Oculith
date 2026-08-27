@@ -227,6 +227,11 @@ let server = null;
   ok((await page.locator("#runs-heading").innerText()).includes("E2E GlassBox"), "Runs table is scoped to the selected Agent");
   eq(await page.locator(".runs-table th", { hasText: /^Agent$/ }).count(), 0, "Agent column is hidden in the Agent view");
   await openTraceByKeyboard(page, okRun.run.id);
+  const exportLink = page.getByRole("link", { name: "Export JSON" });
+  eq(await exportLink.getAttribute("href"), "/api/traces/" + okRun.run.traceId + "/export", "Export JSON link targets the redacted trace export (#154)");
+  const downloadPromise = page.waitForEvent("download");
+  await exportLink.click();
+  eq((await downloadPromise).suggestedFilename(), "trace-" + okRun.run.traceId + ".json", "authenticated UI export keeps the trace filename (#154)");
   await drawerRoundTrip(page);
   await errorsOnly(page).check();
   // The model may legitimately run a command that exits non-zero; the filter must agree with the API either way.

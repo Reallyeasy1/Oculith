@@ -88,4 +88,16 @@ export const api = {
     ),
   trace: (runId: string) => request<TraceView>("/api/runs/" + runId + "/trace"),
   audit: (runId: string) => request<{ schemaVersion: string; capturePolicy: CapturePolicy; audit: AuditRow[] }>("/api/runs/" + runId + "/audit"),
+  exportTrace: async (traceId: string): Promise<{ blob: Blob; filename: string }> => {
+    const response = await fetch("/api/traces/" + encodeURIComponent(traceId) + "/export", {
+      headers: authToken ? { Authorization: "Bearer " + authToken } : undefined,
+    });
+    if (!response.ok) {
+      const data = (await response.json().catch(() => ({}))) as { error?: string };
+      throw new ApiError(data.error ?? "Export failed", response.status);
+    }
+    const disposition = response.headers.get("Content-Disposition") ?? "";
+    const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? "trace-" + traceId + ".json";
+    return { blob: await response.blob(), filename };
+  },
 };
