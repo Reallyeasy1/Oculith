@@ -7,7 +7,7 @@ import { liveRuns, matchesFilter, needsAttention, recoveredFailures, summarizeRu
 function run(status: TraceStatus, degraded = false, agentId = "a", agentName = "A", extra: Partial<RunListItem> = {}): RunListItem {
   return {
     runId: "r", traceId: "t", agentId, agentName, status, eventCount: 0, runtime: "x", model: "y", toolCalls: 0, toolFailures: 0,
-    capabilities: { model: "unknown", tool: "unknown" }, denials: 0, actions: 0, degraded, truncated: false, evicted: false, redacted: false, ...extra,
+    capabilities: { model: "unknown", tool: "unknown" }, denials: 0, actions: 0, executionStatus: "running", taskOutcome: "unknown", degraded, truncated: false, evicted: false, redacted: false, ...extra,
   };
 }
 
