@@ -7,7 +7,9 @@ import { ObservationEmitter } from "./emitter.js";
 import { buildTrace } from "./query.js";
 import { SCHEMA_VERSION, type EventInput, type ObservationEvent } from "./schema.js";
 import { MemoryTraceStore, NdjsonTraceStore } from "./store.js";
-import { backfillSummaries, JsonRunSummaryStore, ROLLUP_VERSION, rollupRun, scheduleRollup, summaryFromView, type RunSummary } from "./summary.js";
+import pg from "pg";
+import { PostgresRunSummaryStore } from "./postgres-summary.js";
+import { backfillSummaries, JsonRunSummaryStore, ROLLUP_VERSION, rollupRun, scheduleRollup, summaryFromView, type RunSummary, type RunSummaryStore } from "./summary.js";
 
 let seq = 0;
 const t = (ms: number) => new Date(1_700_000_000_000 + ms).toISOString();
@@ -79,14 +81,34 @@ describe("summaryFromView", () => {
   });
 });
 
-describe("JsonRunSummaryStore", () => {
+// The store cases run against every backend (#191): Postgres only when DATABASE_URL points at a database.
+const DATABASE_URL = process.env.DATABASE_URL;
+interface Backend { name: string; open: () => Promise<{ summaries: RunSummaryStore; reopen: () => Promise<RunSummaryStore>; done: () => Promise<void> }> }
+const backends: Backend[] = [
+  { name: "JsonRunSummaryStore", open: async () => {
+    const { root, summaries } = await tempStore();
+    // reopening proves it survives a reload; an older db.json without the collection still loads
+    const reopen = async () => { const r = new JsonStore(path.join(root, "db.json")); await r.initialize(); return new JsonRunSummaryStore(r); };
+    return { summaries, reopen, done: async () => {} };
+  } },
+  ...(DATABASE_URL ? [{ name: "PostgresRunSummaryStore", open: async () => {
+    const summaries = new PostgresRunSummaryStore(DATABASE_URL);
+    await summaries.migrate();
+    const pool = new pg.Pool({ connectionString: DATABASE_URL });
+    await pool.query("DELETE FROM runs_summary");
+    await pool.end();
+    return { summaries, reopen: async () => new PostgresRunSummaryStore(DATABASE_URL), done: () => summaries.close() };
+  } }] : []),
+];
+
+describe.each(backends)("$name", ({ open }) => {
   it("upserts, filters and returns newest first; setTaskOutcome records the source", async () => {
-    const { root, json, summaries } = await tempStore();
+    const { summaries, reopen, done } = await open();
     await summaries.upsert(stub({ runId: "r1", agentId: "a", configHash: "c1", startedAt: t(100), executionStatus: "completed" }));
     await summaries.upsert(stub({ runId: "r2", agentId: "b", configHash: "c1", startedAt: t(300), executionStatus: "failed" }));
     await summaries.upsert(stub({ runId: "r3", agentId: "a", configHash: "c2", startedAt: t(200), executionStatus: "completed" }));
     await summaries.upsert(stub({ runId: "r1", agentId: "a", configHash: "c1", startedAt: t(100), executionStatus: "timeout" }));
-    expect(json.snapshot().runSummaries).toHaveLength(3);
+    expect(await summaries.query()).toHaveLength(3);
     expect((await summaries.query()).map((s) => s.runId)).toEqual(["r2", "r3", "r1"]);
     expect((await summaries.query({ agentId: "a" })).map((s) => s.runId)).toEqual(["r3", "r1"]);
     expect((await summaries.query({ configHash: "c1" })).map((s) => s.runId)).toEqual(["r2", "r1"]);
@@ -98,10 +120,11 @@ describe("JsonRunSummaryStore", () => {
     expect(await summaries.get("r3")).toMatchObject({ taskOutcome: "passed", taskOutcomeSource: "deterministic:eval-1" });
     expect((await summaries.query({ taskOutcome: "passed" })).map((s) => s.runId)).toEqual(["r3"]);
     await expect(summaries.setTaskOutcome("nope", "failed", "x")).rejects.toThrow("Run summary not found");
-    // survives a reload; an older db.json without the collection still loads
-    const reopened = new JsonStore(path.join(root, "db.json"));
-    await reopened.initialize();
-    expect((await new JsonRunSummaryStore(reopened).get("r3"))?.taskOutcome).toBe("passed");
+    expect(await summaries.get("missing")).toBeUndefined();
+    const again = await reopen();
+    expect((await again.get("r3"))?.taskOutcome).toBe("passed");
+    expect((await again.get("r3"))?.metrics).toEqual((await summaries.get("r3"))?.metrics);
+    await done();
   });
 });
 
