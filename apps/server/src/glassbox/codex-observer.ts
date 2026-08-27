@@ -7,6 +7,7 @@ import { newId, type EventInput, type EventType } from "./schema.js";
  * Every hook is optional work for the parser's existing callers — the sink argument is optional. */
 export interface CodexStreamSink {
   onThreadStarted(threadId: string): void;
+  onItemStarted(item: Record<string, unknown>): void;
   onItemCompleted(item: Record<string, unknown>): void;
   onTurnCompleted(usage: Record<string, unknown>): void;
   onError(message: string): void;
@@ -44,6 +45,7 @@ export class CodexStreamObserver implements CodexStreamSink {
   private sawModel = false;
   private finished = false;
   private lastError: string | undefined;
+  private readonly activeItems = new Map<string, { spanId: string; kind: string }>();
 
   constructor(
     private readonly emitter: ObservationEmitter,
@@ -52,12 +54,12 @@ export class CodexStreamObserver implements CodexStreamSink {
     private readonly adapter: "CodexRunner" | "ContainerCodexRunner",
   ) {}
 
-  private base(type: EventType, name: string): Omit<EventInput, "category"> {
+  private base(type: EventType, name: string, spanId = newId("spn")): Omit<EventInput, "category"> {
     return {
       traceId: this.trace.traceId,
       runId: this.trace.runId,
       agentId: this.trace.agentId,
-      spanId: newId("spn"),
+      spanId,
       parentSpanId: this.parentSpanId,
       type,
       name,
@@ -75,21 +77,45 @@ export class CodexStreamObserver implements CodexStreamSink {
     this.sessionId = threadId;
   }
 
+  private commandIdentity(command: string): { program: string } | { program: string; argument0: string } {
+    const tokens = command.trim().match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+    const unquote = (token: string): string => token.replace(/^(?:"|')|(?:"|')$/g, "");
+    const program = path.win32.basename(unquote(tokens[0] ?? "")).slice(0, 40);
+    const argument0 = tokens[1] ? unquote(tokens[1]).slice(0, 64) : undefined;
+    return { program, ...(argument0 ? { argument0 } : {}) };
+  }
+
+  onItemStarted(item: Record<string, unknown>): void {
+    const kind = str(item.type);
+    if (!kind || !["command_execution", "file_change", "mcp_tool_call", "web_search"].includes(kind)) return;
+    this.sawAnyEvent = true;
+    this.sawTool = true;
+    const spanId = newId("spn");
+    const id = str(item.id);
+    if (id) this.activeItems.set(id, { spanId, kind });
+    const command = str(item.command) ?? "";
+    const identity = kind === "command_execution" ? this.commandIdentity(command) : undefined;
+    this.emitter.emit({
+      ...this.base("tool.call.started", identity ? "shell:" + identity.program : kind, spanId),
+      category: "tool",
+      phase: "start",
+      status: "running",
+      attributes: identity
+        ? { ...identity, commandBytes: Buffer.byteLength(command, "utf8") }
+        : { tool: kind },
+    });
+  }
+
   onItemCompleted(item: Record<string, unknown>): void {
     this.sawAnyEvent = true;
     const kind = str(item.type);
     if (kind === "command_execution") {
       this.commandExecution(item);
-    } else if (kind === "file_change" && Array.isArray(item.changes)) {
-      this.fileChange(item.changes as Array<Record<string, unknown>>);
+    } else if (kind === "file_change") {
+      this.completeGenericTool(item, kind);
+      if (Array.isArray(item.changes)) this.fileChange(item.changes as Array<Record<string, unknown>>);
     } else if (kind === "mcp_tool_call" || kind === "web_search") {
-      this.sawTool = true;
-      this.emitter.emit({
-        ...this.base("tool.call.completed", kind),
-        category: "tool",
-        status: str(item.status) === "failed" ? "error" : "ok",
-        attributes: { tool: kind },
-      });
+      this.completeGenericTool(item, kind);
     }
     // agent_message: the runner's final output, not trace content.
     // reasoning: deliberately never captured. error: non-fatal notice (E8), not a failure.
@@ -105,14 +131,17 @@ export class CodexStreamObserver implements CodexStreamSink {
     const failed = declined || (exitCode !== undefined && exitCode !== 0);
     // win32.basename strips both "/" and "\\" on every platform, so an absolute exe path (which on
     // Windows carries the user profile) never reaches the store.
-    const program = path.win32.basename(command.trim().split(/\s+/)[0] ?? "").slice(0, 40);
+    const identity = this.commandIdentity(command);
+    const active = str(item.id) ? this.activeItems.get(str(item.id)!) : undefined;
+    if (str(item.id)) this.activeItems.delete(str(item.id)!);
     this.emitter.emit({
-      ...this.base(failed ? "tool.call.failed" : "tool.call.completed", "shell:" + program),
+      ...this.base(failed ? "tool.call.failed" : "tool.call.completed", "shell:" + identity.program, active?.spanId),
       category: "tool",
+      ...(active ? { phase: "end" as const } : {}),
       status: failed ? "error" : "ok",
       // Metadata only: the command text itself is content and goes in the summary, under policy.
       attributes: {
-        program,
+        ...identity,
         commandBytes: Buffer.byteLength(command, "utf8"),
         ...(exitCode !== undefined ? { exitCode } : {}),
         outputBytes: bytes(item.aggregated_output),
@@ -132,15 +161,31 @@ export class CodexStreamObserver implements CodexStreamSink {
       // Keep this separate from tool.call.failed: consumers need to distinguish a sandbox policy
       // decision from an ordinary non-zero exit. Only bounded metadata is captured here.
       this.emitter.emit({
-        ...this.base("policy.denied", program || "shell"),
+        ...this.base("policy.denied", identity.program || "shell"),
         category: "policy",
         status: "error",
         actorId: "sandbox",
         actorType: "service",
         source: { component: "Sandbox", adapter: this.adapter, observed: true },
-        attributes: { program, decision: "sandbox_declined", commandBytes: Buffer.byteLength(command, "utf8") },
+        attributes: { ...identity, decision: "sandbox_declined", commandBytes: Buffer.byteLength(command, "utf8") },
       });
     }
+  }
+
+  private completeGenericTool(item: Record<string, unknown>, kind: string): void {
+    this.sawTool = true;
+    const id = str(item.id);
+    const active = id ? this.activeItems.get(id) : undefined;
+    if (id) this.activeItems.delete(id);
+    const failed = str(item.status) === "failed" || str(item.status) === "declined";
+    this.emitter.emit({
+      ...this.base(failed ? "tool.call.failed" : "tool.call.completed", kind, active?.spanId),
+      category: "tool",
+      ...(active ? { phase: "end" as const } : {}),
+      status: failed ? "error" : "ok",
+      attributes: { tool: kind },
+      ...(failed ? { error: { type: "tool_failed", message: kind + " failed" } } : {}),
+    });
   }
 
   private fileChange(changes: Array<Record<string, unknown>>): void {

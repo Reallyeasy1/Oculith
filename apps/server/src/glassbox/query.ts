@@ -41,6 +41,7 @@ export interface TraceMetrics {
   terminalStatus: TraceStatus;
   toolCalls: number;
   toolFailures: number;
+  toolIdentities?: string[] | undefined;
   modelCalls: number;
   tokens?: { input?: number | undefined; cachedInput?: number | undefined; output?: number | undefined } | undefined;
   retries: number;
@@ -257,6 +258,11 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
     span.category === "model" && events.some((event) => event.spanId === span.spanId && event.type.startsWith("model.")),
   );
   const retrySpans = new Set(events.filter((event) => event.attempt > 1).map((event) => event.spanId));
+  const toolIdentities = [...new Set(toolSpans.map((span) => {
+    const program = typeof span.attributes.program === "string" ? span.attributes.program : "";
+    const argument0 = typeof span.attributes.argument0 === "string" ? span.attributes.argument0 : "";
+    return [program, argument0].filter(Boolean).join(" ");
+  }).filter(Boolean))].slice(0, 3);
   const metrics: TraceMetrics = {
     ...(durationMs !== undefined ? { durationMs } : {}),
     terminalStatus: status,
@@ -265,6 +271,7 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
       span.status === "error" || span.status === "timeout" || span.status === "cancelled" ||
       events.some((event) => event.spanId === span.spanId && event.type === "tool.call.failed"),
     ).length,
+    ...(toolIdentities.length > 0 ? { toolIdentities } : {}),
     modelCalls: modelSpans.length,
     ...(usage && (usage.inputTokens !== undefined || usage.cachedInputTokens !== undefined || usage.outputTokens !== undefined)
       ? { tokens: {

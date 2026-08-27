@@ -92,6 +92,7 @@ export interface RunListItem {
   capabilities: { model: "observed" | "unavailable" | "unknown"; tool: "observed" | "unavailable" | "unknown" };
   toolCalls: number;
   toolFailures: number;
+  toolIdentities?: string[];
   tokens?: { output?: number };
   denials: number;
   actions: number;
@@ -166,6 +167,7 @@ export interface TraceSummary {
     terminalStatus: TraceStatus;
     toolCalls: number;
     toolFailures: number;
+    toolIdentities?: string[];
     modelCalls: number;
     tokens?: { input?: number; cachedInput?: number; output?: number };
     retries: number;
