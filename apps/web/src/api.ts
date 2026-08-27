@@ -1,4 +1,4 @@
-import type { Agent, AgentRun, CapturePolicy, Message, RunListItem, SystemInfo, TraceView } from "./types";
+import type { Agent, AgentRun, CapturePolicy, Message, RunListItem, SystemInfo, TraceView, WorkspaceTemplate } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -60,7 +60,7 @@ export const api = {
       method: "DELETE",
     }),
   listWorkspaces: () => request<{ workspaces: { name: string; path: string; agents: string[]; fileCount: number; lastModified: string; managed: boolean }[] }>("/api/workspaces"),
-  listWorkspaceTemplates: () => request<{ templates: { name: string; fileCount: number; bytes: number }[] }>("/api/workspace-templates"),
+  listWorkspaceTemplates: () => request<{ templates: WorkspaceTemplate[] }>("/api/workspace-templates"),
   startAgent: (id: string) =>
     request<{ agent: Agent }>("/api/agents/" + id + "/start", {
       method: "POST",

@@ -27,6 +27,28 @@ describe("Workspace templates", () => {
     const target = manager.pathForName("shared"); await manager.create(agent(target));
     await expect(manager.create(agent(target), true, "demo")).rejects.toThrow("A template requires a new workspace");
   });
+  it("keeps a template's README.md and .gitignore; AGENTS.md stays platform-owned", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "workspace-template-")); roots.push(root);
+    const templates = path.join(root, "templates"); const source = path.join(templates, "demo");
+    await mkdir(source, { recursive: true });
+    await writeFile(path.join(source, "README.md"), "template readme"); await writeFile(path.join(source, ".gitignore"), "template ignore\n"); await writeFile(path.join(source, "AGENTS.md"), "template agents");
+    const manager = new WorkspaceManager(path.join(root, "workspaces"), templates); await manager.initialize();
+    const target = manager.pathForName("demo-workspace"); await manager.create(agent(target), false, "demo");
+    expect(await readFile(path.join(target, "README.md"), "utf8")).toBe("template readme");
+    expect(await readFile(path.join(target, ".gitignore"), "utf8")).toBe("template ignore\n");
+    expect(await readFile(path.join(target, "AGENTS.md"), "utf8")).toContain("Platform-managed");
+  });
+  it("reports a template that breaks the copy limits instead of failing the whole list", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "workspace-template-")); roots.push(root);
+    const templates = path.join(root, "templates");
+    await mkdir(path.join(templates, "good"), { recursive: true }); await writeFile(path.join(templates, "good", "a.txt"), "ok");
+    await mkdir(path.join(templates, "huge"), { recursive: true }); await writeFile(path.join(templates, "huge", "blob.bin"), Buffer.alloc(10 * 1024 * 1024 + 1));
+    const manager = new WorkspaceManager(path.join(root, "workspaces"), templates); await manager.initialize();
+    expect(await manager.listTemplates()).toEqual([
+      { name: "good", fileCount: 1, bytes: 2 },
+      { name: "huge", error: "Workspace template exceeds copy limits" },
+    ]);
+  });
 });
 
 describe("WorkspaceManager.list", () => {

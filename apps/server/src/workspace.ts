@@ -45,14 +45,19 @@ export class WorkspaceManager {
     await walk(directory); return { files, bytes };
   }
 
-  async listTemplates(): Promise<{ name: string; fileCount: number; bytes: number }[]> {
+  async listTemplates(): Promise<({ name: string; fileCount: number; bytes: number } | { name: string; error: string })[]> {
     let entries;
     try { entries = await readdir(this.templatesRoot, { withFileTypes: true }); } catch { return []; }
-    const templates = [];
+    const templates: ({ name: string; fileCount: number; bytes: number } | { name: string; error: string })[] = [];
     for (const entry of entries) {
       if (!entry.isDirectory() || !NAME.test(entry.name)) continue;
-      const size = await this.templateSize(this.templatePath(entry.name));
-      templates.push({ name: entry.name, fileCount: size.files, bytes: size.bytes });
+      // A symlink or over-limit template is reported per entry, never a 500 for the whole list (same shape as list()).
+      try {
+        const size = await this.templateSize(this.templatePath(entry.name));
+        templates.push({ name: entry.name, fileCount: size.files, bytes: size.bytes });
+      } catch (error) {
+        templates.push({ name: entry.name, error: error instanceof Error ? error.message : String(error) });
+      }
     }
     return templates.sort((a, b) => a.name.localeCompare(b.name));
   }
@@ -69,12 +74,14 @@ export class WorkspaceManager {
     }
     await this.writeInstructions(agent);
     if (exists) return;
-    await writeFile(
+    // AGENTS.md is platform-owned (written above); README.md/.gitignore are defaults a template may ship itself.
+    const writeIfAbsent = (file: string, content: string) =>
+      writeFile(file, content, { encoding: "utf8", flag: "wx" }).catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });
+    await writeIfAbsent(
       path.join(agent.workspacePath, ".gitignore"),
       [".codex/", "node_modules/", "dist/", ".env", "*.log", ""].join("\n"),
-      "utf8",
     );
-    await writeFile(
+    await writeIfAbsent(
       path.join(agent.workspacePath, "README.md"),
       [
         "# " + agent.name + " workspace",
@@ -83,7 +90,6 @@ export class WorkspaceManager {
         "The platform-generated AGENTS.md contains the current Agent instructions.",
         "",
       ].join("\n"),
-      "utf8",
     );
   }
 

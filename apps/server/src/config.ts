@@ -1,6 +1,11 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
+
+// Templates ship with the repo (not runtime state), so the default is repo-relative rather than cwd-relative:
+// `npm run dev` runs the server with cwd apps/server. src/ and dist/ sit at the same depth.
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 const envSchema = z.object({
   HOST: z.string().default("0.0.0.0"),
@@ -8,7 +13,7 @@ const envSchema = z.object({
   LOG_LEVEL: z.string().default("info"),
   APP_DATA_DIR: z.string().default(path.resolve(".data")),
   AGENT_WORKSPACE_ROOT: z.string().default(path.resolve("workspaces")),
-  WORKSPACE_TEMPLATES_DIR: z.string().default(path.resolve("workspace-templates")),
+  WORKSPACE_TEMPLATES_DIR: z.string().default(path.join(REPO_ROOT, "workspace-templates")),
   CODEX_HOME: z.string().default(path.resolve("codex-home")),
   CODEX_BIN: z.string().default("codex"),
   CODEX_SANDBOX_MODE: z

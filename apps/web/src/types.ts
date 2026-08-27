@@ -201,3 +201,6 @@ export interface SystemInfo {
   containerEngine: string | null;
   runtime: string;
 }
+
+// Mirrors WorkspaceManager.listTemplates(): a bad template (symlink, over limits) is reported, not a 500.
+export type WorkspaceTemplate = { name: string; fileCount: number; bytes: number } | { name: string; error: string };
