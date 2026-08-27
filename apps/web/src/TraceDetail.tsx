@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ObservationEvent, RunListItem, Span, TraceView } from "./types";
-import type { RunLogLine } from "./types";
 import { api } from "./api";
+import type { AuditRow, ObservationEvent, RunListItem, RunLogLine, Span, TraceView } from "./types";
 import { STATUS_ICON, formatClock, formatDuration, formatUsage } from "./runs-view-model";
 import {
   CATEGORIES,
@@ -9,25 +8,26 @@ import {
   EMPTY_FILTER,
   STATUSES,
   barGeometry,
+  capabilityCopy,
   defaultExpanded,
   formatAttribute,
   indexSpans,
   isFilterActive,
+  spanStatusLabel,
+  timelineTicks,
   visibleRows,
   type TraceFilter,
 } from "./trace-view-model";
 
-// Three capability states (PRD §8): observed | unavailable | unknown. "unknown" = the Run was cut short
-// before the stream said anything; it is not a capability gap. Short badge copy; long form in `title`.
-const CAPABILITY_LABEL = { observed: "observed", unavailable: "unavailable", unknown: "no evidence — run cut short" } as const;
-const CAPABILITY_TITLE = {
-  observed: "The runtime emitted events for this layer.",
-  unavailable: "The Run completed but the runtime exposed no events for this layer.",
-  unknown: "The Run was cancelled, timed out, or its stream never started, so nothing was said about this layer; absence proves nothing.",
-} as const;
-
-function CapabilityBadge({ layer, state }: { layer: "model" | "tool"; state: keyof typeof CAPABILITY_LABEL }) {
-  return <span className="badge" title={layer + ": " + CAPABILITY_TITLE[state]}>{layer} {CAPABILITY_LABEL[state]}</span>;
+// Three capability states (PRD §8): observed | unavailable | unknown. Unknown remains pending while a
+// Run is live; only an ended Run can say it was cut short. Short badge copy; long form in `title`.
+function CapabilityBadge({ layer, state, status }: {
+  layer: "model" | "tool";
+  state: "observed" | "unavailable" | "unknown";
+  status: TraceView["summary"]["status"];
+}) {
+  const copy = capabilityCopy(state, status);
+  return <span className="badge" title={layer + ": " + copy.title}>{layer} {copy.label}</span>;
 }
 
 interface Props {
@@ -49,6 +49,9 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
   const [logs, setLogs] = useState<RunLogLine[]>([]);
   const [logsTruncated, setLogsTruncated] = useState(false);
   const [logLevel, setLogLevel] = useState("");
+  const [showAudit, setShowAudit] = useState(false);
+  const [auditRows, setAuditRows] = useState<AuditRow[] | null>(null);
+  const [auditError, setAuditError] = useState<string | null>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   // Bumped whenever focus must move programmatically (keyboard nav, Jump, drawer close); the effect below
   // runs after the target row has rendered, which matters when Jump expands a collapsed path.
@@ -66,7 +69,19 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
   const redactedSpans = useMemo(() => new Set(view?.events.filter((e) => e.privacy.redacted).map((e) => e.spanId)), [view]);
   const expanded = useMemo(() => expandedState ?? (view ? defaultExpanded(view) : new Set<string>()), [expandedState, view]);
   const rows = useMemo(() => (view ? visibleRows(view.spans, expanded, filter) : []), [view, expanded, filter]);
+  const ticks = useMemo(() => timelineTicks(view?.summary.durationMs), [view?.summary.durationMs]);
   const rovingId = focusId && rows.some((r) => r.span.spanId === focusId) ? focusId : (rows[0]?.span.spanId ?? null);
+
+  // Refresh audit rows alongside the trace while the panel is visible; this is derived data, so the
+  // trace remains the source of truth for navigating to the supporting span.
+  useEffect(() => {
+    if (!showAudit) return;
+    let cancelled = false;
+    void api.audit(runId)
+      .then(({ audit }) => { if (!cancelled) { setAuditRows(audit); setAuditError(null); } })
+      .catch((reason) => { if (!cancelled) setAuditError(reason instanceof Error ? reason.message : String(reason)); });
+    return () => { cancelled = true; };
+  }, [runId, showAudit, view]);
 
   useEffect(() => {
     if (focusReq > 0 && rovingId) rowRefs.current.get(rovingId)?.focus();
@@ -129,6 +144,16 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
   };
 
   const closeDrawer = () => { const id = openId; setOpenId(null); if (id) focusRow(id); };
+  const openAuditSpan = (spanId: string) => {
+    const path: string[] = [];
+    for (let current = byId.get(spanId); current; current = current.parentSpanId ? byId.get(current.parentSpanId) : undefined) path.push(current.spanId);
+    setFilter(EMPTY_FILTER);
+    setExpanded((prev) => { const next = new Set(prev ?? expanded); path.forEach((id) => next.add(id)); return next; });
+    setShowAudit(false);
+    setOpenId(null);
+    setFocusId(spanId);
+    setFocusReq((n) => n + 1);
+  };
 
   return (
     <section ref={sectionRef} className="runs-view trace-detail" aria-labelledby="trace-heading">
@@ -146,26 +171,36 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
       <dl className="trace-summary">
         <Field label="Trace">{summary.traceId || "—"}</Field>
         <Field label="Agent">{run?.agentName || summary.agentId || "—"}</Field>
-        <Field label="Runtime / model">{run ? run.runtime + " · " + run.model : "—"}</Field>
-        <Field label="Session">{summary.sessionId ?? "—"}</Field>
+        <Field label="Workspace">{summary.workspace ?? run?.workspace ?? "—"}</Field>
+        <Field label="Runtime / model" className="trace-runtime"><span title={run ? run.runtime + " · " + run.model : undefined}>{run ? run.runtime + " · " + run.model : "—"}</span></Field>
+        <Field label="Session">{summary.sessionId ?? <span className="trace-muted">not observed</span>}</Field>
         <Field label="Start">{formatClock(summary.startedAt)}</Field>
-        <Field label="Duration">{formatDuration(summary.durationMs)}{summary.endedReason === "server_restart" ? " until restart" : ""}</Field>
+        <Field label="Duration">{formatDuration(summary.durationMs)}{summary.endedReason === "server_restart" ? " observed · interrupted by restart" : ""}</Field>
         <Field label="Events">{summary.eventCount} · {summary.spanCount} spans</Field>
         <Field label="Usage">{formatUsage(summary.usage)}</Field>
-        <Field label="Trust">
-          <CapabilityBadge layer="model" state={summary.capabilities.model} />
-          <CapabilityBadge layer="tool" state={summary.capabilities.tool} />
+        <Field label="Metrics">
+          {summary.metrics.toolCalls} tool calls · {summary.metrics.toolFailures} failed · {summary.metrics.modelCalls} model calls
+          {summary.metrics.retries > 0 ? ` · ${summary.metrics.retries} retries` : ""}
+          {summary.metrics.denials > 0 ? ` · ${summary.metrics.denials} denied` : ""}
+        </Field>
+        <Field label="Config hash">
+          <code title={run?.configSnapshot ? JSON.stringify(run.configSnapshot) : undefined}>{summary.configHash ?? run?.configHash ?? "—"}</code>
+        </Field>
+        <Field label="Evidence" className="trace-evidence">
+          <CapabilityBadge layer="model" state={summary.capabilities.model} status={summary.status} />
+          <CapabilityBadge layer="tool" state={summary.capabilities.tool} status={summary.status} />
           {summary.redactedEvents > 0 && <span className="badge">redacted {summary.redactedEvents}</span>}
           {summary.truncated && <span className="badge badge-warn">truncated</span>}
           {summary.degraded && <span className="badge badge-warn">degraded</span>}
           {summary.incompleteSpans > 0 && <span className="badge badge-warn">{summary.incompleteSpans} incomplete</span>}
+          {summary.workspaceChanges && <span className="badge">{summary.workspaceChanges.added + summary.workspaceChanges.modified + summary.workspaceChanges.removed} files changed</span>}
         </Field>
       </dl>
 
       {failure && (
         <div className="error-banner trace-banner" aria-live="polite">
           <div>
-            <strong>First actionable {failure.kind}: {failure.name}</strong>
+            <strong>{failure.kind === "denied" ? "First denial" : "First actionable " + failure.kind}: {failure.name}</strong>
             <span className="trace-banner-meta">{failure.category} · {failure.component}{failure.message ? " · " + failure.message : ""}</span>
             <p className="trace-diagnosis">{failure.diagnosis}</p>
           </div>
@@ -193,17 +228,50 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
         </label>
         <label className="trace-check">
           <input type="checkbox" checked={filter.errorsOnly} onChange={(e) => setFilter({ ...filter, errorsOnly: e.target.checked })} />
-          errors only
+          Errors only
         </label>
         {isFilterActive(filter) && (
           <button type="button" className="button button-ghost" onClick={() => setFilter(EMPTY_FILTER)}>Clear</button>
         )}
+        <button
+          type="button"
+          className="button button-ghost"
+          aria-pressed={showAudit}
+          onClick={() => setShowAudit((open) => !open)}
+        >
+          Audit
+        </button>
       </div>
+
+      {showAudit ? (
+        <AuditTable rows={auditRows} error={auditError} onOpenSpan={openAuditSpan} />
+      ) : (
+        <>
+      {ticks.length > 0 && (
+        <div className="trace-axis" aria-hidden="true">
+          <span className="trace-axis-title">Timeline</span>
+          <span className="trace-axis-scale">
+            {ticks.map((tick, index) => (
+              <span
+                key={tick.milliseconds}
+                className={"trace-axis-tick" + (index === 0 ? " first" : index === ticks.length - 1 ? " last" : "")}
+                style={{ left: tick.percent + "%" }}
+              >
+                <span>{formatDuration(tick.milliseconds)}</span>
+              </span>
+            ))}
+          </span>
+        </div>
+      )}
 
       <div className="trace-tree" role="tree" aria-label="Spans">
         {rows.map((row, index) => {
           const s = row.span;
-          const geo = barGeometry(s, view);
+          const geo = barGeometry(s, view, s.parentSpanId ? byId.get(s.parentSpanId) : undefined);
+          const timingDescription = geo
+            ? `${s.name}: starts ${formatDuration(geo.startOffsetMs)} after Run start; ${geo.instant ? "instant event" : `duration ${formatDuration(geo.durationMs)}`}${geo.openEnded ? "; incomplete and open-ended" : ""}${geo.endsAfterParent ? "; ends after parent" : ""}.`
+            : undefined;
+          const timingId = `span-timing-${s.spanId}`;
           const failing = failure?.spanId === s.spanId;
           return (
             <div
@@ -213,9 +281,10 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
               aria-level={s.depth + 1}
               aria-expanded={row.hasChildren ? row.expanded : undefined}
               aria-selected={openId === s.spanId}
+              aria-describedby={timingDescription ? timingId : undefined}
               tabIndex={rovingId === s.spanId ? 0 : -1}
               className={"trace-row" + (failing ? " failing" : "") + (row.context ? " context" : "") + (openId === s.spanId ? " selected" : "")}
-              style={{ paddingLeft: 12 + s.depth * 18 }}
+              style={{ "--trace-indent": `${s.depth * 18}px` } as React.CSSProperties}
               onClick={() => { setFocusId(s.spanId); setOpenId(s.spanId); }}
               onKeyDown={(e) => onRowKey(e, index)}
             >
@@ -229,7 +298,7 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
               >
                 {row.hasChildren ? (row.expanded ? "▾" : "▸") : "·"}
               </button>
-              <span className={"status status-" + s.status}><span aria-hidden="true">{STATUS_ICON[s.status]}</span>{s.status}</span>
+              <span className={"status status-" + s.status}><span aria-hidden="true">{STATUS_ICON[s.status]}</span>{spanStatusLabel(s, summary.endedReason)}</span>
               <span className="trace-name">{s.name}</span>
               <span className="trace-cat">{s.category}</span>
               <span className="trace-badges">
@@ -237,10 +306,17 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
                 {!s.source.observed && <span className="badge">unavailable</span>}
                 {redactedSpans.has(s.spanId) && <span className="badge">redacted</span>}
               </span>
-              <span className="trace-bar" aria-hidden="true">
-                {geo && <span className={"trace-bar-fill fill-" + s.status} style={{ left: geo.left + "%", width: geo.width + "%" }} />}
+              <span className="trace-bar" title={timingDescription} aria-hidden="true">
+                {geo?.instant && <span className={"trace-bar-marker fill-" + s.status} style={{ left: geo.left + "%" }} />}
+                {geo && !geo.instant && (
+                  <span
+                    className={"trace-bar-fill fill-" + s.status + (geo.openEnded ? " open-ended" : "")}
+                    style={{ left: geo.left + "%", width: geo.width + "%" }}
+                  />
+                )}
               </span>
               <span className="trace-dur">{formatDuration(s.durationMs)}</span>
+              {timingDescription && <span id={timingId} className="sr-only">{timingDescription}</span>}
             </div>
           );
         })}
@@ -248,37 +324,67 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
           <p className="runs-empty">{view.spans.length === 0 ? "No spans observed yet." : "No spans match these filters."}</p>
         )}
       </div>
+        </>
+      )}
 
-      <details className="trace-logs">
-        <summary>Logs · {logs.length}{logsTruncated ? "+" : ""}</summary>
-        <label>Level
-          <select value={logLevel} onChange={(event) => setLogLevel(event.target.value)}>
-            <option value="">all</option>
-            <option value="info">info</option>
-            <option value="error">error</option>
-          </select>
-        </label>
-        {logs.length === 0 ? <p className="runs-empty">No log lines carry this Run&apos;s id.</p> : (
-          <ol className="run-logs">
-            {logs.map((line, index) => (
-              <li key={line.time + ":" + index}>
-                <time>{formatClock(line.time)}</time> <strong>{line.level}</strong>{" "}
-                {line.spanId && byId.has(line.spanId) ? <button type="button" onClick={() => focusRow(line.spanId!)}>{line.msg}</button> : <span>{line.msg}</span>}
-                {line.err && <small>{line.err}</small>}
-              </li>
-            ))}
-          </ol>
-        )}
-      </details>
+      {!showAudit && (
+        <>
+          <details className="trace-logs">
+            <summary>Logs · {logs.length}{logsTruncated ? "+" : ""}</summary>
+            <label>Level
+              <select value={logLevel} onChange={(event) => setLogLevel(event.target.value)}>
+                <option value="">all</option>
+                <option value="info">info</option>
+                <option value="error">error</option>
+              </select>
+            </label>
+            {logs.length === 0 ? <p className="runs-empty">No log lines carry this Run&apos;s id.</p> : (
+              <ol className="run-logs">
+                {logs.map((line, index) => (
+                  <li key={line.time + ":" + index}>
+                    <time>{formatClock(line.time)}</time> <strong>{line.level}</strong>{" "}
+                    {line.spanId && byId.has(line.spanId) ? <button type="button" onClick={() => focusRow(line.spanId!)}>{line.msg}</button> : <span>{line.msg}</span>}
+                    {line.err && <small>{line.err}</small>}
+                  </li>
+                ))}
+              </ol>
+            )}
+          </details>
 
-      {openSpan && <SpanDrawer span={openSpan} view={view} parentName={openSpan.parentSpanId ? byId.get(openSpan.parentSpanId)?.name : undefined} onClose={closeDrawer} />}
+          {openSpan && <SpanDrawer span={openSpan} view={view} parentName={openSpan.parentSpanId ? byId.get(openSpan.parentSpanId)?.name : undefined} onClose={closeDrawer} />}
+        </>
+      )}
     </section>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function AuditTable({ rows, error, onOpenSpan }: { rows: AuditRow[] | null; error: string | null; onOpenSpan: (spanId: string) => void }) {
+  if (error) return <p className="runs-empty" role="alert">Audit could not be loaded: {error}</p>;
+  if (!rows) return <p className="runs-empty" aria-live="polite">Loading audit…</p>;
+  if (rows.length === 0) return <p className="runs-empty">No audit-relevant events for this Run.</p>;
   return (
-    <div>
+    <div className="runs-table-wrap audit-table-wrap">
+      <table className="runs-table audit-table">
+        <thead><tr><th scope="col">Time</th><th scope="col">Actor</th><th scope="col">Action</th><th scope="col">Resource</th><th scope="col">Outcome</th></tr></thead>
+        <tbody>{rows.map((row) => (
+          <tr key={row.eventId} tabIndex={0} onClick={() => onOpenSpan(row.spanId)} onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpenSpan(row.spanId); }
+          }} aria-label={`Open evidence for ${row.action} by ${row.actor.type}/${row.actor.id}`}>
+            <td>{formatClock(row.at)}</td>
+            <td>{row.actor.type}/{row.actor.id}</td>
+            <td><button type="button" className="audit-evidence" onClick={() => onOpenSpan(row.spanId)}>{row.action}</button></td>
+            <td>{row.resource}</td>
+            <td><span className={"badge audit-outcome" + (row.outcome === "denied" ? " badge-error" : "")}>{row.outcome}</span></td>
+          </tr>
+        ))}</tbody>
+      </table>
+    </div>
+  );
+}
+
+function Field({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
+  return (
+    <div className={className}>
       <dt>{label}</dt>
       <dd>{children}</dd>
     </div>
@@ -292,6 +398,7 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
   const events = useMemo(() => view.events.filter((e) => e.spanId === span.spanId), [view, span]);
   const attempt = events[0]?.attempt;
   const shown = events.slice(0, DRAWER_EVENT_CAP);
+  const workspaceChange = view.events.find((event) => event.type === "workspace.changed" && event.parentSpanId === span.spanId);
 
   useEffect(() => { ref.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus(); }, [span.spanId]);
 
@@ -316,7 +423,7 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
       </div>
       <dl className="trace-summary">
         <Field label="Status">
-          <span className={"status status-" + span.status}><span aria-hidden="true">{STATUS_ICON[span.status]}</span>{span.status}</span>
+          <span className={"status status-" + span.status}><span aria-hidden="true">{STATUS_ICON[span.status]}</span>{view.summary.endedReason === "server_restart" && span.incomplete ? "interrupted by server restart (never closed)" : span.status}</span>
           {span.incomplete && <span className="badge badge-warn">incomplete</span>}
         </Field>
         <Field label="Span id">{span.spanId}</Field>
@@ -339,6 +446,13 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
         <>
           <h4>Safe summary <span className="badge">{span.summary.policy}</span></h4>
           <p className="span-summary">{span.summary.text}</p>
+        </>
+      )}
+
+      {workspaceChange && (
+        <>
+          <h4>Changed paths</h4>
+          <pre className="span-summary">{String(workspaceChange.attributes.paths || "No paths changed")}</pre>
         </>
       )}
 

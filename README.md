@@ -88,7 +88,7 @@ xdg-open http://localhost:3000   # Linux desktop
 In the Web UI:
 
 1. Select **Create Agent**.
-2. Enter a name, description, and workspace instructions.
+2. Enter a name, description, instructions, and optionally choose or name a workspace.
 3. Select **Create Agent** again.
 4. Enter a task in the Playground, for example:
 
@@ -232,6 +232,7 @@ flowchart LR
 
 The first turn uses `codex exec`; later turns resume the stored Codex thread.
 Deleting an Agent archives its workspace under `workspaces/.deleted/`.
+Named workspaces may be shared by multiple Agents and are never archived by Agent deletion. To seed one before creating an Agent, create a directly nested directory such as `workspaces/repo-doctor`; the Create Agent workspace field will list it after startup. Switching an Agent's workspace clears its Codex thread so later turns cannot retain references to the previous project.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for component and extension
 boundaries.
@@ -298,6 +299,7 @@ assertion in `container-codex-runner.test.ts` (see the Windows caveat in `CLAUDE
 
 ## Limitations
 
+- Agents run in disposable containers and cannot expose ports to the user's machine; runnable build output stays in the workspace with a host-side command to start it.
 - Single process. `JsonStore` and the NDJSON trace store are in-memory-plus-file with no cross-process locking; run one server.
 - Local NDJSON trace store only — no external backend, no query engine beyond the in-memory index. Retention is a startup-only pass (`GLASSBOX_RETENTION_DAYS` / `GLASSBOX_MAX_DISK_MB`); evicted Runs keep their metadata skeleton and a `trace.truncated` tombstone.
 - No `workspace.changed` events on this Codex/Ark stack: Ark shells out instead of calling `apply_patch`, so no `file_change` item has ever been observed (see [docs/CODEX_EVENTS.md](docs/CODEX_EVENTS.md)). The mapping exists but stays dormant rather than inventing a diff.
@@ -307,6 +309,10 @@ assertion in `container-codex-runner.test.ts` (see the Windows caveat in `CLAUDE
 
 ## Documentation
 
+- [TechJam Track 1 problem statement](docs/PROBLEM_STATEMENT.md) — the requirements this project answers, with a mapping to the PRD
+- [Project brief](docs/PROJECT_BRIEF.md) — concept, what is built, sprint plan, working agreements
+- [Sprint plan](docs/SPRINTS.md)
+- [UAT coverage](docs/UAT_COVERAGE.md) — what has been tested, how, and what remains
 - [Architecture](docs/ARCHITECTURE.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)

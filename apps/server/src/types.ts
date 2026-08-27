@@ -9,6 +9,9 @@ export interface Agent {
   instructions: string;
   status: AgentStatus;
   workspacePath: string;
+  workspaceName?: string | undefined;
+  workspaceManaged?: boolean | undefined;
+  workspaceTemplate?: string | undefined;
   codexThreadId: string | null;
   lastError: string | null;
   createdAt: string;
@@ -30,6 +33,16 @@ export interface RunUsage {
   outputTokens?: number;
 }
 
+export interface AgentConfigSnapshot {
+  instructions: string;
+  modelProvider: "ark" | "openai";
+  model: string;
+  codexSandboxMode: "read-only" | "workspace-write" | "danger-full-access";
+  runtimeProvider: "local-process" | "container";
+  containerRuntimeImage: string;
+  capturePolicy: "metadata_only" | "safe_summary";
+}
+
 export interface AgentRun {
   id: string;
   agentId: string;
@@ -42,6 +55,32 @@ export interface AgentRun {
   completedAt: string | null;
   createdAt: string;
   traceId?: string | undefined;
+  /** Persisted observation parent used to attach restart cancellation after in-memory span handles are lost. */
+  traceParentSpanId?: string | undefined;
+  configHash?: string | undefined;
+  configSnapshot?: AgentConfigSnapshot | undefined;
+}
+
+export interface RegressionCase {
+  id: string;
+  name: string;
+  prompt: string;
+  workspaceTemplate: string;
+  sourceRunId?: string | undefined;
+  baselineConfigHash: string;
+  assertions: import("./eval/evaluators.js").Assertion[];
+  createdAt: string;
+}
+
+export interface EvalRun {
+  id: string;
+  caseIds: string[];
+  target: { agentId: string; configHash: string; snapshot: AgentConfigSnapshot };
+  runIds: string[];
+  results: { caseId: string; runId?: string | undefined; results: import("./eval/evaluators.js").EvalResult[]; error?: string | undefined }[];
+  status: "running" | "completed" | "failed";
+  createdAt: string;
+  completedAt?: string | undefined;
 }
 
 export interface Database {
@@ -49,18 +88,23 @@ export interface Database {
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
+  regressionCases: RegressionCase[];
+  evalRuns: EvalRun[];
 }
 
 export interface CreateAgentInput {
   name: string;
   description?: string | undefined;
   instructions?: string | undefined;
+  workspace?: string | undefined;
+  template?: string | undefined;
 }
 
 export interface UpdateAgentInput {
   name?: string | undefined;
   description?: string | undefined;
   instructions?: string | undefined;
+  workspace?: string | undefined;
 }
 
 export interface RunnerResult {

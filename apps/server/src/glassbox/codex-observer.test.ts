@@ -59,6 +59,8 @@ describe("CodexStreamObserver", () => {
     ]);
     expect(events.every((e) => e.parentSpanId === "spn_rt" && e.source.observed)).toBe(true);
     expect(events.every((e) => e.sessionId === "thr-1")).toBe(true);
+    // The agent chose these actions: attribute them to it, not to the local user (#135).
+    expect(events.every((e) => e.actorType === "agent" && e.actorId === "agt-1")).toBe(true);
     expect(events[0]!.attributes.exitCode).toBe(0);
     expect(events[0]!.attributes.program).toBe("curl");
     expect(events[0]!.summary?.text).toContain("[REDACTED:bearer]");
@@ -100,6 +102,7 @@ describe("CodexStreamObserver", () => {
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       type: "capability.unavailable",
+      actorType: "service", actorId: "runner",
       attributes: { model: false, tool: false },
     });
   });
@@ -150,9 +153,17 @@ describe("CodexStreamObserver", () => {
     );
     await em.flush();
 
-    const [e] = await store.readRun("run-1");
-    expect(e).toMatchObject({ type: "tool.call.failed", status: "error", error: { type: "denied" } });
-    expect(e!.attributes.exitCode).toBe(-1);
+    const events = await store.readRun("run-1");
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ type: "tool.call.failed", status: "error", error: { type: "denied" } });
+    expect(events[0]!.attributes.exitCode).toBe(-1);
+    expect(events[1]).toMatchObject({
+      type: "policy.denied", category: "policy", status: "error", name: "pwsh",
+      actorId: "sandbox", actorType: "service", source: { component: "Sandbox" },
+      attributes: { program: "pwsh", decision: "sandbox_declined", commandBytes: 9 },
+    });
+    expect(events[1]!.attributes).not.toHaveProperty("command");
+    expect(events[1]!.summary).toBeUndefined();
   });
 
   it("emits one error.recorded from the buffered stream error only when the run failed", async () => {

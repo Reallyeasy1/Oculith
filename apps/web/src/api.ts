@@ -1,4 +1,4 @@
-import type { Agent, AgentRun, CapturePolicy, Message, RunListItem, RunLogLine, SystemInfo, TraceView } from "./types";
+import type { Agent, AgentRun, AuditRow, CapturePolicy, Message, RunListItem, RunLogLine, SystemInfo, TraceView, WorkspaceTemplate } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -40,6 +40,8 @@ export const api = {
     name: string;
     description: string;
     instructions: string;
+    workspace?: string;
+    template?: string;
   }) =>
     request<{ agent: Agent }>("/api/agents", {
       method: "POST",
@@ -47,7 +49,7 @@ export const api = {
     }),
   updateAgent: (
     id: string,
-    body: { name: string; description: string; instructions: string },
+    body: { name: string; description: string; instructions: string; workspace?: string },
   ) =>
     request<{ agent: Agent }>("/api/agents/" + id, {
       method: "PATCH",
@@ -57,6 +59,8 @@ export const api = {
     request<{ archivedWorkspace: string }>("/api/agents/" + id, {
       method: "DELETE",
     }),
+  listWorkspaces: () => request<{ workspaces: { name: string; path: string; agents: string[]; fileCount: number; lastModified: string; managed: boolean }[] }>("/api/workspaces"),
+  listWorkspaceTemplates: () => request<{ templates: WorkspaceTemplate[] }>("/api/workspace-templates"),
   startAgent: (id: string) =>
     request<{ agent: Agent }>("/api/agents/" + id + "/start", {
       method: "POST",
@@ -84,4 +88,5 @@ export const api = {
     ),
   trace: (runId: string) => request<TraceView>("/api/runs/" + runId + "/trace"),
   logs: (runId: string, level = "") => request<{ lines: RunLogLine[]; truncated: boolean }>("/api/runs/" + runId + "/logs?" + new URLSearchParams({ limit: "500", ...(level ? { level } : {}) })),
+  audit: (runId: string) => request<{ schemaVersion: string; capturePolicy: CapturePolicy; audit: AuditRow[] }>("/api/runs/" + runId + "/audit"),
 };

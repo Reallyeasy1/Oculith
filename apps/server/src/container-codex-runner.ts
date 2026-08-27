@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
 import { RunCancelledError } from "./errors.js";
-import { CodexStreamObserver } from "./glassbox/codex-observer.js";
+import { CodexStreamObserver, RUNNER_ACTOR } from "./glassbox/codex-observer.js";
 import { createDefaultEmitter, type ObservationEmitter } from "./glassbox/emitter.js";
 import { newId } from "./glassbox/schema.js";
 import { redactText } from "./glassbox/redact.js";
@@ -46,6 +46,30 @@ export function buildContainerRunArgs(
   config: AppConfig,
 ): string[] {
   const name = containerName(request.agentId, config.runtimeInstanceId);
+  return [
+    ...buildHardenedContainerPrefix({
+      name,
+      agentId: request.agentId,
+      workspacePath: request.workspacePath,
+      config,
+      includeModelCredentials: true,
+      mountCodexHome: true,
+    }),
+    config.containerRuntimeImage,
+    "codex",
+    ...buildCodexArgs(request, config.codexSandboxMode, "/workspace"),
+  ];
+}
+
+export function buildHardenedContainerPrefix(options: {
+  name: string;
+  agentId: string;
+  workspacePath: string;
+  config: AppConfig;
+  includeModelCredentials: boolean;
+  mountCodexHome: boolean;
+}): string[] {
+  const { name, agentId, workspacePath, config } = options;
   const engineName = config.containerEngine.split(/[\\/]/).at(-1)?.toLowerCase();
   return [
     "run",
@@ -56,7 +80,7 @@ export function buildContainerRunArgs(
     "--label",
     "io.codejam.launchpad=agent-runtime",
     "--label",
-    "io.codejam.agent-id=" + request.agentId,
+    "io.codejam.agent-id=" + agentId,
     "--label",
     "io.codejam.instance-id=" + config.runtimeInstanceId,
     ...(engineName === "podman" ? ["--userns", "keep-id"] : []),
@@ -74,25 +98,17 @@ export function buildContainerRunArgs(
     String(config.containerPidsLimit),
     "--user",
     config.containerUser,
-    "--env",
-    "ARK_API_KEY",
-    "--env",
-    "OPENAI_API_KEY",
-    "--env",
-    "CODEX_HOME=/codex-home",
+    ...(options.includeModelCredentials ? ["--env", "ARK_API_KEY", "--env", "OPENAI_API_KEY"] : []),
+    ...(options.mountCodexHome ? ["--env", "CODEX_HOME=/codex-home"] : []),
     "--env",
     "HOME=/tmp",
     "--env",
     "NO_COLOR=1",
     "--mount",
-    "type=bind,src=" + request.workspacePath + ",dst=/workspace",
-    "--mount",
-    "type=bind,src=" + config.codexHome + ",dst=/codex-home",
+    "type=bind,src=" + workspacePath + ",dst=/workspace",
+    ...(options.mountCodexHome ? ["--mount", "type=bind,src=" + config.codexHome + ",dst=/codex-home"] : []),
     "--workdir",
     "/workspace",
-    config.containerRuntimeImage,
-    "codex",
-    ...buildCodexArgs(request, config.codexSandboxMode, "/workspace"),
   ];
 }
 
@@ -161,6 +177,7 @@ export class ContainerCodexRunner implements AgentRunner {
           traceId: request.trace.traceId,
           runId: request.trace.runId,
           agentId: request.trace.agentId,
+          ...RUNNER_ACTOR,
           source: { component: "AgentRunner", adapter: "ContainerCodexRunner", observed: true },
         }
       : undefined;

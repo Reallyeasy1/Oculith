@@ -392,6 +392,13 @@ button {
   margin: 0;
 }
 
+.runtime-connecting {
+  max-width: 1180px;
+  margin: 0 auto 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .config-banner p {
   font-size: 10px;
   margin-top: 2px;
@@ -1190,6 +1197,11 @@ textarea:focus {
 .run-logs { margin: 0; padding-left: 24px; font: 12px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .run-logs small { display: block; color: var(--muted); }
 
+.runs-empty-action {
+  margin-left: 8px;
+  padding: 4px 8px;
+}
+
 .status-ok {
   color: #277756;
   background: #dcf2e9;
@@ -1223,6 +1235,52 @@ textarea:focus {
   color: #8a6d1f;
   border-color: #e3cf95;
   background: #f6ecd2;
+}
+
+.badge-recovered {
+  margin-left: 6px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* "Live now" strip (#131): running Runs above the table, whatever the quick filter says. */
+.live-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.live-run {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--purple);
+  border-radius: 12px;
+  background: var(--purple-soft);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.live-run:hover,
+.live-run.selected {
+  background: #e8e4fb;
+}
+
+.live-run:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: 2px;
+}
+
+.badge-error {
+  color: #ac4343;
+  border-color: #e8b4ae;
+  background: #f6dfdc;
 }
 
 
@@ -1272,6 +1330,10 @@ textarea:focus {
   padding: 0 22px 12px;
 }
 
+.trace-detail > .trace-summary {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
 .trace-summary dt {
   font-size: 9px;
   font-weight: 700;
@@ -1284,6 +1346,31 @@ textarea:focus {
   margin: 2px 0 0;
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+.trace-runtime,
+.trace-runtime dd,
+.trace-runtime dd span {
+  min-width: 0;
+}
+
+.trace-runtime dd span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-muted {
+  color: var(--muted);
+}
+
+.trace-evidence {
+  grid-column: 1 / -1;
+}
+
+.trace-evidence .badge {
+  white-space: nowrap;
 }
 
 .trace-banner {
@@ -1309,6 +1396,19 @@ textarea:focus {
 
 .trace-banner .button {
   flex-shrink: 0;
+  color: #fff;
+  background: #8b3030;
+  box-shadow: 0 7px 18px rgba(92, 27, 27, 0.22);
+}
+
+.trace-banner .button:hover:not(:disabled) {
+  background: #702424;
+}
+
+.trace-banner .button:focus-visible {
+  outline: 3px solid #fff;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px #8b3030;
 }
 
 .trace-filters {
@@ -1341,12 +1441,108 @@ textarea:focus {
 .trace-filters .trace-check {
   flex-direction: row;
   align-items: center;
-  padding-bottom: 6px;
+  align-self: flex-end;
+  min-height: 30px;
+  padding-bottom: 0;
+  white-space: nowrap;
+}
+
+.trace-filters input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--purple);
+}
+
+.trace-filters .button[aria-pressed="true"] {
+  background: var(--purple-soft);
+  border-color: var(--purple);
+  color: var(--purple-dark);
+}
+
+.audit-table-wrap {
+  border-top: 1px solid #ecebe5;
+}
+
+.audit-table tbody tr {
+  cursor: pointer;
+}
+
+.audit-table tbody tr:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: -2px;
+}
+
+.audit-evidence {
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid currentColor;
+  background: transparent;
+  color: var(--purple-dark);
+  font: inherit;
+  cursor: pointer;
 }
 
 .trace-tree {
   border-top: 1px solid #ecebe5;
   font-size: 12px;
+}
+
+.trace-axis {
+  display: grid;
+  grid-template-columns: 18px 84px minmax(160px, 1.4fr) 84px auto minmax(120px, 1fr) 64px;
+  align-items: end;
+  gap: 8px;
+  min-height: 38px;
+  padding: 8px 14px 5px 12px;
+  color: var(--muted);
+  font-size: 10px;
+  border-top: 1px solid #ecebe5;
+  border-bottom: 1px solid #ecebe5;
+}
+
+.trace-axis-title {
+  grid-column: 5;
+  text-align: right;
+}
+
+.trace-axis-scale {
+  position: relative;
+  grid-column: 6;
+  height: 23px;
+  border-bottom: 1px solid var(--line);
+}
+
+.trace-axis-tick {
+  position: absolute;
+  inset-block: 12px -4px;
+  width: 1px;
+  background: var(--line);
+}
+
+.trace-axis-tick > span {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  font-variant-numeric: tabular-nums;
+}
+
+.trace-axis-tick.first > span {
+  left: 0;
+  transform: none;
+}
+
+.trace-axis-tick.last > span {
+  right: 0;
+  left: auto;
+  transform: none;
+}
+
+.trace-axis + .trace-tree {
+  border-top: 0;
 }
 
 .trace-row {
@@ -1396,6 +1592,7 @@ textarea:focus {
 
 .trace-name {
   font-weight: 600;
+  padding-left: var(--trace-indent, 0);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1439,6 +1636,60 @@ textarea:focus {
 .trace-bar-fill.fill-timeout,
 .trace-bar-fill.fill-cancelled {
   background: #c9a13d;
+}
+
+.trace-bar-fill.open-ended {
+  border: 1px solid currentColor;
+  background: repeating-linear-gradient(135deg, currentColor 0 2px, transparent 2px 5px);
+  color: var(--purple);
+}
+
+.trace-bar-fill.open-ended.fill-ok {
+  color: var(--green);
+}
+
+.trace-bar-fill.open-ended.fill-error {
+  color: var(--red);
+}
+
+.trace-bar-fill.open-ended.fill-timeout,
+.trace-bar-fill.open-ended.fill-cancelled {
+  color: #c9a13d;
+}
+
+.trace-bar-marker {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 12px;
+  border-radius: 1px;
+  background: var(--purple);
+  transform: translateX(-1px);
+}
+
+.trace-bar-marker.fill-ok {
+  background: var(--green);
+}
+
+.trace-bar-marker.fill-error {
+  background: var(--red);
+}
+
+.trace-bar-marker.fill-timeout,
+.trace-bar-marker.fill-cancelled {
+  background: #c9a13d;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .trace-dur {
@@ -1541,6 +1792,14 @@ textarea:focus {
 }
 
 @media (max-width: 720px) {
+  .trace-detail > .trace-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .trace-axis {
+    display: none;
+  }
+
   .trace-row {
     grid-template-columns: 18px 84px minmax(0, 1fr) 64px;
   }
@@ -1549,6 +1808,12 @@ textarea:focus {
   .trace-row .trace-badges,
   .trace-row .trace-bar {
     display: none;
+  }
+}
+
+@media (min-width: 721px) and (max-width: 1050px) {
+  .trace-detail > .trace-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 

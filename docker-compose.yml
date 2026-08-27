@@ -17,6 +17,7 @@ services:
       PORT: 3000
       APP_DATA_DIR: /app/data
       AGENT_WORKSPACE_ROOT: /app/workspaces
+      WORKSPACE_TEMPLATES_DIR: /app/workspace-templates
       CODEX_HOME: /app/codex-home
       CODEX_SANDBOX_MODE: ${CODEX_SANDBOX_MODE:-workspace-write}
     ports:

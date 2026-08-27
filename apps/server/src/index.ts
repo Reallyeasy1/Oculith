@@ -13,7 +13,7 @@ const config = loadConfig();
 await writeCodexConfig(config);
 
 const store = new JsonStore(path.join(config.dataDirectory, "launchpad.json"));
-const workspaces = new WorkspaceManager(config.workspaceRoot);
+const workspaces = new WorkspaceManager(config.workspaceRoot, config.workspaceTemplatesDirectory);
 const runLogs = new RunLogStore(path.join(config.dataDirectory, "logs"), config.glassboxLogMaxMb * 1024 * 1024);
 await runLogs.initialize();
 
