@@ -78,7 +78,9 @@ const terminal = new Set(["completed", "failed", "cancelled"]);
 async function runTask(agentId, content) {
   const sent = await api("/api/agents/" + agentId + "/messages", { method: "POST", body: JSON.stringify({ content }) });
   eq(sent.status, 202, "POST message accepted");
-  const runId = sent.json().run.id;
+  return runTask.wait(sent.json().run.id);
+}
+runTask.wait = async function waitForRun(runId) {
   const deadline = Date.now() + RUN_TIMEOUT_MS;
   let run;
   while (Date.now() < deadline) {
@@ -95,7 +97,7 @@ async function runTask(agentId, content) {
     await sleep(200);
   }
   return { run, view };
-}
+};
 
 // ---- browser helpers --------------------------------------------------------------------------------------------
 async function openApp(page) {
@@ -172,6 +174,37 @@ let server = null;
   const listed = (await api("/api/runs")).json();
   eq(listed.runs.find((r) => r.runId === okRun.run.id).status, "ok", "/api/runs lists the run as ok");
   console.log("      capabilities " + JSON.stringify(okRun.view.summary.capabilities) + ", redactedEvents " + okRun.view.summary.redactedEvents + ", events " + okRun.view.summary.eventCount);
+
+  console.log("\n[2b] shared workspace: second Agent on the first's workspace, busy lock, switch (#64)");
+  const shared = await api("/api/agents", { method: "POST", body: JSON.stringify({ name: "E2E Sharer", workspace: agent.workspaceName }) });
+  eq(shared.status, 201, "second Agent created on the first Agent's workspace name");
+  const sharer = shared.json().agent;
+  eq(sharer.workspacePath, agent.workspacePath, "both Agents resolve to the same workspace path");
+  const sharedEntry = (await api("/api/workspaces")).json().workspaces.find((w) => w.name === agent.workspaceName);
+  ok(sharedEntry && sharedEntry.agents.includes(agent.id) && sharedEntry.agents.includes(sharer.id) && sharedEntry.managed === false, "/api/workspaces lists the shared workspace with both Agents, unmanaged");
+  // POST queues the Run atomically (Agent → busy) before returning, so the per-workspace lock is observable at once.
+  const held = await api("/api/agents/" + sharer.id + "/messages", { method: "POST", body: JSON.stringify({ content: "Reply with the single word: pong" }) });
+  eq(held.status, 202, "second Agent's run queued in the shared workspace");
+  eq((await api("/api/agents/" + agent.id + "/messages", { method: "POST", body: JSON.stringify({ content: "collide" }) })).status, 409, "409 for the first Agent while the other is mid-Run in the shared workspace");
+  const sharedRun = await runTask.wait(held.json().run.id);
+  eq(sharedRun.run.status, "completed", "shared-workspace run completed (" + sharedRun.run.id + ")");
+  eq(sharedRun.view.summary.workspace, agent.workspaceName, "trace summary names the shared workspace");
+  ok(typeof (await api("/api/agents/" + sharer.id)).json().agent.codexThreadId === "string", "second Agent holds a Codex thread after its run");
+  const switched = await api("/api/agents/" + sharer.id, { method: "PATCH", body: JSON.stringify({ workspace: "e2e-switch" }) });
+  eq(switched.status, 200, "PATCH switches the second Agent to workspace e2e-switch");
+  eq(switched.json().agent.workspaceName, "e2e-switch", "workspaceName follows the switch");
+  eq(switched.json().agent.codexThreadId, null, "codexThreadId is null after the switch");
+  ok(switched.json().agent.workspacePath !== agent.workspacePath && fs.existsSync(path.join(switched.json().agent.workspacePath, "AGENTS.md")), "AGENTS.md exists in the new workspace directory");
+  const switchRun = await runTask(sharer.id, "Reply with the single word: pong");
+  eq(switchRun.run.status, "completed", "post-switch run completed (" + switchRun.run.id + ")");
+  const switchCreated = switchRun.view.events.find((e) => e.type === "run.created");
+  eq(switchCreated && switchCreated.attributes.workspace, "e2e-switch", "run.created.attributes.workspace names the new workspace on the next Run");
+  // Sweep these traces now: deleting the Agent below drops its Runs from the store (the NDJSON files are still swept in [7]).
+  sweep("/api/runs/" + sharedRun.run.id + "/trace", JSON.stringify(sharedRun.view));
+  sweep("/api/runs/" + switchRun.run.id + "/trace", JSON.stringify(switchRun.view));
+  // Newest updatedAt wins the reload's auto-select; remove the second Agent so the UI steps keep their baseline.
+  eq((await api("/api/agents/" + sharer.id, { method: "DELETE" })).status, 200, "second Agent deleted");
+  ok(fs.existsSync(path.join(agent.workspacePath, "AGENTS.md")), "first Agent's workspace survives the other's delete");
 
   console.log("\n[3] export = trace body (FR-12)");
   const traceRes = await api("/api/runs/" + okRun.run.id + "/trace");

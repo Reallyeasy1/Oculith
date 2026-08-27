@@ -19,6 +19,7 @@ export interface AuditRow {
 export interface TraceSummary {
   schemaVersion: typeof SCHEMA_VERSION; capturePolicy: CapturePolicy; runId: string; traceId: string; agentId: string;
   sessionId?: string | undefined; status: TraceStatus; startedAt?: string | undefined; endedAt?: string | undefined;
+  workspace?: string | undefined;
   durationMs?: number | undefined; eventCount: number; spanCount: number; incompleteSpans: number; redactedEvents: number; denials: number;
   audit: { actions: number; denials: number; actors: string[] };
   /** Set when the Run was closed by AgentService.initialize() after a restart: durationMs then stops at the last event observed before the restart. */
@@ -283,6 +284,7 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
   const failure = focusFailure(events, spans, status, degraded, durationMs);
   const auditRows = projectAudit(events);
   const declaredUnavailable = events.some((e) => e.type === "capability.unavailable");
+  const workspace = events.find((event) => event.type === "run.created" && typeof event.attributes.workspace === "string")?.attributes.workspace;
   const workspaceEvent = events.find((event) => event.type === "workspace.changed");
   const workspaceChanges = workspaceEvent ? {
     added: Number(workspaceEvent.attributes.added ?? 0),
@@ -295,6 +297,7 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
     schemaVersion: SCHEMA_VERSION, capturePolicy: opts.capturePolicy,
     runId: first?.runId ?? "", traceId: first?.traceId ?? "", agentId: first?.agentId ?? "",
     sessionId: events.find((e) => e.sessionId)?.sessionId,
+    ...(typeof workspace === "string" ? { workspace } : {}),
     status, startedAt, endedAt, durationMs, endedReason: restart ? "server_restart" : undefined, eventCount: events.length, spanCount: flat.length,
     incompleteSpans: flat.filter((s) => s.incomplete).length, redactedEvents: events.filter((e) => e.privacy.redacted).length,
     denials: events.filter((e) => e.type === "policy.denied").length,

@@ -40,6 +40,7 @@ export const api = {
     name: string;
     description: string;
     instructions: string;
+    workspace?: string;
   }) =>
     request<{ agent: Agent }>("/api/agents", {
       method: "POST",
@@ -47,7 +48,7 @@ export const api = {
     }),
   updateAgent: (
     id: string,
-    body: { name: string; description: string; instructions: string },
+    body: { name: string; description: string; instructions: string; workspace?: string },
   ) =>
     request<{ agent: Agent }>("/api/agents/" + id, {
       method: "PATCH",
@@ -57,6 +58,7 @@ export const api = {
     request<{ archivedWorkspace: string }>("/api/agents/" + id, {
       method: "DELETE",
     }),
+  listWorkspaces: () => request<{ workspaces: { name: string; path: string; agents: string[]; fileCount: number; lastModified: string; managed: boolean }[] }>("/api/workspaces"),
   startAgent: (id: string) =>
     request<{ agent: Agent }>("/api/agents/" + id + "/start", {
       method: "POST",

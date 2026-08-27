@@ -17,6 +17,7 @@ const emptyForm = {
   description: "",
   instructions:
     "Help me build and test software in this workspace. Keep changes small and explain the result.",
+  workspace: "",
 };
 
 function formatTime(value: string): string {
@@ -50,6 +51,7 @@ export default function App() {
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
   const [runs, setRuns] = useState<RunListItem[]>([]);
+  const [workspaces, setWorkspaces] = useState<{ name: string; path: string }[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [trace, setTrace] = useState<TraceView | null>(null);
   // "agent" = the selected Agent's Runs under its Playground; "overview" = All runs across Agents (#70).
@@ -134,7 +136,7 @@ export default function App() {
   }, [refreshTrace, selectedRunId]);
 
   const bootstrap = useCallback(async () => {
-    await Promise.all([refreshAgents(), refreshRuns(), api.system().then(setSystem)]);
+    await Promise.all([refreshAgents(), refreshRuns(), api.system().then(setSystem), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces))]);
   }, [refreshAgents, refreshRuns]);
 
   useEffect(() => {
@@ -182,6 +184,7 @@ export default function App() {
         name: selected.name,
         description: selected.description,
         instructions: selected.instructions,
+        workspace: selected.workspaceName ?? selected.workspacePath.split(/[\\/]/).at(-1) ?? "",
       });
     }
   }, [selected]);
@@ -200,8 +203,9 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      const { agent } = await api.createAgent(form);
-      await refreshAgents();
+      const { workspace, ...agentForm } = form;
+      const { agent } = await api.createAgent({ ...agentForm, ...(workspace ? { workspace } : {}) });
+      await Promise.all([refreshAgents(), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces))]);
       setSelectedId(agent.id);
       setView("agent");
       setShowCreate(false);
@@ -216,11 +220,14 @@ export default function App() {
   const saveAgent = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!selected) return;
+    const currentWorkspace = selected.workspaceName ?? selected.workspacePath.split(/[\\/]/).at(-1) ?? "";
+    if (form.workspace !== currentWorkspace && !window.confirm("Switch workspace? This clears the Agent's existing Codex conversation thread.")) return;
     setBusy(true);
     setError(null);
     try {
-      await api.updateAgent(selected.id, form);
-      await refreshAgents();
+      const { workspace, ...agentForm } = form;
+      await api.updateAgent(selected.id, { ...agentForm, ...(workspace ? { workspace } : {}) });
+      await Promise.all([refreshAgents(), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces))]);
       setShowSettings(false);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -525,6 +532,11 @@ export default function App() {
                   <StatusPill status={selected.status} />
                 </div>
                 <p>{selected.description || "A Codex coding Agent in an isolated workspace."}</p>
+                <p>
+                  Workspace <strong>{selected.workspaceName ?? selected.workspacePath.split(/[\\/]/).at(-1)}</strong>{" "}
+                  <code>{selected.workspacePath}</code>{" "}
+                  <button type="button" className="button button-ghost" onClick={() => void navigator.clipboard.writeText(selected.workspacePath)}>Copy path</button>
+                </p>
               </div>
               <div className="header-actions">
                 <button
@@ -582,6 +594,19 @@ export default function App() {
                   </label>
                 </div>
                 <label>
+                  Workspace
+                  <input
+                    list="workspace-names-settings"
+                    value={form.workspace}
+                    onChange={(event) => setForm({ ...form, workspace: event.target.value })}
+                    pattern="[a-z0-9][a-z0-9._-]{0,63}"
+                    required
+                  />
+                </label>
+                <datalist id="workspace-names-settings">
+                  {workspaces.map((workspace) => <option key={workspace.name} value={workspace.name}>{workspace.path}</option>)}
+                </datalist>
+                <label>
                   System instructions
                   <textarea
                     value={form.instructions}
@@ -593,7 +618,7 @@ export default function App() {
                   />
                 </label>
                 <div className="panel-footer">
-                  <code>{selected.workspacePath}</code>
+                  <code title={selected.workspacePath}>{selected.workspaceName ?? selected.workspacePath}</code>
                   <button className="button button-primary" disabled={busy}>
                     {busy ? <Spinner /> : "Save changes"}
                   </button>
@@ -783,6 +808,19 @@ export default function App() {
                 maxLength={500}
               />
             </label>
+            <label>
+              Workspace
+              <input
+                list="workspace-names-create"
+                placeholder="Leave blank for a managed workspace"
+                value={form.workspace}
+                onChange={(event) => setForm({ ...form, workspace: event.target.value })}
+                pattern="[a-z0-9][a-z0-9._-]{0,63}"
+              />
+            </label>
+            <datalist id="workspace-names-create">
+              {workspaces.map((workspace) => <option key={workspace.name} value={workspace.name}>{workspace.path}</option>)}
+            </datalist>
             <label>
               Instructions
               <textarea

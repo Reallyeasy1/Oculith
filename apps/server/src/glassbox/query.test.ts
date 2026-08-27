@@ -62,7 +62,7 @@ describe("buildTrace", () => {
   it("reconstructs a nested tree with durations and rolls up ok", () => {
     seq = 0;
     const events = [
-      root(), ev({ type: "run.created", category: "control", spanId: "rc", parentSpanId: "root", attributes: { configHash: "0123456789abcdef" } }), svcStart(), rtStart(),
+      root(), ev({ type: "run.created", category: "control", spanId: "rc", parentSpanId: "root", attributes: { workspace: "repo-doctor", configHash: "0123456789abcdef" } }), svcStart(), rtStart(),
       ev({ type: "tool.call.completed", category: "tool", spanId: "tool1", parentSpanId: "rt", status: "ok", durationMs: 5 }),
       ev({ type: "model.completed", category: "model", spanId: "m1", parentSpanId: "rt", status: "ok", attributes: { inputTokens: 10, outputTokens: 2 } }),
       ev({ type: "runtime.codex.completed", category: "runtime", spanId: "rt", phase: "end", status: "ok" }),
@@ -87,6 +87,7 @@ describe("buildTrace", () => {
     });
     expect(view.summary.configHash).toBe("0123456789abcdef");
     expect(view.summary.capabilities).toEqual({ model: "observed", tool: "observed" });
+    expect(view.summary.workspace).toBe("repo-doctor");
     expect(view.spans[0]!.spanId).toBe("root");
     const rt = flattenSpans(view.spans).find((s) => s.spanId === "rt")!;
     expect(rt.depth).toBe(2); expect(rt.durationMs).toBe(30); expect(rt.children.map((c) => c.spanId)).toEqual(["tool1", "m1"]);

@@ -89,6 +89,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
             <tr>
               <th scope="col">Status</th>
               {showAgent && <th scope="col">Agent</th>}
+              <th scope="col">Workspace</th>
               <th scope="col">Start</th>
               <th scope="col">Duration</th>
               <th scope="col">First failing step</th>
@@ -125,6 +126,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                   )}
                 </td>
                 {showAgent && <td>{run.agentName || run.agentId}</td>}
+                <td>{run.workspace ?? "—"}</td>
                 <td>{formatClock(run.startedAt)}</td>
                 <td>{formatDuration(run.durationMs)}{run.endedReason === "server_restart" ? " · interrupted" : ""}</td>
                 <td>{run.firstFailingStep ?? "—"}</td>
