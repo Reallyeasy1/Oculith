@@ -91,7 +91,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
   }, [focusReq]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!view || !focusEventId) return;
+    if (!view || view.summary.runId !== runId || !focusEventId) return;
     const event = view.events.find((item) => item.eventId === focusEventId);
     if (!event) { onFocusHandled(); return; }
     const path: string[] = [];
