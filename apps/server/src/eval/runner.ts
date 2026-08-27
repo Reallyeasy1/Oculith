@@ -2,10 +2,12 @@ import type { AgentService } from "../agent-service.js";
 import { buildTrace } from "../glassbox/query.js";
 import type { ObservationEmitter } from "../glassbox/emitter.js";
 import type { TraceStore } from "../glassbox/store.js";
+import type { EvaluationStore } from "../glassbox/evaluation.js";
+import { rollupRun, type RunSummaryStore } from "../glassbox/summary.js";
 import { evaluateAll } from "./evaluators.js";
 
 export class EvalRunner {
-  constructor(private readonly service: AgentService, private readonly glassbox: { emitter: ObservationEmitter; store: TraceStore }) {}
+  constructor(private readonly service: AgentService, private readonly glassbox: { emitter: ObservationEmitter; store: TraceStore; summaries?: RunSummaryStore | undefined; evaluations?: EvaluationStore | undefined }) {}
 
   async execute(evalRunId: string): Promise<void> {
     const evalRun = this.service.getEvalRun(evalRunId);
@@ -18,6 +20,17 @@ export class EvalRunner {
         await this.glassbox.emitter.flush();
         const view = buildTrace(await this.glassbox.store.readRun(run.id), { capturePolicy: this.glassbox.emitter.capturePolicy });
         const results = await evaluateAll(view, regressionCase.assertions);
+        if (this.glassbox.evaluations && this.glassbox.summaries) {
+          await rollupRun({ traces: this.glassbox.store, emitter: this.glassbox.emitter, summaries: this.glassbox.summaries }, run.id);
+          const evaluatedAt = new Date().toISOString();
+          for (const result of results) {
+            await this.glassbox.evaluations.putResult({
+              runId: run.id, evaluatorId: result.type, evaluatorVersion: 1, passed: result.pass,
+              explanation: result.message, evidenceEventIds: result.evidenceEventIds,
+              metadata: { expected: result.expected, observed: result.observed }, evaluatedAt, jobId: evalRun.id,
+            });
+          }
+        }
         // A Run that did not complete (runner threw, timed out, cancelled) fails the case; keep its evidence.
         const error = finished.status === "completed" ? undefined : finished.error ?? "Run " + finished.status;
         if (error) failed = true;

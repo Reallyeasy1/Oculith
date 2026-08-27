@@ -12,6 +12,8 @@ import { WorkspaceManager } from "./workspace.js";
 import { createTraceContext } from "./glassbox/context.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
 import { MemoryTraceStore, type TraceStore } from "./glassbox/store.js";
+import { JsonEvaluationStore } from "./glassbox/evaluation.js";
+import { JsonRunSummaryStore } from "./glassbox/summary.js";
 
 class FakeRunner implements AgentRunner {
   async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -266,7 +268,10 @@ const settle = async (service: AgentService, runId: string) => {
 
 describe("GlassBox control-plane adapter", () => {
   it("runs persisted regression cases serially through isolated ordinary Runs", async () => {
-    const { service, store, emitter, config } = await makeTraced();
+    const { service, store, emitter, config, jsonStore } = await makeTraced();
+    const summaries = new JsonRunSummaryStore(jsonStore);
+    const evaluations = new JsonEvaluationStore(jsonStore, summaries);
+    await evaluations.initialize();
     await mkdir(path.join(config.workspaceTemplatesDirectory, "fixture"), { recursive: true });
     const agent = await service.createAgent({ name: "Eval target", instructions: "complete the task" });
     const snapshot = configSnapshot(agent, config);
@@ -275,10 +280,11 @@ describe("GlassBox control-plane adapter", () => {
     const evalRun = await service.createEvalRun({ caseIds: [regressionCase.id], target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } });
     expect(evalRun).toMatchObject({ templateHashes: { fixture: regressionCase.templateHash } });
     expect(evalRun.templateHashMismatch).toBeUndefined();
-    await new EvalRunner(service, { emitter, store }).execute(evalRun.id);
+    await new EvalRunner(service, { emitter, store, summaries, evaluations }).execute(evalRun.id);
     const finished = service.getEvalRun(evalRun.id);
     expect(finished).toMatchObject({ status: "completed", runIds: [expect.any(String)] });
     expect(finished.results[0]).toMatchObject({ caseId: regressionCase.id, runId: finished.runIds[0], results: [expect.objectContaining({ type: "terminal_status", pass: true })] });
+    expect(await evaluations.resultsForRun(finished.runIds[0]!)).toEqual([expect.objectContaining({ evaluatorId: "terminal_status", evaluatorVersion: 1, passed: true, jobId: evalRun.id })]);
     await emitter.flush();
     expect((await store.readRun(finished.runIds[0]!)).find((event) => event.type === "run.created")?.attributes).toMatchObject({ evalRunId: evalRun.id, caseId: regressionCase.id, templateHash: regressionCase.templateHash });
   });
