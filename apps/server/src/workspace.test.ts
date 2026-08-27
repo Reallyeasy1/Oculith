@@ -28,3 +28,20 @@ describe("Workspace templates", () => {
     await expect(manager.create(agent(target), true, "demo")).rejects.toThrow("A template requires a new workspace");
   });
 });
+
+describe("WorkspaceManager.list", () => {
+  it("skips non-conforming directory names and files instead of failing the whole list", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-ws-"));
+    roots.push(root);
+    const manager = new WorkspaceManager(root);
+    await manager.initialize();
+    await mkdir(path.join(root, "good-repo"));
+    await writeFile(path.join(root, "good-repo", "index.js"), "", "utf8");
+    for (const bad of ["My-Repo", ".git", "Repo"]) await mkdir(path.join(root, bad));
+    await writeFile(path.join(root, "notes.txt"), "", "utf8");
+
+    const listed = await manager.list([]);
+    expect(listed.map((workspace) => workspace.name)).toEqual(["good-repo"]);
+    expect(listed[0]).toMatchObject({ fileCount: 1, agents: [], managed: false });
+  });
+});

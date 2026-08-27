@@ -92,28 +92,33 @@ export class WorkspaceManager {
     const output = [];
     for (const entry of entries) {
       if (!entry.isDirectory() || entry.name === ".deleted") continue;
-      const workspacePath = this.pathForName(entry.name);
-      let fileCount = 0;
-      let latest = (await stat(workspacePath)).mtimeMs;
-      const walk = async (directory: string): Promise<void> => {
-        for (const child of await readdir(directory, { withFileTypes: true })) {
-          const childPath = path.join(directory, child.name);
-          const info = await stat(childPath);
-          latest = Math.max(latest, info.mtimeMs);
-          if (child.isDirectory()) await walk(childPath);
-          else fileCount++;
-        }
-      };
-      await walk(workspacePath);
-      const attached = agents.filter((agent) => path.resolve(agent.workspacePath) === workspacePath);
-      output.push({
-        name: entry.name,
-        path: workspacePath,
-        agents: attached.map((agent) => agent.id),
-        fileCount,
-        lastModified: new Date(latest).toISOString(),
-        managed: attached.length === 1 && (attached[0]!.workspaceManaged ?? entry.name === attached[0]!.id),
-      });
+      // Hand-seeded dirs with unattachable names (`My-Repo`, `.git`) and per-entry stat failures (EPERM, removed
+      // mid-walk) are skipped, never a 500: the web calls this list on every bootstrap.
+      let workspacePath: string;
+      try { workspacePath = this.pathForName(entry.name); } catch { continue; }
+      try {
+        let fileCount = 0;
+        let latest = (await stat(workspacePath)).mtimeMs;
+        const walk = async (directory: string): Promise<void> => {
+          for (const child of await readdir(directory, { withFileTypes: true })) {
+            const childPath = path.join(directory, child.name);
+            const info = await stat(childPath);
+            latest = Math.max(latest, info.mtimeMs);
+            if (child.isDirectory()) await walk(childPath);
+            else fileCount++;
+          }
+        };
+        await walk(workspacePath);
+        const attached = agents.filter((agent) => path.resolve(agent.workspacePath) === workspacePath);
+        output.push({
+          name: entry.name,
+          path: workspacePath,
+          agents: attached.map((agent) => agent.id),
+          fileCount,
+          lastModified: new Date(latest).toISOString(),
+          managed: attached.length === 1 && (attached[0]!.workspaceManaged ?? entry.name === attached[0]!.id),
+        });
+      } catch { continue; }
     }
     return output.sort((left, right) => left.name.localeCompare(right.name));
   }
