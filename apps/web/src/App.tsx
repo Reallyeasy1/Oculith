@@ -5,6 +5,7 @@ import type { Agent, AgentRun, EvalRun, Message, RegressionCase, RunListItem, Sy
 import RunsView from "./RunsView";
 import TraceDetail from "./TraceDetail";
 import Overview from "./Overview";
+import CompareView from "./CompareView";
 import { refreshIntervalMs } from "./trace-view-model";
 
 const starterPrompts = [
@@ -57,6 +58,7 @@ export default function App() {
   const [templates, setTemplates] = useState<WorkspaceTemplate[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [trace, setTrace] = useState<TraceView | null>(null);
+  const [focusEventId, setFocusEventId] = useState<string | null>(null);
   const [regressionCases, setRegressionCases] = useState<RegressionCase[]>([]);
   const [evalRuns, setEvalRuns] = useState<EvalRun[]>([]);
   // "agent" = the selected Agent's Runs under its Playground; "overview" = All runs across Agents (#70).
@@ -569,7 +571,7 @@ export default function App() {
         )}
 
         {view === "overview" ? (
-          <Overview runs={runs} cases={regressionCases} evalRuns={evalRuns} selectedAgent={selected} onRunCase={startEvaluation} onDeleteCase={deleteRegressionCase} />
+          <><Overview runs={runs} cases={regressionCases} evalRuns={evalRuns} selectedAgent={selected} onRunCase={startEvaluation} onDeleteCase={deleteRegressionCase} /><CompareView evalRuns={evalRuns} onOpenEvidence={(runId, eventId) => { setFocusEventId(eventId ?? null); setSelectedRunId(runId); }} /></>
         ) : selected ? playgroundCollapsed ? (
           <div className="playground-bar">
             <div className="header-title-row">
@@ -819,6 +821,8 @@ export default function App() {
             run={runs.find((run) => run.runId === selectedRunId)}
             view={trace}
             templateBacked={Boolean(agents.find((agent) => agent.id === runs.find((run) => run.runId === selectedRunId)?.agentId)?.workspaceTemplate)}
+            focusEventId={focusEventId}
+            onFocusHandled={() => setFocusEventId(null)}
             onCaseSaved={refreshRegressionCases}
             onClose={() => setSelectedRunId(null)}
           />

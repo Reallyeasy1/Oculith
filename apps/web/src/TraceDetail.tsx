@@ -36,13 +36,15 @@ interface Props {
   run: RunListItem | undefined;
   view: TraceView | null;
   templateBacked: boolean;
+  focusEventId: string | null;
+  onFocusHandled: () => void;
   onCaseSaved: () => Promise<void>;
   onClose: () => void;
 }
 
 // Trace detail (UX-02): summary header, first-error banner with Jump, nested tree with duration bars,
 // client-side filters, focus-trapped span drawer. Everything shown comes straight from the API payload.
-export default function TraceDetail({ runId, run, view, templateBacked, onCaseSaved, onClose }: Props) {
+export default function TraceDetail({ runId, run, view, templateBacked, focusEventId, onFocusHandled, onCaseSaved, onClose }: Props) {
   const [filter, setFilter] = useState<TraceFilter>(EMPTY_FILTER);
   // null = untouched → follow the API's default (roots + failure path) even as the trace grows while polling.
   const [expandedState, setExpanded] = useState<Set<string> | null>(null);
@@ -87,6 +89,20 @@ export default function TraceDetail({ runId, run, view, templateBacked, onCaseSa
   useEffect(() => {
     if (focusReq > 0 && rovingId) rowRefs.current.get(rovingId)?.focus();
   }, [focusReq]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!view || !focusEventId) return;
+    const event = view.events.find((item) => item.eventId === focusEventId);
+    if (!event) { onFocusHandled(); return; }
+    const path: string[] = [];
+    const parents = indexSpans(view.spans);
+    let current = parents.get(event.spanId);
+    while (current) { path.unshift(current.spanId); current = current.parentSpanId ? parents.get(current.parentSpanId) : undefined; }
+    setExpanded((previous) => new Set([...(previous ?? defaultExpanded(view)), ...path]));
+    setFocusId(event.spanId);
+    setOpenId(event.spanId);
+    onFocusHandled();
+  }, [focusEventId, onFocusHandled, view]);
 
   if (!view) {
     return (
