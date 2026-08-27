@@ -37,9 +37,18 @@ export function capabilityCopy(
     return { label: "pending", title: "The Run is still in progress; capability evidence may arrive on a later refresh." };
   }
   return {
-    label: "no evidence — run cut short",
+    label: "no evidence",
     title: "The Run was cancelled, timed out, or its stream never started, so nothing was said about this layer; absence proves nothing.",
   };
+}
+
+export function capabilityBadgeLabel(
+  layer: "model" | "tool",
+  state: "observed" | "unavailable" | "unknown",
+  runStatus: TraceStatus,
+): string {
+  const copy = capabilityCopy(state, runStatus);
+  return layer + (state === "unknown" && runStatus !== "running" ? ": " : " ") + copy.label;
 }
 
 export function spanStatusLabel(span: Pick<Span, "status" | "incomplete">, endedReason?: "server_restart"): string {

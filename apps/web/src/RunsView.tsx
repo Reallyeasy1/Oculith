@@ -3,6 +3,7 @@ import type { RunListItem } from "./types";
 import {
   FILTER_LABEL,
   QUICK_FILTERS,
+  evidenceBadges,
   STATUS_ICON,
   formatClock,
   formatDuration,
@@ -14,13 +15,6 @@ import {
   summarizeRuns,
   type QuickFilter,
 } from "./runs-view-model";
-
-function noEvidenceTitle(run: RunListItem): string {
-  const layers = [run.capabilities.model === "unknown" ? "model" : "", run.capabilities.tool === "unknown" ? "tool" : ""].filter(Boolean).join(" and ");
-  return run.status === "timeout" || run.status === "cancelled" || run.status === "running"
-    ? `No ${layers} evidence — the Run was cut short before calls were observed.`
-    : `No ${layers} calls observed in this Run.`;
-}
 
 interface Props {
   runs: RunListItem[];
@@ -144,9 +138,9 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                   {run.degraded && <span className="badge badge-warn">degraded</span>}
                   {run.truncated && <span className="badge badge-warn">truncated</span>}
                   {run.evicted && <span className="badge badge-warn">evicted</span>}
-                  {(run.capabilities.model === "unknown" || run.capabilities.tool === "unknown") && (
-                    <span className="badge" title={noEvidenceTitle(run)}>no evidence</span>
-                  )}
+                  {evidenceBadges(run).map((badge) => (
+                    <span key={badge.label} className={"badge" + (badge.warn ? " badge-warn" : "")} title={badge.title}>{badge.label}</span>
+                  ))}
                   {run.workspaceChanges && <span className="badge">{run.workspaceChanges.added + run.workspaceChanges.modified + run.workspaceChanges.removed} files changed</span>}
                 </td>
                 <td>{formatClock(run.lastEventAt)}</td>

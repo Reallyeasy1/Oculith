@@ -8,6 +8,7 @@ import {
   EMPTY_FILTER,
   STATUSES,
   barGeometry,
+  capabilityBadgeLabel,
   capabilityCopy,
   defaultExpanded,
   formatAttribute,
@@ -27,7 +28,7 @@ function CapabilityBadge({ layer, state, status }: {
   status: TraceView["summary"]["status"];
 }) {
   const copy = capabilityCopy(state, status);
-  return <span className="badge" title={layer + ": " + copy.title}>{layer} {copy.label}</span>;
+  return <span className={"badge" + (state === "unknown" && status !== "running" ? " badge-warn" : "")} title={layer + ": " + copy.title}>{capabilityBadgeLabel(layer, state, status)}</span>;
 }
 
 interface Props {
