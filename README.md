@@ -308,6 +308,8 @@ assertion in `container-codex-runner.test.ts` (see the Windows caveat in `CLAUDE
 
 ## Documentation
 
+- [Project brief](docs/PROJECT_BRIEF.md) — concept, what is built, sprint plan, working agreements
+- [Sprint plan](docs/SPRINTS.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)

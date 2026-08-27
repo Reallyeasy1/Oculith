@@ -287,14 +287,15 @@ The Verify loop consumes the observation contract; it never creates a second sou
 | FR-01…FR-11, UX-01/02, V-01 | #21–#35, #38, #39, #60, #69, #70, #72, #76, #93 |
 | FR-12 | #79 |
 | FR-13 | #81 |
-| FR-14 | #82, #87 |
-| FR-15 | #74 |
+| FR-14 | #82, #87, #135 |
+| FR-15 | #74, #129, #130, #134 |
 | FR-16 | #64, #68, #84, #88 |
 | FR-17 | #67, #80, #83 |
 | FR-18 | #85, #105 |
 | FR-19 | #86, #89 |
-| UX-03 | #97, #98, #99, #100, #101, #102, #103 |
-| V-01, AC-08 | #90, #91, #92, #94, #95, #104 |
+| UX-03 | #97, #98, #99, #100, #101, #102, #103, #131, #132, #136, #137, #138 |
+| V-01, AC-08 | #90, #91, #92, #94, #95, #104, #143 |
+| Evidence quality (UAT round 3, 27 Aug 2026) | #129 model-turn spans, #130 tool-call spans and identity, #131 attention rule, #132 outcome line, #133 exit-code hints, #134 per-Agent baselines, #135 actor attribution, #136 restart honesty, #137 chip semantics, #138 drawer layout |
 
 ## Appendix A — Locked decisions
 MVP centre = single-Run observability + failure diagnosis · storage = NDJSON per Run behind `TraceStore` + rebuildable index · capture = `metadata_only` default, `safe_summary` opt-in, raw prohibited · update model = polling, SSE only after P0 · no Collector/DB/cloud dependency.
