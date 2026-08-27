@@ -17,6 +17,15 @@ export interface Agent {
   updatedAt: string;
 }
 
+export interface Workspace {
+  name: string;
+  path: string;
+  agents: string[];
+  fileCount: number;
+  lastModified: string;
+  managed: boolean;
+}
+
 export interface Message {
   id: string;
   agentId: string;

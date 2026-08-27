@@ -12,6 +12,7 @@ import {
   recoveredFailures,
   sortNewestFirst,
   summarizeRuns,
+  workspaceLabel,
   type QuickFilter,
 } from "./runs-view-model";
 
@@ -126,7 +127,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                   )}
                 </td>
                 {showAgent && <td>{run.agentName || run.agentId}</td>}
-                <td>{run.workspace ?? "—"}</td>
+                <td title={workspaceLabel(run.workspace, run.agentId).title}>{workspaceLabel(run.workspace, run.agentId).text}</td>
                 <td>{formatClock(run.startedAt)}</td>
                 <td>{formatDuration(run.durationMs)}{run.endedReason === "server_restart" ? " · interrupted" : ""}</td>
                 <td>{run.firstFailingStep ?? "—"}</td>

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type { AuditRow, ObservationEvent, RunListItem, Span, TraceView } from "./types";
-import { STATUS_ICON, formatClock, formatDuration, formatUsage } from "./runs-view-model";
+import { STATUS_ICON, formatClock, formatDuration, formatUsage, workspaceLabel } from "./runs-view-model";
 import {
   CATEGORIES,
   DRAWER_EVENT_CAP,
@@ -165,7 +165,7 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
       <dl className="trace-summary">
         <Field label="Trace">{summary.traceId || "—"}</Field>
         <Field label="Agent">{run?.agentName || summary.agentId || "—"}</Field>
-        <Field label="Workspace">{summary.workspace ?? run?.workspace ?? "—"}</Field>
+        <Field label="Workspace"><span title={workspaceLabel(summary.workspace ?? run?.workspace, summary.agentId || run?.agentId || "").title}>{workspaceLabel(summary.workspace ?? run?.workspace, summary.agentId || run?.agentId || "").text}</span></Field>
         <Field label="Runtime / model" className="trace-runtime"><span title={run ? run.runtime + " · " + run.model : undefined}>{run ? run.runtime + " · " + run.model : "—"}</span></Field>
         <Field label="Session">{summary.sessionId ?? <span className="trace-muted">not observed</span>}</Field>
         <Field label="Start">{formatClock(summary.startedAt)}</Field>

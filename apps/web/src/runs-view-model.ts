@@ -1,4 +1,4 @@
-import type { RunListItem, TraceStatus } from "./types";
+import type { RunListItem, TraceStatus, Workspace } from "./types";
 
 // Pure helpers for RunsView. Render only what the API returned — no client-side status inference.
 
@@ -7,6 +7,16 @@ export type QuickFilter = "attention" | "all" | "failed" | "running" | "cancelle
 export const QUICK_FILTERS: QuickFilter[] = ["attention", "all", "failed", "running", "cancelled", "timeout", "degraded"];
 
 export const FILTER_LABEL: Partial<Record<QuickFilter, string>> = { attention: "Needs attention", timeout: "Timed out" };
+
+export function workspaceLabel(workspace: string | undefined, agentId: string): { text: string; title?: string } {
+  if (!workspace) return { text: "—" };
+  return workspace === agentId ? { text: "managed", title: workspace } : { text: workspace };
+}
+
+export function workspaceOptionLabel(workspace: Workspace): string {
+  const agents = `${workspace.agents.length} ${workspace.agents.length === 1 ? "agent" : "agents"}`;
+  return `${workspace.name} · ${agents} · ${workspace.managed ? "managed" : "unmanaged"} · ${workspace.fileCount} files`;
+}
 
 /** Tool failures + denials an ok Run worked around (#131); 0 unless the Run ended ok. */
 export function recoveredFailures(run: RunListItem): number {
