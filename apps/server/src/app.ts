@@ -26,6 +26,7 @@ const createAgentBody = z.object({
   description: z.string().max(500).optional(),
   instructions: z.string().max(10_000).optional(),
   workspace: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/).optional(),
+  template: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/).optional(),
 });
 const updateAgentBody = createAgentBody.partial().refine(
   (value) => Object.keys(value).length > 0,
@@ -154,6 +155,7 @@ export async function createApp(
   app.get("/api/agents", async () => ({ agents: service.listAgents() }));
 
   app.get("/api/workspaces", async () => ({ workspaces: await service.listWorkspaces() }));
+  app.get("/api/workspace-templates", async () => ({ templates: await service.listWorkspaceTemplates() }));
 
   app.post("/api/agents", async (request, reply) => {
     const body = createAgentBody.parse(request.body);

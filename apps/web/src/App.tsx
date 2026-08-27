@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentRun, Message, RunListItem, SystemInfo, TraceView } from "./types";
+import { agentPayload } from "./agent-form";
+import type { Agent, AgentRun, Message, RunListItem, SystemInfo, TraceView, WorkspaceTemplate } from "./types";
 import RunsView from "./RunsView";
 import TraceDetail from "./TraceDetail";
 import Overview from "./Overview";
@@ -18,6 +19,7 @@ const emptyForm = {
   instructions:
     "Help me build and test software in this workspace. Keep changes small and explain the result.",
   workspace: "",
+  template: "",
 };
 
 function formatTime(value: string): string {
@@ -52,6 +54,7 @@ export default function App() {
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
   const [runs, setRuns] = useState<RunListItem[]>([]);
   const [workspaces, setWorkspaces] = useState<{ name: string; path: string }[]>([]);
+  const [templates, setTemplates] = useState<WorkspaceTemplate[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [trace, setTrace] = useState<TraceView | null>(null);
   // "agent" = the selected Agent's Runs under its Playground; "overview" = All runs across Agents (#70).
@@ -136,7 +139,7 @@ export default function App() {
   }, [refreshTrace, selectedRunId]);
 
   const bootstrap = useCallback(async () => {
-    await Promise.all([refreshAgents(), refreshRuns(), api.system().then(setSystem), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces))]);
+    await Promise.all([refreshAgents(), refreshRuns(), api.system().then(setSystem), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces)), api.listWorkspaceTemplates().then((result) => setTemplates(result.templates))]);
   }, [refreshAgents, refreshRuns]);
 
   useEffect(() => {
@@ -185,6 +188,7 @@ export default function App() {
         description: selected.description,
         instructions: selected.instructions,
         workspace: selected.workspaceName ?? selected.workspacePath.split(/[\\/]/).at(-1) ?? "",
+        template: selected.workspaceTemplate ?? "",
       });
     }
   }, [selected]);
@@ -203,8 +207,7 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      const { workspace, ...agentForm } = form;
-      const { agent } = await api.createAgent({ ...agentForm, ...(workspace ? { workspace } : {}) });
+      const { agent } = await api.createAgent(agentPayload(form, { template: true }));
       await Promise.all([refreshAgents(), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces))]);
       setSelectedId(agent.id);
       setView("agent");
@@ -225,8 +228,7 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      const { workspace, ...agentForm } = form;
-      await api.updateAgent(selected.id, { ...agentForm, ...(workspace ? { workspace } : {}) });
+      await api.updateAgent(selected.id, agentPayload(form, { template: false }));
       await Promise.all([refreshAgents(), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces))]);
       setShowSettings(false);
     } catch (reason) {
@@ -821,6 +823,13 @@ export default function App() {
             <datalist id="workspace-names-create">
               {workspaces.map((workspace) => <option key={workspace.name} value={workspace.name}>{workspace.path}</option>)}
             </datalist>
+            <label>
+              Start from
+              <select value={form.template} onChange={(event) => setForm({ ...form, template: event.target.value })}>
+                <option value="">Empty workspace</option>
+                {templates.filter((template) => template.name !== "empty" && !("error" in template)).map((template) => <option key={template.name} value={template.name}>{template.name}</option>)}
+              </select>
+            </label>
             <label>
               Instructions
               <textarea

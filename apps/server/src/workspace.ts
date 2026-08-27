@@ -1,16 +1,20 @@
-import { mkdir, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Agent } from "./types.js";
 
+const NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const MAX_TEMPLATE_FILES = 1_000;
+const MAX_TEMPLATE_BYTES = 10 * 1024 * 1024;
+
 export class WorkspaceManager {
-  constructor(private readonly root: string) {}
+  constructor(private readonly root: string, private readonly templatesRoot = path.resolve("workspace-templates")) {}
 
   workspacePath(agentId: string): string {
     return this.pathForName(agentId);
   }
 
   pathForName(name: string): string {
-    if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(name)) throw new Error("Invalid workspace name");
+    if (!NAME.test(name)) throw new Error("Invalid workspace name");
     const resolved = path.resolve(this.root, name);
     if (path.dirname(resolved) !== path.resolve(this.root)) throw new Error("Workspace must be directly under AGENT_WORKSPACE_ROOT");
     return resolved;
@@ -21,19 +25,63 @@ export class WorkspaceManager {
     await mkdir(path.join(this.root, ".deleted"), { recursive: true });
   }
 
-  async create(agent: Agent, allowExisting = false): Promise<void> {
+  private templatePath(name: string): string {
+    if (!NAME.test(name)) throw new Error("Invalid workspace template name");
+    const resolved = path.resolve(this.templatesRoot, name);
+    if (path.dirname(resolved) !== path.resolve(this.templatesRoot)) throw new Error("Invalid workspace template name");
+    return resolved;
+  }
+
+  private async templateSize(directory: string): Promise<{ files: number; bytes: number }> {
+    let files = 0; let bytes = 0;
+    const walk = async (current: string): Promise<void> => {
+      for (const entry of await readdir(current, { withFileTypes: true })) {
+        if (entry.isSymbolicLink()) throw new Error("Workspace templates cannot contain symbolic links");
+        const full = path.join(current, entry.name);
+        if (entry.isDirectory()) await walk(full);
+        else { const info = await stat(full); files++; bytes += info.size; if (files > MAX_TEMPLATE_FILES || bytes > MAX_TEMPLATE_BYTES) throw new Error("Workspace template exceeds copy limits"); }
+      }
+    };
+    await walk(directory); return { files, bytes };
+  }
+
+  async listTemplates(): Promise<({ name: string; fileCount: number; bytes: number } | { name: string; error: string })[]> {
+    let entries;
+    try { entries = await readdir(this.templatesRoot, { withFileTypes: true }); } catch { return []; }
+    const templates: ({ name: string; fileCount: number; bytes: number } | { name: string; error: string })[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !NAME.test(entry.name)) continue;
+      // A symlink or over-limit template is reported per entry, never a 500 for the whole list (same shape as list()).
+      try {
+        const size = await this.templateSize(this.templatePath(entry.name));
+        templates.push({ name: entry.name, fileCount: size.files, bytes: size.bytes });
+      } catch (error) {
+        templates.push({ name: entry.name, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    return templates.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async create(agent: Agent, allowExisting = false, template?: string): Promise<void> {
     let exists = true;
     try { await stat(agent.workspacePath); } catch { exists = false; }
-    if (exists && !allowExisting) throw new Error("Workspace already exists");
+    if (exists && (!allowExisting || template)) throw new Error(template ? "A template requires a new workspace" : "Workspace already exists");
     if (!exists) await mkdir(agent.workspacePath, { recursive: false });
+    if (!exists && template) {
+      const source = this.templatePath(template);
+      await this.templateSize(source);
+      await cp(source, agent.workspacePath, { recursive: true, dereference: false, errorOnExist: false, force: false });
+    }
     await this.writeInstructions(agent);
     if (exists) return;
-    await writeFile(
+    // AGENTS.md is platform-owned (written above); README.md/.gitignore are defaults a template may ship itself.
+    const writeIfAbsent = (file: string, content: string) =>
+      writeFile(file, content, { encoding: "utf8", flag: "wx" }).catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });
+    await writeIfAbsent(
       path.join(agent.workspacePath, ".gitignore"),
       [".codex/", "node_modules/", "dist/", ".env", "*.log", ""].join("\n"),
-      "utf8",
     );
-    await writeFile(
+    await writeIfAbsent(
       path.join(agent.workspacePath, "README.md"),
       [
         "# " + agent.name + " workspace",
@@ -42,7 +90,6 @@ export class WorkspaceManager {
         "The platform-generated AGENTS.md contains the current Agent instructions.",
         "",
       ].join("\n"),
-      "utf8",
     );
   }
 

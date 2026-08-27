@@ -11,6 +11,7 @@ export interface Agent {
   workspacePath: string;
   workspaceName?: string | undefined;
   workspaceManaged?: boolean | undefined;
+  workspaceTemplate?: string | undefined;
   codexThreadId: string | null;
   lastError: string | null;
   createdAt: string;
@@ -72,6 +73,7 @@ export interface CreateAgentInput {
   description?: string | undefined;
   instructions?: string | undefined;
   workspace?: string | undefined;
+  template?: string | undefined;
 }
 
 export interface UpdateAgentInput {
