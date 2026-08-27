@@ -14,15 +14,15 @@ warnings go to stderr and are not part of this contract.
 | Version | Top-level `type` | `item.type` | Fields seen | GlassBox mapping | Evidence state | Example |
 |---|---|---|---|---|---|---|
 | 0.111 / 0.142 | `thread.started` | — | `thread_id` | `sessionId` backfill (already parsed) | observed | E1 |
-| 0.111 / 0.142 | `turn.started` | — | *(no other fields)* | ignored | observed | E2 |
+| 0.111 / 0.142 | `turn.started` | — | *(no other fields)* | `model.request` — `start` of the `model.turn` span (`turnIndex`); marks the model capability observed (#129) | observed | E2 |
 | 0.111 / 0.142 | `item.started` | `command_execution` | `id`, `command`, `aggregated_output` (empty), `exit_code` (`null`), `status:"in_progress"` | `tool.call.started` (correlate to the completion by `item.id`) | observed | E3 |
 | 0.111 / 0.142 | `item.completed` | `command_execution` | `id`, `command`, `aggregated_output`, `exit_code`, `status` | `tool.call.completed`; `tool.call.failed` when `exit_code !== 0` | observed | E4 |
 | 0.142 | `item.completed` | `command_execution` (denied) | same fields, `exit_code:-1`, `status:"declined"` | `tool.call.failed` (denied-by-sandbox reason) | observed | E5 |
 | 0.111 / 0.142 | `item.completed` | `agent_message` | `id`, `text` | final output = **last** agent message; not stored as trace content | observed | E6 |
 | 0.111 / 0.142 | `item.completed` | `reasoning` | `id`, `text` | **dropped — no chain-of-thought; deliberately not mapped** | observed | E7 |
 | 0.111 / 0.142 | `item.completed` | `error` | `id`, `message` | non-fatal notice; does **not** fail the run | observed | E8 |
-| 0.111 | `turn.completed` | — | `usage.{input_tokens, cached_input_tokens, output_tokens}` | `model.completed` (usage attrs) | observed | E9 |
-| 0.142 | `turn.completed` | — | same plus `usage.reasoning_output_tokens` | `model.completed` (usage attrs) | observed | E10 |
+| 0.111 | `turn.completed` | — | `usage.{input_tokens, cached_input_tokens, output_tokens}` | `model.completed` — `end` of the open `model.turn` span (usage attrs, #129) | observed | E9 |
+| 0.142 | `turn.completed` | — | same plus `usage.reasoning_output_tokens` | `model.completed` — `end` of the open `model.turn` span (usage attrs, #129) | observed | E10 |
 | 0.111 | `error` | — | `message` | retry notice → `runtime.codex.failed` only if the turn also fails | observed | E11 |
 | 0.111 | `turn.failed` | — | `error.message` (**nested**, not top-level `message`) | `runtime.codex.failed` — authoritative failure | observed | E12 |
 
@@ -125,10 +125,11 @@ Each block is copied byte-for-byte out of the named fixture (after the scrubbing
 
 ## Degradation rule (PRD AC-04)
 
-If a run's stream yields **no** `command_execution`/`file_change` items and no
+If a run's stream yields **no** `command_execution`/`file_change` items and no `turn.started` /
 `turn.completed.usage`, the runner must emit one `capability.unavailable` event rather than a
-silently empty trace. `codex-0.111-turn-failed.jsonl` is exactly that shape (`thread.started`
-only, then `turn.failed`) and is the fixture to test it against.
+silently empty trace. A `turn.started` is model evidence (#129): `codex-0.111-turn-failed.jsonl`
+(`thread.started`, `turn.started`, then `turn.failed`) therefore keeps its open `model.turn` span
+plus one `error.recorded` and does **not** degrade.
 
 ### `file_change` is unproven
 

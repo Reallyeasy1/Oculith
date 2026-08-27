@@ -80,6 +80,7 @@ export interface RunListItem {
   startedAt?: string;
   durationMs?: number;
   endedReason?: "server_restart";
+  interruptedAfterMs?: number;
   firstFailingStep?: string;
   eventCount: number;
   runtime: string;
@@ -92,6 +93,7 @@ export interface RunListItem {
   capabilities: { model: "observed" | "unavailable" | "unknown"; tool: "observed" | "unavailable" | "unknown" };
   toolCalls: number;
   toolFailures: number;
+  toolIdentities?: string[];
   tokens?: { output?: number };
   denials: number;
   actions: number;
@@ -102,6 +104,7 @@ export interface RunListItem {
   configHash?: string;
   configSnapshot?: AgentConfigSnapshot;
   workspaceChanges?: { added: number; modified: number; removed: number; bytesDelta: number; truncated: boolean };
+  outcome?: { text?: string; finalMessageBytes: number; reportedFailure: boolean };
   degraded: boolean;
   truncated: boolean;
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
@@ -162,6 +165,8 @@ export interface TraceSummary {
   durationMs?: number;
   /** Run closed by a server restart: durationMs stops at the last event observed before it. */
   endedReason?: "server_restart";
+  /** Lower bound from Run start to the server-restart marker. */
+  interruptedAfterMs?: number;
   eventCount: number;
   spanCount: number;
   incompleteSpans: number;
@@ -182,7 +187,10 @@ export interface TraceSummary {
     terminalStatus: TraceStatus;
     toolCalls: number;
     toolFailures: number;
+    toolIdentities?: string[];
     modelCalls: number;
+    timeToFirstToolMs?: number;
+    timeSplit: { modelMs: number; toolMs: number; containerStartMs: number };
     tokens?: { input?: number; cachedInput?: number; output?: number };
     retries: number;
     denials: number;
@@ -190,6 +198,7 @@ export interface TraceSummary {
   configHash?: string;
   capabilities: { model: "observed" | "unavailable" | "unknown"; tool: "observed" | "unavailable" | "unknown" };
   workspaceChanges?: { added: number; modified: number; removed: number; bytesDelta: number; truncated: boolean };
+  outcome?: { text?: string; finalMessageBytes: number; reportedFailure: boolean };
   firstFailingStep?: string;
   failure?: FailureFocus;
 }

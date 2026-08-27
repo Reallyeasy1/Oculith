@@ -1196,10 +1196,15 @@ textarea:focus {
   font-size: 12px;
 }
 
-.runs-runtime {
+.runs-runtime,
+.runs-outcome {
   max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.runs-outcome {
+  max-width: 280px;
 }
 
 .runs-table th,

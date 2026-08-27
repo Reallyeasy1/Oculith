@@ -2,7 +2,7 @@
 //   npx vitest run apps/web/src/runs-view-model.test.ts
 import { describe, expect, it } from "vitest";
 import type { RunListItem, TraceStatus } from "./types";
-import { formatCost, formatUsage, liveRuns, matchesFilter, needsAttention, outlierLabel, recoveredFailures, runOutlier, summarizeRuns } from "./runs-view-model";
+import { formatCost, formatRunDuration, formatUsage, liveRuns, matchesFilter, needsAttention, outlierLabel, recoveredFailures, runOutlier, summarizeRuns } from "./runs-view-model";
 
 function run(status: TraceStatus, degraded = false, agentId = "a", agentName = "A", extra: Partial<RunListItem> = {}): RunListItem {
   return {
@@ -62,6 +62,12 @@ describe("needsAttention", () => {
     expect(matchesFilter(run("ok", false, "a", "A", { toolFailures: 2 }), "failed")).toBe(false);
   });
 
+  it("flags an ok Run when the agent reports failure in its final message", () => {
+    const reported = run("ok", false, "a", "A", { outcome: { finalMessageBytes: 20, reportedFailure: true } });
+    expect(needsAttention(reported)).toBe(true);
+    expect(matchesFilter(reported, "attention")).toBe(true);
+  });
+
   it("includes a denial even when the Run reached an otherwise successful terminal state", () => {
     const denied = { ...run("ok"), denials: 1 };
     expect(needsAttention(denied)).toBe(true);
@@ -102,6 +108,12 @@ describe("runOutlier", () => {
     expect(formatCost(0.001234)).toBe("$0.0012");
     expect(formatCost(1.234)).toBe("$1.23");
     expect(formatCost(undefined)).toBe("—");
+  });
+});
+
+describe("formatRunDuration", () => {
+  it("renders restart time as a lower bound and keeps the last evidence offset", () => {
+    expect(formatRunDuration(52, "server_restart", 61_000)).toBe("≥ 1m 01s · interrupted (last evidence +52 ms)");
   });
 });
 

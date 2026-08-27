@@ -44,11 +44,13 @@ const summaries = await openSummaryStore(config, store);
 const rollup = { traces: traceStore, emitter, summaries, log: glassboxLog };
 const service = new AgentService(config, store, workspaces, runner, emitter, (runId) => void scheduleRollup(rollup, runId));
 await service.initialize();
+await service.startHeartbeat();
 
 const app = await createApp(config, service, { emitter, store: traceStore, summaries });
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");
+  service.stopHeartbeat();
   await app.close();
   await summaries.close?.();
   process.exit(0);
