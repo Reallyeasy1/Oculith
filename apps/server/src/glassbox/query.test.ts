@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTrace, flattenSpans, formatExitCode } from "./query.js";
+import { buildTrace, flattenSpans, formatExitCode, projectAudit } from "./query.js";
 import { SCHEMA_VERSION, type ObservationEvent } from "./schema.js";
 
 let seq = 0;
@@ -19,6 +19,29 @@ describe("buildTrace", () => {
     expect(formatExitCode(137)).toBe("137 — SIGKILL (timeout, cancellation, or out-of-memory termination)");
     expect(formatExitCode(1)).toBe("1");
   });
+  it("explains exit code 127 as a missing program", () => {
+    expect(formatExitCode(127)).toBe("127 — command not found — the program is missing from the runtime image");
+  });
+  it("explains exit code 126 as found but not executable", () => {
+    expect(formatExitCode(126)).toBe("126 — found but not executable — permissions or wrong interpreter");
+  });
+  it("explains exit code 124 as a timeout-wrapper kill", () => {
+    expect(formatExitCode(124)).toBe("124 — timed out — killed by the timeout wrapper");
+  });
+  it("explains exit code 130 as SIGINT", () => {
+    expect(formatExitCode(130)).toBe("130 — interrupted — SIGINT");
+  });
+  it("explains exit code 2 as a usage error or interpreter file-not-found", () => {
+    expect(formatExitCode(2)).toBe("2 — usage error, or the interpreter could not find the file");
+  });
+  it("names the missing-program cause in the diagnosis for an exit code 127 tool failure", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "tool.call.failed", category: "tool", spanId: "tool", parentSpanId: "rt", status: "error", name: "shell:curl", error: { type: "exit_code", message: "exit code 127" } }),
+      ev({ type: "run.failed", category: "control", spanId: "failed", parentSpanId: "svc", status: "error" })];
+    const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(summary.failure?.diagnosis).toContain("command not found");
+  });
   it("uses the formatted exit code in failure focus and diagnosis", () => {
     seq = 0;
     const events = [root(), svcStart(), rtStart(),
@@ -36,10 +59,26 @@ describe("buildTrace", () => {
     const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
     expect(summary.failure?.message).toBe("Codex exited with code 137 — SIGKILL (timeout, cancellation, or out-of-memory termination): stderr tail");
   });
+  it("prefers the platform workspace snapshot over the runtime stream's file_change report (#153)", () => {
+    seq = 0;
+    const report = ev({ type: "workspace.changed", category: "workspace", spanId: "wsr", parentSpanId: "rt", status: "ok",
+      source: { component: "AgentRunner", adapter: "ContainerCodexRunner", observed: true }, attributes: { fileCount: 1, added: 0, updated: 1, deleted: 0 } });
+    const snapshot = ev({ type: "workspace.changed", category: "workspace", spanId: "wss", parentSpanId: "svc", status: "ok",
+      source: { component: "AgentService", adapter: "WorkspaceSnapshot", observed: true }, attributes: { added: 0, modified: 1, removed: 0, bytesDelta: 3, truncated: false, paths: "src/invoice.js" } });
+    const done = [ev({ type: "runtime.codex.completed", category: "runtime", spanId: "rt", phase: "end", status: "ok" }),
+      ev({ type: "run.completed", category: "control", spanId: "rdone", parentSpanId: "svc", status: "ok" })];
+    // Stream report first (it arrives mid-Run), snapshot after the runtime closed — the snapshot must win.
+    const both = buildTrace([root(), svcStart(), rtStart(), report, ...done.slice(0, 1), snapshot, done[1]!], { capturePolicy: "metadata_only" });
+    expect(both.summary.workspaceChanges).toEqual({ added: 0, modified: 1, removed: 0, bytesDelta: 3, truncated: false });
+    // Report alone (no snapshot ran): its vocabulary is normalised rather than read as zero.
+    seq = 0;
+    const only = buildTrace([root(), svcStart(), rtStart(), report, ...done], { capturePolicy: "metadata_only" });
+    expect(only.summary.workspaceChanges).toMatchObject({ added: 0, modified: 1, removed: 0 });
+  });
   it("reconstructs a nested tree with durations and rolls up ok", () => {
     seq = 0;
     const events = [
-      root(), ev({ type: "run.created", category: "control", spanId: "rc", parentSpanId: "root", attributes: { configHash: "0123456789abcdef" } }), svcStart(), rtStart(),
+      root(), ev({ type: "run.created", category: "control", spanId: "rc", parentSpanId: "root", attributes: { workspace: "repo-doctor", configHash: "0123456789abcdef" } }), svcStart(), rtStart(),
       ev({ type: "tool.call.completed", category: "tool", spanId: "tool1", parentSpanId: "rt", status: "ok", durationMs: 5 }),
       ev({ type: "model.completed", category: "model", spanId: "m1", parentSpanId: "rt", status: "ok", attributes: { inputTokens: 10, outputTokens: 2 } }),
       ev({ type: "runtime.codex.completed", category: "runtime", spanId: "rt", phase: "end", status: "ok" }),
@@ -187,6 +226,29 @@ describe("buildTrace", () => {
     const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
     expect(summary).toMatchObject({ status: "ok", denials: 1, firstFailingStep: "pwsh" });
     expect(summary.failure).toMatchObject({ kind: "denied", name: "pwsh", component: "Sandbox", diagnosis: "sandbox declined `pwsh`" });
+  });
+  it("projects audit rows from stored facts and summarizes their counts", () => {
+    seq = 0;
+    const events = [root(),
+      ev({ type: "run.created", category: "control", spanId: "created", name: "run.created" }),
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tool", name: "shell:git", actorType: "agent", actorId: "agt-1", status: "ok", attributes: { program: "git" } }),
+      ev({ type: "policy.denied", category: "policy", spanId: "deny", name: "shell:pwsh", actorType: "service", actorId: "sandbox", status: "error", attributes: { program: "pwsh" } }),
+      ev({ type: "runtime.codex.completed", category: "runtime", spanId: "rt", phase: "end", status: "ok", name: "codex exec", actorType: "service", actorId: "runner" }),
+      ev({ type: "run.completed", category: "control", spanId: "done", name: "run.completed", status: "ok" }),
+    ];
+    const rows = projectAudit(events);
+    expect(rows.map((row) => row.eventId)).toEqual(expect.arrayContaining(events.map((event) => event.eventId)));
+    expect(rows.find((row) => row.action === "run.created")).toMatchObject({ actor: { type: "human", id: "local-user" }, outcome: "allowed", resource: "run.created" });
+    expect(rows.find((row) => row.action === "policy.denied")).toMatchObject({ actor: { type: "service", id: "sandbox" }, outcome: "denied", resource: "pwsh" });
+    expect(rows.find((row) => row.action === "tool.call.completed")).toMatchObject({ actor: { type: "agent", id: "agt-1" }, outcome: "ok", resource: "git" });
+    expect(rows.find((row) => row.action === "runtime.codex.completed")).toMatchObject({ actor: { type: "service", id: "runner" }, outcome: "ok" });
+    const view = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(view.summary.audit).toEqual({ actions: rows.length, denials: 1, actors: ["agent/agt-1", "human/local-user", "service/runner", "service/sandbox"] });
+  });
+  it("projects restart cancellation as a service audit fact", () => {
+    seq = 0;
+    const cancellation = ev({ type: "run.cancelled", category: "control", spanId: "cancel", status: "cancelled", actorType: "service", actorId: "server", attributes: { reason: "server_restart" } });
+    expect(projectAudit([cancellation])).toEqual([expect.objectContaining({ action: "run.cancelled", outcome: "cancelled", actor: { type: "service", id: "server" } })]);
   });
   it("focuses a denial ahead of its associated tool failure when the Run fails", () => {
     seq = 0;
