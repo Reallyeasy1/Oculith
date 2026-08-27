@@ -275,7 +275,7 @@ export async function createApp(
       const runs = service.allRuns().filter((r) => (!q.agentId || r.agentId === q.agentId) && (!q.from || r.createdAt >= q.from) && (!q.to || r.createdAt <= q.to))
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, q.limit * 2);
       // Stored summaries are the read model (#168): one snapshot per request, no NDJSON read for a fresh row.
-      const known = new Map((glassbox.summaries?.query() ?? []).map((s) => [s.runId, s]));
+      const known = new Map(((await glassbox.summaries?.query()) ?? []).map((s) => [s.runId, s]));
       const rollup = glassbox.summaries ? { traces: glassbox.store, emitter: glassbox.emitter, summaries: glassbox.summaries } : undefined;
       const empty = (runId: string): RunSummary => summaryFromView(buildTrace([], { capturePolicy: glassbox.emitter.capturePolicy, degraded: glassbox.emitter.isDegraded(runId) }));
       const items = [];

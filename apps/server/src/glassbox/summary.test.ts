@@ -87,21 +87,21 @@ describe("JsonRunSummaryStore", () => {
     await summaries.upsert(stub({ runId: "r3", agentId: "a", configHash: "c2", startedAt: t(200), executionStatus: "completed" }));
     await summaries.upsert(stub({ runId: "r1", agentId: "a", configHash: "c1", startedAt: t(100), executionStatus: "timeout" }));
     expect(json.snapshot().runSummaries).toHaveLength(3);
-    expect(summaries.query().map((s) => s.runId)).toEqual(["r2", "r3", "r1"]);
-    expect(summaries.query({ agentId: "a" }).map((s) => s.runId)).toEqual(["r3", "r1"]);
-    expect(summaries.query({ configHash: "c1" }).map((s) => s.runId)).toEqual(["r2", "r1"]);
-    expect(summaries.query({ executionStatus: "timeout" }).map((s) => s.runId)).toEqual(["r1"]);
-    expect(summaries.query({ from: t(150), to: t(250) }).map((s) => s.runId)).toEqual(["r3"]);
-    expect(summaries.query({ limit: 1 }).map((s) => s.runId)).toEqual(["r2"]);
-    expect(summaries.query({ taskOutcome: "passed" })).toEqual([]);
+    expect((await summaries.query()).map((s) => s.runId)).toEqual(["r2", "r3", "r1"]);
+    expect((await summaries.query({ agentId: "a" })).map((s) => s.runId)).toEqual(["r3", "r1"]);
+    expect((await summaries.query({ configHash: "c1" })).map((s) => s.runId)).toEqual(["r2", "r1"]);
+    expect((await summaries.query({ executionStatus: "timeout" })).map((s) => s.runId)).toEqual(["r1"]);
+    expect((await summaries.query({ from: t(150), to: t(250) })).map((s) => s.runId)).toEqual(["r3"]);
+    expect((await summaries.query({ limit: 1 })).map((s) => s.runId)).toEqual(["r2"]);
+    expect(await summaries.query({ taskOutcome: "passed" })).toEqual([]);
     await summaries.setTaskOutcome("r3", "passed", "deterministic:eval-1");
-    expect(summaries.get("r3")).toMatchObject({ taskOutcome: "passed", taskOutcomeSource: "deterministic:eval-1" });
-    expect(summaries.query({ taskOutcome: "passed" }).map((s) => s.runId)).toEqual(["r3"]);
+    expect(await summaries.get("r3")).toMatchObject({ taskOutcome: "passed", taskOutcomeSource: "deterministic:eval-1" });
+    expect((await summaries.query({ taskOutcome: "passed" })).map((s) => s.runId)).toEqual(["r3"]);
     await expect(summaries.setTaskOutcome("nope", "failed", "x")).rejects.toThrow("Run summary not found");
     // survives a reload; an older db.json without the collection still loads
     const reopened = new JsonStore(path.join(root, "db.json"));
     await reopened.initialize();
-    expect(new JsonRunSummaryStore(reopened).get("r3")?.taskOutcome).toBe("passed");
+    expect((await new JsonRunSummaryStore(reopened).get("r3"))?.taskOutcome).toBe("passed");
   });
 });
 
@@ -123,18 +123,18 @@ describe("rollup and backfill", () => {
     await emitter.flush();
     const deps = { traces, emitter, summaries };
     expect(await backfillSummaries(deps)).toEqual({ scanned: 3, written: 2, skipped: 1 });
-    expect(summaries.get("run-1")).toMatchObject({ executionStatus: "failed", taskOutcome: "unknown", eventCount: 12, rollupVersion: ROLLUP_VERSION });
-    expect(summaries.get("run-3")).toBeUndefined();
+    expect(await summaries.get("run-1")).toMatchObject({ executionStatus: "failed", taskOutcome: "unknown", eventCount: 12, rollupVersion: ROLLUP_VERSION });
+    expect(await summaries.get("run-3")).toBeUndefined();
     // idempotent
     expect(await backfillSummaries(deps)).toEqual({ scanned: 3, written: 0, skipped: 3 });
     // stale version is rewritten; the outcome written by the evaluation plane survives
     await summaries.setTaskOutcome("run-2", "passed", "evaluator:e@1");
-    await summaries.upsert({ ...summaries.get("run-2")!, rollupVersion: 0 });
+    await summaries.upsert({ ...(await summaries.get("run-2"))!, rollupVersion: 0 });
     expect(await backfillSummaries(deps)).toEqual({ scanned: 3, written: 1, skipped: 2 });
-    expect(summaries.get("run-2")).toMatchObject({ rollupVersion: ROLLUP_VERSION, taskOutcome: "passed", taskOutcomeSource: "evaluator:e@1" });
+    expect(await summaries.get("run-2")).toMatchObject({ rollupVersion: ROLLUP_VERSION, taskOutcome: "passed", taskOutcomeSource: "evaluator:e@1" });
     // the summary and a fresh buildTrace never disagree
     const view = buildTrace(await traces.readRun("run-1"), { capturePolicy: "metadata_only" });
-    const { updatedAt: _u, ...stored } = summaries.get("run-1")!;
+    const { updatedAt: _u, ...stored } = (await summaries.get("run-1"))!;
     const { updatedAt: _u2, ...derived } = summaryFromView(view);
     expect(stored).toEqual(derived);
   });
@@ -145,7 +145,7 @@ describe("rollup and backfill", () => {
     emitAll(emitter, fixture());
     const logs: string[] = [];
     await scheduleRollup({ traces, emitter, summaries, log: (m) => logs.push(m) }, "run-1");
-    expect(summaries.get("run-1")?.executionStatus).toBe("failed");
+    expect((await summaries.get("run-1"))?.executionStatus).toBe("failed");
     expect(await rollupRun({ traces, emitter, summaries }, "missing")).toBeUndefined();
     const broken = { ...summaries, get: () => undefined, upsert: async () => { throw new Error("disk full"); } };
     await expect(scheduleRollup({ traces, emitter, summaries: broken, log: (m) => logs.push(m) }, "run-1")).resolves.toBeUndefined();

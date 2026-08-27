@@ -44,9 +44,9 @@ export interface RunSummaryQuery {
 
 export interface RunSummaryStore {
   upsert(summary: RunSummary): Promise<void>;
-  get(runId: string): RunSummary | undefined;
+  get(runId: string): Promise<RunSummary | undefined>;
   /** Newest `startedAt` first. */
-  query(query?: RunSummaryQuery): RunSummary[];
+  query(query?: RunSummaryQuery): Promise<RunSummary[]>;
   setTaskOutcome(runId: string, outcome: TaskOutcome, source: string): Promise<void>;
 }
 
@@ -72,11 +72,11 @@ export const isFresh = (summary: RunSummary | undefined, entry: RunIndexEntry): 
 export class JsonRunSummaryStore implements RunSummaryStore {
   constructor(private readonly store: JsonStore) {}
 
-  get(runId: string): RunSummary | undefined {
+  async get(runId: string): Promise<RunSummary | undefined> {
     return this.store.snapshot().runSummaries.find((s) => s.runId === runId);
   }
 
-  query(q: RunSummaryQuery = {}): RunSummary[] {
+  async query(q: RunSummaryQuery = {}): Promise<RunSummary[]> {
     return this.store.snapshot().runSummaries
       .filter((s) => (!q.agentId || s.agentId === q.agentId) && (!q.configHash || s.configHash === q.configHash)
         && (!q.executionStatus || s.executionStatus === q.executionStatus) && (!q.taskOutcome || s.taskOutcome === q.taskOutcome)
@@ -112,7 +112,7 @@ export async function rollupRun(deps: RollupDeps, runId: string, entry?: RunInde
   if (events.length === 0) return undefined;
   const found = entry ?? deps.traces.listRuns().find((e) => e.runId === runId);
   const view = buildTrace(events, { capturePolicy: deps.emitter.capturePolicy, degraded: deps.emitter.isDegraded(runId), truncated: found?.truncated });
-  const previous = deps.summaries.get(runId);
+  const previous = await deps.summaries.get(runId);
   const summary = summaryFromView(view, { taskOutcome: previous?.taskOutcome, taskOutcomeSource: previous?.taskOutcomeSource });
   await deps.summaries.upsert(summary);
   return summary;
@@ -131,7 +131,7 @@ export async function backfillSummaries(deps: RollupDeps): Promise<{ scanned: nu
   const report = { scanned: 0, written: 0, skipped: 0 };
   for (const entry of deps.traces.listRuns()) {
     report.scanned++;
-    const existing = deps.summaries.get(entry.runId);
+    const existing = await deps.summaries.get(entry.runId);
     // Running Runs are rolled up by their own terminal event; a stale count means events landed after the last rollup.
     if (entry.status === "running" || isFresh(existing, entry)) { report.skipped++; continue; }
     if (await rollupRun(deps, entry.runId, entry)) report.written++;
