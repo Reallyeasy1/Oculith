@@ -14,7 +14,7 @@ interface Props {
 // All-runs overview across Agents (#70): the summary strip. The Runs table and trace detail stay in App below it.
 export default function Overview({ runs, cases, evalRuns, selectedAgent, onRunCase, onDeleteCase }: Props) {
   const s = summarizeRuns(runs);
-  const stats: [string, number][] = [["Total", s.total], ["Ok", s.ok], ["Needs attention", s.attention], ["Running", s.running]];
+  const stats: [string, number][] = [["Total", s.total], ["Ok", s.ok], ["Needs attention", s.attention], ["Recovered", s.recovered], ["Running", s.running]];
   const [pendingCaseId, setPendingCaseId] = useState<string | null>(null);
   const act = async (regressionCase: RegressionCase, action: "run" | "delete") => {
     setPendingCaseId(regressionCase.id);

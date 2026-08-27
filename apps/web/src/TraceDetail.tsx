@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import type { Assertion, ObservationEvent, RunListItem, Span, TraceView } from "./types";
+import type { Assertion, AuditRow, ObservationEvent, RunListItem, Span, TraceView } from "./types";
 import { STATUS_ICON, formatClock, formatDuration, formatUsage } from "./runs-view-model";
 import {
   CATEGORIES,
@@ -53,6 +53,9 @@ export default function TraceDetail({ runId, run, view, templateBacked, onCaseSa
   const [caseAssertions, setCaseAssertions] = useState<Assertion[]>([]);
   const [savingCase, setSavingCase] = useState(false);
   const [caseError, setCaseError] = useState<string | null>(null);
+  const [showAudit, setShowAudit] = useState(false);
+  const [auditRows, setAuditRows] = useState<AuditRow[] | null>(null);
+  const [auditError, setAuditError] = useState<string | null>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   // Bumped whenever focus must move programmatically (keyboard nav, Jump, drawer close); the effect below
   // runs after the target row has rendered, which matters when Jump expands a collapsed path.
@@ -69,6 +72,17 @@ export default function TraceDetail({ runId, run, view, templateBacked, onCaseSa
   const rows = useMemo(() => (view ? visibleRows(view.spans, expanded, filter) : []), [view, expanded, filter]);
   const ticks = useMemo(() => timelineTicks(view?.summary.durationMs), [view?.summary.durationMs]);
   const rovingId = focusId && rows.some((r) => r.span.spanId === focusId) ? focusId : (rows[0]?.span.spanId ?? null);
+
+  // Refresh audit rows alongside the trace while the panel is visible; this is derived data, so the
+  // trace remains the source of truth for navigating to the supporting span.
+  useEffect(() => {
+    if (!showAudit) return;
+    let cancelled = false;
+    void api.audit(runId)
+      .then(({ audit }) => { if (!cancelled) { setAuditRows(audit); setAuditError(null); } })
+      .catch((reason) => { if (!cancelled) setAuditError(reason instanceof Error ? reason.message : String(reason)); });
+    return () => { cancelled = true; };
+  }, [runId, showAudit, view]);
 
   useEffect(() => {
     if (focusReq > 0 && rovingId) rowRefs.current.get(rovingId)?.focus();
@@ -158,6 +172,16 @@ export default function TraceDetail({ runId, run, view, templateBacked, onCaseSa
   };
 
   const closeDrawer = () => { const id = openId; setOpenId(null); if (id) focusRow(id); };
+  const openAuditSpan = (spanId: string) => {
+    const path: string[] = [];
+    for (let current = byId.get(spanId); current; current = current.parentSpanId ? byId.get(current.parentSpanId) : undefined) path.push(current.spanId);
+    setFilter(EMPTY_FILTER);
+    setExpanded((prev) => { const next = new Set(prev ?? expanded); path.forEach((id) => next.add(id)); return next; });
+    setShowAudit(false);
+    setOpenId(null);
+    setFocusId(spanId);
+    setFocusReq((n) => n + 1);
+  };
 
   return (
     <section ref={sectionRef} className="runs-view trace-detail" aria-labelledby="trace-heading">
@@ -240,8 +264,20 @@ export default function TraceDetail({ runId, run, view, templateBacked, onCaseSa
         {isFilterActive(filter) && (
           <button type="button" className="button button-ghost" onClick={() => setFilter(EMPTY_FILTER)}>Clear</button>
         )}
+        <button
+          type="button"
+          className="button button-ghost"
+          aria-pressed={showAudit}
+          onClick={() => setShowAudit((open) => !open)}
+        >
+          Audit
+        </button>
       </div>
 
+      {showAudit ? (
+        <AuditTable rows={auditRows} error={auditError} onOpenSpan={openAuditSpan} />
+      ) : (
+        <>
       {ticks.length > 0 && (
         <div className="trace-axis" aria-hidden="true">
           <span className="trace-axis-title">Timeline</span>
@@ -319,8 +355,10 @@ export default function TraceDetail({ runId, run, view, templateBacked, onCaseSa
           <p className="runs-empty">{view.spans.length === 0 ? "No spans observed yet." : "No spans match these filters."}</p>
         )}
       </div>
+        </>
+      )}
 
-      {openSpan && <SpanDrawer span={openSpan} view={view} parentName={openSpan.parentSpanId ? byId.get(openSpan.parentSpanId)?.name : undefined} onClose={closeDrawer} />}
+      {!showAudit && openSpan && <SpanDrawer span={openSpan} view={view} parentName={openSpan.parentSpanId ? byId.get(openSpan.parentSpanId)?.name : undefined} onClose={closeDrawer} />}
       {showSaveCase && (
         <div className="modal-backdrop" onMouseDown={() => !savingCase && setShowSaveCase(false)}>
           <form className="modal regression-case-modal" onSubmit={saveCase} onMouseDown={(event) => event.stopPropagation()}>
@@ -373,6 +411,30 @@ function prefillAssertions(view: TraceView): Assertion[] {
   if (toolCalls > 0) assertions.push({ type: "max_tool_calls", max: toolCalls * 2 });
   if (view.summary.durationMs !== undefined) assertions.push({ type: "max_duration_ms", max: Math.ceil(view.summary.durationMs * 1.5) });
   return assertions;
+}
+
+function AuditTable({ rows, error, onOpenSpan }: { rows: AuditRow[] | null; error: string | null; onOpenSpan: (spanId: string) => void }) {
+  if (error) return <p className="runs-empty" role="alert">Audit could not be loaded: {error}</p>;
+  if (!rows) return <p className="runs-empty" aria-live="polite">Loading audit…</p>;
+  if (rows.length === 0) return <p className="runs-empty">No audit-relevant events for this Run.</p>;
+  return (
+    <div className="runs-table-wrap audit-table-wrap">
+      <table className="runs-table audit-table">
+        <thead><tr><th scope="col">Time</th><th scope="col">Actor</th><th scope="col">Action</th><th scope="col">Resource</th><th scope="col">Outcome</th></tr></thead>
+        <tbody>{rows.map((row) => (
+          <tr key={row.eventId} tabIndex={0} onClick={() => onOpenSpan(row.spanId)} onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpenSpan(row.spanId); }
+          }} aria-label={`Open evidence for ${row.action} by ${row.actor.type}/${row.actor.id}`}>
+            <td>{formatClock(row.at)}</td>
+            <td>{row.actor.type}/{row.actor.id}</td>
+            <td><button type="button" className="audit-evidence" onClick={() => onOpenSpan(row.spanId)}>{row.action}</button></td>
+            <td>{row.resource}</td>
+            <td><span className={"badge audit-outcome" + (row.outcome === "denied" ? " badge-error" : "")}>{row.outcome}</span></td>
+          </tr>
+        ))}</tbody>
+      </table>
+    </div>
+  );
 }
 
 function Field({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {

@@ -66,6 +66,38 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
 }
 
 describe("Agent lifecycle", () => {
+  it("validates, lists, shares, and switches named workspaces safely", async () => {
+    let finish!: (result: RunnerResult) => void;
+    const runner: AgentRunner = {
+      run: () => new Promise((resolve) => { finish = resolve; }),
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const first = await service.createAgent({ name: "One", workspace: "shared-repo" });
+    const second = await service.createAgent({ name: "Two", workspace: "shared-repo" });
+    expect(first.workspacePath).toBe(second.workspacePath);
+    expect((await service.listWorkspaces()).find((workspace) => workspace.name === "shared-repo")).toMatchObject({
+      agents: expect.arrayContaining([first.id, second.id]), managed: false,
+    });
+
+    const { run } = await service.sendMessage(first.id, "hold");
+    await expect.poll(() => readFile(path.join(first.workspacePath, "AGENTS.md"), "utf8")).toMatch(/named One/);
+    await expect(service.sendMessage(second.id, "collide")).rejects.toMatchObject({ statusCode: 409 });
+    await expect(service.updateAgent(second.id, { workspace: "next-repo" })).resolves.toMatchObject({ workspaceName: "next-repo", codexThreadId: null });
+    expect(await readFile(path.join(service.getAgent(second.id).workspacePath, "AGENTS.md"), "utf8")).toContain("Two");
+    finish({ output: "done", threadId: "thread", usage: null });
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    await service.deleteAgent(first.id);
+    await expect(stat(first.workspacePath)).resolves.toBeDefined();
+  });
+
+  it.each(["../escape", "UPPER", "/absolute", "a/b", "a\\b", ""])("rejects unsafe workspace name %j", async (workspace) => {
+    const service = await makeService();
+    await expect(service.createAgent({ name: "Unsafe", workspace })).rejects.toMatchObject({ statusCode: 400 });
+  });
+
   it("briefs new and existing Agents about disposable containers and host-side commands", async () => {
     const service = await makeService();
     const agent = await service.createAgent({ name: "Frontend Builder" });
@@ -248,6 +280,38 @@ describe("GlassBox control-plane adapter", () => {
     expect((await store.readRun(finished.runIds[0]!)).find((event) => event.type === "run.created")?.attributes).toMatchObject({ evalRunId: evalRun.id, caseId: regressionCase.id });
   });
 
+  it("records a throwing case and still runs the remaining cases", async () => {
+    let calls = 0;
+    const { service, store, emitter, config } = await makeTraced(
+      new (class extends FakeRunner {
+        override run(request: RunnerRequest): Promise<RunnerResult> {
+          if (calls++ === 0) return Promise.reject(new Error("runner exploded"));
+          return super.run(request);
+        }
+      })(),
+    );
+    await mkdir(path.join(config.workspaceTemplatesDirectory, "fixture"), { recursive: true });
+    const agent = await service.createAgent({ name: "Eval target", instructions: "complete the task" });
+    const snapshot = configSnapshot(agent, config);
+    const assertions = [{ type: "terminal_status" as const, expected: "ok" }];
+    const first = await service.createRegressionCase({ name: "first", prompt: "one", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions });
+    const second = await service.createRegressionCase({ name: "second", prompt: "two", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions });
+    const evalRun = await service.createEvalRun({ caseIds: [first.id, second.id], target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } });
+    await new EvalRunner(service, { emitter, store }).execute(evalRun.id);
+    const finished = service.getEvalRun(evalRun.id);
+    expect(finished.status).toBe("failed");
+    expect(finished.completedAt).toEqual(expect.any(String));
+    expect(finished.results).toHaveLength(2);
+    expect(finished.results[0]).toMatchObject({ caseId: first.id, runId: expect.any(String), error: "runner exploded", results: [expect.objectContaining({ type: "terminal_status", pass: false })] });
+    expect(service.getRun(finished.results[0]!.runId!)).toMatchObject({ status: "failed", error: "runner exploded" });
+    expect(finished.results[1]).toMatchObject({ caseId: second.id, runId: expect.any(String), results: [expect.objectContaining({ type: "terminal_status", pass: true })] });
+    expect(finished.results[1]!.results[0]!.pass).toBe(true);
+    expect(service.getAgent(agent.id).status).not.toBe("busy");
+    // the Agent went error -> ready, so the next ordinary message is still admitted; wait so cleanup does not race the store
+    const { run: next } = await service.sendMessage(agent.id, "still admitted");
+    expect(await service.waitForRun(next.id)).toMatchObject({ status: "completed" });
+  });
+
   it("runs an evaluation in a fresh template workspace and leaves the Agent thread untouched", async () => {
     class CapturingRunner extends FakeRunner {
       requests: RunnerRequest[] = [];
@@ -379,21 +443,33 @@ describe("GlassBox control-plane adapter", () => {
   });
 
   it("restart marks interrupted Runs cancelled in the trace", async () => {
+    // Wait for the runner to be reached instead of sleeping: executeRun awaits workspace writes first, so a
+    // fixed delay restarts too early under load and later control events would follow the cancel marker.
+    let reached!: () => void;
+    const runnerReached = new Promise<void>((resolve) => { reached = resolve; });
     const { service, store, emitter, config, jsonStore, workspaces } = await makeTraced(
       new (class extends FakeRunner {
         override run(): Promise<RunnerResult> {
+          reached();
           return new Promise(() => undefined);
         }
       })(),
     );
     const agent = await service.createAgent({ name: "r" });
+    const snapshot = configSnapshot(agent, config);
+    const evalRun = await service.createEvalRun({ caseIds: [], target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } });
     const { run } = await service.sendMessage(agent.id, "x");
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await runnerReached;
     await emitter.flush();
     // a second service on the same store simulates a process restart
     const restarted = new AgentService(config, jsonStore, workspaces, new FakeRunner(), emitter);
     await restarted.initialize();
     await emitter.flush();
+    expect(restarted.getEvalRun(evalRun.id)).toMatchObject({
+      status: "failed",
+      completedAt: expect.any(String),
+      results: [{ caseId: "", results: [], error: "Server restarted while this Eval Run was active" }],
+    });
     const events = await store.readRun(run.id);
     const serviceSpan = events.find((event) => event.type === "agent_service.run.started");
     expect(events.at(-1)).toMatchObject({
