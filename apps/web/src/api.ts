@@ -97,6 +97,7 @@ export const api = {
     request<void>("/api/regression-cases/" + id, { method: "DELETE" }),
   listEvalRuns: () => request<{ evalRuns: EvalRun[] }>("/api/eval-runs"),
   evalRun: (id: string) => request<{ evalRun: EvalRun }>("/api/eval-runs/" + id),
+  compareEvalRuns: (baselineId: string, candidateId: string) => request<import("./types").EvalComparison>("/api/eval-runs/" + baselineId + "/compare/" + candidateId),
   startEvalRun: (body: { agentId: string; caseIds: string[] }) =>
     request<{ evalRun: EvalRun }>("/api/eval-runs", {
       method: "POST",

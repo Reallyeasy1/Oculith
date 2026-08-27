@@ -1,0 +1,43 @@
+import { useMemo, useState } from "react";
+import { api } from "./api";
+import type { EvalComparison, EvalResult, EvalRun } from "./types";
+
+interface Props {
+  evalRuns: EvalRun[];
+  onOpenEvidence: (runId: string, eventId?: string) => void;
+}
+
+export default function CompareView({ evalRuns, onOpenEvidence }: Props) {
+  const [baselineId, setBaselineId] = useState("");
+  const [candidateId, setCandidateId] = useState("");
+  const [comparison, setComparison] = useState<EvalComparison | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const compatible = useMemo(() => evalRuns.filter((item) => item.status !== "running"), [evalRuns]);
+  const compare = async () => {
+    if (!baselineId || !candidateId || baselineId === candidateId) return;
+    setError(null);
+    try { setComparison(await api.compareEvalRuns(baselineId, candidateId)); }
+    catch (reason) { setComparison(null); setError(reason instanceof Error ? reason.message : String(reason)); }
+  };
+  if (compatible.length < 2) return null;
+  return <section className="runs-view comparison-view" aria-labelledby="comparison-heading">
+    <div className="playground-topbar"><div><span className="eyebrow">Regression</span><h2 id="comparison-heading">Compare evaluations</h2></div></div>
+    <div className="comparison-controls">
+      <label>Baseline <select value={baselineId} onChange={(event) => setBaselineId(event.target.value)}><option value="">Choose evaluation</option>{compatible.map((item) => <option key={item.id} value={item.id}>{item.id.slice(0, 8)} · {item.status}</option>)}</select></label>
+      <label>Candidate <select value={candidateId} onChange={(event) => setCandidateId(event.target.value)}><option value="">Choose evaluation</option>{compatible.map((item) => <option key={item.id} value={item.id}>{item.id.slice(0, 8)} · {item.status}</option>)}</select></label>
+      <button type="button" className="button button-primary" onClick={() => void compare()} disabled={!baselineId || !candidateId || baselineId === candidateId}>Compare</button>
+    </div>
+    {error && <div className="error-banner" role="alert">{error}</div>}
+    {comparison && <>
+      <div className={"comparison-banner " + (comparison.regressions > 0 ? "has-regression" : "no-regression")} role="status"><strong>{comparison.regressions > 0 ? "REGRESSION" : "No regression"}</strong>{comparison.regressions > 0 ? " · " + comparison.regressions + " assertion" + (comparison.regressions === 1 ? "" : "s") + " regressed" : " · all compared assertions held"}</div>
+      <div className="runs-table-wrap"><table className="runs-table"><thead><tr><th>Case</th><th>Assertion</th><th>Baseline</th><th>Candidate</th><th>Δ</th></tr></thead><tbody>{comparison.cases.flatMap((item) => item.assertions.map((assertion, index) => <tr key={item.caseId + index} className={assertion.regression ? "comparison-regression" : undefined}><td>{item.caseId.slice(0, 8)}</td><td>{assertion.type}</td><td><ResultCell result={assertion.baseline} runId={item.traceLinks.baseline} onOpenEvidence={onOpenEvidence} /></td><td><ResultCell result={assertion.candidate} runId={item.traceLinks.candidate} onOpenEvidence={onOpenEvidence} /></td><td>{assertion.delta === undefined ? "—" : assertion.delta > 0 ? "+" + assertion.delta : assertion.delta}</td></tr>))}</tbody></table></div>
+    </>}
+  </section>;
+}
+
+function ResultCell({ result, runId, onOpenEvidence }: { result?: EvalResult; runId?: string; onOpenEvidence: (runId: string, eventId?: string) => void }) {
+  if (!result) return <>—</>;
+  const eventId = result.evidenceEventIds[0];
+  const content = <><span className={"badge " + (result.pass ? "" : "badge-warn")}>{result.pass ? "PASS" : "FAIL"}</span> {String(result.observed ?? "—")}</>;
+  return runId ? <button type="button" className="evidence-link" onClick={() => onOpenEvidence(runId, eventId)}>{content}</button> : content;
+}
