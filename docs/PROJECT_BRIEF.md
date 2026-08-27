@@ -1,6 +1,6 @@
 # GlassBox project reference
 
-_State as of 27 August 2026 (main `400998b`). Sections 1–9 describe the system and change slowly; sections 10–14 (plan, status, ledger, UAT history, risks) are snapshots — epic #42, `docs/SPRINTS.md` and the GitHub milestone **TechJam MVP** are the live source of truth._
+_State as of 27 August 2026 (main `755546b`). Sections 1–9 describe the system and change slowly; sections 10–14 (plan, status, ledger, UAT history, risks) are snapshots — epic #42, `docs/SPRINTS.md` and the GitHub milestone **TechJam MVP** are the live source of truth._
 
 ---
 
@@ -278,24 +278,24 @@ S0 ▶ S1 ─┬─ S2 (evidence + demo-visible UI) ─────────�
 
 **Cut order if time runs out:** #67 (done) → #80 (done) → #89 → #87 (done). Never cut #79, #81, #84, #85, #86, #92.
 
+**Next up (plan after UAT rounds 3–4, 27 Aug):** Track A finish the Verify chain (#142/#144 → #151/#152 → #91/#90 → #92) · Track B evidence quality (#130 → #129 → #132 → #156 → #136) · Track C surfacing fixes (#154, #157, #155, #138, #137; author-blocked #124 #125 #118) · Track D #148 → #90 · Track E submission (#35, #93, #94, #95). #134 deferred past the demo. Full table in `docs/SPRINTS.md` "Next up"; mirrored on #42.
+
 **Demo script (PRD §13, nine steps, ≤ 3 min).** Start a Run from the Repo Doctor template → open its trace → show the first failure / a sandbox denial in the audit tab → save the Run as a Regression Case (assertions prefilled) → change only the Agent's instructions → rerun as an EvalRun from a fresh template copy → comparison flags PASS→FAIL as `REGRESSION` with links to both traces.
 
 ## 11. Status board
 
-_Snapshot 27 August 2026, ~04:30 SGT._
+_Snapshot 27 August 2026, ~16:30 SGT._
 
-- **main** `400998b` — typecheck clean; server 178/179 (the Windows-only `/tmp` case); web 25/25; E2E PASS (96 checks) on `236bfaf`.
+- **main** `755546b` — typecheck clean; server 194/195 (the Windows-only `/tmp` case); web 27/27; E2E PASS (117 checks) on `fdaeb57`.
 - **Live instance** `localhost:3000` on merged main (container runtime, auth off locally).
-- **Merged today (22 PRs):** #78 #120 #112 #116 #113 #109 #117 #119 #115 #108 #111 #114 #122 #107 #121 #126 #139 #140 #141 #145 #147 (+ #77/#76 workflow the night before).
+- **Merged today (30 PRs):** #78 #120 #112 #116 #113 #109 #117 #119 #115 #108 #111 #114 #122 #107 #121 #126 #139 #140 #141 #145 #147 #150 #106 #123 #127 #128 #159 #161 #163 (+ #77/#76 workflow the night before). S3 and S4 are on main; S5 is in review.
 
 | PR | Issue | Author | Base | Review | Next |
 |---|---|---|---|---|---|
-| #106 selectable workspaces | #64 | PockyFtw | main | Blocked — `list()` 500s on odd directory names; E2E switch step missing | controller follow-up in progress |
-| #123 workspace templates | #68 | keezhenxian | #106 | Blocked — empty template → 400; templates not in the Docker image; README/.gitignore clobber; `listTemplates` throws | controller follow-up after #106 |
-| #127 isolated eval Run | #105 | keezhenxian | #123 | Mergeable | lands after #123 |
-| #128 regression cases | #84 | keezhenxian | #127 | Mergeable | lands after #127 |
-| #142 eval runs | #85 | keezhenxian | #128 | Blocked — 30 s wait ceiling; EvalRuns not closed on restart; no mixed batch test | decision pending (controller fix or author) |
+| #142 eval runs | #85 | keezhenxian | main | Blocked — 30 s wait ceiling; EvalRuns not closed on restart; no mixed batch test | decision pending (controller fix or author) |
 | #144 comparison | #86 | keezhenxian | #142 | Blocked — regressions counted per case, not per assertion | decision pending |
+| #151 regression cases UI | #88 | keezhenxian | main | review pending | review with #158 (single create path) |
+| #152 comparison UI | #89 | keezhenxian | #151 | review pending | after #151 |
 | #125 deep links | #102 | keezhenxian | main | Blocked — rAF race drops `?run=` on reload | author |
 | #124 responsive trace | #100 | keezhenxian | main | Blocked — `min-width` causes the scroll it fixes; no screenshots | author |
 | #118 a11y round 2 | #103 | PockyFtw | main | Blocked — RunsView key breaks E2E [4b] | author |
@@ -356,7 +356,7 @@ _The feature-by-feature coverage table, the E2E lane steps and the list of untes
 
 | Item | Why it matters | Proposed resolution |
 |---|---|---|
-| Verify chain is one long stack | Six PRs land in strict order; a blocker at the base (#106) holds S3–S5 | Controller fixing #106/#123. Decision: fix #142/#144 blockers as controller follow-ups (fastest) or hand back to the author |
+| Verify chain: #142/#144 still blocked | EvalRun and comparison are the demo's steps 6–7; #151/#152 (UI) stack on them | Decision: fix #142/#144 blockers as controller follow-ups (fastest) or hand back to the author |
 | Runtime-layer blindness (#129/#130) | Model time and tool identity invisible; weakens the demo's "why did it fail" beat | Start right after the chain lands; observer-only, no contract break |
 | `safe_summary` as the POC default | Without it tool rows have no identity under `metadata_only` | Decide once #130's `argument0` exists |
 | UX-03 PRs author-blocked (#124, #125, #118) | The demo runs on a laptop | Three small fixes requested on the PRs; #138 filed separately |
