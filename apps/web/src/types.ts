@@ -273,5 +273,10 @@ export interface EvalRun {
   runIds: string[]; results: { caseId: string; runId?: string; results: EvalResult[]; error?: string }[];
   status: "running" | "completed" | "failed"; createdAt: string; completedAt?: string;
 }
+export interface EvalComparison {
+  cases: { caseId: string; assertions: { type: string; baseline?: EvalResult; candidate?: EvalResult; delta?: number; regression: boolean }[]; regression: boolean; traceLinks: { baseline?: string; candidate?: string } }[];
+  regressions: number;
+}
+
 // Mirrors WorkspaceManager.listTemplates(): a bad template (symlink, over limits) is reported, not a 500.
 export type WorkspaceTemplate = { name: string; fileCount: number; bytes: number } | { name: string; error: string };

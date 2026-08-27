@@ -33,6 +33,9 @@ const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
   const { rm } = await import("node:fs/promises");
+  // A deliberately non-settling FakeRunner can be between scheduling its run and writing AGENTS.md.
+  // Let that microtask reach the runner before removing its temporary workspace.
+  await new Promise((resolve) => setTimeout(resolve, 20));
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) =>
       rm(directory, { recursive: true, force: true }),
