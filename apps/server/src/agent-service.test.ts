@@ -347,16 +347,21 @@ describe("GlassBox control-plane adapter", () => {
   });
 
   it("restart marks interrupted Runs cancelled in the trace", async () => {
+    // Wait for the runner to be reached instead of sleeping: executeRun awaits workspace writes first, so a
+    // fixed delay restarts too early under load and later control events would follow the cancel marker.
+    let reached!: () => void;
+    const runnerReached = new Promise<void>((resolve) => { reached = resolve; });
     const { service, store, emitter, config, jsonStore, workspaces } = await makeTraced(
       new (class extends FakeRunner {
         override run(): Promise<RunnerResult> {
+          reached();
           return new Promise(() => undefined);
         }
       })(),
     );
     const agent = await service.createAgent({ name: "r" });
     const { run } = await service.sendMessage(agent.id, "x");
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await runnerReached;
     await emitter.flush();
     // a second service on the same store simulates a process restart
     const restarted = new AgentService(config, jsonStore, workspaces, new FakeRunner(), emitter);
