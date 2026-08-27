@@ -256,6 +256,7 @@ let server = null;
   await page.locator(".agent-card", { hasText: "E2E GlassBox" }).click();
   await rows().first().waitFor({ timeout: 10_000 });
   eq(await rows().count(), 1, "first Agent again: exactly its one Run");
+  eq(await rows().first().locator(".tool-call-summary").evaluate((node) => getComputedStyle(node).gap), "4px", "Tool-call badges have explicit spacing (#157)");
   eq(await page.locator(".agent-card[aria-current=page] strong").textContent(), "E2E GlassBox", "sidebar marks the selected Agent aria-current=page");
   const allRuns = page.locator(".agent-card", { hasText: "All runs" });
   await allRuns.focus();

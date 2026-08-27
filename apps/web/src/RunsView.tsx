@@ -137,17 +137,19 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 <td>{run.runtime} · {run.model}</td>
                 <td>{formatUsage(run.usage)}</td>
                 <td>
-                  <span>{run.toolCalls}{run.toolFailures > 0 && <> · {run.toolFailures} failed</>}</span>{" "}
-                  {run.redacted && <span className="badge">redacted</span>}
-                  {run.denials > 0 && <span className="badge badge-warn">denied {run.denials}</span>}
-                  {run.actions > 0 && <span className="badge">actions {run.actions}</span>}
-                  {run.degraded && <span className="badge badge-warn">degraded</span>}
-                  {run.truncated && <span className="badge badge-warn">truncated</span>}
-                  {run.evicted && <span className="badge badge-warn">evicted</span>}
-                  {(run.capabilities.model === "unknown" || run.capabilities.tool === "unknown") && (
-                    <span className="badge" title={noEvidenceTitle(run)}>no evidence</span>
-                  )}
-                  {run.workspaceChanges && <span className="badge">{run.workspaceChanges.added + run.workspaceChanges.modified + run.workspaceChanges.removed} files changed</span>}
+                  <span className="tool-call-summary">
+                    <span>{run.toolCalls}{run.toolFailures > 0 && <> · {run.toolFailures} failed</>}</span>
+                    {run.redacted && <span className="badge">redacted</span>}
+                    {run.denials > 0 && <span className="badge badge-warn">denied {run.denials}</span>}
+                    {run.actions > 0 && <span className="badge">actions {run.actions}</span>}
+                    {run.degraded && <span className="badge badge-warn">degraded</span>}
+                    {run.truncated && <span className="badge badge-warn">truncated</span>}
+                    {run.evicted && <span className="badge badge-warn">evicted</span>}
+                    {(run.capabilities.model === "unknown" || run.capabilities.tool === "unknown") && (
+                      <span className="badge" title={noEvidenceTitle(run)}>no evidence</span>
+                    )}
+                    {run.workspaceChanges && <span className="badge">{run.workspaceChanges.added + run.workspaceChanges.modified + run.workspaceChanges.removed} files changed</span>}
+                  </span>
                 </td>
                 <td>{formatClock(run.lastEventAt)}</td>
               </tr>
