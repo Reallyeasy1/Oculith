@@ -7,7 +7,9 @@ import {
   formatClock,
   formatDuration,
   formatUsage,
+  liveRuns,
   matchesFilter,
+  recoveredFailures,
   sortNewestFirst,
   summarizeRuns,
   type QuickFilter,
@@ -37,6 +39,9 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
     [runs, filter],
   );
   const okCount = summarizeRuns(runs).ok;
+  // Elapsed is computed at render time: the dashboard poll (#98) replaces `runs` every tick, so it ticks with the poll.
+  const live = liveRuns(runs);
+  const now = Date.now();
 
   return (
     <section className="runs-view" aria-labelledby="runs-heading">
@@ -59,6 +64,25 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
           ))}
         </div>
       </div>
+      {live.length > 0 && (
+        <ul className="live-strip" aria-label="Live now">
+          {live.map((run) => (
+            <li key={run.runId}>
+              <button
+                type="button"
+                className={"live-run" + (run.runId === selectedRunId ? " selected" : "")}
+                aria-label={"Open trace for running Run" + (showAgent ? " of " + (run.agentName || run.agentId) : "")}
+                onClick={() => onOpenTrace(run.runId)}
+              >
+                <span className="status status-running"><span aria-hidden="true">{STATUS_ICON.running}</span>live</span>
+                {showAgent && <strong>{run.agentName || run.agentId}</strong>}
+                <span>{formatDuration(run.startedAt ? Math.max(0, now - Date.parse(run.startedAt)) : undefined)} elapsed</span>
+                <span>last event {formatClock(run.lastEventAt)}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       <div className="runs-table-wrap">
         <table className="runs-table">
           <thead>
@@ -97,6 +121,9 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                     <span aria-hidden="true">{STATUS_ICON[run.status]}</span>
                     {run.status}
                   </span>
+                  {recoveredFailures(run) > 0 && (
+                    <span className="badge badge-warn badge-recovered">recovered after {recoveredFailures(run)} {recoveredFailures(run) === 1 ? "failure" : "failures"}</span>
+                  )}
                 </td>
                 {showAgent && <td>{run.agentName || run.agentId}</td>}
                 <td>{run.workspace ?? "—"}</td>
@@ -113,6 +140,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                   <span>{run.toolCalls}{run.toolFailures > 0 && <> · {run.toolFailures} failed</>}</span>{" "}
                   {run.redacted && <span className="badge">redacted</span>}
                   {run.denials > 0 && <span className="badge badge-warn">denied {run.denials}</span>}
+                  {run.actions > 0 && <span className="badge">actions {run.actions}</span>}
                   {run.degraded && <span className="badge badge-warn">degraded</span>}
                   {run.truncated && <span className="badge badge-warn">truncated</span>}
                   {run.evicted && <span className="badge badge-warn">evicted</span>}

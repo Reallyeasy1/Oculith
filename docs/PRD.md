@@ -142,7 +142,7 @@ ObservationEmitter ──► validate (zod) ──► RedactionPipeline ──�
 
 ## 8. Observability data contract
 
-**Identifiers:** `traceId` (required, one per Run in MVP) · `spanId`/`parentSpanId` (root omits parent) · `runId` (required) · `agentId` (required) / `agentVersionId` (optional) · `sessionId` (= Codex thread id, when available) · `requestId` (required at ingress) · `actorId`/`actorType` (human | service | agent | controller; MVP `local-user`) · `attempt` (default 1) · `sequence` (monotonic per trace, required).
+**Identifiers:** `traceId` (required, one per Run in MVP) · `spanId`/`parentSpanId` (root omits parent) · `runId` (required) · `agentId` (required) / `agentVersionId` (optional) · `sessionId` (= Codex thread id, when available) · `requestId` (required at ingress) · `actorId`/`actorType` (human | service | agent | controller — `human/local-user` for requests and user cancellations, `agent/<agentId>` for the tool/model/workspace actions the agent takes, `service/runner` for runtime lifecycle, `service/sandbox` for denials, `service/server` for restart cancellations) · `attempt` (default 1) · `sequence` (monotonic per trace, required).
 
 **Envelope**
 ```json
@@ -257,7 +257,7 @@ The Verify loop consumes the observation contract; it never creates a second sou
 |---|---|---|
 | FR-12 | **Configuration identity:** compute a deterministic `configHash` from behaviour-affecting Agent/runtime configuration and stamp every `run.created`, Run list row and trace summary | Same effective configuration gives the same hash; a relevant change gives a different hash; secrets and machine-specific paths are excluded (#79) |
 | FR-13 | **Denial evidence:** emit one `policy.denied` alongside a sandbox-declined tool outcome, with service/sandbox actor and bounded metadata; count and focus denials | Audit and trace identify the declined program; no raw command/output under `metadata_only` (#81) |
-| FR-14 | **Audit projection:** derive actor/action/resource/outcome rows from stored control, policy, sandbox and terminal runtime events; every row links to its source event and trace | `GET /api/runs/:id/audit` and trace audit routes return no fabricated rows; summary exposes counts only (#82, #87) |
+| FR-14 | **Audit projection:** derive actor/action/resource/outcome rows from stored control, policy, sandbox, tool and terminal runtime events; every row links to its source event and trace | `GET /api/runs/:id/audit` and trace audit routes return no fabricated rows; summary exposes counts only (#82, #87) |
 | FR-15 | **Per-Run metrics:** derive bounded duration, tool/model/error/denial counts and token usage from the same events used by the trace summary | Metrics are deterministic, visible in list/detail, and equal direct event counts (#74) |
 | FR-16 | **Regression Case and starting state:** save a Run as a case with bounded prompt, baseline Run/config, workspace-template reference and deterministic assertions; named/template workspaces reproduce the same starting state | Save-from-Run pre-fills evidence-backed assertions; reruns never mutate the baseline workspace (#64, #68, #84, #88) |
 | FR-17 | **Deterministic evaluators:** support `terminal_status`, `expected_tool`, `max_tool_calls`, `max_duration_ms`, `post_check`, and `files_changed` only when cheaply observed | Each result is pass/fail with evidence references; `post_check` runs in the sandbox on the judged path (Docker) and falls back to a bounded local process where the sandbox is unavailable (#80); CI uses the fallback (#91) (#80, #83) |
@@ -287,14 +287,15 @@ The Verify loop consumes the observation contract; it never creates a second sou
 | FR-01…FR-11, UX-01/02, V-01 | #21–#35, #38, #39, #60, #69, #70, #72, #76, #93 |
 | FR-12 | #79 |
 | FR-13 | #81 |
-| FR-14 | #82, #87 |
-| FR-15 | #74 |
+| FR-14 | #82, #87, #135 |
+| FR-15 | #74, #129, #130, #134 |
 | FR-16 | #64, #68, #84, #88 |
 | FR-17 | #67, #80, #83 |
 | FR-18 | #85, #105 |
 | FR-19 | #86, #89 |
-| UX-03 | #97, #98, #99, #100, #101, #102, #103 |
-| V-01, AC-08 | #90, #91, #92, #94, #95, #104 |
+| UX-03 | #97, #98, #99, #100, #101, #102, #103, #131, #132, #136, #137, #138 |
+| V-01, AC-08 | #90, #91, #92, #94, #95, #104, #143 |
+| Evidence quality (UAT round 3, 27 Aug 2026) | #129 model-turn spans, #130 tool-call spans and identity, #131 attention rule, #132 outcome line, #133 exit-code hints, #134 per-Agent baselines, #135 actor attribution, #136 restart honesty, #137 chip semantics, #138 drawer layout |
 
 ## Appendix A — Locked decisions
 MVP centre = single-Run observability + failure diagnosis · storage = NDJSON per Run behind `TraceStore` + rebuildable index · capture = `metadata_only` default, `safe_summary` opt-in, raw prohibited · update model = polling, SSE only after P0 · no Collector/DB/cloud dependency.

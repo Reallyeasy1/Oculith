@@ -62,6 +62,38 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
 }
 
 describe("Agent lifecycle", () => {
+  it("validates, lists, shares, and switches named workspaces safely", async () => {
+    let finish!: (result: RunnerResult) => void;
+    const runner: AgentRunner = {
+      run: () => new Promise((resolve) => { finish = resolve; }),
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const first = await service.createAgent({ name: "One", workspace: "shared-repo" });
+    const second = await service.createAgent({ name: "Two", workspace: "shared-repo" });
+    expect(first.workspacePath).toBe(second.workspacePath);
+    expect((await service.listWorkspaces()).find((workspace) => workspace.name === "shared-repo")).toMatchObject({
+      agents: expect.arrayContaining([first.id, second.id]), managed: false,
+    });
+
+    const { run } = await service.sendMessage(first.id, "hold");
+    await expect.poll(() => readFile(path.join(first.workspacePath, "AGENTS.md"), "utf8")).toMatch(/named One/);
+    await expect(service.sendMessage(second.id, "collide")).rejects.toMatchObject({ statusCode: 409 });
+    await expect(service.updateAgent(second.id, { workspace: "next-repo" })).resolves.toMatchObject({ workspaceName: "next-repo", codexThreadId: null });
+    expect(await readFile(path.join(service.getAgent(second.id).workspacePath, "AGENTS.md"), "utf8")).toContain("Two");
+    finish({ output: "done", threadId: "thread", usage: null });
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    await service.deleteAgent(first.id);
+    await expect(stat(first.workspacePath)).resolves.toBeDefined();
+  });
+
+  it.each(["../escape", "UPPER", "/absolute", "a/b", "a\\b", ""])("rejects unsafe workspace name %j", async (workspace) => {
+    const service = await makeService();
+    await expect(service.createAgent({ name: "Unsafe", workspace })).rejects.toMatchObject({ statusCode: 400 });
+  });
+
   it("briefs new and existing Agents about disposable containers and host-side commands", async () => {
     const service = await makeService();
     const agent = await service.createAgent({ name: "Frontend Builder" });
@@ -360,16 +392,21 @@ describe("GlassBox control-plane adapter", () => {
   });
 
   it("restart marks interrupted Runs cancelled in the trace", async () => {
+    // Wait for the runner to be reached instead of sleeping: executeRun awaits workspace writes first, so a
+    // fixed delay restarts too early under load and later control events would follow the cancel marker.
+    let reached!: () => void;
+    const runnerReached = new Promise<void>((resolve) => { reached = resolve; });
     const { service, store, emitter, config, jsonStore, workspaces } = await makeTraced(
       new (class extends FakeRunner {
         override run(): Promise<RunnerResult> {
+          reached();
           return new Promise(() => undefined);
         }
       })(),
     );
     const agent = await service.createAgent({ name: "r" });
     const { run } = await service.sendMessage(agent.id, "x");
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await runnerReached;
     await emitter.flush();
     // a second service on the same store simulates a process restart
     const restarted = new AgentService(config, jsonStore, workspaces, new FakeRunner(), emitter);
