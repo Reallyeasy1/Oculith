@@ -255,7 +255,7 @@ let server = null;
   const caseDialog = page.locator(".regression-case-modal");
   await caseDialog.waitFor({ timeout: 5_000 });
   ok((await caseDialog.locator(".assertion-list > div").count()) >= 1, "save dialog shows inferred assertions");
-  await caseDialog.getByRole("button", { name: "Save regression case" }).click();
+  await caseDialog.getByRole("button", { name: "Save regression case", exact: true }).click();
   await caseDialog.waitFor({ state: "detached", timeout: 10_000 });
   const regressionCase = (await api("/api/regression-cases")).json().cases.find((item) => item.sourceRunId === okRun.run.id);
   ok(regressionCase, "saving the baseline trace creates a regression case");
