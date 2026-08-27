@@ -235,8 +235,8 @@ class TimeoutRunner extends FakeRunner {
   }
 }
 
-async function makeTraced(runner: AgentRunner = new FakeRunner(), store: TraceStore = new MemoryTraceStore()) {
-  const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+async function makeTraced(runner: AgentRunner = new FakeRunner(), store: TraceStore = new MemoryTraceStore(), capturePolicy: "metadata_only" | "safe_summary" = "metadata_only") {
+  const emitter = new ObservationEmitter({ store, capturePolicy });
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
   temporaryDirectories.push(root);
   const config = loadConfig({
@@ -383,8 +383,35 @@ describe("GlassBox control-plane adapter", () => {
     expect(events.find((e) => e.type === "run.completed")!.attributes).toMatchObject({
       inputTokens: 12,
       outputTokens: 5,
+      finalMessageBytes: 16,
+      reportedFailure: false,
     });
     expect(JSON.stringify(events)).not.toContain("hello"); // prompt text is never stored
+  });
+
+  it("persists only outcome metadata under metadata_only and a redacted bounded summary under safe_summary", async () => {
+    const secret = "ark-12345678-1234-1234-1234-123456789abc";
+    const runner = new (class extends FakeRunner {
+      override async run(): Promise<RunnerResult> {
+        return { output: `Unable to continue with ${secret}`, threadId: "thread", usage: null };
+      }
+    })();
+    const metadata = await makeTraced(runner);
+    const metadataAgent = await metadata.service.createAgent({ name: "metadata outcome" });
+    const metadataRun = (await metadata.service.sendMessage(metadataAgent.id, "go")).run;
+    await settle(metadata.service, metadataRun.id); await metadata.emitter.flush();
+    const metadataEvent = (await metadata.store.readRun(metadataRun.id)).find((event) => event.type === "run.completed")!;
+    expect(metadataEvent.attributes).toMatchObject({ reportedFailure: true, finalMessageBytes: expect.any(Number) });
+    expect(metadataEvent.summary).toBeUndefined();
+    expect(JSON.stringify(metadataEvent)).not.toContain(secret);
+
+    const safe = await makeTraced(runner, new MemoryTraceStore(), "safe_summary");
+    const safeAgent = await safe.service.createAgent({ name: "safe outcome" });
+    const safeRun = (await safe.service.sendMessage(safeAgent.id, "go")).run;
+    await settle(safe.service, safeRun.id); await safe.emitter.flush();
+    const safeEvent = (await safe.store.readRun(safeRun.id)).find((event) => event.type === "run.completed")!;
+    expect(safeEvent.summary?.text).toContain("[REDACTED:ark_key]");
+    expect(JSON.stringify(safeEvent)).not.toContain(secret);
   });
 
   it("observes workspace path changes without storing file contents", async () => {

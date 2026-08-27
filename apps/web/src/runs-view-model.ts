@@ -15,7 +15,7 @@ export function recoveredFailures(run: RunListItem): number {
 
 /** error ∪ timeout ∪ cancelled ∪ degraded ∪ any tool failure/denial — the default Runs filter (#35, #131). */
 export function needsAttention(run: RunListItem): boolean {
-  return run.degraded || run.toolFailures > 0 || run.denials > 0 || run.status === "error" || run.status === "timeout" || run.status === "cancelled";
+  return run.outcome?.reportedFailure === true || run.degraded || run.toolFailures > 0 || run.denials > 0 || run.status === "error" || run.status === "timeout" || run.status === "cancelled";
 }
 
 /** Running Runs, newest first — the "Live now" strip, independent of the quick filter (#131). */
