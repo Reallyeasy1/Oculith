@@ -315,6 +315,8 @@ _Snapshot 27 August 2026, ~04:30 SGT._
 
 ## 13. UAT history and findings
 
+_The feature-by-feature coverage table, the E2E lane steps and the list of untested areas live in `docs/UAT_COVERAGE.md`._
+
 | Round | Date | Scope | Outcome |
 |---|---|---|---|
 | 1 | 26 Aug (afternoon) | First run of the Observe half on the POC | Validation errors were 500 in production (error handler registered after static) → fixed in #60; capabilities inferred `unavailable` from absence → third state `unknown` |
