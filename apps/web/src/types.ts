@@ -167,6 +167,8 @@ export interface TraceSummary {
     toolCalls: number;
     toolFailures: number;
     modelCalls: number;
+    timeToFirstToolMs?: number;
+    timeSplit: { modelMs: number; toolMs: number; containerStartMs: number };
     tokens?: { input?: number; cachedInput?: number; output?: number };
     retries: number;
     denials: number;

@@ -7,6 +7,7 @@ import { newId, type EventInput, type EventType } from "./schema.js";
  * Every hook is optional work for the parser's existing callers — the sink argument is optional. */
 export interface CodexStreamSink {
   onThreadStarted(threadId: string): void;
+  onTurnStarted(): void;
   onItemCompleted(item: Record<string, unknown>): void;
   onTurnCompleted(usage: Record<string, unknown>): void;
   onError(message: string): void;
@@ -44,6 +45,8 @@ export class CodexStreamObserver implements CodexStreamSink {
   private sawModel = false;
   private finished = false;
   private lastError: string | undefined;
+  private turnIndex = 0;
+  private activeTurn: { spanId: string; turnIndex: number } | undefined;
 
   constructor(
     private readonly emitter: ObservationEmitter,
@@ -52,12 +55,12 @@ export class CodexStreamObserver implements CodexStreamSink {
     private readonly adapter: "CodexRunner" | "ContainerCodexRunner",
   ) {}
 
-  private base(type: EventType, name: string): Omit<EventInput, "category"> {
+  private base(type: EventType, name: string, spanId = newId("spn")): Omit<EventInput, "category"> {
     return {
       traceId: this.trace.traceId,
       runId: this.trace.runId,
       agentId: this.trace.agentId,
-      spanId: newId("spn"),
+      spanId,
       parentSpanId: this.parentSpanId,
       type,
       name,
@@ -73,6 +76,20 @@ export class CodexStreamObserver implements CodexStreamSink {
   onThreadStarted(threadId: string): void {
     this.sawAnyEvent = true;
     this.sessionId = threadId;
+  }
+
+  onTurnStarted(): void {
+    this.sawAnyEvent = true;
+    this.sawModel = true;
+    const turn = { spanId: newId("spn"), turnIndex: ++this.turnIndex };
+    this.activeTurn = turn;
+    this.emitter.emit({
+      ...this.base("model.request", "model.turn", turn.spanId),
+      category: "model",
+      phase: "start",
+      status: "running",
+      attributes: { turnIndex: turn.turnIndex },
+    });
   }
 
   onItemCompleted(item: Record<string, unknown>): void {
@@ -176,12 +193,15 @@ export class CodexStreamObserver implements CodexStreamSink {
       const value = num(usage[from]);
       if (value !== undefined) attributes[to] = value;
     }
+    const turn = this.activeTurn ?? { spanId: newId("spn"), turnIndex: ++this.turnIndex };
     this.emitter.emit({
-      ...this.base("model.completed", "model.completed"),
+      ...this.base("model.completed", "model.turn", turn.spanId),
       category: "model",
+      ...(this.activeTurn ? { phase: "end" as const } : {}),
       status: "ok",
-      attributes,
+      attributes: { turnIndex: turn.turnIndex, ...attributes },
     });
+    this.activeTurn = undefined;
   }
 
   /** Buffers only: a stream `error` line is a retry notice until the run actually fails (trap 3). */

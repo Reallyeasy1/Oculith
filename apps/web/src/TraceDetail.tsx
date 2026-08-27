@@ -177,6 +177,10 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
           {summary.metrics.retries > 0 ? ` · ${summary.metrics.retries} retries` : ""}
           {summary.metrics.denials > 0 ? ` · ${summary.metrics.denials} denied` : ""}
         </Field>
+        <Field label="Time split">
+          model {formatDuration(summary.metrics.timeSplit.modelMs)} · tools {formatDuration(summary.metrics.timeSplit.toolMs)} · start {formatDuration(summary.metrics.timeSplit.containerStartMs)}
+          {summary.metrics.timeToFirstToolMs !== undefined ? ` · first tool ${formatDuration(summary.metrics.timeToFirstToolMs)}` : ""}
+        </Field>
         <Field label="Config hash">
           <code title={run?.configSnapshot ? JSON.stringify(run.configSnapshot) : undefined}>{summary.configHash ?? run?.configHash ?? "—"}</code>
         </Field>

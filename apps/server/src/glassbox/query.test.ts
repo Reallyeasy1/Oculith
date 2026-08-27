@@ -97,6 +97,8 @@ describe("buildTrace", () => {
       toolCalls: 1,
       toolFailures: 0,
       modelCalls: 1,
+      timeToFirstToolMs: 30,
+      timeSplit: { modelMs: 0, toolMs: 5, containerStartMs: 0 },
       tokens: { input: 10, output: 2 },
       retries: 0,
       denials: 0,
@@ -126,6 +128,7 @@ describe("buildTrace", () => {
       toolCalls: 0,
       toolFailures: 0,
       modelCalls: 0,
+      timeSplit: { modelMs: 0, toolMs: 0, containerStartMs: 0 },
       retries: 0,
       denials: 0,
     });
@@ -140,6 +143,26 @@ describe("buildTrace", () => {
     expect(buildTrace(events, { capturePolicy: "metadata_only" }).summary.metrics).toMatchObject({
       terminalStatus: "ok", toolCalls: 1, toolFailures: 1, modelCalls: 1,
       tokens: { input: 3, cachedInput: 2, output: 1 }, retries: 1, denials: 1,
+    });
+  });
+  it("derives model/tool/container timing and time to first tool from observed spans", () => {
+    seq = 0;
+    const events = [
+      root(),
+      ev({ type: "run.created", category: "control", spanId: "created" }),
+      ev({ type: "runtime.container.started", category: "infrastructure", spanId: "container", phase: "start", status: "running" }),
+      ev({ type: "runtime.codex.started", category: "runtime", spanId: "codex", parentSpanId: "container", phase: "start", status: "running" }),
+      ev({ type: "model.request", category: "model", spanId: "turn-1", parentSpanId: "codex", phase: "start", status: "running", name: "model.turn" }),
+      ev({ type: "model.completed", category: "model", spanId: "turn-1", parentSpanId: "codex", phase: "end", status: "ok", name: "model.turn" }),
+      ev({ type: "tool.call.started", category: "tool", spanId: "tool-1", parentSpanId: "codex", phase: "start", status: "running" }),
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tool-1", parentSpanId: "codex", phase: "end", status: "ok" }),
+      ev({ type: "run.completed", category: "control", spanId: "done", status: "ok" }),
+    ];
+    expect(buildTrace(events, { capturePolicy: "metadata_only" }).summary.metrics).toMatchObject({
+      modelCalls: 1,
+      toolCalls: 1,
+      timeToFirstToolMs: 50,
+      timeSplit: { modelMs: 10, toolMs: 10, containerStartMs: 10 },
     });
   });
   it("handled tool failure keeps parent ok; cancelled never rolls up ok; open spans are incomplete", () => {

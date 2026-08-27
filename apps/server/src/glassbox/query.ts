@@ -42,6 +42,8 @@ export interface TraceMetrics {
   toolCalls: number;
   toolFailures: number;
   modelCalls: number;
+  timeToFirstToolMs?: number | undefined;
+  timeSplit: { modelMs: number; toolMs: number; containerStartMs: number };
   tokens?: { input?: number | undefined; cachedInput?: number | undefined; output?: number | undefined } | undefined;
   retries: number;
   denials: number;
@@ -257,6 +259,11 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
     span.category === "model" && events.some((event) => event.spanId === span.spanId && event.type.startsWith("model.")),
   );
   const retrySpans = new Set(events.filter((event) => event.attempt > 1).map((event) => event.spanId));
+  const firstRunEvent = events.find((event) => event.type === "run.started" || event.type === "run.created");
+  const firstToolEvent = events.find((event) => event.category === "tool");
+  const containerStarted = events.find((event) => event.type === "runtime.container.started");
+  const codexStarted = events.find((event) => event.type === "runtime.codex.started");
+  const spanDuration = (span: Span): number => span.durationMs ?? 0;
   const metrics: TraceMetrics = {
     ...(durationMs !== undefined ? { durationMs } : {}),
     terminalStatus: status,
@@ -266,6 +273,16 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
       events.some((event) => event.spanId === span.spanId && event.type === "tool.call.failed"),
     ).length,
     modelCalls: modelSpans.length,
+    ...(firstRunEvent && firstToolEvent
+      ? { timeToFirstToolMs: Math.max(0, Date.parse(firstToolEvent.timestamp) - Date.parse(firstRunEvent.timestamp)) }
+      : {}),
+    timeSplit: {
+      modelMs: modelSpans.reduce((total, span) => total + spanDuration(span), 0),
+      toolMs: toolSpans.reduce((total, span) => total + spanDuration(span), 0),
+      containerStartMs: containerStarted && codexStarted
+        ? Math.max(0, Date.parse(codexStarted.timestamp) - Date.parse(containerStarted.timestamp))
+        : 0,
+    },
     ...(usage && (usage.inputTokens !== undefined || usage.cachedInputTokens !== undefined || usage.outputTokens !== undefined)
       ? { tokens: {
           ...(usage.inputTokens !== undefined ? { input: usage.inputTokens } : {}),
