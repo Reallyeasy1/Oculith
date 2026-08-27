@@ -285,11 +285,15 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
   const auditRows = projectAudit(events);
   const declaredUnavailable = events.some((e) => e.type === "capability.unavailable");
   const workspace = events.find((event) => event.type === "run.created" && typeof event.attributes.workspace === "string")?.attributes.workspace;
-  const workspaceEvent = events.find((event) => event.type === "workspace.changed");
+  // Two emitters share this type: the runtime stream's file_change report ({ fileCount, added, updated, deleted })
+  // and the platform's before/after disk snapshot ({ added, modified, removed, bytesDelta, paths }). The snapshot
+  // is the honest source (it saw the disk); the stream report is only a fallback, with its vocabulary normalised.
+  const workspaceEvents = events.filter((event) => event.type === "workspace.changed");
+  const workspaceEvent = workspaceEvents.find((event) => event.source.adapter === "WorkspaceSnapshot") ?? workspaceEvents.at(-1);
   const workspaceChanges = workspaceEvent ? {
     added: Number(workspaceEvent.attributes.added ?? 0),
-    modified: Number(workspaceEvent.attributes.modified ?? 0),
-    removed: Number(workspaceEvent.attributes.removed ?? 0),
+    modified: Number(workspaceEvent.attributes.modified ?? workspaceEvent.attributes.updated ?? 0),
+    removed: Number(workspaceEvent.attributes.removed ?? workspaceEvent.attributes.deleted ?? 0),
     bytesDelta: Number(workspaceEvent.attributes.bytesDelta ?? 0),
     truncated: workspaceEvent.attributes.truncated === true,
   } : undefined;
