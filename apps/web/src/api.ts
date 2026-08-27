@@ -1,4 +1,4 @@
-import type { Agent, AgentRun, CapturePolicy, Message, RunListItem, SystemInfo, TraceView } from "./types";
+import type { Agent, AgentRun, Assertion, CapturePolicy, EvalRun, Message, RegressionCase, RunListItem, SystemInfo, TraceView } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -87,4 +87,19 @@ export const api = {
       "/api/runs?" + new URLSearchParams({ limit: String(options.limit ?? 100), ...(options.agentId ? { agentId: options.agentId } : {}) }),
     ),
   trace: (runId: string) => request<TraceView>("/api/runs/" + runId + "/trace"),
+  listRegressionCases: () => request<{ cases: RegressionCase[] }>("/api/regression-cases"),
+  saveRunAsRegressionCase: (runId: string, body: { name: string; assertions: Assertion[] }) =>
+    request<{ regressionCase: RegressionCase }>("/api/runs/" + runId + "/regression-case", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  deleteRegressionCase: (id: string) =>
+    request<void>("/api/regression-cases/" + id, { method: "DELETE" }),
+  listEvalRuns: () => request<{ evalRuns: EvalRun[] }>("/api/eval-runs"),
+  evalRun: (id: string) => request<{ evalRun: EvalRun }>("/api/eval-runs/" + id),
+  startEvalRun: (body: { agentId: string; caseIds: string[] }) =>
+    request<{ evalRun: EvalRun }>("/api/eval-runs", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };

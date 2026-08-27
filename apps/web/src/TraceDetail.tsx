@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ObservationEvent, RunListItem, Span, TraceView } from "./types";
+import { api } from "./api";
+import type { Assertion, ObservationEvent, RunListItem, Span, TraceView } from "./types";
 import { STATUS_ICON, formatClock, formatDuration, formatUsage } from "./runs-view-model";
 import {
   CATEGORIES,
@@ -34,17 +35,24 @@ interface Props {
   /** Runs-list row for this Run (agent name, runtime, model live there, not on TraceSummary). */
   run: RunListItem | undefined;
   view: TraceView | null;
+  templateBacked: boolean;
+  onCaseSaved: () => Promise<void>;
   onClose: () => void;
 }
 
 // Trace detail (UX-02): summary header, first-error banner with Jump, nested tree with duration bars,
 // client-side filters, focus-trapped span drawer. Everything shown comes straight from the API payload.
-export default function TraceDetail({ runId, run, view, onClose }: Props) {
+export default function TraceDetail({ runId, run, view, templateBacked, onCaseSaved, onClose }: Props) {
   const [filter, setFilter] = useState<TraceFilter>(EMPTY_FILTER);
   // null = untouched → follow the API's default (roots + failure path) even as the trace grows while polling.
   const [expandedState, setExpanded] = useState<Set<string> | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [showSaveCase, setShowSaveCase] = useState(false);
+  const [caseName, setCaseName] = useState("");
+  const [caseAssertions, setCaseAssertions] = useState<Assertion[]>([]);
+  const [savingCase, setSavingCase] = useState(false);
+  const [caseError, setCaseError] = useState<string | null>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   // Bumped whenever focus must move programmatically (keyboard nav, Jump, drawer close); the effect below
   // runs after the target row has rendered, which matters when Jump expands a collapsed path.
@@ -84,6 +92,33 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
   const failure = summary.failure;
   const failingSpan = failure && byId.get(failure.spanId);
   const openSpan = openId ? byId.get(openId) : undefined;
+  const saveReason = summary.status !== "ok"
+    ? "Only successful Runs can become regression cases."
+    : !templateBacked
+      ? "This Run did not start from a template-backed workspace."
+      : "";
+
+  const openSaveCase = () => {
+    setCaseName("Case: " + (run?.agentName ?? "Run") + " · " + runId.slice(0, 8));
+    setCaseAssertions(prefillAssertions(view));
+    setCaseError(null);
+    setShowSaveCase(true);
+  };
+  const saveCase = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!caseName.trim() || caseAssertions.length === 0) return;
+    setSavingCase(true);
+    setCaseError(null);
+    try {
+      await api.saveRunAsRegressionCase(runId, { name: caseName.trim(), assertions: caseAssertions });
+      await onCaseSaved();
+      setShowSaveCase(false);
+    } catch (reason) {
+      setCaseError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSavingCase(false);
+    }
+  };
 
   const focusRow = (id: string) => { setFocusId(id); setFocusReq((n) => n + 1); };
   const toggle = (id: string, open: boolean) =>
@@ -134,7 +169,10 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
             <code>{summary.runId || runId}</code>
           </h2>
         </div>
-        <button type="button" className="button button-ghost" onClick={onClose}>Close trace</button>
+        <div className="header-actions">
+          <button type="button" className="button button-ghost" onClick={openSaveCase} disabled={Boolean(saveReason)} title={saveReason || undefined}>Save as regression case</button>
+          <button type="button" className="button button-ghost" onClick={onClose}>Close trace</button>
+        </div>
       </div>
 
       <dl className="trace-summary">
@@ -283,8 +321,58 @@ export default function TraceDetail({ runId, run, view, onClose }: Props) {
       </div>
 
       {openSpan && <SpanDrawer span={openSpan} view={view} parentName={openSpan.parentSpanId ? byId.get(openSpan.parentSpanId)?.name : undefined} onClose={closeDrawer} />}
+      {showSaveCase && (
+        <div className="modal-backdrop" onMouseDown={() => !savingCase && setShowSaveCase(false)}>
+          <form className="modal regression-case-modal" onSubmit={saveCase} onMouseDown={(event) => event.stopPropagation()}>
+            <div className="modal-heading">
+              <div>
+                <span className="eyebrow">Regression case</span>
+                <h2>Save successful Run</h2>
+                <p>These checks were inferred from the trace evidence. Remove any that should not become a stable expectation.</p>
+              </div>
+              <button type="button" onClick={() => setShowSaveCase(false)} disabled={savingCase} aria-label="Close save regression case">×</button>
+            </div>
+            <label>
+              Name
+              <input autoFocus value={caseName} onChange={(event) => setCaseName(event.target.value)} maxLength={120} required />
+            </label>
+            <div className="assertion-list" aria-label="Prefilled assertions">
+              {caseAssertions.map((assertion, index) => (
+                <div key={assertionLabel(assertion) + index}>
+                  <code>{assertionLabel(assertion)}</code>
+                  <button type="button" className="button button-ghost" onClick={() => setCaseAssertions((items) => items.filter((_, itemIndex) => itemIndex !== index))} disabled={savingCase || caseAssertions.length === 1}>Delete</button>
+                </div>
+              ))}
+            </div>
+            {caseError && <div className="error-banner" role="alert">{caseError}</div>}
+            <div className="modal-footer">
+              <button type="button" className="button button-ghost" onClick={() => setShowSaveCase(false)} disabled={savingCase}>Cancel</button>
+              <button className="button button-primary" disabled={savingCase || !caseName.trim() || caseAssertions.length === 0}>{savingCase ? "Saving…" : "Save regression case"}</button>
+            </div>
+          </form>
+        </div>
+      )}
     </section>
   );
+}
+
+function assertionLabel(assertion: Assertion): string {
+  switch (assertion.type) {
+    case "terminal_status": return "terminal status is " + assertion.expected;
+    case "expected_tool": return "uses " + assertion.program;
+    case "max_tool_calls": return "at most " + assertion.max + " tool calls";
+    case "max_duration_ms": return "finishes within " + assertion.max + " ms";
+    case "post_check": return "post-check: " + assertion.command;
+  }
+}
+
+function prefillAssertions(view: TraceView): Assertion[] {
+  const programs = [...new Set(view.events.filter((event) => event.category === "tool" && typeof event.attributes.program === "string").map((event) => String(event.attributes.program)))].slice(0, 3);
+  const toolCalls = new Set(view.events.filter((event) => event.category === "tool" && event.type.startsWith("tool.call.")).map((event) => event.spanId)).size;
+  const assertions: Assertion[] = [{ type: "terminal_status", expected: "ok" }, ...programs.map((program) => ({ type: "expected_tool" as const, program }))];
+  if (toolCalls > 0) assertions.push({ type: "max_tool_calls", max: toolCalls * 2 });
+  if (view.summary.durationMs !== undefined) assertions.push({ type: "max_duration_ms", max: Math.ceil(view.summary.durationMs * 1.5) });
+  return assertions;
 }
 
 function Field({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {

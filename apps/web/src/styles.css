@@ -955,6 +955,28 @@ textarea:focus {
   margin-top: 20px;
 }
 
+.assertion-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 16px;
+}
+
+.assertion-list > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--paper);
+}
+
+.assertion-list code {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -1777,4 +1799,17 @@ textarea:focus {
   list-style: none;
   font-size: 12px;
   color: var(--muted);
+}
+
+.regression-cases {
+  margin-top: 18px;
+}
+
+.case-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.case-actions .button {
+  white-space: nowrap;
 }

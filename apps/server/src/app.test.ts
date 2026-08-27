@@ -188,4 +188,33 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     expect((await app.inject({ method: "GET", url: "/api/nope", headers: auth })).statusCode).toBe(404);
     await app.close();
   });
+
+  it("keeps the dialog's case name and retained assertions when deriving a regression case", async () => {
+    const store = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const ids = { runId: "019f3fa8-44d2-7b60-b413-1a0b2c3d4e5f", agentId: "019f3fa8-44d2-7b60-b413-1a0b2c3d4e60", traceId: "trc_case" };
+    let saved: Record<string, unknown> | undefined;
+    const svc = {
+      ...service,
+      getRun: () => ({ id: ids.runId, agentId: ids.agentId, status: "completed", prompt: "write a check", configHash: "baseline-hash" }),
+      getAgent: () => ({ workspaceTemplate: "node-lib-with-failing-test" }),
+      createRegressionCase: async (input: Record<string, unknown>) => {
+        saved = input;
+        return { ...input, id: "019f3fa8-44d2-7b60-b413-1a0b2c3d4e61", createdAt: "2026-08-26T00:00:00.000Z" };
+      },
+    } as unknown as AgentService;
+    emitter.emit({ ...ids, spanId: "root", type: "run.created", category: "control", name: "run.created", phase: "start", status: "running", source: { component: "test", observed: true } });
+    emitter.emit({ ...ids, spanId: "root", type: "run.completed", category: "control", name: "run.completed", phase: "end", status: "ok", source: { component: "test", observed: true } });
+    await emitter.flush();
+    const app = await createApp(config(), svc, { emitter, store });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/runs/" + ids.runId + "/regression-case",
+      headers: { ...auth, "content-type": "application/json" },
+      payload: { name: "Keeps only the terminal check", assertions: [{ type: "terminal_status", expected: "ok" }] },
+    });
+    expect(res.statusCode).toBe(201);
+    expect(saved).toMatchObject({ name: "Keeps only the terminal check", sourceRunId: ids.runId, workspaceTemplate: "node-lib-with-failing-test", assertions: [{ type: "terminal_status", expected: "ok" }] });
+    await app.close();
+  });
 });

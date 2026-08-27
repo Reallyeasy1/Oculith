@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentRun, Message, RunListItem, SystemInfo, TraceView } from "./types";
+import type { Agent, AgentRun, EvalRun, Message, RegressionCase, RunListItem, SystemInfo, TraceView } from "./types";
 import RunsView from "./RunsView";
 import TraceDetail from "./TraceDetail";
 import Overview from "./Overview";
@@ -56,6 +56,8 @@ export default function App() {
   const [templates, setTemplates] = useState<{ name: string; fileCount: number; bytes: number }[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [trace, setTrace] = useState<TraceView | null>(null);
+  const [regressionCases, setRegressionCases] = useState<RegressionCase[]>([]);
+  const [evalRuns, setEvalRuns] = useState<EvalRun[]>([]);
   // "agent" = the selected Agent's Runs under its Playground; "overview" = All runs across Agents (#70).
   const [view, setView] = useState<"overview" | "agent">("agent");
   // Opening a trace collapses the Playground to a bar so the trace header sits in the first viewport;
@@ -76,6 +78,7 @@ export default function App() {
   const viewRef = useRef(view);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
+  const pollingEvalRunIds = useRef(new Set<string>());
   selectedIdRef.current = selectedId;
   selectedRunIdRef.current = selectedRunId;
   viewRef.current = view;
@@ -119,6 +122,16 @@ export default function App() {
     }
   }, []);
 
+  const refreshRegressionCases = useCallback(async () => {
+    const result = await api.listRegressionCases();
+    if (mountedRef.current) setRegressionCases(result.cases);
+  }, []);
+
+  const refreshEvalRuns = useCallback(async () => {
+    const result = await api.listEvalRuns();
+    if (mountedRef.current) setEvalRuns(result.evalRuns);
+  }, []);
+
   useEffect(() => { setRuns([]); void refreshRuns(); }, [refreshRuns, view, selectedId]); // clear the previous scope so the strip/table never show another scope for a round trip
 
   // No-op unless `runId` is the trace currently open, so the poll loop can call it on every tick
@@ -138,8 +151,8 @@ export default function App() {
   }, [refreshTrace, selectedRunId]);
 
   const bootstrap = useCallback(async () => {
-    await Promise.all([refreshAgents(), refreshRuns(), api.system().then(setSystem), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces)), api.listWorkspaceTemplates().then((result) => setTemplates(result.templates))]);
-  }, [refreshAgents, refreshRuns]);
+    await Promise.all([refreshAgents(), refreshRuns(), refreshRegressionCases(), refreshEvalRuns(), api.system().then(setSystem), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces)), api.listWorkspaceTemplates().then((result) => setTemplates(result.templates))]);
+  }, [refreshAgents, refreshEvalRuns, refreshRegressionCases, refreshRuns]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -290,6 +303,51 @@ export default function App() {
       }
     } finally {
       pollingRunIds.current.delete(runId);
+    }
+  };
+
+  const pollEvalRun = async (evalRunId: string) => {
+    if (pollingEvalRunIds.current.has(evalRunId)) return;
+    pollingEvalRunIds.current.add(evalRunId);
+    try {
+      while (mountedRef.current) {
+        await new Promise((resolve) => window.setTimeout(resolve, 900));
+        if (!mountedRef.current) return;
+        const { evalRun } = await api.evalRun(evalRunId);
+        if (!mountedRef.current) return;
+        setEvalRuns((current) => [evalRun, ...current.filter((item) => item.id !== evalRun.id)]);
+        await refreshRuns();
+        if (evalRun.status !== "running") {
+          await Promise.all([refreshEvalRuns(), refreshRuns()]);
+          return;
+        }
+      }
+    } finally {
+      pollingEvalRunIds.current.delete(evalRunId);
+    }
+  };
+
+  const startEvaluation = async (regressionCase: RegressionCase) => {
+    if (!selected) return;
+    setError(null);
+    try {
+      const { evalRun } = await api.startEvalRun({ agentId: selected.id, caseIds: [regressionCase.id] });
+      setEvalRuns((current) => [evalRun, ...current.filter((item) => item.id !== evalRun.id)]);
+      await refreshRuns();
+      void pollEvalRun(evalRun.id).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
+  const deleteRegressionCase = async (regressionCase: RegressionCase) => {
+    if (!window.confirm("Delete regression case “" + regressionCase.name + "”?")) return;
+    setError(null);
+    try {
+      await api.deleteRegressionCase(regressionCase.id);
+      await Promise.all([refreshRegressionCases(), refreshEvalRuns()]);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
     }
   };
 
@@ -510,7 +568,7 @@ export default function App() {
         )}
 
         {view === "overview" ? (
-          <Overview runs={runs} />
+          <Overview runs={runs} cases={regressionCases} evalRuns={evalRuns} selectedAgent={selected} onRunCase={startEvaluation} onDeleteCase={deleteRegressionCase} />
         ) : selected ? playgroundCollapsed ? (
           <div className="playground-bar">
             <div className="header-title-row">
@@ -759,6 +817,8 @@ export default function App() {
             runId={selectedRunId}
             run={runs.find((run) => run.runId === selectedRunId)}
             view={trace}
+            templateBacked={Boolean(agents.find((agent) => agent.id === runs.find((run) => run.runId === selectedRunId)?.agentId)?.workspaceTemplate)}
+            onCaseSaved={refreshRegressionCases}
             onClose={() => setSelectedRunId(null)}
           />
         )}
