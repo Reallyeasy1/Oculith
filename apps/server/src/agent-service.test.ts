@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -46,6 +46,7 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
     NODE_ENV: "test",
     APP_DATA_DIR: path.join(root, "data"),
     AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+    WORKSPACE_TEMPLATES_DIR: path.join(root, "templates"),
     CODEX_HOME: path.join(root, "codex"),
     ARK_API_KEY: "test-key",
     ARK_MODEL: "ep-test",
@@ -53,7 +54,7 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
   const service = new AgentService(
     config,
     new JsonStore(path.join(root, "data", "db.json")),
-    new WorkspaceManager(path.join(root, "workspaces")),
+    new WorkspaceManager(path.join(root, "workspaces"), config.workspaceTemplatesDirectory),
     runner,
   );
   await service.initialize();
@@ -221,6 +222,7 @@ describe("Agent lifecycle", () => {
     finish({ output: "done", threadId: "thread", usage: null });
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
   });
+
 });
 
 class TimeoutRunner extends FakeRunner {
@@ -237,12 +239,13 @@ async function makeTraced(runner: AgentRunner = new FakeRunner(), store: TraceSt
     NODE_ENV: "test",
     APP_DATA_DIR: path.join(root, "data"),
     AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+    WORKSPACE_TEMPLATES_DIR: path.join(root, "templates"),
     CODEX_HOME: path.join(root, "codex"),
     ARK_API_KEY: "test-key",
     ARK_MODEL: "ep-test",
   });
   const jsonStore = new JsonStore(path.join(root, "data", "db.json"));
-  const workspaces = new WorkspaceManager(path.join(root, "workspaces"));
+  const workspaces = new WorkspaceManager(path.join(root, "workspaces"), config.workspaceTemplatesDirectory);
   const service = new AgentService(config, jsonStore, workspaces, runner, emitter);
   await service.initialize();
   return { service, store, emitter, config, jsonStore, workspaces };
@@ -258,6 +261,48 @@ const settle = async (service: AgentService, runId: string) => {
 };
 
 describe("GlassBox control-plane adapter", () => {
+  it("runs an evaluation in a fresh template workspace and leaves the Agent thread untouched", async () => {
+    class CapturingRunner extends FakeRunner {
+      requests: RunnerRequest[] = [];
+      instructions = "";
+      override async run(request: RunnerRequest): Promise<RunnerResult> {
+        this.requests.push(request);
+        this.instructions = await readFile(path.join(request.workspacePath, "AGENTS.md"), "utf8");
+        return super.run(request);
+      }
+    }
+    const runner = new CapturingRunner();
+    const { service, store, emitter, config } = await makeTraced(runner);
+    await mkdir(path.join(config.workspaceTemplatesDirectory, "fixture"), { recursive: true });
+    await writeFile(path.join(config.workspaceTemplatesDirectory, "fixture", "starting.txt"), "template starting state", "utf8");
+    const agent = await service.createAgent({ name: "Evaluator", instructions: "Run the supplied regression case." });
+    const normal = (await service.sendMessage(agent.id, "establish a normal thread")).run;
+    await settle(service, normal.id);
+    expect(service.getAgent(agent.id).codexThreadId).toBe("fake-thread");
+
+    const { run } = await service.runIsolated({
+      agentId: agent.id,
+      workspaceTemplate: "fixture",
+      prompt: "evaluate the case",
+      tags: { evalRunId: "eval-1", caseId: "case-1" },
+    });
+    await settle(service, run.id);
+    await emitter.flush();
+
+    const isolatedRequest = runner.requests.at(-1)!;
+    expect(isolatedRequest.workspacePath).toContain(path.join(".eval", run.id));
+    expect(isolatedRequest.workspacePath).not.toBe(agent.workspacePath);
+    expect(isolatedRequest.threadId).toBeNull();
+    expect(runner.instructions).toContain("Run the supplied regression case.");
+    await expect(readFile(path.join(agent.workspacePath, "starting.txt"), "utf8")).rejects.toThrow();
+    expect(service.getAgent(agent.id).codexThreadId).toBe("fake-thread");
+    expect(service.getMessages(agent.id)).toHaveLength(2); // the isolated prompt/output never enter normal chat history
+    await expect.poll(async () => stat(isolatedRequest.workspacePath).then(() => true, () => false)).toBe(false);
+
+    const created = (await store.readRun(run.id)).find((event) => event.type === "run.created");
+    expect(created?.attributes).toMatchObject({ evalRunId: "eval-1", caseId: "case-1", configHash: run.configHash });
+  });
+
   it("links the Run to a trace and emits root, control and terminal events in order", async () => {
     const { service, store, emitter } = await makeTraced();
     const agent = await service.createAgent({ name: "traced" });

@@ -25,6 +25,23 @@ import { boundedChangedPaths, diffWorkspace, snapshotWorkspace } from "./workspa
 
 const now = () => new Date().toISOString();
 
+type ExecutionOptions = {
+  runId?: string;
+  workspacePath?: string;
+  workspaceName?: string;
+  tags?: Record<string, string | number | boolean>;
+  persistMessages?: boolean;
+  persistThread?: boolean;
+  cleanup?: () => Promise<void>;
+};
+
+export interface IsolatedRunInput {
+  agentId: string;
+  workspaceTemplate: string;
+  prompt: string;
+  tags?: Record<string, string | number | boolean>;
+}
+
 export function configSnapshot(agent: Agent, config: AppConfig): AgentConfigSnapshot {
   return {
     instructions: "sha256:" + createHash("sha256").update(agent.instructions).digest("hex"),
@@ -173,9 +190,7 @@ export class AgentService {
     if (input.workspace !== undefined) {
       try { nextWorkspacePath = this.workspaces.pathForName(input.workspace.trim()); }
       catch { throw new HttpError(400, "Invalid workspace name"); }
-      if (nextWorkspacePath !== current.workspacePath) {
-        await this.workspaces.create({ ...current, workspacePath: nextWorkspacePath }, true);
-      }
+      if (nextWorkspacePath !== current.workspacePath) await this.workspaces.create({ ...current, workspacePath: nextWorkspacePath }, true);
     }
     const updated = await this.store.mutate((database) => {
       const agent = database.agents.find((item) => item.id === id);
@@ -266,6 +281,7 @@ export class AgentService {
     agentId: string,
     prompt: string,
     context?: TraceContext,
+    options: ExecutionOptions = {},
   ): Promise<{ run: AgentRun; message: Message }> {
     if (!isModelConfigured(this.config)) {
       throw new HttpError(
@@ -274,7 +290,7 @@ export class AgentService {
       );
     }
     const timestamp = now();
-    const runId = randomUUID();
+    const runId = options.runId ?? randomUUID();
     const ctx = context ?? createTraceContext({}, this.emitter.capturePolicy);
     const run: AgentRun = {
       id: runId,
@@ -315,12 +331,14 @@ export class AgentService {
       run.configSnapshot = configSnapshot(storedAgent, this.config);
       run.configHash = configHash(run.configSnapshot);
       database.runs.push(run);
-      database.messages.push(message);
+      if (options.persistMessages !== false) database.messages.push(message);
       const snapshot = structuredClone(storedAgent);
       storedAgent.status = "busy";
       storedAgent.lastError = null;
       storedAgent.updatedAt = timestamp;
-      return snapshot;
+      return options.workspacePath
+        ? { ...snapshot, workspacePath: options.workspacePath, ...(options.workspaceName ? { workspaceName: options.workspaceName } : {}), codexThreadId: options.persistThread === false ? null : snapshot.codexThreadId }
+        : snapshot;
     });
     // Published only once the Run really exists (invariant 3: never fabricate evidence). A rejected
     // request (404/409) must leave `ctx.runId`/`ctx.agentId` unset, or the ingress `onResponse` hook
@@ -357,7 +375,7 @@ export class AgentService {
       name: "run.created",
       status: "ok",
       source: { component: "AgentService", observed: true },
-      attributes: { promptBytes: Buffer.byteLength(prompt, "utf8"), workspace: agentAtStart.workspaceName ?? path.basename(agentAtStart.workspacePath), configHash: run.configHash! },
+      attributes: { promptBytes: Buffer.byteLength(prompt, "utf8"), configHash: run.configHash!, workspace: agentAtStart.workspaceName ?? path.basename(agentAtStart.workspacePath), ...options.tags },
     });
     this.spans.set(runId, {
       traceId: ctx.traceId,
@@ -365,7 +383,7 @@ export class AgentService {
       agentId,
       requestId: ctx.requestId,
     });
-    const execution = this.executeRun(agentAtStart, run);
+    const execution = this.executeRun(agentAtStart, run, options);
     this.activeExecutions.set(agentId, execution);
     void execution
       .finally(() => {
@@ -375,6 +393,32 @@ export class AgentService {
       })
       .catch(() => undefined);
     return { run, message };
+  }
+
+  /**
+   * Run a prompt from a new template copy and a fresh runner thread. It deliberately does not add
+   * conversation messages or a thread id to the target Agent, while retaining the ordinary Run/trace.
+   */
+  async runIsolated(input: IsolatedRunInput): Promise<{ run: AgentRun; message: Message }> {
+    const runId = randomUUID();
+    const agent = this.getAgent(input.agentId);
+    let materialized = false;
+    try {
+      const workspacePath = await this.workspaces.materializeEvalWorkspace(runId, input.workspaceTemplate, agent);
+      materialized = true;
+      return await this.sendMessage(input.agentId, input.prompt, undefined, {
+        runId,
+        workspacePath,
+        workspaceName: input.workspaceTemplate,
+        ...(input.tags ? { tags: input.tags } : {}),
+        persistMessages: false,
+        persistThread: false,
+        ...(this.config.keepEvalWorkspaces ? {} : { cleanup: () => this.workspaces.removeEvalWorkspace(runId) }),
+      });
+    } catch (error) {
+      if (materialized) await this.workspaces.removeEvalWorkspace(runId);
+      throw error;
+    }
   }
 
   async systemInfo(): Promise<Record<string, unknown>> {
@@ -397,7 +441,7 @@ export class AgentService {
     };
   }
 
-  private async executeRun(agentAtStart: Agent, run: AgentRun): Promise<void> {
+  private async executeRun(agentAtStart: Agent, run: AgentRun, options: ExecutionOptions = {}): Promise<void> {
     const link = this.spans.get(run.id);
     const ids = link
       ? {
@@ -454,8 +498,6 @@ export class AgentService {
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
-      // Shared workspaces can serve different Agents sequentially. Refresh the platform-managed
-      // instructions immediately before execution so the active Agent never inherits another's prompt.
       await this.workspaces.writeInstructions(agentAtStart);
       const result = await this.runner.run({
         agentId: agentAtStart.id,
@@ -507,16 +549,18 @@ export class AgentService {
         storedRun.output = result.output;
         storedRun.usage = result.usage;
         storedRun.completedAt = completedAt;
-        database.messages.push({
-          id: randomUUID(),
-          agentId: agent.id,
-          runId: run.id,
-          role: "assistant",
-          content: result.output,
-          createdAt: completedAt,
-        });
+        if (options.persistMessages !== false) {
+          database.messages.push({
+            id: randomUUID(),
+            agentId: agent.id,
+            runId: run.id,
+            role: "assistant",
+            content: result.output,
+            createdAt: completedAt,
+          });
+        }
         agent.status = "ready";
-        agent.codexThreadId = result.threadId;
+        if (options.persistThread !== false) agent.codexThreadId = result.threadId;
         agent.lastError = null;
         agent.updatedAt = completedAt;
       });
@@ -593,6 +637,7 @@ export class AgentService {
       }
     } finally {
       this.spans.delete(run.id);
+      await options.cleanup?.();
     }
   }
 

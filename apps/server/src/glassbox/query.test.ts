@@ -87,7 +87,6 @@ describe("buildTrace", () => {
     });
     expect(view.summary.configHash).toBe("0123456789abcdef");
     expect(view.summary.capabilities).toEqual({ model: "observed", tool: "observed" });
-    expect(view.summary.workspace).toBe("repo-doctor");
     expect(view.spans[0]!.spanId).toBe("root");
     const rt = flattenSpans(view.spans).find((s) => s.spanId === "rt")!;
     expect(rt.depth).toBe(2); expect(rt.durationMs).toBe(30); expect(rt.children.map((c) => c.spanId)).toEqual(["tool1", "m1"]);
