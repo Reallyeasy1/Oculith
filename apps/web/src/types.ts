@@ -94,6 +94,7 @@ export interface RunListItem {
   toolFailures: number;
   tokens?: { output?: number };
   denials: number;
+  actions: number;
   configHash?: string;
   configSnapshot?: AgentConfigSnapshot;
   workspaceChanges?: { added: number; modified: number; removed: number; bytesDelta: number; truncated: boolean };
@@ -118,6 +119,19 @@ export interface FailureFocus {
   diagnosis: string;
 }
 
+export type AuditOutcome = "allowed" | "denied" | "ok" | "error" | "timeout" | "cancelled";
+export interface AuditRow {
+  at: string;
+  actor: { type: ObservationEvent["actorType"]; id: string };
+  action: string;
+  resource: string;
+  outcome: AuditOutcome;
+  eventId: string;
+  spanId: string;
+  traceId: string;
+  attributes: ObservationEvent["attributes"];
+}
+
 export interface TraceSummary {
   schemaVersion: "1.0";
   capturePolicy: CapturePolicy;
@@ -137,6 +151,7 @@ export interface TraceSummary {
   incompleteSpans: number;
   redactedEvents: number;
   denials: number;
+  audit: { actions: number; denials: number; actors: string[] };
   degraded: boolean;
   truncated: boolean;
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
@@ -258,3 +273,5 @@ export interface EvalRun {
   runIds: string[]; results: { caseId: string; runId?: string; results: EvalResult[]; error?: string }[];
   status: "running" | "completed" | "failed"; createdAt: string; completedAt?: string;
 }
+// Mirrors WorkspaceManager.listTemplates(): a bad template (symlink, over limits) is reported, not a 500.
+export type WorkspaceTemplate = { name: string; fileCount: number; bytes: number } | { name: string; error: string };
