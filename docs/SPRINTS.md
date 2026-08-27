@@ -1,11 +1,14 @@
 # GlassBox TechJam MVP sprint plan
 
-Encoded 26 August 2026. GitHub milestone: **TechJam MVP**. Active work uses labels `sprint:S1` through `sprint:S8`; S0 records completed Observe work.
+Encoded 26 August 2026. GitHub milestone: **TechJam MVP**. Active work uses labels `sprint:S1` through `sprint:S8` and, from 27 August, `sprint:E1` through `sprint:E3` for the Evaluate plane (PRD v4 §17); S0 records completed Observe work.
 
 ```text
 S0 ▶ S1 ─┬─ S2 (evidence + demo-visible UI) ─────────────────┬─ S6 (verify) ─┬─ S7 (demo) ─ S8 (submission)
-         └─ S3 (starting state) ─ S4 (case) ─ S5 (execute+compare) ┘
+         └─ S3 (starting state) ─ S4 (case) ─ S5 (execute+compare) ┤
+                                                                   └─ E1 (summaries + evaluators) ─ E2 (jobs + judge + aggregates) ─ E3 (dashboard + compare) ─┘
 ```
+
+E1–E3 run in parallel with S6–S8 on lane F; S7's demo script (PRD §13 v4) walks the E3 surfaces, while S6 still proves the deterministic AC-08 loop.
 
 | Sprint | Scope unit | Issues | Entry gate | Exit gate | Status (27 Aug) |
 |---|---|---|---|---|---|
@@ -15,6 +18,9 @@ S0 ▶ S1 ─┬─ S2 (evidence + demo-visible UI) ─────────�
 | S3 | Starting state | #64→#68, #80 | S1 | Named workspace, template check command, sandboxed post-check | in review (#106, #123) |
 | S4 | Regression case | #83, #84, #88 | S3 shape | Case saved from trace with five prefilled assertions and UI | in review (#128); #88 open |
 | S5 | Execute and compare | #105→#85, #86, #89 | S4 | Ordinary isolated EvalRun; comparison flags PASS→FAIL as REGRESSION | in review (#127, #142, #144); #89 open |
+| E1 | Evaluate foundations | #167 (PRD v4) → #168, #169; #176 | S5 on main (#142, #144); PRD v4 merged before #168/#169 code lands | `/api/runs` served from summaries with `taskOutcome: unknown` and zero NDJSON reads; versioned evaluator definitions and redacted results persisted; template hash checked at rerun | in progress (#167, #168, #176) |
+| E2 | Jobs, judge, aggregates | #170 → #171; #172 | E1 stores merged | A job over the ~20 local Runs is resumable after restart and never delays a live Run; `task_completion@1` returns cited results on the UAT fixtures with the fake judge; reliability and compare endpoints equal hand computation with provenance | not started |
+| E3 | Dashboard and comparison | #173 → #174; P1 #175; P2 #177 | E2 endpoints and stored results | AC-09 from the browser with stored results; lane step covers the panel and drill-back; comparison says "quality drift", never REGRESSION; `npm run poc` unchanged with Postgres optional | not started |
 | S6 | Verify | #91; finish #90 | S2 + S5 | Regression story in `npm run check`; new surfaces in verification lane | not started |
 | S7 | Demo | #92; stretch #67, #103 | S5 | Demo script reaches step 9 from clean state; two rehearsals ≤ 3:00 | not started |
 | S8 | Submission | #93, #35, #94, #95 | S7 | README verified on a clean clone; video ≤ 3:00 | not started |
@@ -22,6 +28,8 @@ S0 ▶ S1 ─┬─ S2 (evidence + demo-visible UI) ─────────�
 Critical path: **S1 → S3 (#64→#68) → S4 (#84) → S5 (#105→#85→#86→#89) → S7 → S8**.
 
 Cut order: **#67 → #80 → #89 → #87**. Never cut **#79, #81, #84, #85, #86, or #92**.
+
+Evaluate critical path: **#167 → #168 → #169 → #170 → #171 → #172 → #173 → #174** (E3 feeds S7's rehearsals). Evaluate cut order: **#177 → #175 → #176**; never cut the P0 chain #168–#174 (PRD §13 v4 walks it).
 
 ## Next up (plan after UAT rounds 3–4, 27 August, main `0a1146e`)
 
@@ -44,4 +52,4 @@ Label changes made with this plan: #88 and #89 → P0; #148 → `sprint:S6`; #13
 
 Status legend: done = every issue closed; in review = PRs open for every remaining issue; in progress = issues open without PRs. See `docs/PROJECT_BRIEF.md` for the live status board and the 27 August UAT round 3 findings that added the S2 evidence issues.
 
-Lanes: A = runtime/starting state · B = trace/audit · C = evaluation · D = frontend · E = verification/submission.
+Lanes: A = runtime/starting state · B = trace/audit · C = evaluation · D = frontend · E = verification/submission · F = Evaluate plane (E1–E3).
