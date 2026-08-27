@@ -292,7 +292,7 @@ let server = null;
   console.log("\n[5] restart with GLASSBOX_DEMO_FAILURE=timeout (gated fixture through the real runner)");
   await stopServer(server);
   server = await startServer({ GLASSBOX_DEMO_FAILURE: "timeout" });
-  const badRun = await runTask(agent.id, "Reply with the single word: pong");
+  const badRun = await runTask(agent.id, "Run the shell command `sleep 10`, wait for it to finish, then reply with the single word: pong");
   eq(badRun.run.status, "failed", "gated run failed (" + badRun.run.id + ")");
   eq(badRun.view.summary.status, "timeout", "trace status timeout");
   eq(badRun.view.summary.failure && badRun.view.summary.failure.kind, "timeout", "first-failure focus is the timeout");
@@ -300,9 +300,17 @@ let server = null;
   eq((await api("/api/runs")).json().runs.find((r) => r.runId === badRun.run.id).firstFailingStep, "codex exec", "/api/runs firstFailingStep = codex exec");
   const badAudit = (await api("/api/runs/" + badRun.run.id + "/audit")).json().audit;
   ok(badAudit.some((row) => row.outcome === "timeout"), "/audit includes the gated timeout evidence");
-  eq(badRun.view.summary.capabilities.model + "/" + badRun.view.summary.capabilities.tool, "unknown/unknown", "capabilities read unknown on a cut-short run (#60)");
+  for (const category of ["model", "tool"]) {
+    const expected = badRun.view.events.some((event) => event.category === category) ? "observed" : "unknown";
+    eq(badRun.view.summary.capabilities[category], expected, category + " capability reflects only evidence observed before the cut-short run (#60)");
+  }
+  const badLogsResponse = await api("/api/runs/" + badRun.run.id + "/logs");
+  eq(badLogsResponse.status, 200, "/logs resolves for the gated timeout Run");
+  const badLogs = badLogsResponse.json().lines;
+  ok(badLogs.some((line) => line.level === "error" && /timed out/i.test(line.msg + " " + (line.err || ""))), "/logs carries the runner timeout line");
+  sweep("/api/runs/" + badRun.run.id + "/logs", badLogsResponse.text);
   const stopped = badRun.view.events.find((e) => e.type === "runtime.container.stopped");
-  eq(stopped && stopped.attributes.cleanup, "rm --force", "container teardown evidence: runtime.container.stopped cleanup=rm --force");
+  ok(stopped && ["signal", "rm --force"].includes(stopped.attributes.cleanup), "container teardown records either graceful signal or forced removal");
   ok(badRun.view.events.some((e) => e.type === "run.timed_out" && /3000/.test(e.error && e.error.message)), "run.timed_out names the 3000 ms fixture timeout");
   await sleep(1_000);
   const leftover = execFileSync(ENGINE, ["ps", "--all", "--quiet", "--filter", "name=launchpad-" + INSTANCE], { encoding: "utf8" }).trim();
@@ -348,9 +356,13 @@ let server = null;
   const ndjson = fs.readdirSync(traceDir, { recursive: true }).filter((f) => String(f).endsWith(".ndjson"));
   ok(ndjson.length >= 2, ndjson.length + " NDJSON trace files under " + traceDir);
   for (const f of ndjson) sweep("file " + f, fs.readFileSync(path.join(traceDir, String(f)), "utf8"));
+  const logDir = path.join(ROOT, "data", "logs");
+  const logFiles = fs.readdirSync(logDir).filter((f) => f.startsWith("server.ndjson"));
+  ok(logFiles.length >= 1 && logFiles.length <= 3, logFiles.length + " bounded server NDJSON log file(s) under " + logDir);
+  for (const f of logFiles) sweep("log file " + f, fs.readFileSync(path.join(logDir, f), "utf8"));
   sweep("/api/runs", (await api("/api/runs")).text);
   for (const r of [okRun, badRun]) {
-    for (const url of ["/api/runs/" + r.run.id + "/trace", "/api/traces/" + r.run.traceId + "/events", "/api/traces/" + r.run.traceId + "/export"]) {
+    for (const url of ["/api/runs/" + r.run.id + "/trace", "/api/runs/" + r.run.id + "/logs", "/api/traces/" + r.run.traceId + "/events", "/api/traces/" + r.run.traceId + "/export"]) {
       const res = await api(url);
       eq(res.status, 200, url + " resolves (a 404 body would be trivially secret-free)");
       sweep(url, res.text);

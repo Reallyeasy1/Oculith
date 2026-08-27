@@ -14,19 +14,27 @@ export interface RunLogLine {
   err?: string | undefined;
 }
 
+export type RunLogViewLine = Pick<RunLogLine, "time" | "level" | "msg"> &
+  Partial<Pick<RunLogLine, "component" | "spanId" | "err">>;
+
 const LOG_SECRET_ASSIGNMENT = /\b(?:token|secret|password|api[_-]?key)\s*=\s*[^\s]+/gi;
-const safe = (value: string): string => redactText(value, [LOG_SECRET_ASSIGNMENT]).text.slice(0, 2_048);
 
 export class RunLogStore {
   private readonly file: string;
   private writeQueue: Promise<void> = Promise.resolve();
-  constructor(private readonly directory: string, private readonly maxBytes: number, private readonly keep = 3) {
+  constructor(
+    private readonly directory: string,
+    private readonly maxBytes: number,
+    private readonly keep = 3,
+    private readonly extraPatterns: RegExp[] = [],
+  ) {
     this.file = path.join(directory, "server.ndjson");
   }
 
   async initialize(): Promise<void> { await mkdir(this.directory, { recursive: true }); }
 
   async append(line: RunLogLine): Promise<void> {
+    const safe = (value: string): string => redactText(value, [LOG_SECRET_ASSIGNMENT, ...this.extraPatterns]).text.slice(0, 2_048);
     const clean: RunLogLine = {
       ...line,
       msg: safe(line.msg),
@@ -47,6 +55,8 @@ export class RunLogStore {
     return this.writeQueue;
   }
 
+  async flush(): Promise<void> { await this.writeQueue; }
+
   child(bindings: Pick<RunLogLine, "runId" | "traceId" | "agentId"> & { component?: string | undefined }) {
     return {
       info: (msg: string) => this.append({ ...bindings, time: new Date().toISOString(), level: "info", msg }),
@@ -54,8 +64,8 @@ export class RunLogStore {
     };
   }
 
-  async readRun(runId: string, options: { level?: string | undefined; limit: number }): Promise<{ lines: RunLogLine[]; truncated: boolean }> {
-    const lines: RunLogLine[] = [];
+  async readRun(runId: string, options: { level?: string | undefined; limit: number }): Promise<{ lines: RunLogViewLine[]; truncated: boolean }> {
+    const lines: RunLogViewLine[] = [];
     const files = [...Array(Math.max(0, this.keep - 1)).keys()].reverse().map((index) => this.file + "." + (index + 1)).concat(this.file);
     for (const file of files) {
       let text: string;
@@ -64,7 +74,16 @@ export class RunLogStore {
         if (!raw) continue;
         try {
           const line = JSON.parse(raw) as RunLogLine;
-          if (line.runId === runId && (!options.level || line.level === options.level)) lines.push(line);
+          if (line.runId === runId && (!options.level || line.level === options.level)) {
+            lines.push({
+              time: line.time,
+              level: line.level,
+              msg: line.msg,
+              ...(line.component ? { component: line.component } : {}),
+              ...(line.spanId ? { spanId: line.spanId } : {}),
+              ...(line.err ? { err: line.err } : {}),
+            });
+          }
         } catch { /* a partial/corrupt line is skipped, never returned as content */ }
       }
     }

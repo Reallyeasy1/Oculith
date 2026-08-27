@@ -530,7 +530,7 @@ export class AgentService {
     const pino = bindings ? this.appLogger?.child(bindings) : undefined;
     try {
       pino?.info("Run started");
-      void logger?.info("Run started").catch(() => undefined);
+      await logger?.info("Run started").catch(() => undefined);
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         if (storedRun) {
@@ -633,6 +633,8 @@ export class AgentService {
         }
       }
       const completedAt = now();
+      pino?.info("Run completed");
+      await logger?.info("Run completed").catch(() => undefined);
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
@@ -674,15 +676,13 @@ export class AgentService {
         });
         service.end("ok", { type: "agent_service.run.completed" });
       }
-      pino?.info("Run completed");
-      void logger?.info("Run completed").catch(() => undefined);
     } catch (error) {
       const completedAt = now();
       const cancelled = error instanceof RunCancelledError;
       const message = error instanceof Error ? error.message : String(error);
       const logMessage = /timed out/i.test(message) ? "Runner timed out" : "Runner failed";
       pino?.error(error, logMessage);
-      void runnerLogger?.error(logMessage, message).catch(() => undefined);
+      await runnerLogger?.error(logMessage, message).catch(() => undefined);
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);

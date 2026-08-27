@@ -243,9 +243,6 @@ export interface RunLogLine {
   time: string;
   level: string;
   msg: string;
-  runId: string;
-  traceId: string;
-  agentId: string;
   component?: string;
   spanId?: string;
   err?: string;
