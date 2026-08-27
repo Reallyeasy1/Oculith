@@ -1115,6 +1115,14 @@ textarea:focus {
   overflow: hidden;
 }
 
+.trace-detail {
+  container: trace-detail / inline-size;
+}
+
+.trace-detail-with-drawer {
+  padding-right: 460px;
+}
+
 .runs-view h2 {
   margin: 3px 0 0;
   font-size: 16px;
@@ -1779,7 +1787,7 @@ textarea:focus {
   overflow-wrap: anywhere;
 }
 
-@media (max-width: 720px) {
+@container trace-detail (max-width: 720px) {
   .trace-detail > .trace-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1799,9 +1807,24 @@ textarea:focus {
   }
 }
 
-@media (min-width: 721px) and (max-width: 1050px) {
+@container trace-detail (min-width: 721px) and (max-width: 1050px) {
   .trace-detail > .trace-summary {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1499px) {
+  .trace-detail-with-drawer {
+    padding-right: 0;
+  }
+
+  .trace-detail-with-drawer .span-drawer {
+    position: static;
+    width: 100%;
+    max-height: none;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+    box-shadow: none;
   }
 }
 
