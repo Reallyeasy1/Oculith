@@ -309,6 +309,7 @@ assertion in `container-codex-runner.test.ts` (see the Windows caveat in `CLAUDE
 
 ## Documentation
 
+- [TechJam Track 1 problem statement](docs/PROBLEM_STATEMENT.md) — the requirements this project answers, with a mapping to the PRD
 - [Project brief](docs/PROJECT_BRIEF.md) — concept, what is built, sprint plan, working agreements
 - [Sprint plan](docs/SPRINTS.md)
 - [UAT coverage](docs/UAT_COVERAGE.md) — what has been tested, how, and what remains

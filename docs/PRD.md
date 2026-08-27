@@ -301,4 +301,5 @@ The Verify loop consumes the observation contract; it never creates a second sou
 MVP centre = single-Run observability + failure diagnosis · storage = NDJSON per Run behind `TraceStore` + rebuildable index · capture = `metadata_only` default, `safe_summary` opt-in, raw prohibited · update model = polling, SSE only after P0 · no Collector/DB/cloud dependency.
 
 ## Appendix B — Sources
+- TechJam 2026 Track 1 problem statement, transcribed with a requirement-to-PRD mapping: `docs/PROBLEM_STATEMENT.md`.
 TechJam 2026 Track 1 brief · Starter Kit `docs/ARCHITECTURE.md`, `docs/HACKATHON_EXTENSION_GUIDE.md` · OpenTelemetry traces, context propagation, GenAI semantic conventions (mapped later; internal schema stays authoritative).
