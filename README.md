@@ -258,7 +258,7 @@ the two are labelled (`kind`) and never folded into one number:
 | --- | --- | --- |
 | `execution_completion` | telemetry | `rate` (completed / terminal Runs), `count` |
 | `tool_failure_rate` | telemetry | `rate` (Σ failures / Σ calls) |
-| `tool_calls`, `tokens` | telemetry | `avg`, `p50`, `p95`, `count` (sum) |
+| `tool_calls`, `tool_failures`, `tokens` | telemetry | `avg`, `p50`, `p95`, `count` (sum) |
 | `latency` | telemetry | `avg`, `p50`, `p95` |
 | `denials` | telemetry | `count` (sum), `avg` |
 | `task_completion` | evaluation | `rate` (passed / evaluated; requires `evaluator { id, version? }`) |

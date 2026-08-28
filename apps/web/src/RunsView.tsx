@@ -69,7 +69,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
       </div>
       {!showAgent && baseline && baseline.sampleCount > 0 && (
         <p className="runs-baseline" aria-label={`Baseline over ${baseline.sampleCount} ${baseline.sampleCount === 1 ? "Run" : "Runs"}`}>
-          Median {formatDuration(baseline.durationMs.median)} · {formatCount(baseline.inputTokens.median)} in · {formatCount(baseline.toolCalls.median)} tools ({baseline.sampleCount} {baseline.sampleCount === 1 ? "Run" : "Runs"})
+          Median {formatDuration(baseline.durationMs.p50)} · {formatCount(baseline.inputTokens.p50)} in · {formatCount(baseline.toolCalls.p50)} tools ({baseline.sampleCount} {baseline.sampleCount === 1 ? "Run" : "Runs"})
         </p>
       )}
       {live.length > 0 && (

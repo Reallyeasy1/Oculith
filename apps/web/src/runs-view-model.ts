@@ -143,11 +143,11 @@ export function formatCount(value: number | undefined): string {
 
 export interface RunOutlier { durationMultiple?: number; inputTokensMultiple?: number }
 
-/** A baseline is too noisy below three terminal Runs; ratios require a positive median. */
+/** A baseline is too noisy below three terminal Runs; ratios require a positive p50. */
 export function runOutlier(run: RunListItem, baseline: AgentRunBaseline | null | undefined): RunOutlier | undefined {
   if (!baseline || baseline.sampleCount < 3) return undefined;
-  const durationMultiple = baseline.durationMs.median && run.durationMs !== undefined ? run.durationMs / baseline.durationMs.median : undefined;
-  const inputTokensMultiple = baseline.inputTokens.median && run.usage?.inputTokens !== undefined ? run.usage.inputTokens / baseline.inputTokens.median : undefined;
+  const durationMultiple = baseline.durationMs.p50 && run.durationMs !== undefined ? run.durationMs / baseline.durationMs.p50 : undefined;
+  const inputTokensMultiple = baseline.inputTokens.p50 && run.usage?.inputTokens !== undefined ? run.usage.inputTokens / baseline.inputTokens.p50 : undefined;
   const outlier = {
     ...(durationMultiple !== undefined && durationMultiple > 3 ? { durationMultiple } : {}),
     ...(inputTokensMultiple !== undefined && inputTokensMultiple > 3 ? { inputTokensMultiple } : {}),

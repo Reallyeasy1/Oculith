@@ -90,7 +90,7 @@ describe("formatUsage", () => {
 });
 
 describe("runOutlier", () => {
-  const baseline = { sampleCount: 20, windowSize: 20 as const, durationMs: { median: 2_000, p90: 5_000 }, inputTokens: { median: 100 }, toolCalls: { median: 2 }, toolFailures: { median: 0 } };
+  const baseline = { sampleCount: 20, windowSize: 20 as const, durationMs: { p50: 2_000, p95: 5_000 }, inputTokens: { p50: 100 }, toolCalls: { p50: 2 }, toolFailures: { p50: 0 } };
 
   it("flags values above three times the median and reports the exact multiple", () => {
     const outlier = runOutlier(run("ok", false, "a", "A", { durationMs: 6_001, usage: { inputTokens: 1_100 } }), baseline);
@@ -101,7 +101,7 @@ describe("runOutlier", () => {
   it("shows no chip with fewer than three Runs, missing/zero medians, or exactly three times", () => {
     expect(runOutlier(run("ok", false, "a", "A", { durationMs: 10_000 }), { ...baseline, sampleCount: 2 })).toBeUndefined();
     expect(runOutlier(run("ok", false, "a", "A", { durationMs: 6_000 }), baseline)).toBeUndefined();
-    expect(runOutlier(run("ok", false, "a", "A", { durationMs: 10_000 }), { ...baseline, durationMs: { median: 0 } })).toBeUndefined();
+    expect(runOutlier(run("ok", false, "a", "A", { durationMs: 10_000 }), { ...baseline, durationMs: { p50: 0 } })).toBeUndefined();
   });
 
   it("formats optional estimated cost without pretending at high precision", () => {
