@@ -8,7 +8,11 @@ import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
 import type { EvaluationStore } from "./glassbox/evaluation.js";
+import { JsonEvaluationStore } from "./glassbox/evaluation.js";
+import { builtinRunEvaluators, EvaluationJobWorker, JsonEvaluationJobStore } from "./glassbox/jobs.js";
 import { MemoryTraceStore } from "./glassbox/store.js";
+import { JsonRunSummaryStore } from "./glassbox/summary.js";
+import { JsonStore } from "./store.js";
 import { RunLogStore } from "./run-log-store.js";
 import type { RunSummary, RunSummaryStore } from "./glassbox/summary.js";
 
@@ -383,6 +387,50 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     const bare = await createApp(config(), svc, { emitter, store });
     expect((await bare.inject({ method: "GET", url: `/api/agents/${agentId}/reliability`, headers: auth })).statusCode).toBe(404);
     await bare.close();
+  });
+
+  it("exposes evaluation jobs as an async boundary: enqueue 202, progress by poll, resume gated (#170)", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "evaluation-jobs-api-"));
+    const store = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const json = new JsonStore(path.join(dir, "launchpad.json"));
+    await json.initialize();
+    const summaries = new JsonRunSummaryStore(json);
+    const evaluations = new JsonEvaluationStore(json, summaries);
+    await evaluations.initialize();
+    const jobs = new EvaluationJobWorker({ jobs: new JsonEvaluationJobStore(json), summaries, evaluations, evaluators: builtinRunEvaluators() });
+    const app = await createApp(config(), service, { emitter, store, summaries, evaluations, jobs });
+    const post = (url: string, payload: unknown) => app.inject({ method: "POST", url, headers: { ...auth, "content-type": "application/json" }, payload: payload as Record<string, unknown> });
+
+    expect((await post("/api/evaluation-jobs", { evaluatorId: "terminal_status", concurrency: 3 })).statusCode).toBe(400);
+    expect((await post("/api/evaluation-jobs", { evaluatorId: "no-such" })).statusCode).toBe(404);
+    expect((await post("/api/evaluation-jobs", { evaluatorId: "task_completion" })).statusCode).toBe(501); // no judge runtime until #171
+
+    const accepted = await post("/api/evaluation-jobs", { evaluatorId: "terminal_status", filter: { executionStatus: "completed" } });
+    expect(accepted.statusCode).toBe(202);
+    const job = accepted.json().job;
+    expect(job).toMatchObject({ evaluatorId: "terminal_status", evaluatorVersion: 1, status: "queued", force: false });
+
+    const listed = await app.inject({ method: "GET", url: "/api/evaluation-jobs", headers: auth });
+    expect(listed.json().jobs.map((item: { id: string }) => item.id)).toContain(job.id);
+    const single = await app.inject({ method: "GET", url: `/api/evaluation-jobs/${job.id}`, headers: auth });
+    expect(single.statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/api/evaluation-jobs/019f3fa8-44d2-7b60-b413-1a0b2c3d4e99", headers: auth })).statusCode).toBe(404);
+    // The empty selection settles quickly; wait so the store is quiescent before the rm below.
+    for (let i = 0; i < 100; i++) {
+      const polled = (await app.inject({ method: "GET", url: `/api/evaluation-jobs/${job.id}`, headers: auth })).json().job;
+      if (polled.status === "completed") break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    // Completed (not interrupted or failed), so not resumable.
+    expect((await post(`/api/evaluation-jobs/${job.id}/resume`, {})).statusCode).toBe(409);
+    await app.close();
+
+    // without the worker wired, the endpoints do not exist
+    const bare = await createApp(config(), service, { emitter, store });
+    expect((await bare.inject({ method: "GET", url: "/api/evaluation-jobs", headers: auth })).statusCode).toBe(404);
+    await bare.close();
+    await rm(dir, { recursive: true, force: true });
   });
 
   it("keeps the dialog's case name and retained assertions when deriving a regression case", async () => {

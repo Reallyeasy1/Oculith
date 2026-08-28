@@ -99,6 +99,7 @@ export interface Database {
   runSummaries: import("./glassbox/summary.js").RunSummary[];
   evaluatorDefinitions: import("./glassbox/evaluation.js").EvaluatorDefinition[];
   evaluationResults: import("./glassbox/evaluation.js").EvaluationResult[];
+  evaluationJobs: import("./glassbox/jobs.js").EvaluationJob[];
 }
 
 export interface CreateAgentInput {

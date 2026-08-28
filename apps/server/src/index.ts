@@ -4,6 +4,7 @@ import { createApp } from "./app.js";
 import { loadConfig, writeCodexConfig } from "./config.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
 import { JsonEvaluationStore } from "./glassbox/evaluation.js";
+import { builtinRunEvaluators, EvaluationJobWorker, JsonEvaluationJobStore } from "./glassbox/jobs.js";
 import { NdjsonTraceStore } from "./glassbox/store.js";
 import { openSummaryStore } from "./glassbox/postgres-summary.js";
 import { scheduleRollup } from "./glassbox/summary.js";
@@ -48,16 +49,22 @@ const runner = createRunner(config, emitter);
 const summaries = await openSummaryStore(config, store);
 const evaluations = new JsonEvaluationStore(store, summaries);
 await evaluations.initialize();
+// Evaluation jobs (#170): background worker over stored summaries; restart honesty first, then the
+// loop picks up whatever was queued. #171 registers the LLM judge in this registry.
+const evaluationJobs = new EvaluationJobWorker({ jobs: new JsonEvaluationJobStore(store), summaries, evaluations, evaluators: builtinRunEvaluators(), log: glassboxLog });
+await evaluationJobs.initialize();
+evaluationJobs.start();
 const rollup = { traces: traceStore, emitter, summaries, log: glassboxLog };
 const service = new AgentService(config, store, workspaces, runner, emitter, (runId) => void scheduleRollup(rollup, runId), runLogs);
 await service.initialize();
 await service.startHeartbeat();
 
-const app = await createApp(config, service, { emitter, store: traceStore, summaries, evaluations, logs: runLogs });
+const app = await createApp(config, service, { emitter, store: traceStore, summaries, evaluations, jobs: evaluationJobs, logs: runLogs });
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");
   service.stopHeartbeat();
+  evaluationJobs.stop();
   await app.close();
   await summaries.close?.();
   process.exit(0);
