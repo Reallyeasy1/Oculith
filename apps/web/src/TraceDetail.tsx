@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type { Assertion, AuditRow, EvaluationResult, ObservationEvent, RunListItem, RunLogLine, Span, TraceView } from "./types";
 import { evaluatorLabel, metadataSummary } from "./eval-view-model";
-import { REPORTED_FAILURE_HINT, STATUS_ICON, formatClock, formatDuration, formatRunDuration, formatUsage, workspaceLabel } from "./runs-view-model";
+import { REPORTED_FAILURE_HINT, STATUS_ICON, collapseRequestId, errorHead, formatClock, formatDuration, formatRunDuration, formatUsage, pluralize, workspaceLabel } from "./runs-view-model";
 import {
   CATEGORIES,
   DRAWER_EVENT_CAP,
@@ -296,9 +296,9 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
         <Field label="Events">{summary.eventCount} · {summary.spanCount} spans</Field>
         <Field label="Usage">{formatUsage(summary.usage)}</Field>
         <Field label="Metrics">
-          {summary.metrics.toolCalls} tool calls · {summary.metrics.toolFailures} failed · {summary.metrics.modelCalls} model calls
+          {pluralize(summary.metrics.toolCalls, "tool call")} · {summary.metrics.toolFailures} failed · {pluralize(summary.metrics.modelCalls, "model call")}
           {summary.metrics.tokens?.reasoning === undefined ? "" : ` · ${formatReasoningTokens(summary.metrics.tokens)}`}
-          {summary.metrics.retries > 0 ? ` · ${summary.metrics.retries} retries` : ""}
+          {summary.metrics.retries > 0 ? ` · ${pluralize(summary.metrics.retries, "retry", "retries")}` : ""}
           {summary.metrics.denials > 0 ? ` · ${summary.metrics.denials} denied` : ""}
         </Field>
         <Field label="Time split">
@@ -323,9 +323,15 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
         <div className="error-banner trace-banner" aria-live="polite">
           <div>
             <strong>{failure.kind === "denied" ? "First denial" : "First actionable " + failure.kind}: {failure.name}</strong>
+<<<<<<< Updated upstream
             <span className="trace-banner-meta">{failure.category} · {failure.component}{failure.message ? " · " + failure.message : ""}</span>
             {failure.hint && <span className="badge badge-warn" title="Derived from the stored provider error by a fixed rule — not a judgement.">{failure.hint}</span>}
             <p id="trace-diagnosis" className="trace-diagnosis">{failure.diagnosis}</p>
+=======
+            {/* #263: the meta line names the origin only; the full error text renders once, in the diagnosis. */}
+            <span className="trace-banner-meta" title={failure.message || undefined}>{failure.category} · {failure.component}</span>
+            <p id="trace-diagnosis" className="trace-diagnosis">{collapseRequestId(failure.diagnosis)}</p>
+>>>>>>> Stashed changes
           </div>
           {failingSpan && (
             <button type="button" className="button button-primary" onClick={jump} aria-describedby="trace-diagnosis">Jump to failing span</button>
@@ -444,7 +450,11 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
                 {row.hasChildren ? (row.expanded ? "▾" : "▸") : "·"}
               </button>
               <span className={"status status-" + s.status}><span aria-hidden="true">{STATUS_ICON[s.status]}</span>{spanStatusLabel(s, summary.endedReason)}</span>
-              <span className="trace-name" title={[[s.attributes.program, s.attributes.argument0].filter((value) => typeof value === "string" && value.length > 0).join(" "), s.error?.message].filter(Boolean).join("\n") || undefined}>{s.name}</span>
+              <span className="trace-name" title={[[s.attributes.program, s.attributes.argument0].filter((value) => typeof value === "string" && value.length > 0).join(" "), s.error?.message].filter(Boolean).join("\n") || undefined}>
+                {s.name}
+                {/* #263: error subtitle is a truncated head; the full text stays in the row's title tooltip. */}
+                {s.error?.message && <span className="trace-error-head"> — {errorHead(s.error.message)}</span>}
+              </span>
               <span className="trace-cat">{s.category}</span>
               <span className="trace-badges">
                 {s.incomplete && <span className="badge badge-warn">incomplete</span>}

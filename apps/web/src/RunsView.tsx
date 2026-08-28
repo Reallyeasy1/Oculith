@@ -4,6 +4,7 @@ import {
   FILTER_LABEL,
   QUICK_FILTERS,
   REPORTED_FAILURE_HINT,
+  errorHead,
   evidenceBadges,
   STATUS_ICON,
   formatClock,
@@ -145,7 +146,8 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 <td>{formatClock(run.startedAt)}</td>
                 <td>{formatRunDuration(run.durationMs, run.endedReason, run.interruptedAfterMs)}</td>
                 <td className="runs-outcome" title={run.outcome?.text}>{run.outcome?.text ?? (run.outcome?.reportedFailure ? <span className="badge badge-warn" title={REPORTED_FAILURE_HINT}>agent reported failure</span> : "—")}</td>
-                <td className="runs-fail-step" title={run.firstFailingStep}>{run.firstFailingStep ?? "—"}</td>
+                {/* #263: cell text is a truncated head; the full step text stays in the title tooltip. */}
+                <td className="runs-fail-step" title={run.firstFailingStep}>{run.firstFailingStep ? errorHead(run.firstFailingStep) : "—"}</td>
                 <td>{run.eventCount}</td>
                 <td title={run.configSnapshot ? JSON.stringify(run.configSnapshot) : undefined}>
                   <code>{run.configHash?.slice(0, 8) ?? "—"}</code>

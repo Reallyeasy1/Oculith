@@ -1694,6 +1694,12 @@ textarea:focus {
   background: var(--purple-soft);
 }
 
+/* #263: truncated error head beside the span name; full text lives in the row's title tooltip. */
+.trace-error-head {
+  font-weight: 400;
+  opacity: 0.8;
+}
+
 .trace-row.failing {
   background: #fae8e6;
 }
