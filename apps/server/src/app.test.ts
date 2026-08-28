@@ -312,6 +312,32 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     await app.close();
   });
 
+  it("answers metric queries with provenance and rejects contract violations with 400", async () => {
+    const store = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const summary = { runId: "run-1", agentId: "agt-1", configHash: "cfg-a", executionStatus: "completed", taskOutcome: "unknown", startedAt: "2026-08-01T00:00:00.000Z", durationMs: 1000, denials: 0, updatedAt: "2026-08-01T00:00:00.000Z", metrics: { terminalStatus: "ok", toolCalls: 2, toolFailures: 0, modelCalls: 1, retries: 0, denials: 0, timeSplit: { modelMs: 0, toolMs: 0, containerStartMs: 0 } } };
+    const summaries = { query: async () => [summary] } as unknown as RunSummaryStore;
+    const evaluations = { getDefinition: async () => undefined, query: async () => [] } as unknown as EvaluationStore;
+    const app = await createApp(config(), service, { emitter, store, summaries, evaluations });
+    const post = (payload: Record<string, unknown>) => app.inject({ method: "POST", url: "/api/metrics/query", headers: { ...auth, "content-type": "application/json" }, payload });
+
+    const ok = await post({ metric: "latency", aggregation: { type: "p95" }, filter: { configHash: "cfg-a" } });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toMatchObject({ schemaVersion: "1.0", capturePolicy: "metadata_only", kind: "telemetry", value: 1000, provenance: { count: 1, sampled: 1, runIds: ["run-1"], filter: { configHash: "cfg-a" } } });
+
+    const unknown = await post({ metric: "vibes", aggregation: { type: "avg" } });
+    expect(unknown.statusCode).toBe(400);
+    expect(JSON.stringify(unknown.json())).toContain("task_completion"); // the 400 lists the catalogue
+    expect((await post({ metric: "denials", aggregation: { type: "p95" } })).statusCode).toBe(400);
+    expect((await post({ metric: "task_completion", aggregation: { type: "rate" }, evaluator: { id: "nope" } })).statusCode).toBe(400);
+    await app.close();
+
+    // without both read models wired, the endpoint does not exist
+    const bare = await createApp(config(), service, { emitter, store });
+    expect((await bare.inject({ method: "POST", url: "/api/metrics/query", headers: { ...auth, "content-type": "application/json" }, payload: { metric: "latency", aggregation: { type: "p95" } } })).statusCode).toBe(404);
+    await bare.close();
+  });
+
   it("keeps the dialog's case name and retained assertions when deriving a regression case", async () => {
     const store = new MemoryTraceStore();
     const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
