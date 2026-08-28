@@ -125,8 +125,8 @@ export default function TraceDetail({ runId, run, view, templateBacked, onCaseSa
     setCaseError(null);
     try {
       await api.saveRunAsRegressionCase(runId, { name: caseName.trim(), assertions: caseAssertions });
+      setShowSaveCase(false); // the case exists now; a failed list refresh must not invite a duplicate Save
       await onCaseSaved();
-      setShowSaveCase(false);
     } catch (reason) {
       setCaseError(reason instanceof Error ? reason.message : String(reason));
     } finally {

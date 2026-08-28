@@ -358,6 +358,8 @@ export default function App() {
       await refreshRuns();
       const openRunId = selectedRunIdRef.current;
       if (openRunId) await refreshTrace(openRunId).catch(() => undefined);
+      // the overview's case rows show the latest evaluation; keep them live after a reload mid-evaluation
+      if (viewRef.current === "overview") await refreshEvalRuns().catch(() => undefined);
       const agentId = selectedIdRef.current;
       if (viewRef.current !== "agent" || !agentId) return;
       try {

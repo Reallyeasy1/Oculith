@@ -69,7 +69,7 @@ export default function Overview({ runs, cases, evalRuns, selectedAgent, onRunCa
                   <td><code title={regressionCase.baselineConfigHash}>{regressionCase.baselineConfigHash.slice(0, 8)}</code></td>
                   <td>{regressionCase.assertions.length}</td>
                   <td>{new Date(regressionCase.createdAt).toLocaleString()}</td>
-                  <td>{evaluation ? <span><code title={evaluation.id}>{evaluation.id.slice(0, 8)}</code> · {evaluation.status === "running" ? "running" : completed?.error ? "failed" : `${passCount ?? 0}/${completed?.results.length ?? 0} passed`}</span> : "—"}</td>
+                  <td>{evaluation ? <span><code title={evaluation.id}>{evaluation.id.slice(0, 8)}</code> · {evaluation.status === "running" ? "running" : !completed || completed.error ? "failed" : `${passCount ?? 0}/${completed.results.length} passed`}</span> : "—"}</td>
                   <td className="case-actions">
                     <button type="button" className="button button-primary" onClick={() => void act(regressionCase, "run")} disabled={!selectedAgent || pendingCaseId === regressionCase.id} title={selectedAgent ? undefined : "Select an Agent from the sidebar first."}>{pendingCaseId === regressionCase.id ? "Working…" : "Run against " + (selectedAgent?.name ?? "this Agent")}</button>
                     <button type="button" className="button button-ghost" onClick={() => void act(regressionCase, "delete")} disabled={pendingCaseId === regressionCase.id}>Delete</button>
