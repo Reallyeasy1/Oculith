@@ -12,6 +12,7 @@ import {
   capabilityBadgeLabel,
   capabilityCopy,
   defaultExpanded,
+  formatActors,
   formatReasoningTokens,
   formatAttribute,
   isFailed,
@@ -148,6 +149,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
   const { summary } = view;
   const failure = summary.failure;
   const workspace = workspaceLabel(summary.workspace ?? run?.workspace, summary.agentId || run?.agentId || "");
+  const actors = formatActors(summary.audit);
   const failingSpan = failure && byId.get(failure.spanId);
   const openSpan = openId ? byId.get(openId) : undefined;
   const saveReason = summary.status !== "ok"
@@ -304,6 +306,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
           {summary.metrics.retries > 0 ? ` · ${pluralize(summary.metrics.retries, "retry", "retries")}` : ""}
           {summary.metrics.denials > 0 ? ` · ${summary.metrics.denials} denied` : ""}
         </Field>
+        <Field label="Actors"><span className="trace-muted" title={actors.title}>{actors.text}</span></Field>
         <Field label="Time split">
           model {formatDuration(summary.metrics.timeSplit.modelMs)} · tools {formatDuration(summary.metrics.timeSplit.toolMs)} · start {formatDuration(summary.metrics.timeSplit.containerStartMs)}
           {summary.metrics.timeToFirstToolMs !== undefined ? ` · first tool ${formatDuration(summary.metrics.timeToFirstToolMs)}` : ""}
