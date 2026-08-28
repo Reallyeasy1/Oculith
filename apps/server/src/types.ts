@@ -97,6 +97,8 @@ export interface Database {
   regressionCases: RegressionCase[];
   evalRuns: EvalRun[];
   runSummaries: import("./glassbox/summary.js").RunSummary[];
+  evaluatorDefinitions: import("./glassbox/evaluation.js").EvaluatorDefinition[];
+  evaluationResults: import("./glassbox/evaluation.js").EvaluationResult[];
 }
 
 export interface CreateAgentInput {
@@ -134,6 +136,12 @@ export interface RunnerRequest {
   threadId: string | null;
   trace?: RunnerTraceContext | undefined;
   timeoutMs?: number | undefined;
+  logger?: RunnerLogger | undefined;
+}
+
+export interface RunnerLogger {
+  info(message: string): void;
+  error(message: string, error?: unknown): void;
 }
 
 export interface AgentRunner {

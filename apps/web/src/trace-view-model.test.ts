@@ -3,7 +3,7 @@
 // (vitest is hoisted from the server workspace — no new dependency.)
 import { describe, expect, it } from "vitest";
 import type { Span, TraceView } from "./types";
-import { EMPTY_FILTER, barGeometry, capabilityCopy, defaultExpanded, interruptedSpanDurationMs, matchesSpan, refreshIntervalMs, spanStatusLabel, timelineTicks, visibleRows } from "./trace-view-model";
+import { EMPTY_FILTER, barGeometry, capabilityBadgeLabel, capabilityCopy, defaultExpanded, interruptedSpanDurationMs, matchesSpan, refreshIntervalMs, spanStatusLabel, timelineTicks, visibleRows } from "./trace-view-model";
 
 const t0 = "2026-08-26T10:00:00.000Z";
 const at = (ms: number) => new Date(Date.parse(t0) + ms).toISOString();
@@ -37,6 +37,14 @@ const view: TraceView = {
 };
 
 describe("trace-view-model", () => {
+  it("keeps terminal evidence labels short and layer-specific", () => {
+    expect(capabilityCopy("unknown", "cancelled").label).toBe("no evidence");
+    expect(capabilityBadgeLabel("model", "unknown", "cancelled")).toBe("model: no evidence");
+    expect(capabilityBadgeLabel("tool", "observed", "ok")).toBe("tool observed");
+    expect(capabilityBadgeLabel("model", "unknown", "running")).toBe("model pending");
+    expect(capabilityBadgeLabel("tool", "unknown", "ok")).toBe("tool: no evidence"); // reachable: chat-only ok Run
+  });
+
   it("expands a small successful trace completely but keeps large traces bounded", () => {
     const small = { ...view, summary: { ...view.summary, spanCount: 6, failure: undefined } };
     expect(defaultExpanded(small).size).toBe(6);
@@ -79,7 +87,7 @@ describe("trace-view-model", () => {
 
   it("keeps unknown capabilities pending until a Run has ended", () => {
     expect(capabilityCopy("unknown", "running").label).toBe("pending");
-    expect(capabilityCopy("unknown", "cancelled").label).toBe("no evidence — run cut short");
+    expect(capabilityCopy("unknown", "cancelled").label).toBe("no evidence");
     expect(capabilityCopy("observed", "running").label).toBe("observed");
   });
 

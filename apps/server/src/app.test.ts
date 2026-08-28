@@ -1,10 +1,15 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import path from "node:path";
+import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
+import type { EvaluationStore } from "./glassbox/evaluation.js";
 import { MemoryTraceStore } from "./glassbox/store.js";
+import { RunLogStore } from "./run-log-store.js";
 import type { RunSummary, RunSummaryStore } from "./glassbox/summary.js";
 
 const service = {
@@ -130,6 +135,28 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     await emitter.flush();
     expect(store.listRuns()).toEqual([]);
     await app.close();
+  });
+
+  it("serves one Run's log lines under auth, bounded, with truncation reported (#75)", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "run-logs-"));
+    const logs = new RunLogStore(dir, 1_000_000);
+    await logs.initialize();
+    const line = (runId: string, n: number) => ({ time: new Date(n).toISOString(), level: n % 2 ? "error" : "info", msg: "line " + n, runId, traceId: "trc_" + runId, agentId: "agt-9" });
+    for (let n = 0; n < 4; n++) await logs.append(line("run-9", n));
+    await logs.append(line("run-8", 9));
+    const svc = { ...service, getRun: (id: string) => { if (id !== "run-9") throw new HttpError(404, "Run not found"); return { id }; } } as unknown as AgentService;
+    const store = new MemoryTraceStore();
+    const app = await createApp(config(), svc, { emitter: new ObservationEmitter({ store, capturePolicy: "metadata_only" }), store, logs });
+    expect((await app.inject({ method: "GET", url: "/api/runs/run-9/logs" })).statusCode).toBe(401);
+    const get = (url: string) => app.inject({ method: "GET", url, headers: auth });
+    const all = (await get("/api/runs/run-9/logs")).json();
+    expect(all).toEqual({ lines: [0, 1, 2, 3].map((n) => ({ time: new Date(n).toISOString(), level: n % 2 ? "error" : "info", msg: "line " + n })), truncated: false });
+    const bounded = (await get("/api/runs/run-9/logs?level=error&limit=1")).json();
+    expect(bounded).toEqual({ lines: [{ time: new Date(3).toISOString(), level: "error", msg: "line 3" }], truncated: true });
+    expect((await get("/api/runs/run-9/logs?limit=9999")).statusCode).toBe(400);
+    expect((await get("/api/runs/nope/logs")).statusCode).toBe(404);
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
   });
 
   it("lists runs and serves a trace with schemaVersion and capturePolicy", async () => {
@@ -264,6 +291,24 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     expect(bad.json()).toHaveProperty("details");
     expect((await app.inject({ method: "GET", url: "/api/runs/not-a-uuid", headers: auth })).statusCode).toBe(400);
     expect((await app.inject({ method: "GET", url: "/api/nope", headers: auth })).statusCode).toBe(404);
+    await app.close();
+  });
+
+  it("lists evaluator definitions and current evaluations for an existing Run", async () => {
+    const store = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const runId = "019f3fa8-44d2-7b60-b413-1a0b2c3d4e5f";
+    const definition = { id: "task_completion", name: "Task Completion", version: 1, type: "llm_judge" as const, rubric: "rubric", minScore: 1, maxScore: 5, passThreshold: 4, config: {}, setsTaskOutcome: true, createdAt: "2026-08-28T00:00:00.000Z" };
+    const result = { runId, evaluatorId: definition.id, evaluatorVersion: 1, score: 5, passed: true, explanation: "completed", evidenceEventIds: ["evt-1"], metadata: {}, evaluatedAt: "2026-08-28T01:00:00.000Z" };
+    const evaluations = {
+      listDefinitions: async () => [definition],
+      resultsForRun: async (id: string) => id === runId ? [result] : [],
+    } as unknown as EvaluationStore;
+    const svc = { ...service, getRun: (id: string) => { if (id !== runId) throw new HttpError(404, "Run not found"); return { id }; } } as unknown as AgentService;
+    const app = await createApp(config(), svc, { emitter, store, evaluations });
+    expect((await app.inject({ method: "GET", url: "/api/evaluators", headers: auth })).json()).toEqual({ evaluators: [definition] });
+    expect((await app.inject({ method: "GET", url: `/api/runs/${runId}/evaluations`, headers: auth })).json()).toEqual({ evaluations: [result] });
+    expect((await app.inject({ method: "GET", url: "/api/runs/019f3fa8-44d2-7b60-b413-1a0b2c3d4e60/evaluations", headers: auth })).statusCode).toBe(404);
     await app.close();
   });
 
