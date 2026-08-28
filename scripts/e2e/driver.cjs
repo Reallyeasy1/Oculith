@@ -128,6 +128,7 @@ async function openApp(page) {
 
 async function openTraceByKeyboard(page, runId) {
   const row = page.locator(`${RUNS_TABLE} tbody tr`).first();
+  ok(/^Open trace for .+, .+, .+$/.test(await row.getAttribute("aria-label")), "Runs row has a unique name including Agent, status, and start time (#103)");
   await row.focus();
   eq(await page.evaluate(() => document.activeElement && document.activeElement.tagName), "TR", "Runs row takes focus");
   await page.keyboard.press("Enter");
@@ -150,7 +151,9 @@ async function drawerRoundTrip(page) {
   await page.keyboard.press("Enter");
   const dialog = page.locator("[role=dialog]");
   await dialog.waitFor({ timeout: 5_000 });
-  ok(await page.evaluate(() => !!(document.activeElement && document.activeElement.closest("[role=dialog]"))), "Drawer takes focus on open");
+  eq(await page.evaluate(() => document.activeElement && document.activeElement.id), "span-drawer-title", "Drawer heading takes focus on open (#103)");
+  await page.keyboard.press("Shift+Tab");
+  ok(await page.evaluate(() => !!(document.activeElement && document.activeElement.closest("[role=dialog]"))), "Shift+Tab from the heading stays inside the drawer");
   for (let i = 0; i < 6; i++) await page.keyboard.press("Tab");
   ok(await page.evaluate(() => !!(document.activeElement && document.activeElement.closest("[role=dialog]"))), "Focus stays inside the drawer after 6 Tabs");
   await page.keyboard.press("Escape");
@@ -285,6 +288,13 @@ async function closeResources() {
   eq((await page.locator(`${RUNS_TABLE} tbody tr`).first().locator("td").nth(1).innerText()).trim(), "managed", "managed workspace UUID is rendered as 'managed'");
   eq(await page.locator(`${RUNS_TABLE} tbody tr`).first().locator("td").nth(1).getAttribute("title"), agent.id, "managed workspace keeps its UUID in the tooltip");
   await openTraceByKeyboard(page, okRun.run.id);
+  const expandPlayground = page.locator("button", { hasText: "Expand Playground" });
+  await expandPlayground.click();
+  const collapsePlayground = page.locator("button", { hasText: "Collapse Playground" });
+  await collapsePlayground.waitFor({ timeout: 5_000 });
+  await collapsePlayground.click();
+  await expandPlayground.waitFor({ timeout: 5_000 });
+  ok(true, "Playground toggle names both Expand and Collapse states (#103)");
   const exportLink = page.getByRole("link", { name: "Export JSON" });
   eq(await exportLink.getAttribute("href"), "/api/traces/" + okRun.run.traceId + "/export", "Export JSON link targets the redacted trace export (#154)");
   const downloadPromise = page.waitForEvent("download");
@@ -323,8 +333,11 @@ async function closeResources() {
   const regressionCase = (await api("/api/regression-cases")).json().cases.find((item) => item.sourceRunId === okRun.run.id);
   ok(regressionCase, "saving the baseline trace creates a regression case");
   sweep("DOM (ok trace)", await glassboxText(page));
-  await page.locator("button", { hasText: "Close trace" }).click();
-  eq(await page.locator(".trace-detail").count(), 0, "Close trace returns to the Runs table");
+  await page.locator("[role=treeitem]").first().focus();
+  await page.keyboard.press("Escape");
+  await page.locator(".trace-detail").waitFor({ state: "detached", timeout: 5_000 });
+  await page.waitForFunction((runId) => document.activeElement && document.activeElement.getAttribute("data-run-id") === runId, okRun.run.id, { timeout: 5_000 });
+  ok(true, "Escape on the tree closes the trace and restores focus to its Runs row (#103)");
 
   console.log("\n[4b] UI: Runs follow the selected Agent; All runs spans Agents with the summary strip (#70)");
   const rows = () => page.locator(`${RUNS_TABLE} tbody tr`);
@@ -434,6 +447,7 @@ async function closeResources() {
   const banner = page.locator(".trace-banner");
   ok((await banner.innerText()).includes("timeout"), "first-failure banner is shown");
   const jump = page.locator("button", { hasText: "Jump to failing span" });
+  eq(await jump.getAttribute("aria-describedby"), "trace-diagnosis", "Jump is described by the diagnosis paragraph (#103)");
   await page.setViewportSize({ width: 1366, height: 768 });
   await page.locator("[role=treeitem]").first().click();
   const dialog = page.locator("[role=dialog]");

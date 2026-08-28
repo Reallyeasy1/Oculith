@@ -90,6 +90,13 @@ export default function App() {
   selectedRunIdRef.current = selectedRunId;
   viewRef.current = view;
 
+  // Escape/Close hands focus back to the Run's row; if a quick filter hides that row, the Runs heading keeps the keyboard user anchored (#103).
+  const closeTrace = useCallback(() => {
+    const runId = selectedRunIdRef.current;
+    setSelectedRunId(null);
+    requestAnimationFrame(() => (document.querySelector<HTMLElement>(`[data-run-id="${runId}"]`) ?? document.getElementById("runs-heading"))?.focus());
+  }, []);
+
   const selected = useMemo(
     () => agents.find((agent) => agent.id === selectedId) ?? null,
     [agents, selectedId],
@@ -629,6 +636,11 @@ export default function App() {
                 </p>
               </div>
               <div className="header-actions">
+                {selectedRunId && playgroundExpanded && (
+                  <button className="button button-ghost" onClick={() => setPlaygroundExpanded(false)}>
+                    Collapse Playground
+                  </button>
+                )}
                 <button
                   className="button button-ghost"
                   onClick={() => setShowSettings((value) => !value)}
@@ -857,7 +869,7 @@ export default function App() {
             focusEventId={focusEventId}
             onFocusHandled={() => setFocusEventId(null)}
             onCaseSaved={refreshRegressionCases}
-            onClose={() => setSelectedRunId(null)}
+            onClose={closeTrace}
           />
         )}
         {/* runs are server-scoped already; the filter only keeps another Agent's rows out of the DOM across a switch */}

@@ -45,7 +45,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
       <div className="playground-topbar">
         <div>
           <span className="eyebrow">GlassBox</span>
-          <h2 id="runs-heading">{title}</h2>
+          <h2 id="runs-heading" tabIndex={-1}>{title}</h2>
         </div>
         <div className="runs-filters" role="group" aria-label="Quick filters">
           {QUICK_FILTERS.map((item) => (
@@ -103,9 +103,10 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
             {visible.map((run) => (
               <tr
                 key={run.runId}
+                data-run-id={run.runId}
                 tabIndex={0}
                 className={run.runId === selectedRunId ? "selected" : undefined}
-                aria-label={"Open trace for " + (run.agentName || run.runId) + ", " + run.status}
+                aria-label={"Open trace for " + (run.agentName || run.runId) + ", " + run.status + ", " + formatClock(run.startedAt)}
                 onClick={() => onOpenTrace(run.runId)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {

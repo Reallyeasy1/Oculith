@@ -193,6 +193,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
         else if (row.span.parentSpanId && byId.has(row.span.parentSpanId)) focusRow(row.span.parentSpanId);
         break;
       case "Enter": case " ": setOpenId(id); break;
+      case "Escape": onClose(); break;
       default: return;
     }
     event.preventDefault();
@@ -290,10 +291,10 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
           <div>
             <strong>{failure.kind === "denied" ? "First denial" : "First actionable " + failure.kind}: {failure.name}</strong>
             <span className="trace-banner-meta">{failure.category} · {failure.component}{failure.message ? " · " + failure.message : ""}</span>
-            <p className="trace-diagnosis">{failure.diagnosis}</p>
+            <p id="trace-diagnosis" className="trace-diagnosis">{failure.diagnosis}</p>
           </div>
           {failingSpan && (
-            <button type="button" className="button button-primary" onClick={jump} autoFocus>Jump to failing span</button>
+            <button type="button" className="button button-primary" onClick={jump} aria-describedby="trace-diagnosis">Jump to failing span</button>
           )}
         </div>
       )}
@@ -497,16 +498,18 @@ function Field({ label, children, className }: { label: string; children: React.
 
 const FOCUSABLE = 'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
-/** Dialog keyboard contract shared by the span drawer and the save-case modal: autofocus, Tab cycles inside, Escape closes. */
+/** Dialog keyboard contract shared by the span drawer and the save-case modal: autofocus, Tab cycles inside, Escape closes.
+ *  A `[data-autofocus]` element (e.g. a tabindex=-1 heading) wins the initial focus so a screen reader announces the title first (#103). */
 function useFocusTrap(ref: React.RefObject<HTMLElement | null>, onClose: () => void, focusKey: string) {
-  useEffect(() => { ref.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus(); }, [ref, focusKey]);
+  useEffect(() => { ref.current?.querySelector<HTMLElement>("[data-autofocus], " + FOCUSABLE)?.focus(); }, [ref, focusKey]);
   return (event: React.KeyboardEvent) => {
     if (event.key === "Escape") { event.preventDefault(); onClose(); return; }
     if (event.key !== "Tab" || !ref.current) return;
     const items = Array.from(ref.current.querySelectorAll<HTMLElement>(FOCUSABLE));
     const first = items[0], last = items[items.length - 1];
     if (!first || !last) return;
-    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    // Shift+Tab from the first item, or from a non-tabbable autofocus target ahead of it, wraps to the last item.
+    if (event.shiftKey && (document.activeElement === first || !items.includes(document.activeElement as HTMLElement))) { event.preventDefault(); last.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   };
 }
@@ -529,7 +532,7 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
       <div className="span-drawer-head">
         <div>
           <span className="eyebrow">Span · {span.category}</span>
-          <h3 id="span-drawer-title">{identity || span.name}</h3>
+          <h3 id="span-drawer-title" tabIndex={-1} data-autofocus>{identity || span.name}</h3>
         </div>
         <button type="button" className="button button-ghost" onClick={onClose} aria-label="Close span details">×</button>
       </div>
