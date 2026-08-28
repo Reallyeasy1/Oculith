@@ -16,6 +16,10 @@ const traces = new NdjsonTraceStore(config.traceDirectory, log);
 await traces.initialize();
 const emitter = new ObservationEmitter({ store: traces, capturePolicy: config.glassboxCapturePolicy, log });
 const summaries = await openSummaryStore(config, store);
-const report = await backfillSummaries({ traces, emitter, summaries, log });
+const report = await backfillSummaries({ traces, emitter, summaries, log, pricing: {
+  inputPerMillion: config.glassboxPricePerMtokInput,
+  cachedInputPerMillion: config.glassboxPricePerMtokCachedInput,
+  outputPerMillion: config.glassboxPricePerMtokOutput,
+} });
 console.log("[glassbox] backfill", JSON.stringify(report));
 await summaries.close?.();

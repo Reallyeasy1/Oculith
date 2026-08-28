@@ -4,9 +4,10 @@ import type { ObservationEmitter } from "./emitter.js";
 import { buildTrace, type TraceMetrics, type TraceSummary, type TraceView } from "./query.js";
 import type { CapturePolicy, TraceStatus } from "./schema.js";
 import type { RunIndexEntry, TraceStore } from "./store.js";
+import { estimatedCost, type TokenPricing } from "./cost.js";
 
 /** Bump when `summaryFromView` changes shape or meaning; `npm run glassbox:backfill` then rewrites older records. */
-export const ROLLUP_VERSION = 6; // 6: metrics.timeSplit / timeToFirstToolMs (#129)
+export const ROLLUP_VERSION = 7; // 7: persisted estimatedCostUsd (#249)
 
 export type ExecutionStatus = "running" | "completed" | "failed" | "timeout" | "cancelled";
 export type TaskOutcome = "passed" | "failed" | "unknown";
@@ -29,6 +30,7 @@ export interface RunSummary {
   startedAt?: string | undefined; endedAt?: string | undefined; durationMs?: number | undefined; lastEventAt?: string | undefined;
   workspace?: string | undefined; sessionId?: string | undefined;
   metrics: TraceMetrics; usage?: TraceSummary["usage"]; denials: number; actions: number;
+  estimatedCostUsd?: number | undefined;
   capabilities: TraceSummary["capabilities"]; workspaceChanges?: TraceSummary["workspaceChanges"];
   /** #132 — `text` is an observed fact (the agent's own final words, safe_summary only); `reportedFailure` is a derived phrase match. Neither is `taskOutcome`. */
   outcome?: TraceSummary["outcome"];
@@ -118,6 +120,7 @@ export class JsonRunSummaryStore implements RunSummaryStore {
 
 export interface RollupDeps {
   traces: TraceStore; emitter: ObservationEmitter; summaries: RunSummaryStore;
+  pricing?: TokenPricing | undefined;
   log?: ((message: string, meta: Record<string, unknown>) => void) | undefined;
 }
 
@@ -127,7 +130,9 @@ export async function rollupRun(deps: RollupDeps, runId: string, entry?: RunInde
   if (events.length === 0) return undefined;
   const found = entry ?? deps.traces.listRuns().find((e) => e.runId === runId);
   const view = buildTrace(events, { capturePolicy: deps.emitter.capturePolicy, degraded: deps.emitter.isDegraded(runId), truncated: found?.truncated });
-  return deps.summaries.upsert(summaryFromView(view));
+  const summary = summaryFromView(view);
+  const cost = estimatedCost(summary, deps.pricing ?? {});
+  return deps.summaries.upsert(cost === undefined ? summary : { ...summary, estimatedCostUsd: cost });
 }
 
 /** Write path (invariant 3): waits for the terminal event to land, then rolls up; a failure is logged, never raised.

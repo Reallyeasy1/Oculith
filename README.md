@@ -294,7 +294,7 @@ Not covered — know this before putting anything sensitive near it:
 | `GLASSBOX_RETENTION_DAYS` / `GLASSBOX_MAX_DISK_MB` | `7` / `200` | Startup-only compaction of finished Runs to terminal events + tombstone; `0` disables |
 | `GLASSBOX_LOG_MAX_MB` | `50` | Run-correlated, redacted server log rotation (3 files kept) |
 | `GLASSBOX_STORE` / `DATABASE_URL` | `json` / — | `postgres` keeps Run summaries in PostgreSQL (`docker compose --profile postgres up`); traces stay NDJSON |
-| `GLASSBOX_PRICE_PER_MTOK_INPUT` / `_OUTPUT` | — | Optional display-only cost estimates |
+| `GLASSBOX_PRICE_PER_MTOK_INPUT` / `_CACHED_INPUT` / `_OUTPUT` | — | Optional cost estimates; cached input defaults to the input rate |
 
 Full list including container/resource limits: [.env.example](.env.example).
 
