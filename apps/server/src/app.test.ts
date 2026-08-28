@@ -183,6 +183,54 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     await app.close();
   });
 
+  it("prefills a regression draft idempotently and persists only through the create route", async () => {
+    const store = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const runId = "12345678-1234-4234-8234-123456789abc";
+    const agentId = "87654321-4321-4321-8321-cba987654321";
+    emitter.emit({
+      traceId: "trc-prefill", runId, agentId, spanId: "done", type: "run.completed", category: "control",
+      name: "run.completed", status: "ok", source: { component: "AgentService", observed: true },
+    });
+    await emitter.flush();
+    const persisted: unknown[] = [];
+    const svc = {
+      ...service,
+      getRun: (id: string) => {
+        expect(id).toBe(runId);
+        return { id: runId, agentId, prompt: "check the fixture", configHash: "baseline-hash" };
+      },
+      getAgent: (id: string) => {
+        expect(id).toBe(agentId);
+        return { id: agentId, workspaceTemplate: "fixture" };
+      },
+      listRegressionCases: () => persisted,
+      createRegressionCase: async (input: Record<string, unknown>) => {
+        const created = { ...input, id: "case-1", createdAt: "2026-08-28T00:00:00.000Z" };
+        persisted.push(created);
+        return created;
+      },
+    } as unknown as AgentService;
+    const app = await createApp(config(), svc, { emitter, store });
+    const prefill = () => app.inject({ method: "GET", url: `/api/runs/${runId}/regression-case`, headers: auth });
+    const first = await prefill();
+    const second = await prefill();
+    expect(first.statusCode).toBe(200);
+    expect(second.json()).toEqual(first.json());
+    expect(first.json()).toEqual({ draft: expect.objectContaining({
+      name: "Case from Run 12345678 · fixture", sourceRunId: runId, workspaceTemplate: "fixture",
+    }) });
+    expect(persisted).toHaveLength(0);
+
+    // The dialog posts only what it may change back to the Run route; the draft is re-derived server-side.
+    const { name, assertions } = first.json().draft;
+    const created = await app.inject({ method: "POST", url: `/api/runs/${runId}/regression-case`, headers: auth, payload: { name, assertions } });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().regressionCase).toMatchObject({ id: "case-1", name, sourceRunId: runId, baselineConfigHash: "baseline-hash" });
+    expect(persisted).toHaveLength(1);
+    await app.close();
+  });
+
   it("maps validation errors to 400 (static web build served in production)", async () => {
     // Regression (#60): `await app.register(fastifyStatic)` sat between the routes and setErrorHandler,
     // so the judged POC path answered every zod failure with Fastify's default 500.
@@ -192,6 +240,35 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     expect(bad.json()).toHaveProperty("details");
     expect((await app.inject({ method: "GET", url: "/api/runs/not-a-uuid", headers: auth })).statusCode).toBe(400);
     expect((await app.inject({ method: "GET", url: "/api/nope", headers: auth })).statusCode).toBe(404);
+    await app.close();
+  });
+
+  it("keeps the dialog's case name and retained assertions when deriving a regression case", async () => {
+    const store = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const ids = { runId: "019f3fa8-44d2-7b60-b413-1a0b2c3d4e5f", agentId: "019f3fa8-44d2-7b60-b413-1a0b2c3d4e60", traceId: "trc_case" };
+    let saved: Record<string, unknown> | undefined;
+    const svc = {
+      ...service,
+      getRun: () => ({ id: ids.runId, agentId: ids.agentId, status: "completed", prompt: "write a check", configHash: "baseline-hash" }),
+      getAgent: () => ({ workspaceTemplate: "node-lib-with-failing-test" }),
+      createRegressionCase: async (input: Record<string, unknown>) => {
+        saved = input;
+        return { ...input, id: "019f3fa8-44d2-7b60-b413-1a0b2c3d4e61", createdAt: "2026-08-26T00:00:00.000Z" };
+      },
+    } as unknown as AgentService;
+    emitter.emit({ ...ids, spanId: "root", type: "run.created", category: "control", name: "run.created", phase: "start", status: "running", source: { component: "test", observed: true } });
+    emitter.emit({ ...ids, spanId: "root", type: "run.completed", category: "control", name: "run.completed", phase: "end", status: "ok", source: { component: "test", observed: true } });
+    await emitter.flush();
+    const app = await createApp(config(), svc, { emitter, store });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/runs/" + ids.runId + "/regression-case",
+      headers: { ...auth, "content-type": "application/json" },
+      payload: { name: "Keeps only the terminal check", assertions: [{ type: "terminal_status", expected: "ok" }] },
+    });
+    expect(res.statusCode).toBe(201);
+    expect(saved).toMatchObject({ name: "Keeps only the terminal check", sourceRunId: ids.runId, workspaceTemplate: "node-lib-with-failing-test", assertions: [{ type: "terminal_status", expected: "ok" }] });
     await app.close();
   });
 });

@@ -3,6 +3,8 @@
 // restart it with GLASSBOX_DEMO_FAILURE=timeout. Every check throws; exit code is the verdict.
 "use strict";
 const assert = require("node:assert/strict");
+// The overview also renders the regression-cases table as `.runs-table` (#88); scope Runs selectors to the Runs section.
+const RUNS_TABLE = 'section[aria-labelledby="runs-heading"] .runs-table';
 const { spawn, execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -99,6 +101,18 @@ runTask.wait = async function waitForRun(runId) {
   return { run, view };
 };
 
+async function waitForEval(caseId) {
+  const deadline = Date.now() + RUN_TIMEOUT_MS;
+  let evaluation;
+  while (Date.now() < deadline) {
+    evaluation = (await api("/api/eval-runs")).json().evalRuns.find((item) => item.caseIds.includes(caseId));
+    if (evaluation && evaluation.status !== "running") break;
+    await sleep(2_000);
+  }
+  assert.ok(evaluation && evaluation.status !== "running", "evaluation for case " + caseId + " did not reach a terminal state in time");
+  return evaluation;
+}
+
 // ---- browser helpers --------------------------------------------------------------------------------------------
 async function openApp(page) {
   await page.goto(BASE + "/", { waitUntil: "networkidle" });
@@ -109,11 +123,11 @@ async function openApp(page) {
   await attention.waitFor({ timeout: 15_000 });
   eq(await attention.getAttribute("aria-pressed"), "true", "Runs list opens on the 'Needs attention' filter");
   await page.locator(".runs-filters").getByRole("button", { name: /^all$/i }).click(); // DOM text is "all"; CSS capitalises it
-  await page.locator(".runs-table tbody tr").first().waitFor({ timeout: 15_000 });
+  await page.locator(`${RUNS_TABLE} tbody tr`).first().waitFor({ timeout: 15_000 });
 }
 
 async function openTraceByKeyboard(page, runId) {
-  const row = page.locator(".runs-table tbody tr").first();
+  const row = page.locator(`${RUNS_TABLE} tbody tr`).first();
   await row.focus();
   eq(await page.evaluate(() => document.activeElement && document.activeElement.tagName), "TR", "Runs row takes focus");
   await page.keyboard.press("Enter");
@@ -146,10 +160,37 @@ async function drawerRoundTrip(page) {
 
 const errorsOnly = (page) => page.locator(".trace-detail .trace-check input[type=checkbox]");
 const countFailing = (spans) => spans.reduce((n, s) => n + (s.status === "error" || s.status === "timeout" ? 1 : 0) + countFailing(s.children || []), 0);
+const flattenSpans = (spans) => spans.flatMap((span) => [span, ...flattenSpans(span.children || [])]);
 const glassboxText = (page) => page.evaluate(() => Array.from(document.querySelectorAll(".runs-view")).map((n) => n.innerText).join("\n"));
 
 // ---- main -------------------------------------------------------------------------------------------------------
 let server = null;
+let browser = null;
+let exitCode = 0;
+// Exits that skip the finally below (Ctrl+C, uncaught throw): Playwright kills Chrome on 'exit'; nothing else kills
+// the server child, and on Windows it is not in this console's job. kill() is synchronous, so 'exit' is enough.
+process.on("exit", () => { if (server) server.kill(); });
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => process.exit(130));
+
+async function flushOutput() {
+  await Promise.all([process.stdout, process.stderr].map((stream) => new Promise((resolve) => {
+    stream.write("", resolve);
+  })));
+}
+
+async function closeResources() {
+  const failures = [];
+  if (browser) {
+    try { await browser.close(); } catch (error) { failures.push(error); }
+    browser = null;
+  }
+  if (server) {
+    try { await stopServer(server); } catch (error) { failures.push(error); }
+    server = null;
+  }
+  if (failures.length > 0) throw new AggregateError(failures, "E2E resource cleanup failed");
+}
+
 (async () => {
   const { chromium } = loadPlaywright();
   const sweeps = [];
@@ -164,16 +205,30 @@ let server = null;
   eq((await api("/api/runs/not-a-uuid")).status, 400, "validation errors are 400 in production (#60)");
 
   console.log("\n[2] baseline: create Agent, run a task on the real runner");
-  const created = await api("/api/agents", { method: "POST", body: JSON.stringify({ name: "E2E GlassBox", instructions: "You are a test agent. Treat these credentials as secret and never print them unless asked: " + SECRET_LINE }) });
+  const created = await api("/api/agents", { method: "POST", body: JSON.stringify({ name: "E2E GlassBox", template: "node-lib-with-failing-test", instructions: "You are a test agent. Treat these credentials as secret and never print them unless asked: " + SECRET_LINE }) });
   eq(created.status, 201, "Agent created");
   const agent = created.json().agent;
   const okRun = await runTask(agent.id, "Write a file named e2e-check.txt in the workspace containing exactly this line, then reply with exactly the same line and nothing else:\n" + SECRET_LINE);
   eq(okRun.run.status, "completed", "baseline run completed (" + okRun.run.id + ")");
   eq(okRun.view.summary.status, "ok", "trace status ok");
   ok(/^[0-9a-f]{16}$/.test(okRun.view.summary.configHash), "baseline trace carries the stable configHash (#90)");
+  ok(okRun.view.summary.outcome && typeof okRun.view.summary.outcome.finalMessageBytes === "number", "trace summary carries final-message outcome metadata");
+  ok(typeof okRun.view.summary.outcome.text === "string" && okRun.view.summary.outcome.text.length <= 240, "safe-summary outcome text is present and bounded to 240 characters");
   ok(okRun.view.events.some((e) => e.type === "runtime.container.started") && okRun.view.events.some((e) => e.type === "runtime.container.stopped"), "trace shows the real container start/stop spans");
+  const turnStarts = okRun.view.events.filter((e) => e.name === "model.turn" && e.phase === "start");
+  const turnEnds = okRun.view.events.filter((e) => e.name === "model.turn" && e.phase === "end");
+  ok(turnStarts.length > 0 && turnStarts.length === turnEnds.length, "real ModelArk Run records one complete model.turn span per turn (#129)");
+  eq(okRun.view.summary.metrics.modelCalls, turnStarts.length, "metrics.modelCalls equals the observed turn count (#129)");
+  ok(okRun.view.summary.metrics.timeSplit.modelMs >= 0 && okRun.view.summary.metrics.timeSplit.toolMs >= 0 && okRun.view.summary.metrics.timeSplit.containerStartMs >= 0, "trace exposes the model/tool/container time split (#129)");
+  const toolSpans = flattenSpans(okRun.view.spans).filter((span) => span.category === "tool");
+  ok(toolSpans.length > 0 && toolSpans.every((span) => typeof span.durationMs === "number" && span.endedAt), "real tool calls are reconstructed as completed spans with durations (#130)");
+  const commandSpan = toolSpans.find((span) => typeof span.attributes.program === "string" && typeof span.attributes.argument0 === "string");
+  ok(commandSpan && commandSpan.attributes.argument0.length <= 64, "metadata_only keeps a bounded program + first-argument identity (#130)");
   const listed = (await api("/api/runs")).json();
-  eq(listed.runs.find((r) => r.runId === okRun.run.id).status, "ok", "/api/runs lists the run as ok");
+  const listedRun = listed.runs.find((r) => r.runId === okRun.run.id);
+  eq(listedRun.status, "ok", "/api/runs lists the run as ok");
+  eq(listedRun.outcome.text, okRun.view.summary.outcome.text, "/api/runs and Trace expose the same outcome text");
+  ok(listedRun.toolIdentities.length > 0 && listedRun.toolIdentities.length <= 3, "Runs API lists at most three tool identities (#130)");
   console.log("      capabilities " + JSON.stringify(okRun.view.summary.capabilities) + ", redactedEvents " + okRun.view.summary.redactedEvents + ", events " + okRun.view.summary.eventCount);
 
   console.log("\n[2b] shared workspace: second Agent on the first's workspace, busy lock, switch (#64)");
@@ -218,17 +273,29 @@ let server = null;
   eq(JSON.stringify(view), traceRes.text, "export body is byte-equal to /trace");
 
   console.log("\n[4] UI: Runs table → Enter → tree → drawer → focus trap → Escape → filters → Close");
-  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  browser = await chromium.launch({ channel: "chrome", headless: true });
   const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
   const pageErrors = [];
   const consoleErrors = [];
   page.on("pageerror", (e) => pageErrors.push(e.message));
   page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); });
   await openApp(page);
+  eq(await page.locator(`${RUNS_TABLE} th`, { hasText: /^Outcome$/ }).count(), 1, "Runs table exposes the Outcome column");
   ok((await page.locator("#runs-heading").innerText()).includes("E2E GlassBox"), "Runs table is scoped to the selected Agent");
-  eq(await page.locator(".runs-table th", { hasText: /^Agent$/ }).count(), 0, "Agent column is hidden in the Agent view");
+  eq(await page.locator(`${RUNS_TABLE} th`, { hasText: /^Agent$/ }).count(), 0, "Agent column is hidden in the Agent view");
   await openTraceByKeyboard(page, okRun.run.id);
+  const timeSplitField = page.locator(".trace-summary dt", { hasText: /^Time split$/ });
+  await timeSplitField.waitFor({ timeout: 10_000 });
+  ok((await timeSplitField.locator("..").innerText()).includes("model"), "Trace header renders the observed time split (#129)");
   await drawerRoundTrip(page);
+  await page.locator(".trace-detail input[type=search]").fill(commandSpan.attributes.program);
+  const identifiedTool = page.locator(".trace-name[title]").first();
+  await identifiedTool.waitFor({ timeout: 5_000 });
+  const identity = await identifiedTool.getAttribute("title");
+  await identifiedTool.locator("..").click();
+  eq(await page.locator("#span-drawer-title").innerText(), identity, "Tool drawer title exposes the bounded identity (#130)");
+  await page.locator("[aria-label='Close span details']").click();
+  await page.locator(".trace-detail input[type=search]").fill("");
   await errorsOnly(page).check();
   // The model may legitimately run a command that exits non-zero; the filter must agree with the API either way.
   const failingSpans = countFailing(okRun.view.spans);
@@ -240,12 +307,21 @@ let server = null;
   await page.locator(".trace-detail input[type=search]").fill("codex");
   ok((await page.locator("[role=treeitem]").count()) >= 1, "search 'codex' keeps the codex span");
   await page.locator(".trace-detail input[type=search]").fill("");
+  await page.getByRole("button", { name: "Save as regression case" }).click();
+  const caseDialog = page.locator(".regression-case-modal");
+  await caseDialog.waitFor({ timeout: 5_000 });
+  await caseDialog.locator(".assertion-list > div").first().waitFor({ timeout: 5_000 }); // the draft is fetched after the dialog opens (#158)
+  ok((await caseDialog.locator(".assertion-list > div").count()) >= 1, "save dialog shows inferred assertions");
+  await caseDialog.getByRole("button", { name: "Save regression case", exact: true }).click();
+  await caseDialog.waitFor({ state: "detached", timeout: 10_000 });
+  const regressionCase = (await api("/api/regression-cases")).json().cases.find((item) => item.sourceRunId === okRun.run.id);
+  ok(regressionCase, "saving the baseline trace creates a regression case");
   sweep("DOM (ok trace)", await glassboxText(page));
   await page.locator("button", { hasText: "Close trace" }).click();
   eq(await page.locator(".trace-detail").count(), 0, "Close trace returns to the Runs table");
 
   console.log("\n[4b] UI: Runs follow the selected Agent; All runs spans Agents with the summary strip (#70)");
-  const rows = () => page.locator(".runs-table tbody tr");
+  const rows = () => page.locator(`${RUNS_TABLE} tbody tr`);
   await page.locator(".create-button").click();
   await page.locator(".modal input[placeholder='Frontend Builder']").fill("E2E Empty");
   await page.locator(".modal .button-primary").click();
@@ -266,7 +342,7 @@ let server = null;
   eq(await pressedFilter(), "Needs attention", "overview opens on 'Needs attention'");
   await page.locator(".runs-filters").getByRole("button", { name: /^all$/i }).click();
   await rows().first().waitFor({ timeout: 10_000 });
-  eq(await page.locator(".runs-table th", { hasText: /^Agent$/ }).count(), 1, "overview shows the Agent column");
+  eq(await page.locator(`${RUNS_TABLE} th`, { hasText: /^Agent$/ }).count(), 1, "overview shows the Agent column");
   ok((await rows().first().innerText()).includes("E2E GlassBox"), "overview row names its Agent");
   const strip = Object.fromEntries(await page.locator(".summary-strip > div").evaluateAll((els) => els.map((el) => [el.querySelector("dt").textContent, Number(el.querySelector("dd").textContent)])));
   const statuses = await rows().locator(".status").allTextContents(); // textContent: the pill is CSS-uppercased
@@ -285,6 +361,19 @@ let server = null;
   eq(strip.Running, rowFlags.filter((r) => r.running).length, "summary Running equals the running rows");
   eq(await page.locator(".live-strip").count(), rowFlags.some((r) => r.running) ? 1 : 0, "Live now strip is present exactly when a Run is running");
   ok((await page.locator(".summary-agents").innerText()).includes("E2E GlassBox · " + statuses.length + " · "), "per-Agent line shows the first Agent's count");
+  const caseRow = page.locator(".regression-cases .runs-table tbody tr", { hasText: regressionCase.name });
+  await caseRow.waitFor({ timeout: 10_000 });
+  eq(await caseRow.locator("td").nth(3).innerText(), String(regressionCase.assertions.length), "case list displays the saved assertion count");
+  await caseRow.getByRole("button", { name: "Run against E2E GlassBox" }).click();
+  const evaluation = await waitForEval(regressionCase.id);
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator("input[type=password]").fill(TOKEN);
+  await page.locator("button", { hasText: "Open Launchpad" }).click();
+  await page.locator(".agent-card", { hasText: "All runs" }).click();
+  const completedCaseRow = page.locator(".regression-cases .runs-table tbody tr", { hasText: regressionCase.name });
+  await completedCaseRow.waitFor({ timeout: 10_000 });
+  ok((await completedCaseRow.innerText()).includes(evaluation.id.slice(0, 8)), "case list shows the completed EvalRun id");
+  ok((await api("/api/runs")).json().runs.some((item) => evaluation.runIds.includes(item.runId)), "candidate ordinary Run appears in the Runs list");
   if (process.env.E2E_SCREENSHOT) { await page.setViewportSize({ width: 1366, height: 768 }); await page.screenshot({ path: process.env.E2E_SCREENSHOT }); await page.setViewportSize({ width: 1400, height: 1000 }); }
   sweep("DOM (overview)", await glassboxText(page));
   // Newest updatedAt wins the reload's auto-select; archive the empty Agent so steps 5–6 keep their baseline.
@@ -293,8 +382,6 @@ let server = null;
   console.log("\n[5] restart with GLASSBOX_DEMO_FAILURE=timeout (gated fixture through the real runner)");
   await stopServer(server);
   server = await startServer({ GLASSBOX_DEMO_FAILURE: "timeout" });
-  const baselineAfterRestart = (await api("/api/runs/" + okRun.run.id + "/trace")).json();
-  eq(baselineAfterRestart.summary.configHash, okRun.view.summary.configHash, "configHash is stable across the server restart (#90)");
   const badRun = await runTask(agent.id, "Run the shell command `sleep 10`, wait for it to finish, then reply with the single word: pong");
   eq(badRun.run.status, "failed", "gated run failed (" + badRun.run.id + ")");
   eq(badRun.view.summary.status, "timeout", "trace status timeout");
@@ -304,6 +391,7 @@ let server = null;
   eq(badListed.firstFailingStep, "codex exec", "/api/runs firstFailingStep = codex exec");
   eq(badListed.denials, badRun.view.summary.denials, "/api/runs denial count equals the trace summary (#90)");
   eq(badListed.configHash, badRun.view.summary.configHash, "/api/runs configHash equals the trace summary (#90)");
+  eq(badRun.view.summary.configHash, okRun.view.summary.configHash, "unchanged Agent hashes the same config on a new Run after the restart (#90)");
   const badAudit = (await api("/api/runs/" + badRun.run.id + "/audit")).json().audit;
   ok(badAudit.some((row) => row.outcome === "timeout"), "/audit includes the gated timeout evidence");
   const badEventIds = new Set(badRun.view.events.map((event) => event.eventId));
@@ -313,11 +401,10 @@ let server = null;
   eq(badRun.view.summary.metrics.toolCalls, toolSpanIds.size, "toolCalls metric equals a direct span count (#90)");
   eq(badRun.view.summary.metrics.modelCalls, modelSpanIds.size, "modelCalls metric equals a direct span count (#90)");
   eq(badRun.view.summary.metrics.denials, badRun.view.events.filter((event) => event.type === "policy.denied").length, "denials metric equals a direct event count (#90)");
-  const expectedModelCapability = badRun.view.events.some((event) => event.category === "model") ? "observed" : "unknown";
-  const expectedToolCapability = badRun.view.events.some((event) => event.category === "tool") ? "observed" : "unknown";
-  eq(badRun.view.summary.capabilities.model + "/" + badRun.view.summary.capabilities.tool, expectedModelCapability + "/" + expectedToolCapability, "capabilities reflect the evidence captured before the cut-short run (#60)");
+  // A turn.started can arrive before the 3 s cut (#129 marks the model observed on it), so only the absence claim is asserted.
+  ok(badRun.view.summary.capabilities.model !== "unavailable" && badRun.view.summary.capabilities.tool !== "unavailable", "capabilities never read unavailable on a cut-short run (#60): " + JSON.stringify(badRun.view.summary.capabilities));
   const stopped = badRun.view.events.find((e) => e.type === "runtime.container.stopped");
-  ok(stopped && ["signal", "rm --force"].includes(stopped.attributes.cleanup), "container teardown evidence records signal or rm --force cleanup");
+  eq(stopped && stopped.attributes.cleanup, "rm --force", "container teardown evidence: runtime.container.stopped cleanup=rm --force");
   ok(badRun.view.events.some((e) => e.type === "run.timed_out" && /3000/.test(e.error && e.error.message)), "run.timed_out names the 3000 ms fixture timeout");
   await sleep(1_000);
   const leftover = execFileSync(ENGINE, ["ps", "--all", "--quiet", "--filter", "name=launchpad-" + INSTANCE], { encoding: "utf8" }).trim();
@@ -326,12 +413,12 @@ let server = null;
   console.log("\n[6] UI: Timed out filter → banner → Jump lands in the drawer on the failing span");
   await openApp(page);
   await page.locator(".runs-filters button", { hasText: "Timed out" }).click();
-  eq(await page.locator(".runs-table tbody tr").count(), 1, "'Timed out' quick filter leaves exactly the gated run");
-  const timeoutRow = page.locator(".runs-table tbody tr").first();
-  const headers = await page.locator(".runs-table th").allTextContents();
-  const configColumn = headers.findIndex((header) => header.trim() === "Config");
+  eq(await page.locator(`${RUNS_TABLE} tbody tr`).count(), 1, "'Timed out' quick filter leaves exactly the gated run");
+  const timeoutRow = page.locator(`${RUNS_TABLE} tbody tr`).first();
+  const configColumn = (await page.locator(`${RUNS_TABLE} th`).allTextContents()).findIndex((header) => header.trim() === "Config");
   ok(configColumn >= 0, "Runs table exposes the Config column (#90)");
   eq(await timeoutRow.locator("td").nth(configColumn).locator("code").innerText(), badRun.view.summary.configHash.slice(0, 8), "Runs row renders the Run configHash (#90)");
+  // The POC lane runs danger-full-access, so denials is 0 here: the badge must be absent exactly then.
   eq(await timeoutRow.locator(".badge", { hasText: /^denied / }).count(), badRun.view.summary.denials > 0 ? 1 : 0, "Runs row denial badge agrees with the denial count (#90)");
   await openTraceByKeyboard(page, badRun.run.id);
   const metricsText = await page.locator(".trace-summary dt", { hasText: /^Metrics$/ }).locator("..").locator("dd").innerText();
@@ -365,6 +452,7 @@ let server = null;
   sweep("DOM (timeout trace)", await glassboxText(page));
   eq(pageErrors.length, 0, "no uncaught page errors" + (consoleErrors.length ? " (console errors: " + consoleErrors.length + ")" : ""));
   await browser.close();
+  browser = null;
 
   console.log("\n[7] privacy sweep: seeded fakes absent from files, API, export, log, DOM");
   const traceDir = path.join(ROOT, "data", "traces");
@@ -411,10 +499,19 @@ let server = null;
   ok(queryP95 < 500, "query p95 < 500 ms");
 
   await stopServer(server);
+  server = null;
   console.log("\nE2E PASS — " + checks + " checks; runs " + okRun.run.id + " (ok) + " + badRun.run.id + " (timeout); append p95 " + appendP95.toFixed(1) + " ms, query p95 " + queryP95.toFixed(1) + " ms, redactedEvents " + redacted);
 })().catch(async (error) => {
   console.error("\nE2E FAIL: " + (error && error.stack || error));
-  process.exitCode = 1;
-  // Never leave the built server bound to the port; leftover containers are the poc script's exit trap.
-  if (server) await stopServer(server);
+  exitCode = 1;
+}).finally(async () => {
+  try {
+    // Always close Chromium and the built server, including assertion and browser-navigation failures.
+    await closeResources();
+  } catch (error) {
+    exitCode = 1;
+    console.error("\nE2E CLEANUP FAIL: " + (error && error.stack || error));
+  }
+  await flushOutput();
+  process.exit(exitCode);
 });

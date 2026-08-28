@@ -146,8 +146,18 @@ describe("P0 verification invariants", () => {
       modelCalls: modelSpanIds.size,
       denials: view.events.filter((event: { type: string }) => event.type === "policy.denied").length,
     });
+    // #130/#129 metrics, hand-computed from the same evidence: bounded tool identities and the tool time of the split.
+    type SpanLike = { category: string; durationMs?: number; attributes: Record<string, unknown>; children?: SpanLike[] };
+    const flatten = (spans: SpanLike[]): SpanLike[] => spans.flatMap((span) => [span, ...flatten(span.children ?? [])]);
+    const toolSpans = flatten(view.spans).filter((span) => span.category === "tool");
+    expect(toolSpans).toHaveLength(toolSpanIds.size);
+    const identities = [...new Set(toolSpans.map((span) => [span.attributes.program, span.attributes.argument0].filter((part) => typeof part === "string" && part).join(" ")).filter(Boolean))].slice(0, 3);
+    expect(view.summary.metrics.toolIdentities).toEqual(identities);
+    expect(view.summary.metrics.timeSplit.toolMs).toBe(toolSpans.reduce((total, span) => total + (span.durationMs ?? 0), 0));
+    expect(view.summary.configHash).toMatch(/^[0-9a-f]{16}$/);
     const listed = (await h.app.inject({ method: "GET", url: "/api/runs" })).json().runs.find((run: { runId: string }) => run.runId === runId);
-    expect(listed).toMatchObject({ denials: view.summary.denials, configHash: view.summary.configHash });
+    expect(listed).toMatchObject({ denials: view.summary.denials, configHash: view.summary.configHash, toolCalls: view.summary.metrics.toolCalls, toolFailures: view.summary.metrics.toolFailures });
+    expect(listed.toolIdentities).toEqual(view.summary.metrics.toolIdentities);
     await h.app.close();
   });
 });
