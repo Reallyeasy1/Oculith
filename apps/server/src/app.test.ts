@@ -10,8 +10,9 @@ import { ObservationEmitter } from "./glassbox/emitter.js";
 import type { EvaluationStore } from "./glassbox/evaluation.js";
 import { JsonEvaluationStore } from "./glassbox/evaluation.js";
 import { builtinRunEvaluators, EvaluationJobWorker, JsonEvaluationJobStore } from "./glassbox/jobs.js";
+import { buildTrace } from "./glassbox/query.js";
 import { MemoryTraceStore } from "./glassbox/store.js";
-import { JsonRunSummaryStore } from "./glassbox/summary.js";
+import { JsonRunSummaryStore, summaryFromView } from "./glassbox/summary.js";
 import { JsonStore } from "./store.js";
 import { RunLogStore } from "./run-log-store.js";
 import type { RunSummary, RunSummaryStore } from "./glassbox/summary.js";
@@ -215,6 +216,36 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     await app.close();
   });
 
+  it("serves the runs list from stored summaries, scoped to the agent filter (#213)", async () => {
+    const store = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const agentId = "87654321-4321-4321-8321-cba987654321";
+    const ids = { runId: "run-9", agentId, traceId: "trc_9" };
+    emitter.emit({ ...ids, spanId: "root", type: "run.completed", category: "control", name: "run.completed", status: "ok", source: { component: "AgentService", observed: true } });
+    await emitter.flush();
+    // A fresh stored row (current rollup version, event count matches the index) must be served as-is —
+    // the evaluation plane's outcome included — with no re-rollup write on the poll path.
+    const fresh = summaryFromView(buildTrace(await store.readRun("run-9"), { capturePolicy: "metadata_only" }), { taskOutcome: "passed", taskOutcomeSource: "deterministic:eval-1" });
+    const queries: unknown[] = [];
+    const upserts: unknown[] = [];
+    const summaries = {
+      query: async (query: unknown) => { queries.push(query); return [fresh]; },
+      upsert: async (summary: RunSummary) => { upserts.push(summary); return summary; },
+    } as unknown as RunSummaryStore;
+    const run = { id: "run-9", agentId, status: "completed", traceId: "trc_9", createdAt: "2026-08-26T00:00:00.000Z" };
+    const svc = { ...service, getRuns: () => [], listAgents: () => [{ id: agentId, name: "Nine" }], allRuns: () => [run] } as unknown as AgentService;
+    const app = await createApp(config(), svc, { emitter, store, summaries });
+    const filtered = await app.inject({ method: "GET", url: `/api/runs?agentId=${agentId}`, headers: auth });
+    expect(filtered.statusCode).toBe(200);
+    expect(filtered.json().runs[0]).toMatchObject({ runId: "run-9", status: "ok", taskOutcome: "passed" });
+    const unfiltered = await app.inject({ method: "GET", url: "/api/runs", headers: auth });
+    expect(unfiltered.json().runs).toHaveLength(1);
+    // #213: the summary read model is scoped to the same agent filter as the runs themselves.
+    expect(queries).toEqual([{ agentId }, {}]);
+    expect(upserts).toEqual([]);
+    await app.close();
+  });
+
   it("serves an Agent's rolling baseline from the newest terminal summaries", async () => {
     const store = new MemoryTraceStore();
     const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
@@ -228,12 +259,15 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
       capabilities: { model: "observed", tool: "observed" }, degraded: false, truncated: false, evicted: false,
       redactedEvents: 0, eventCount: 1, rollupVersion: 1, updatedAt: "2026-08-28T00:00:00.000Z",
     });
-    const summaries = { query: async () => [makeSummary(3), makeSummary(2), makeSummary(1)] } as unknown as RunSummaryStore;
+    const queries: unknown[] = [];
+    const summaries = { query: async (query: unknown) => { queries.push(query); return [makeSummary(3), makeSummary(2), makeSummary(1)]; } } as unknown as RunSummaryStore;
     const svc = { ...service, getAgent: (id: string) => { if (id !== agentId) throw new HttpError(404, "Agent not found"); return { id }; } } as unknown as AgentService;
     const app = await createApp(config({ GLASSBOX_PRICE_PER_MTOK_INPUT: "2", GLASSBOX_PRICE_PER_MTOK_OUTPUT: "4" }), svc, { emitter, store, summaries });
     const result = await app.inject({ method: "GET", url: `/api/agents/${agentId}/runs/baseline`, headers: auth });
     expect(result.statusCode).toBe(200);
-    expect(result.json().baseline).toMatchObject({ sampleCount: 3, windowSize: 20, durationMs: { median: 2_000, p90: 3_000 }, inputTokens: { median: 200, p90: 300 }, toolCalls: { median: 2, p90: 3 }, estimatedCostUsd: { median: 0.00048, p90: 0.00072 } });
+    expect(result.json().baseline).toMatchObject({ sampleCount: 3, windowSize: 20, durationMs: { p50: 2_000, p95: 3_000 }, inputTokens: { p50: 200, p95: 300 }, toolCalls: { p50: 2, p95: 3 }, estimatedCostUsd: { p50: 0.00048, p95: 0.00072 } });
+    // #213: the store query is bounded so the Postgres backend never scans an Agent's whole history.
+    expect(queries).toEqual([{ agentId, limit: 40 }]);
     expect((await app.inject({ method: "GET", url: "/api/agents/12345678-1234-4234-8234-123456789abc/runs/baseline", headers: auth })).statusCode).toBe(404);
     await app.close();
   });

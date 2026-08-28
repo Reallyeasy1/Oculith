@@ -18,7 +18,7 @@ import { CATEGORIES, SCHEMA_VERSION, STATUSES } from "./glassbox/schema.js";
 import type { RunIndexEntry, TraceStore } from "./glassbox/store.js";
 import { executionStatusOf, isFresh, rollupRun, summaryFromView, traceStatusOf, type RunSummary, type RunSummaryStore } from "./glassbox/summary.js";
 import type { RunLogStore } from "./run-log-store.js";
-import { buildAgentRunBaseline, estimatedCost } from "./glassbox/baseline.js";
+import { BASELINE_QUERY_LIMIT, buildAgentRunBaseline, estimatedCost } from "./glassbox/baseline.js";
 import { caseFromRun, regressionCaseInput } from "./eval/cases.js";
 import { EvalRunner } from "./eval/runner.js";
 import { compareEvalRuns } from "./eval/compare.js";
@@ -331,9 +331,9 @@ export async function createApp(
       app.get("/api/agents/:id/runs/baseline", async (request) => {
         const { id } = agentIdParams.parse(request.params);
         service.getAgent(id);
-        // The builder selects the newest 20 terminal Runs. Recent in-progress
-        // Runs must not displace older completed evidence from that window.
-        const summaries = await glassbox.summaries!.query({ agentId: id });
+        // The builder selects the newest 20 terminal Runs; the bounded query leaves headroom so recent
+        // in-progress Runs cannot displace older completed evidence from that window (#213).
+        const summaries = await glassbox.summaries!.query({ agentId: id, limit: BASELINE_QUERY_LIMIT });
         return { baseline: buildAgentRunBaseline(summaries, {
           inputPerMillion: config.glassboxPricePerMtokInput,
           outputPerMillion: config.glassboxPricePerMtokOutput,
@@ -369,8 +369,11 @@ export async function createApp(
       // the page can still come back under `limit` even though older matching runs exist.
       const runs = service.allRuns().filter((r) => (!q.agentId || r.agentId === q.agentId) && (!q.from || r.createdAt >= q.from) && (!q.to || r.createdAt <= q.to))
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, q.limit * 2);
-      // Stored summaries are the read model (#168): one snapshot per request, no NDJSON read for a fresh row.
-      const known = new Map(((await glassbox.summaries?.query()) ?? []).map((s) => [s.runId, s]));
+      // Stored summaries are the read model (#168): one snapshot per request, no NDJSON read for a fresh
+      // row. Scoped to the agent filter (#213) — only agentId is safe to push down: the runs above match it
+      // exactly, while from/to bound createdAt, not the summaries' startedAt, and a summary missing from
+      // this map triggers a stored re-rollup of its Run on every poll.
+      const known = new Map(((await glassbox.summaries?.query({ agentId: q.agentId })) ?? []).map((s) => [s.runId, s]));
       const rollup = glassbox.summaries ? { traces: glassbox.store, emitter: glassbox.emitter, summaries: glassbox.summaries } : undefined;
       const empty = (runId: string): RunSummary => summaryFromView(buildTrace([], { capturePolicy: glassbox.emitter.capturePolicy, degraded: glassbox.emitter.isDegraded(runId) }));
       const items = [];
