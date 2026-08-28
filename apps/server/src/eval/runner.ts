@@ -20,6 +20,9 @@ export class EvalRunner {
         await this.glassbox.emitter.flush();
         const view = buildTrace(await this.glassbox.store.readRun(run.id), { capturePolicy: this.glassbox.emitter.capturePolicy });
         const results = await evaluateAll(view, regressionCase.assertions);
+        // A Run that did not complete (runner threw, timed out, cancelled) fails the case; keep its evidence.
+        const error = finished.status === "completed" ? undefined : finished.error ?? "Run " + finished.status;
+        if (error) failed = true;
         // FR-21 adapter: one EvaluationResult per (run, evaluator, version), so several assertions of one type fold
         // into one verdict (all must pass) instead of the last write shadowing the others. The summary row must
         // exist before putResult (setTaskOutcome 404s otherwise) — rollupRun is idempotent, so roll up here.
@@ -36,10 +39,10 @@ export class EvalRunner {
               evaluatedAt, jobId: evalRun.id,
             });
           }
+          // FR-22: the case's assertions are the caller's definition of task success, so a deterministic miss
+          // (budget assertions included) or a Run that never completed marks the task failed.
+          await this.glassbox.summaries.setTaskOutcome(run.id, !error && results.every((result) => result.pass) ? "passed" : "failed", `deterministic:${evalRunId}`);
         }
-        // A Run that did not complete (runner threw, timed out, cancelled) fails the case; keep its evidence.
-        const error = finished.status === "completed" ? undefined : finished.error ?? "Run " + finished.status;
-        if (error) failed = true;
         await this.service.updateEvalRun(evalRunId, (item) => { item.runIds.push(run.id); item.results.push({ caseId, runId: run.id, results, ...(error ? { error } : {}) }); });
       } catch (error) {
         failed = true;
