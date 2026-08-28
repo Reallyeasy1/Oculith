@@ -46,7 +46,7 @@ afterEach(async () => {
   );
 });
 
-async function makeService(runner: AgentRunner = new FakeRunner()): Promise<AgentService> {
+async function makeService(runner: AgentRunner = new FakeRunner(), env: Record<string, string> = {}): Promise<AgentService> {
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
   temporaryDirectories.push(root);
   const config = loadConfig({
@@ -57,6 +57,7 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
     CODEX_HOME: path.join(root, "codex"),
     ARK_API_KEY: "test-key",
     ARK_MODEL: "ep-test",
+    ...env,
   });
   const service = new AgentService(
     config,
@@ -67,6 +68,22 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
   await service.initialize();
   return service;
 }
+
+describe("systemInfo runtime label (#260)", () => {
+  it("says local process for the local-process provider", async () => {
+    const service = await makeService(new FakeRunner(), { RUNTIME_PROVIDER: "local-process" });
+    expect(await service.systemInfo()).toMatchObject({
+      runtimeProvider: "local-process", containerEngine: null, runtime: "Codex CLI as local process",
+    });
+  });
+
+  it("names the container engine for the container provider", async () => {
+    const service = await makeService(new FakeRunner(), { RUNTIME_PROVIDER: "container", CONTAINER_ENGINE: "podman" });
+    expect(await service.systemInfo()).toMatchObject({
+      runtimeProvider: "container", containerEngine: "podman", runtime: "Codex CLI in podman container",
+    });
+  });
+});
 
 describe("Agent lifecycle", () => {
   it("validates, lists, shares, and switches named workspaces safely", async () => {
