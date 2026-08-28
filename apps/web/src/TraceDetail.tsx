@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import type { Assertion, AuditRow, ObservationEvent, RunListItem, RunLogLine, Span, TraceView } from "./types";
+import type { Assertion, AuditRow, EvaluationResult, ObservationEvent, RunListItem, RunLogLine, Span, TraceView } from "./types";
+import { evaluatorLabel, metadataSummary } from "./eval-view-model";
 import { REPORTED_FAILURE_HINT, STATUS_ICON, formatClock, formatDuration, formatRunDuration, formatUsage, workspaceLabel } from "./runs-view-model";
 import {
   CATEGORIES,
@@ -67,6 +68,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
   const [auditRows, setAuditRows] = useState<AuditRow[] | null>(null);
   const [auditError, setAuditError] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [evaluations, setEvaluations] = useState<EvaluationResult[]>([]);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   // Bumped whenever focus must move programmatically (keyboard nav, Jump, drawer close); the effect below
   // runs after the target row has rendered, which matters when Jump expands a collapsed path.
@@ -97,6 +99,16 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
       .catch((reason) => { if (!cancelled) setAuditError(reason instanceof Error ? reason.message : String(reason)); });
     return () => { cancelled = true; };
   }, [runId, showAudit, view]);
+
+  // #173: stored evaluation results refresh alongside the trace poll (`view` changes every tick while
+  // open). A server without the evaluation store (404) or a Run without results keeps the panel hidden.
+  useEffect(() => {
+    let cancelled = false;
+    void api.runEvaluations(runId)
+      .then(({ evaluations: results }) => { if (!cancelled) setEvaluations(results); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [runId, view]);
 
   useEffect(() => {
     if (focusReq > 0 && rovingId) rowRefs.current.get(rovingId)?.focus();
@@ -217,6 +229,19 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
     setFocusReq((n) => n + 1);
   };
 
+  // Evidence links use the same jump mechanism as the audit table and the first-failure banner:
+  // expand the cited span's path, focus its row and open the drawer (#173).
+  const openEvidenceEvent = (eventId: string) => {
+    const event = view.events.find((item) => item.eventId === eventId);
+    if (!event) return;
+    const path: string[] = [];
+    for (let current = byId.get(event.spanId); current; current = current.parentSpanId ? byId.get(current.parentSpanId) : undefined) path.unshift(current.spanId);
+    setFilter(EMPTY_FILTER);
+    setExpanded((prev) => { const next = new Set(prev ?? expanded); path.forEach((id) => next.add(id)); return next; });
+    setFocusId(event.spanId);
+    setOpenId(event.spanId);
+  };
+
   const downloadExport = async () => {
     setExportError(null);
     try {
@@ -303,6 +328,28 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
             <button type="button" className="button button-primary" onClick={jump} aria-describedby="trace-diagnosis">Jump to failing span</button>
           )}
         </div>
+      )}
+
+      {evaluations.length > 0 && (
+        <section className="trace-evaluations" aria-labelledby="trace-evaluations-heading">
+          <h3 id="trace-evaluations-heading">Evaluation</h3>
+          <ul>
+            {evaluations.map((result) => (
+              <li key={evaluatorLabel(result)}>
+                <span className={"badge " + (result.passed ? "" : "badge-warn")}>{result.passed ? "PASS" : "FAIL"}</span>
+                <code>{evaluatorLabel(result)}</code>
+                {result.score !== undefined && <span>score {result.score}</span>}
+                {result.explanation && <span className="trace-muted">{result.explanation}</span>}
+                {metadataSummary(result.metadata) && <span className="trace-muted">{metadataSummary(result.metadata)}</span>}
+                {result.evidenceEventIds.map((eventId, index) => (
+                  <button key={eventId} type="button" className="evidence-link" onClick={() => openEvidenceEvent(eventId)}>
+                    evidence{result.evidenceEventIds.length > 1 ? " " + (index + 1) : ""}
+                  </button>
+                ))}
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
 
       <div className="trace-filters" role="group" aria-label="Span filters">

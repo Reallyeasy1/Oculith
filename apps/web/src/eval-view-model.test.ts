@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { templateHashDetails } from "./eval-view-model";
+import { evaluatorLabel, metadataSummary, templateHashDetails } from "./eval-view-model";
+
+describe("evaluatorLabel", () => {
+  it("joins evaluator id and version as the provenance label", () => {
+    expect(evaluatorLabel({ evaluatorId: "task_completion", evaluatorVersion: 1 })).toBe("task_completion@1");
+  });
+});
+
+describe("metadataSummary", () => {
+  it("renders sorted key: value pairs and an empty string for no metadata", () => {
+    expect(metadataSummary({ zulu: true, alpha: 3, beta: null })).toBe("alpha: 3 · beta: null · zulu: true");
+    expect(metadataSummary({})).toBe("");
+  });
+});
 
 describe("templateHashDetails", () => {
   it("sorts template provenance and keeps both display and full hashes", () => {

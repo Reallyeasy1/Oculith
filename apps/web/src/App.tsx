@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
 import { agentPayload } from "./agent-form";
-import type { Agent, AgentRun, AgentRunBaseline, EvalRun, Message, RegressionCase, RunListItem, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
+import type { Agent, AgentRun, AgentRunBaseline, EvalRun, Message, RegressionCase, ReliabilityReport, RunListItem, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
 import RunsView from "./RunsView";
+import ReliabilityPanel from "./ReliabilityPanel";
 import TraceDetail from "./TraceDetail";
 import Overview from "./Overview";
 import CompareView from "./CompareView";
@@ -58,6 +59,7 @@ export default function App() {
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
   const [runs, setRuns] = useState<RunListItem[]>([]);
   const [runBaseline, setRunBaseline] = useState<AgentRunBaseline | null>(null);
+  const [reliability, setReliability] = useState<ReliabilityReport | null>(null);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [templates, setTemplates] = useState<WorkspaceTemplate[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
@@ -144,14 +146,16 @@ export default function App() {
     const overview = viewRef.current === "overview";
     const agentId = selectedIdRef.current;
     const scope = overview ? "overview" : agentId;
-    if (!scope) { setRuns([]); setRunBaseline(null); return; }
+    if (!scope) { setRuns([]); setRunBaseline(null); setReliability(null); return; }
     try {
-      const [result, baselineResult] = await Promise.all([
+      const [result, baselineResult, reliabilityResult] = await Promise.all([
         api.listRuns(overview ? { limit: 200 } : { agentId: agentId!, limit: 100 }),
         overview ? Promise.resolve(null) : api.runBaseline(agentId!).catch(() => null),
+        // #173: same fail-soft contract as the baseline — a server without the reliability endpoints just hides the panel.
+        overview ? Promise.resolve(null) : api.reliability(agentId!).catch(() => null),
       ]);
       const stillCurrent = (viewRef.current === "overview" ? "overview" : selectedIdRef.current) === scope;
-      if (mountedRef.current && stillCurrent) { setRuns(result.runs); setRunBaseline(baselineResult?.baseline ?? null); }
+      if (mountedRef.current && stillCurrent) { setRuns(result.runs); setRunBaseline(baselineResult?.baseline ?? null); setReliability(reliabilityResult); }
     } catch {
       // ponytail: runs table goes stale, baseline keeps working (invariant 12)
     }
@@ -898,6 +902,7 @@ export default function App() {
           </div>
         )}
 
+        {view === "agent" && selected && <ReliabilityPanel report={reliability} />}
         {selectedRunId && (
           <TraceDetail
             key={selectedRunId}
