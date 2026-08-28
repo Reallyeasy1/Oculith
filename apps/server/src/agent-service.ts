@@ -296,11 +296,14 @@ export class AgentService {
     return item;
   }
 
-  async createRegressionCase(input: Omit<RegressionCase, "id" | "createdAt" | "templateHash">): Promise<RegressionCase> {
-    let templateHash: string;
-    try { templateHash = await this.workspaces.templateHash(input.workspaceTemplate); }
+  /** A missing or oversized template is a client error (400), not a server fault, wherever a case names one. */
+  private async templateHash(name: string): Promise<string> {
+    try { return await this.workspaces.templateHash(name); }
     catch (error) { throw new HttpError(400, error instanceof Error ? error.message : "Unable to hash workspace template"); }
-    const item: RegressionCase = { ...input, templateHash, id: randomUUID(), createdAt: now() };
+  }
+
+  async createRegressionCase(input: Omit<RegressionCase, "id" | "createdAt" | "templateHash">): Promise<RegressionCase> {
+    const item: RegressionCase = { ...input, templateHash: await this.templateHash(input.workspaceTemplate), id: randomUUID(), createdAt: now() };
     await this.store.mutate((database) => database.regressionCases.push(item));
     return item;
   }
@@ -323,7 +326,7 @@ export class AgentService {
     const templateHashes: Record<string, string> = {};
     let mismatch = false;
     for (const regressionCase of input.caseIds.map((id) => this.getRegressionCase(id))) {
-      const current = (templateHashes[regressionCase.workspaceTemplate] ??= await this.workspaces.templateHash(regressionCase.workspaceTemplate));
+      const current = (templateHashes[regressionCase.workspaceTemplate] ??= await this.templateHash(regressionCase.workspaceTemplate));
       if (regressionCase.templateHash !== undefined && regressionCase.templateHash !== current) mismatch = true;
     }
     if (mismatch && !options.force) throw new HttpError(409, "template changed since the case was recorded");
