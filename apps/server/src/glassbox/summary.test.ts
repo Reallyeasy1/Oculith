@@ -66,6 +66,12 @@ describe("summaryFromView", () => {
     expect(summary.metrics).toMatchObject({ terminalStatus: "error", toolCalls: 1, toolFailures: 1, modelCalls: 1, denials: 1, tokens: { input: 10, output: 5 } });
     expect(summary.actions).toBeGreaterThan(0);
   });
+  it("carries the #132 outcome line from the terminal event into the stored summary", () => {
+    seq = 0;
+    const events = [ev({ type: "run.started", category: "control", spanId: "s", status: "ok" }),
+      ev({ type: "run.completed", category: "control", spanId: "e", status: "ok", attributes: { finalMessageBytes: 9, reportedFailure: true }, summary: { text: "Unable to", policy: "safe_summary" } })];
+    expect(summaryFromView(buildTrace(events, { capturePolicy: "safe_summary" })).outcome).toEqual({ text: "Unable to", finalMessageBytes: 9, reportedFailure: true });
+  });
   it("maps every trace status onto an execution status; a restart-cancel keeps its reason", () => {
     const statuses = { ok: "completed", error: "failed", timeout: "timeout", cancelled: "cancelled" } as const;
     for (const [type, status] of Object.entries({ "run.completed": "ok", "run.failed": "error", "run.timed_out": "timeout", "run.cancelled": "cancelled" } as const)) {

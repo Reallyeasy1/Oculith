@@ -35,6 +35,8 @@ export interface TraceSummary {
   /** `unknown` = no evidence either way (run cut short before the stream said anything) — never claim `unavailable` from absence. */
   capabilities: { model: Capability; tool: Capability };
   workspaceChanges?: { added: number; modified: number; removed: number; bytesDelta: number; truncated: boolean } | undefined;
+  /** #132 — `text`: observed fact (redacted first 240 chars of the final message, safe_summary only); `reportedFailure`: derived deterministic phrase match, not a judgement. */
+  outcome?: { text?: string | undefined; finalMessageBytes: number; reportedFailure: boolean } | undefined;
   firstFailingStep?: string | undefined; failure?: FailureFocus | undefined;
 }
 
@@ -320,6 +322,13 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
     bytesDelta: Number(workspaceEvent.attributes.bytesDelta ?? 0),
     truncated: workspaceEvent.attributes.truncated === true,
   } : undefined;
+  const completion = events.find((event) => event.type === "run.completed");
+  const finalMessageBytes = completion?.attributes.finalMessageBytes;
+  const outcome = completion && typeof finalMessageBytes === "number" ? {
+    ...(completion.summary?.text !== undefined ? { text: completion.summary.text } : {}),
+    finalMessageBytes,
+    reportedFailure: completion.attributes.reportedFailure === true,
+  } : undefined;
   const summary: TraceSummary = {
     schemaVersion: SCHEMA_VERSION, capturePolicy: opts.capturePolicy,
     runId: first?.runId ?? "", traceId: first?.traceId ?? "", agentId: first?.agentId ?? "",
@@ -333,7 +342,7 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
       denials: auditRows.filter((row) => row.outcome === "denied").length,
       actors: [...new Set(auditRows.map((row) => row.actor.type + "/" + row.actor.id))].sort(),
     },
-    degraded, truncated, evicted, usage, metrics, configHash, workspaceChanges,
+    degraded, truncated, evicted, usage, metrics, configHash, workspaceChanges, outcome,
     capabilities: { model: events.some((e) => e.category === "model") ? "observed" : declaredUnavailable ? "unavailable" : "unknown", tool: events.some((e) => e.category === "tool") ? "observed" : declaredUnavailable ? "unavailable" : "unknown" },
     firstFailingStep: failure && failure.kind !== "degraded" ? failure.name : undefined, failure,
   };

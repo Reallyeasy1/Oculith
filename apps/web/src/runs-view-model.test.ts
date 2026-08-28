@@ -62,6 +62,12 @@ describe("needsAttention", () => {
     expect(matchesFilter(run("ok", false, "a", "A", { toolFailures: 2 }), "failed")).toBe(false);
   });
 
+  it("flags an ok Run when the agent reports failure in its final message", () => {
+    const reported = run("ok", false, "a", "A", { outcome: { finalMessageBytes: 20, reportedFailure: true } });
+    expect(needsAttention(reported)).toBe(true);
+    expect(matchesFilter(reported, "attention")).toBe(true);
+  });
+
   it("includes a denial even when the Run reached an otherwise successful terminal state", () => {
     const denied = { ...run("ok"), denials: 1 };
     expect(needsAttention(denied)).toBe(true);

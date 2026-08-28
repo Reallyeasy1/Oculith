@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { CodexStreamObserver } from "./codex-observer.js";
+import { CodexStreamObserver, describeFinalMessage } from "./codex-observer.js";
 import { ObservationEmitter } from "./emitter.js";
 import { MemoryTraceStore } from "./store.js";
 import { parseCodexEventLine, type ParsedEvents } from "../codex-runner.js";
@@ -40,6 +40,12 @@ const lines = [
 ] as const;
 
 describe("CodexStreamObserver", () => {
+  it("derives bounded outcome metadata from a deterministic failure phrase list", () => {
+    expect(describeFinalMessage("curl is NOT INSTALLED on this image")).toMatchObject({ reportedFailure: true, finalMessageBytes: 35 });
+    expect(describeFinalMessage("Everything completed successfully").reportedFailure).toBe(false);
+    expect(describeFinalMessage("x".repeat(300)).summaryText).toHaveLength(240);
+  });
+
   it("maps observed items to tool/workspace/model events, never stores reasoning, and redacts commands", async () => {
     const store = new MemoryTraceStore();
     const em = new ObservationEmitter({ store, capturePolicy: "safe_summary" });

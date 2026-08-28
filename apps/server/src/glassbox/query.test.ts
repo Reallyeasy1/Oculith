@@ -14,6 +14,20 @@ const svcStart = () => ev({ type: "agent_service.run.started", category: "contro
 const rtStart = () => ev({ type: "runtime.codex.started", category: "runtime", spanId: "rt", parentSpanId: "svc", phase: "start", status: "running", source: { component: "AgentRunner", observed: true } });
 
 describe("buildTrace", () => {
+  it("projects safe text and metadata-only failure hints from the terminal Run event", () => {
+    const completed = ev({
+      type: "run.completed", category: "control", spanId: "done", status: "ok",
+      attributes: { finalMessageBytes: 42, reportedFailure: true },
+      summary: { text: "Unable to continue", policy: "safe_summary" },
+    });
+    expect(buildTrace([completed], { capturePolicy: "safe_summary" }).summary.outcome).toEqual({
+      text: "Unable to continue", finalMessageBytes: 42, reportedFailure: true,
+    });
+    expect(buildTrace([{ ...completed, summary: undefined }], { capturePolicy: "metadata_only" }).summary.outcome).toEqual({
+      finalMessageBytes: 42, reportedFailure: true,
+    });
+  });
+
   it("formats Windows crash and SIGKILL exit codes with deterministic operator hints", () => {
     expect(formatExitCode(3221225794)).toBe("3221225794 (0xC0000142) — process failed to initialise — the runtime CLI could not start; restart the server");
     expect(formatExitCode(137)).toBe("137 — SIGKILL (timeout, cancellation, or out-of-memory termination)");

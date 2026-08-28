@@ -5,6 +5,7 @@ import type { AppConfig } from "./config.js";
 import { isModelConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
 import { createTraceContext, type TraceContext } from "./glassbox/context.js";
+import { describeFinalMessage } from "./glassbox/codex-observer.js";
 import {
   createDefaultEmitter,
   type ObservationEmitter,
@@ -686,6 +687,7 @@ export class AgentService {
         agent.updatedAt = completedAt;
       });
       if (ids && service) {
+        const outcome = describeFinalMessage(result.output);
         this.emitter.emit({
           ...ids,
           spanId: newId("spn"),
@@ -696,9 +698,14 @@ export class AgentService {
           status: "ok",
           source: { component: "AgentService", observed: true },
           attributes: {
-            outputBytes: Buffer.byteLength(result.output, "utf8"),
+            outputBytes: outcome.finalMessageBytes,
+            finalMessageBytes: outcome.finalMessageBytes,
+            reportedFailure: outcome.reportedFailure,
             ...(result.usage ?? {}),
           },
+          ...(this.emitter.capturePolicy === "safe_summary"
+            ? { summary: { text: outcome.summaryText, policy: "safe_summary" as const } }
+            : {}),
           ...(result.threadId ? { sessionId: result.threadId } : {}),
         });
         service.end("ok", { type: "agent_service.run.completed" });
