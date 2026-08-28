@@ -33,6 +33,19 @@ export function describeFinalMessage(text: string): { finalMessageBytes: number;
   };
 }
 
+/** Bounded identity (#130): basename of the program plus its first argument, 64 chars max. Codex wraps every
+ * command as `/bin/bash -lc '<script>'` (E3/E4) or `powershell.exe -Command "<script>"` (E5), so the first
+ * argument of a shell wrapper is the script's own first token — `bash python3`, not `bash -lc`. */
+export function commandIdentity(command: string): { program: string } | { program: string; argument0: string } {
+  const tokenize = (text: string): string[] => text.trim().match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+  const unquote = (token: string): string => token.replace(/^(?:"|')|(?:"|')$/g, "");
+  const tokens = tokenize(command);
+  const program = path.win32.basename(unquote(tokens[0] ?? "")).slice(0, 40);
+  const script = /^-(?:l?c|Command)$/i.test(tokens[1] ?? "") && tokens[2] ? tokenize(unquote(tokens[2]))[0] : undefined;
+  const argument0 = (script ?? (tokens[1] ? unquote(tokens[1]) : undefined))?.slice(0, 64);
+  return { program, ...(argument0 ? { argument0 } : {}) };
+}
+
 const USAGE_KEYS: Record<string, string> = {
   input_tokens: "inputTokens",
   cached_input_tokens: "cachedInputTokens",
@@ -106,19 +119,6 @@ export class CodexStreamObserver implements CodexStreamSink {
     });
   }
 
-  /** Bounded identity (#130): basename of the program plus its first argument, 64 chars max. Codex wraps every
-   * command as `/bin/bash -lc '<script>'` (E3/E4) or `powershell.exe -Command "<script>"` (E5), so the first
-   * argument of a shell wrapper is the script's own first token — `bash python3`, not `bash -lc`. */
-  private commandIdentity(command: string): { program: string } | { program: string; argument0: string } {
-    const tokenize = (text: string): string[] => text.trim().match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
-    const unquote = (token: string): string => token.replace(/^(?:"|')|(?:"|')$/g, "");
-    const tokens = tokenize(command);
-    const program = path.win32.basename(unquote(tokens[0] ?? "")).slice(0, 40);
-    const script = /^-(?:l?c|Command)$/i.test(tokens[1] ?? "") && tokens[2] ? tokenize(unquote(tokens[2]))[0] : undefined;
-    const argument0 = (script ?? (tokens[1] ? unquote(tokens[1]) : undefined))?.slice(0, 64);
-    return { program, ...(argument0 ? { argument0 } : {}) };
-  }
-
   onItemStarted(item: Record<string, unknown>): void {
     const kind = str(item.type);
     if (!kind || !["command_execution", "file_change", "mcp_tool_call", "web_search"].includes(kind)) return;
@@ -128,7 +128,7 @@ export class CodexStreamObserver implements CodexStreamSink {
     const id = str(item.id);
     if (id) this.activeItems.set(id, { spanId, kind });
     const command = str(item.command) ?? "";
-    const identity = kind === "command_execution" ? this.commandIdentity(command) : undefined;
+    const identity = kind === "command_execution" ? commandIdentity(command) : undefined;
     this.emitter.emit({
       ...this.base("tool.call.started", identity ? "shell:" + identity.program : kind, spanId),
       category: "tool",
@@ -165,7 +165,7 @@ export class CodexStreamObserver implements CodexStreamSink {
     const failed = declined || (exitCode !== undefined && exitCode !== 0);
     // win32.basename strips both "/" and "\\" on every platform, so an absolute exe path (which on
     // Windows carries the user profile) never reaches the store.
-    const identity = this.commandIdentity(command);
+    const identity = commandIdentity(command);
     const active = str(item.id) ? this.activeItems.get(str(item.id)!) : undefined;
     if (str(item.id)) this.activeItems.delete(str(item.id)!);
     this.emitter.emit({

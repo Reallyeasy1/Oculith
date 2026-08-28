@@ -792,7 +792,8 @@ export default function App() {
                     </div>
                     <div className="thinking-row">
                       <Spinner />
-                      Codex is reading, editing, or running commands…
+                      {(activeRun.status === "running" && activeRun.currentActivity?.label) ||
+                        "Codex is reading, editing, or running commands…"}
                     </div>
                   </article>
                 )}

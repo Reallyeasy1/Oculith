@@ -35,6 +35,11 @@ export interface Message {
   createdAt: string;
 }
 
+export interface RunActivity {
+  kind: "thinking" | "command" | "file_change" | "web_search" | "mcp_tool_call";
+  label: string;
+}
+
 export interface AgentRun {
   id: string;
   agentId: string;
@@ -52,6 +57,7 @@ export interface AgentRun {
   traceParentSpanId?: string;
   configHash?: string;
   configSnapshot?: AgentConfigSnapshot;
+  currentActivity?: RunActivity;
 }
 
 export interface AgentConfigSnapshot {
