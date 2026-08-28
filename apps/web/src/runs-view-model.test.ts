@@ -90,7 +90,7 @@ describe("needsAttention", () => {
 
 describe("formatUsage", () => {
   it("keeps small usage exact and compacts wide token counts", () => {
-    expect(formatUsage({ inputTokens: 37384, outputTokens: 383 })).toBe("37k in · 383 out");
+    expect(formatUsage({ inputTokens: 37384, cachedInputTokens: 12_400, outputTokens: 383 })).toBe("37k in · 12k cached · 383 out");
     expect(formatUsage({ inputTokens: 999, outputTokens: 1200 })).toBe("999 in · 1.2k out");
   });
 });

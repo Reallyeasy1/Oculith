@@ -139,7 +139,9 @@ export function formatRunDuration(durationMs: number | undefined, endedReason?: 
 
 export function formatUsage(usage: RunListItem["usage"]): string {
   if (!usage || (usage.inputTokens === undefined && usage.outputTokens === undefined)) return "—";
-  return formatCount(usage.inputTokens ?? 0) + " in · " + formatCount(usage.outputTokens ?? 0) + " out";
+  return formatCount(usage.inputTokens ?? 0) + " in"
+    + (usage.cachedInputTokens === undefined ? "" : " · " + formatCount(usage.cachedInputTokens) + " cached")
+    + " · " + formatCount(usage.outputTokens ?? 0) + " out";
 }
 
 export function formatCount(value: number | undefined): string {

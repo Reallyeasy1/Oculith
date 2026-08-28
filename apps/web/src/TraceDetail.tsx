@@ -12,6 +12,7 @@ import {
   capabilityBadgeLabel,
   capabilityCopy,
   defaultExpanded,
+  formatReasoningTokens,
   formatAttribute,
   isFailed,
   indexSpans,
@@ -296,6 +297,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
         <Field label="Usage">{formatUsage(summary.usage)}</Field>
         <Field label="Metrics">
           {summary.metrics.toolCalls} tool calls · {summary.metrics.toolFailures} failed · {summary.metrics.modelCalls} model calls
+          {summary.metrics.tokens?.reasoning === undefined ? "" : ` · ${formatReasoningTokens(summary.metrics.tokens)}`}
           {summary.metrics.retries > 0 ? ` · ${summary.metrics.retries} retries` : ""}
           {summary.metrics.denials > 0 ? ` · ${summary.metrics.denials} denied` : ""}
         </Field>

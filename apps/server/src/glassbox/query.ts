@@ -29,7 +29,7 @@ export interface TraceSummary {
   degraded: boolean; truncated: boolean;
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
   evicted: boolean;
-  usage?: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number } | undefined;
+  usage?: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number; reasoningOutputTokens?: number } | undefined;
   metrics: TraceMetrics;
   configHash?: string | undefined;
   /** `unknown` = no evidence either way (run cut short before the stream said anything) — never claim `unavailable` from absence. */
@@ -49,7 +49,7 @@ export interface TraceMetrics {
   modelCalls: number;
   timeToFirstToolMs?: number | undefined;
   timeSplit: { modelMs: number; toolMs: number; containerStartMs: number };
-  tokens?: { input?: number | undefined; cachedInput?: number | undefined; output?: number | undefined } | undefined;
+  tokens?: { input?: number | undefined; cachedInput?: number | undefined; output?: number | undefined; reasoning?: number | undefined } | undefined;
   retries: number;
   denials: number;
 }
@@ -298,7 +298,8 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
   const usage = usageEvents.length
     ? { ...(hasNumeric("inputTokens") ? { inputTokens: sum("inputTokens") } : {}),
         ...(hasNumeric("cachedInputTokens") ? { cachedInputTokens: sum("cachedInputTokens") } : {}),
-        ...(hasNumeric("outputTokens") ? { outputTokens: sum("outputTokens") } : {}) }
+        ...(hasNumeric("outputTokens") ? { outputTokens: sum("outputTokens") } : {}),
+        ...(hasNumeric("reasoningOutputTokens") ? { reasoningOutputTokens: sum("reasoningOutputTokens") } : {}) }
     : undefined;
   const toolSpans = flat.filter((span) =>
     span.category === "tool" && events.some((event) => event.spanId === span.spanId && event.type.startsWith("tool.call.")),
@@ -355,11 +356,12 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
         ? Math.max(0, Date.parse(codexStarted.timestamp) - Date.parse(containerStarted.timestamp))
         : 0,
     },
-    ...(usage && (usage.inputTokens !== undefined || usage.cachedInputTokens !== undefined || usage.outputTokens !== undefined)
+    ...(usage && (usage.inputTokens !== undefined || usage.cachedInputTokens !== undefined || usage.outputTokens !== undefined || usage.reasoningOutputTokens !== undefined)
       ? { tokens: {
           ...(usage.inputTokens !== undefined ? { input: usage.inputTokens } : {}),
           ...(usage.cachedInputTokens !== undefined ? { cachedInput: usage.cachedInputTokens } : {}),
           ...(usage.outputTokens !== undefined ? { output: usage.outputTokens } : {}),
+          ...(usage.reasoningOutputTokens !== undefined ? { reasoning: usage.reasoningOutputTokens } : {}),
         } }
       : {}),
     retries: retrySpans.size,

@@ -175,11 +175,14 @@ describe("buildTrace", () => {
     const events = [root(), svcStart(), rtStart(),
       ev({ type: "tool.call.failed", category: "tool", spanId: "tool-retry", parentSpanId: "rt", status: "error", attempt: 2 }),
       ev({ type: "policy.denied", category: "policy", spanId: "denial", parentSpanId: "rt", status: "error" }),
-      ev({ type: "model.completed", category: "model", spanId: "model", parentSpanId: "rt", status: "ok", attributes: { inputTokens: 3, cachedInputTokens: 2, outputTokens: 1, text: "ignored" } }),
+      ev({ type: "model.completed", category: "model", spanId: "model", parentSpanId: "rt", status: "ok", attributes: { inputTokens: 3, cachedInputTokens: 2, outputTokens: 1, reasoningOutputTokens: 4, text: "ignored" } }),
       ev({ type: "run.completed", category: "control", spanId: "done", parentSpanId: "svc", status: "ok" })];
     expect(buildTrace(events, { capturePolicy: "metadata_only" }).summary.metrics).toMatchObject({
       terminalStatus: "ok", toolCalls: 1, toolFailures: 1, modelCalls: 1,
-      tokens: { input: 3, cachedInput: 2, output: 1 }, retries: 1, denials: 1,
+      tokens: { input: 3, cachedInput: 2, output: 1, reasoning: 4 }, retries: 1, denials: 1,
+    });
+    expect(buildTrace(events, { capturePolicy: "metadata_only" }).summary.usage).toEqual({
+      inputTokens: 3, cachedInputTokens: 2, outputTokens: 1, reasoningOutputTokens: 4,
     });
   });
   it("derives model/tool/container timing and time to first tool from observed spans", () => {
