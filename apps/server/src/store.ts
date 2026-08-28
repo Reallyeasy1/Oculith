@@ -66,6 +66,27 @@ export class JsonStore {
       encoding: "utf8",
       mode: 0o600,
     });
-    await rename(temporaryPath, this.filePath);
+    await renameWithRetry(temporaryPath, this.filePath);
+  }
+}
+
+/** On Windows the rename destination can be transiently locked by an AV/indexer scan (or a stray
+ * reader), failing with EPERM/EBUSY and taking the whole Run down with it (#274). Retry briefly
+ * before surfacing; atomicity is unaffected — the tmp file is complete either way. `renameFn` is
+ * injectable for tests only. */
+export async function renameWithRetry(
+  from: string,
+  to: string,
+  renameFn: (from: string, to: string) => Promise<void> = rename,
+): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await renameFn(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (attempt >= 3 || (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES")) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+    }
   }
 }

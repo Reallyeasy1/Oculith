@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { JsonStore } from "./store.js";
+import { JsonStore, renameWithRetry } from "./store.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -52,5 +52,31 @@ describe("JsonStore", () => {
     expect(store.snapshot().messages.map((message) => message.content)).toEqual([
       "queue recovered",
     ]);
+  });
+});
+
+describe("renameWithRetry (#274)", () => {
+  const eperm = () => Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+
+  it("absorbs transient EPERM/EBUSY locks and succeeds on a later attempt", async () => {
+    let calls = 0;
+    await renameWithRetry("a.tmp", "a", async () => {
+      calls++;
+      if (calls < 3) throw eperm();
+    });
+    expect(calls).toBe(3);
+  });
+
+  it("gives up after the bounded retries", async () => {
+    let calls = 0;
+    await expect(renameWithRetry("a.tmp", "a", async () => { calls++; throw eperm(); })).rejects.toThrow("EPERM");
+    expect(calls).toBe(4);
+  });
+
+  it("surfaces non-lock errors immediately", async () => {
+    let calls = 0;
+    const enoent = Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" });
+    await expect(renameWithRetry("a.tmp", "a", async () => { calls++; throw enoent; })).rejects.toThrow("ENOENT");
+    expect(calls).toBe(1);
   });
 });
