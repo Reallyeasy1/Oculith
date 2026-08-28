@@ -52,3 +52,12 @@ describe("GlassBox retention config", () => {
       .toMatchObject({ glassboxRetentionDays: 7, glassboxMaxDiskMb: 200 });
   });
 });
+
+describe("GlassBox cost display config", () => {
+  it("keeps pricing optional and accepts non-negative per-million token rates", () => {
+    expect(loadConfig({ NODE_ENV: "test" })).toMatchObject({ glassboxPricePerMtokInput: undefined, glassboxPricePerMtokOutput: undefined });
+    expect(loadConfig({ NODE_ENV: "test", GLASSBOX_PRICE_PER_MTOK_INPUT: "2.5", GLASSBOX_PRICE_PER_MTOK_OUTPUT: "0" }))
+      .toMatchObject({ glassboxPricePerMtokInput: 2.5, glassboxPricePerMtokOutput: 0 });
+    expect(() => loadConfig({ NODE_ENV: "test", GLASSBOX_PRICE_PER_MTOK_INPUT: "-1" })).toThrow();
+  });
+});

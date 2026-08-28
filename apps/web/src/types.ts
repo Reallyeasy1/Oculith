@@ -120,6 +120,18 @@ export interface RunListItem {
   evicted: boolean;
   redacted: boolean;
   lastEventAt?: string;
+  estimatedCostUsd?: number;
+}
+
+export interface BaselineDistribution { median?: number; p90?: number }
+export interface AgentRunBaseline {
+  sampleCount: number;
+  windowSize: 20;
+  durationMs: BaselineDistribution;
+  inputTokens: BaselineDistribution;
+  toolCalls: BaselineDistribution;
+  toolFailures: BaselineDistribution;
+  estimatedCostUsd?: BaselineDistribution;
 }
 
 export interface FailureFocus {

@@ -15,6 +15,7 @@ import { CATEGORIES, SCHEMA_VERSION, STATUSES } from "./glassbox/schema.js";
 import type { RunIndexEntry, TraceStore } from "./glassbox/store.js";
 import { executionStatusOf, isFresh, rollupRun, summaryFromView, traceStatusOf, type RunSummary, type RunSummaryStore } from "./glassbox/summary.js";
 import type { RunLogStore } from "./run-log-store.js";
+import { buildAgentRunBaseline, estimatedCost } from "./glassbox/baseline.js";
 import { caseFromRun, regressionCaseInput } from "./eval/cases.js";
 import { EvalRunner } from "./eval/runner.js";
 import { compareEvalRuns } from "./eval/compare.js";
@@ -275,6 +276,19 @@ export async function createApp(
         return { evaluations: await glassbox.evaluations!.resultsForRun(id) };
       });
     }
+    if (glassbox.summaries) {
+      app.get("/api/agents/:id/runs/baseline", async (request) => {
+        const { id } = agentIdParams.parse(request.params);
+        service.getAgent(id);
+        // The builder selects the newest 20 terminal Runs. Recent in-progress
+        // Runs must not displace older completed evidence from that window.
+        const summaries = await glassbox.summaries!.query({ agentId: id });
+        return { baseline: buildAgentRunBaseline(summaries, {
+          inputPerMillion: config.glassboxPricePerMtokInput,
+          outputPerMillion: config.glassboxPricePerMtokOutput,
+        }) };
+      });
+    }
     // Derives the case from the Run's trace evidence; 409 without a template, 400 when the Run cannot be a baseline.
     const draftFor = async (params: unknown) => {
       const run = service.getRun(runIdParams.parse(params).id);
@@ -321,12 +335,14 @@ export async function createApp(
           : summaryFromView(await viewFor(run.id, entry));
         const status = s.eventCount ? traceStatusOf(s.executionStatus) : run.status === "completed" ? "ok" : run.status === "failed" ? "error" : run.status === "cancelled" ? "cancelled" : "running";
         if (q.status && status !== q.status) continue;
+        const cost = estimatedCost(s, { inputPerMillion: config.glassboxPricePerMtokInput, outputPerMillion: config.glassboxPricePerMtokOutput });
         items.push({ runId: run.id, traceId: run.traceId ?? s.traceId, agentId: run.agentId, agentName: agents.get(run.agentId) ?? "", workspace: s.workspace, status, startedAt: s.startedAt ?? run.createdAt, durationMs: s.durationMs, endedReason: s.endedReason, interruptedAfterMs: s.interruptedAfterMs,
           firstFailingStep: s.firstFailingStep, eventCount: s.eventCount, runtime: config.runtimeProvider, model: config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default",
           usage: s.usage, workspaceChanges: s.workspaceChanges, outcome: s.outcome, capabilities: s.capabilities, toolCalls: s.metrics.toolCalls, toolFailures: s.metrics.toolFailures, toolIdentities: s.metrics.toolIdentities,
           tokens: s.metrics.tokens?.output !== undefined ? { output: s.metrics.tokens.output } : undefined,
           denials: s.denials, actions: s.actions, executionStatus: executionStatusOf(status), taskOutcome: s.taskOutcome, configHash: s.configHash ?? run.configHash, configSnapshot: run.configSnapshot,
-          degraded: s.degraded, truncated: s.truncated, evicted: s.evicted, redacted: s.redactedEvents > 0, lastEventAt: s.lastEventAt });
+          degraded: s.degraded, truncated: s.truncated, evicted: s.evicted, redacted: s.redactedEvents > 0, lastEventAt: s.lastEventAt,
+          ...(cost === undefined ? {} : { estimatedCostUsd: cost }) });
         if (items.length >= q.limit) break;
       }
       return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, runs: items };

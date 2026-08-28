@@ -64,6 +64,8 @@ const envSchema = z.object({
   GLASSBOX_STORE: z.enum(["json", "postgres"]).default("json"),
   DATABASE_URL: z.string().min(1).optional(),
   GLASSBOX_LOG_MAX_MB: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.coerce.number().finite().positive().default(50)),
+  GLASSBOX_PRICE_PER_MTOK_INPUT: z.preprocess((value) => value === "" ? undefined : value, z.coerce.number().finite().nonnegative().optional()),
+  GLASSBOX_PRICE_PER_MTOK_OUTPUT: z.preprocess((value) => value === "" ? undefined : value, z.coerce.number().finite().nonnegative().optional()),
   /** Keep completed isolated evaluation workspaces for post-check/debugging; the default cleans them up. */
   KEEP_EVAL_WORKSPACES: z.enum(["0", "1"]).default("0"),
 });
@@ -123,6 +125,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     glassboxStore: env.GLASSBOX_STORE,
     databaseUrl: env.DATABASE_URL,
     glassboxLogMaxMb: env.GLASSBOX_LOG_MAX_MB,
+    glassboxPricePerMtokInput: env.GLASSBOX_PRICE_PER_MTOK_INPUT,
+    glassboxPricePerMtokOutput: env.GLASSBOX_PRICE_PER_MTOK_OUTPUT,
     keepEvalWorkspaces: env.KEEP_EVAL_WORKSPACES === "1",
   };
 }
