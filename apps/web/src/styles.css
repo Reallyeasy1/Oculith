@@ -1833,7 +1833,7 @@ textarea:focus {
 /* One breakpoint set, on the trace container's content width. #124's viewport values (800 / 1099)
    translated with the sidebar, page padding and border removed (800 → 654, 1099 → 753), so the tree
    compacts the same way without a drawer and also when the docked drawer eats the width. */
-@container trace-detail (max-width: 660px) {
+@container trace-detail (max-width: 690px) {
   .trace-detail > .trace-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1853,7 +1853,7 @@ textarea:focus {
   }
 }
 
-@container trace-detail (min-width: 661px) and (max-width: 760px) {
+@container trace-detail (min-width: 691px) and (max-width: 760px) {
   .trace-detail > .trace-summary {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
