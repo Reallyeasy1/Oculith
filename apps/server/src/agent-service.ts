@@ -92,6 +92,8 @@ export class AgentService {
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
     private readonly emitter: ObservationEmitter = createDefaultEmitter(),
+    /** Fires after a Run's terminal event is emitted (Run end and restart-cancel); wired to the summary rollup (#168). */
+    private readonly onRunEnded?: ((runId: string) => void) | undefined,
   ) {}
 
   async initialize(): Promise<void> {
@@ -144,6 +146,7 @@ export class AgentService {
         source: { component: "AgentService", observed: true },
         attributes: { reason: "server_restart" },
       });
+      this.onRunEnded?.(run.id);
     }
   }
 
@@ -715,6 +718,7 @@ export class AgentService {
       }
     } finally {
       this.spans.delete(run.id);
+      this.onRunEnded?.(run.id);
       await options.cleanup?.();
     }
   }

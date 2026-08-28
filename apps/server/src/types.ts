@@ -96,6 +96,7 @@ export interface Database {
   runs: AgentRun[];
   regressionCases: RegressionCase[];
   evalRuns: EvalRun[];
+  runSummaries: import("./glassbox/summary.js").RunSummary[];
 }
 
 export interface CreateAgentInput {

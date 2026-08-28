@@ -95,6 +95,10 @@ export interface RunListItem {
   tokens?: { output?: number };
   denials: number;
   actions: number;
+  /** Process status (`status` mapped: ok→completed, error→failed). */
+  executionStatus: "running" | "completed" | "failed" | "timeout" | "cancelled";
+  /** Whether the task succeeded; `unknown` until an evaluator or Eval Run sets it (#168). */
+  taskOutcome: "passed" | "failed" | "unknown";
   configHash?: string;
   configSnapshot?: AgentConfigSnapshot;
   workspaceChanges?: { added: number; modified: number; removed: number; bytesDelta: number; truncated: boolean };
