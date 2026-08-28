@@ -192,7 +192,7 @@ export class NdjsonTraceStore extends BaseTraceStore {
    * Retention (FR-14), startup-only. Age: Runs whose LAST event is older than `retentionDays`. Disk: while total
    * indexed bytes exceed `maxDiskMb`, evict the oldest finished Run. `0` disables a knob. Eviction never deletes a
    * file: it compacts the Run to a metadata skeleton — always-kept terminal/error events, the root run.* events, the
-   * `start` half of every kept span and `model.completed` (usage) — plus one `trace.truncated` (`reason: retention_*`)
+   * `start` half of every kept span and both halves of `model.turn` (`model.completed` usage, #129) — plus one `trace.truncated` (`reason: retention_*`)
    * tombstone, so status/startedAt/durationMs/incomplete/usage roll up identically and the Run survives a rebuild.
    * A Run whose file fails to compact is logged (`retention.evict_failed`) and skipped; the pass continues.
    */
@@ -225,7 +225,7 @@ export class NdjsonTraceStore extends BaseTraceStore {
     const file = this.file(entry.runId);
     const all = await this.parseFile(file);
     const mine = all.filter((e) => e.runId === entry.runId);
-    const keptSpans = new Set(mine.filter(keepAlways).map((e) => e.spanId));
+    const keptSpans = new Set(mine.filter((e) => keepAlways(e) || e.type === "model.completed").map((e) => e.spanId)); // model.completed is the end half of a model.turn span (#129): keep its start so durationMs/incomplete survive
     const kept = mine.filter((e) => keepAlways(e) || e.type === "run.created" || e.type === "run.started" || e.type === "model.completed" || (e.phase === "start" && keptSpans.has(e.spanId)));
     if (kept.length === mine.length) return undefined;
     const tombstone = observationEventSchema.parse({

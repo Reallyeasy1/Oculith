@@ -12,7 +12,12 @@ describe("regression case prefill", () => {
       { type: "terminal_status", expected: "ok" }, { type: "expected_tool", program: "npm" },
       { type: "max_tool_calls", max: 2 }, { type: "max_duration_ms", max: 150 },
     ]);
-    expect(caseFromRun({ id: "run", prompt: "check it", configHash: "hash" } as never, view, "fixture")).toMatchObject({ workspaceTemplate: "fixture", baselineConfigHash: "hash" });
+    expect(caseFromRun({ id: "12345678-1234-4234-8234-123456789abc", prompt: "check it", configHash: "hash" } as never, view, "fixture")).toMatchObject({
+      name: "Case from Run 12345678 · fixture",
+      workspaceTemplate: "fixture",
+      sourceRunId: "12345678-1234-4234-8234-123456789abc",
+      baselineConfigHash: "hash",
+    });
   });
 
   it("refuses a failed run as a baseline", () => {
