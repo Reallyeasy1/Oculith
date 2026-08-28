@@ -69,7 +69,8 @@ call() {
 }
 
 # json EXPR: evaluate EXPR against the JSON on stdin (d = parsed document).
-json() { node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));const v=(d=>'"$1"')(d);if(v!==undefined&&v!==null)process.stdout.write(String(v))'; }
+json() { node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));const v=(d=>'"$1"')(d);if(v!==undefined&&v!==null)process.stdout.write(String(v)+"
+")'; }
 
 # jsonstr STRING → a JSON string literal (safe embedding of prompts/instructions).
 jsonstr() { printf '%s' "$1" | node -e 'process.stdout.write(JSON.stringify(require("fs").readFileSync(0,"utf8")))'; }
