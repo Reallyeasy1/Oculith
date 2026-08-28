@@ -87,7 +87,7 @@ export type Category =
   | "sandbox"
   | "policy"
   | "infrastructure";
-export type CapturePolicy = "metadata_only" | "safe_summary";
+export type CapturePolicy = "metadata_only" | "safe_summary" | "reasoning_summary";
 
 export interface RunListItem {
   runId: string;

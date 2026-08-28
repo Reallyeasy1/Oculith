@@ -50,7 +50,7 @@ We hit this ourselves during baseline testing: a 10-minute timeout that looked l
 
 | Non-goal | Why |
 |---|---|
-| Capturing chain-of-thought, full prompts/completions, raw headers, raw env | Privacy principle; `full/raw` capture policy is *prohibited*, not merely off |
+| Capturing **raw** chain-of-thought, full prompts/completions, raw headers, raw env | Privacy principle; `full/raw` capture policy is *prohibited*, not merely off. Reasoning text exists only as bounded 240-char redacted summaries under the explicit opt-in `reasoning_summary` policy (#259) — never raw, never by default |
 | Replacing Jaeger/Grafana/Datadog/OTel Collector | Six days; local NDJSON + in-memory index is enough; OTLP mapping is P2 |
 | Multi-tenancy, enterprise identity, hardened authz, compliance archive | Different track; `actorId = local-user` suffices |
 | Scheduler, workflow engine, router, A2A gateway, reconciliation controller | Phase 1–3 roadmap; only work that strengthens *evidence* is accepted |
@@ -99,7 +99,7 @@ We hit this ourselves during baseline testing: a 10-minute timeout that looked l
 ### 6.2 Nice-to-have (P1)
 - **Usage & safe I/O summaries** (tokens from `turn.completed`, request/result summaries) only under `safe_summary` policy.
 - **Export** `GET /api/traces/:traceId/export` — redacted, schema-versioned JSON identical in policy to the query response.
-- **Capture policy config**: `metadata_only` (default) and `safe_summary` (opt-in local/demo); `full/raw` not implemented.
+- **Capture policy config**: `metadata_only` (default), `safe_summary` (opt-in local/demo) and `reasoning_summary` (opt-in superset: adds bounded redacted reasoning summaries, #259); `full/raw` not implemented.
 - **Bound storage**: caps 1,000 events/Run, 32 KB/event, 10 MB/Run, age cleanup; truncation is observable (`trace.truncated`).
 - **Live update**: 1–2 s polling first; SSE only after P0 is complete.
 
@@ -171,7 +171,7 @@ ObservationEmitter ──► validate (zod) ──► RedactionPipeline ──�
 
 **Redaction is not an event.** There is no `redaction.applied` event: every event records its own redaction outcome inline on its `privacy` block (`redacted`, `rulesetVersion`, `rules`, `reason`, `originalBytes`/`storedBytes`), so evidence and its treatment can never drift apart.
 
-**Capture policy:** `metadata_only` (default: IDs, timing, status, names, counts, codes, sizes, flags) · `safe_summary` (opt-in: bounded, filtered, redacted summaries) · `full/raw` (**not implemented**).
+**Capture policy:** `metadata_only` (default: IDs, timing, status, names, counts, codes, sizes, flags) · `safe_summary` (opt-in: bounded, filtered, redacted summaries) · `reasoning_summary` (opt-in: everything `safe_summary` captures plus 240-char redacted reasoning summaries as `model.reasoning` events, #259) · `full/raw` (**not implemented**).
 
 **Fixtures are not telemetry (v4).** The capture policy governs what *instrumentation* persists. `RegressionCase.prompt` and the conversation messages a user submits are **fixtures** — explicit, user-created evaluation data with their own semantics — and the evaluator input view built from them is redacted before any model request and never persisted; see §17.4.
 

@@ -5,7 +5,7 @@ import type { AppConfig } from "./config.js";
 import { buildHardenedContainerPrefix } from "./container-codex-runner.js";
 import { createDefaultEmitter, type ObservationEmitter } from "./glassbox/emitter.js";
 import { redactText } from "./glassbox/redact.js";
-import { newId } from "./glassbox/schema.js";
+import { capturesSummaries, newId } from "./glassbox/schema.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -126,7 +126,7 @@ export class PostCheckRunner {
       span?.end(status, {
         type: status === "ok" ? "runtime.postcheck.completed" : "runtime.postcheck.failed",
         attributes: { exitCode: outcome.code, durationMs, stdoutBytes, stderrBytes, ...(outcome.signal ? { signal: outcome.signal } : {}) },
-        ...(this.emitter.capturePolicy === "safe_summary" && safeTail
+        ...(capturesSummaries(this.emitter.capturePolicy) && safeTail
           ? { summary: { text: safeTail, policy: "safe_summary" as const } }
           : {}),
       });

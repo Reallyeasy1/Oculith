@@ -2,7 +2,7 @@ import path from "node:path";
 import type { RunnerLogger, RunnerRunStats, RunnerTraceContext } from "../types.js";
 import type { ObservationEmitter } from "./emitter.js";
 import { redactText } from "./redact.js";
-import { newId, type EventInput, type EventType } from "./schema.js";
+import { capturesSummaries, newId, type EventInput, type EventType } from "./schema.js";
 
 /** What `parseCodexEventLine` reports while it walks a `codex exec --json` stream.
  * Every hook is optional work for the parser's existing callers — the sink argument is optional. */
@@ -57,9 +57,10 @@ const USAGE_KEYS: Record<string, string> = {
 /**
  * Turns an observed Codex event stream into ObservationEvents. Mapping is pinned to the captures
  * catalogued in `docs/CODEX_EVENTS.md` — nothing here is inferred from a schema we have not seen:
- *  - `reasoning` items are never captured (no chain-of-thought, deliberately unmapped, E7); only their
- *    count is kept, as a per-turn model-call proxy (#207) — codex exec emits exactly one turn per
- *    prompt, so the turn span alone cannot distinguish one model call from many.
+ *  - `reasoning` item text is never captured raw. Its count is always kept, as a per-turn model-call
+ *    proxy (#207) — codex exec emits exactly one turn per prompt, so the turn span alone cannot
+ *    distinguish one model call from many. Under the explicit opt-in `reasoning_summary` policy ONLY
+ *    (#259), each item additionally emits a `model.reasoning` event with a 240-char redacted summary.
  *  - an `item.type === "error"` is a non-fatal notice on every Ark run (E8) and is dropped.
  *  - top-level `error` lines are retry noise (E11); the last one is buffered and only surfaces as a
  *    single `error.recorded` when the run itself fails.
@@ -174,18 +175,33 @@ export class CodexStreamObserver implements CodexStreamSink {
     this.sawAnyEvent = true;
     const kind = str(item.type);
     if (kind === "reasoning") {
-      // Each reasoning item is one model call (#207). Count only — the text stays unmapped (E7).
+      // Each reasoning item is one model call (#207). Counting comes first and is policy-independent.
       this.observedCalls++;
       this.unpairedReasoning++;
+      // #259: reasoning text is captured ONLY under the explicit opt-in reasoning_summary tier — never
+      // under safe_summary or metadata_only — as a bounded redacted summary, redacted BEFORE the slice
+      // (the #258 rule: a cut can drop the anchor a pattern needs and leak the bare token). Mirrors
+      // model.message below.
+      if (this.emitter.capturePolicy === "reasoning_summary") {
+        const text = str(item.text) ?? "";
+        this.emitter.emit({
+          ...this.base("model.reasoning", "model.reasoning"),
+          category: "model",
+          status: "ok",
+          attributes: { reasoningBytes: Buffer.byteLength(text, "utf8") },
+          summary: { text: redactText(text).text.slice(0, 240), policy: "safe_summary" },
+        });
+      }
     } else if (kind === "agent_message") {
       // A message produced by the same call as its reasoning is not a second call; without one
       // (non-reasoning models) the message is the only evidence the call happened.
       if (this.unpairedReasoning > 0) this.unpairedReasoning--;
       else this.observedCalls++;
       // #258: every agent message (not just the final one) is captured as a bounded summary — but only
-      // under safe_summary. Its sole payload is content, so at metadata_only the event is not emitted at
-      // all (an empty shell would carry nothing an operator can use). Counting above is policy-independent.
-      if (this.emitter.capturePolicy === "safe_summary") {
+      // under a summary-capturing policy. Its sole payload is content, so at metadata_only the event is
+      // not emitted at all (an empty shell would carry nothing an operator can use). Counting above is
+      // policy-independent.
+      if (capturesSummaries(this.emitter.capturePolicy)) {
         const text = str(item.text) ?? "";
         this.emitter.emit({
           ...this.base("model.message", "model.message"),
@@ -209,11 +225,11 @@ export class CodexStreamObserver implements CodexStreamSink {
     } else if (kind === "mcp_tool_call" || kind === "web_search") {
       this.completeGenericTool(item, kind);
     }
-    // reasoning: deliberately never captured (counted above only).
+    // reasoning: raw text never captured; counted above, summarised only under reasoning_summary (#259).
     // error: non-fatal notice (E8), not a failure.
   }
 
-  /** #258: last 512 chars of `aggregated_output`, appended to tool summaries under safe_summary only.
+  /** #258: last 512 chars of `aggregated_output`, appended to tool summaries under summary-capturing policies only.
    * Redacted BEFORE slicing (same as the runner's stderr tail): a tail cut can drop the `Bearer `/key
    * prefix a pattern anchors on and leak the bare token. The emitter's redactEvent scans it again. */
   private outputTail(item: Record<string, unknown>): string | undefined {
@@ -250,7 +266,7 @@ export class CodexStreamObserver implements CodexStreamSink {
     const identity = commandIdentity(command);
     const active = str(item.id) ? this.activeItems.get(str(item.id)!) : undefined;
     if (str(item.id)) this.activeItems.delete(str(item.id)!);
-    const tail = this.emitter.capturePolicy === "safe_summary" ? this.outputTail(item) : undefined;
+    const tail = capturesSummaries(this.emitter.capturePolicy) ? this.outputTail(item) : undefined;
     this.totals.toolCalls++;
     if (failed) this.totals.toolFailures++;
     if (declined) this.logDenial(identity);
@@ -269,7 +285,7 @@ export class CodexStreamObserver implements CodexStreamSink {
       },
       // #258: command text (1024) plus a redacted tail of the output — for failed tools this is the
       // error text the operator previously never saw. Bounded well under the 4096 summary cap.
-      ...(this.emitter.capturePolicy === "safe_summary"
+      ...(capturesSummaries(this.emitter.capturePolicy)
         ? {
             summary: {
               text: command.slice(0, 1024) + (tail !== undefined ? "\n--- output tail ---\n" + tail : ""),
@@ -302,7 +318,7 @@ export class CodexStreamObserver implements CodexStreamSink {
 
   private completeGenericTool(item: Record<string, unknown>, kind: string): void {
     this.sawTool = true;
-    const tail = this.emitter.capturePolicy === "safe_summary" ? this.outputTail(item) : undefined;
+    const tail = capturesSummaries(this.emitter.capturePolicy) ? this.outputTail(item) : undefined;
     const id = str(item.id);
     const active = id ? this.activeItems.get(id) : undefined;
     if (id) this.activeItems.delete(id);
@@ -336,7 +352,7 @@ export class CodexStreamObserver implements CodexStreamSink {
         updated: count("update"),
         deleted: count("delete"),
       },
-      ...(this.emitter.capturePolicy === "safe_summary"
+      ...(capturesSummaries(this.emitter.capturePolicy)
         ? {
             summary: {
               text: changes.map((c) => str(c.path) ?? "?").slice(0, 20).join(", "),

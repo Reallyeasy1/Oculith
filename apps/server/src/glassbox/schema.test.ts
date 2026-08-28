@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { ZodError } from "zod";
 import {
-  CATEGORIES, EVENT_TYPES, SCHEMA_VERSION, STATUSES,
-  eventInputSchema, newId, observationEventSchema,
+  CAPTURE_POLICIES, CATEGORIES, EVENT_TYPES, SCHEMA_VERSION, STATUSES,
+  capturesSummaries, eventInputSchema, newId, observationEventSchema,
 } from "./schema.js";
 import { createTraceContext } from "./context.js";
 
@@ -50,6 +50,13 @@ describe("ObservationEvent schema", () => {
     });
     expect("eventId" in input).toBe(false);
     expect(input.status).toBe("unset");
+  });
+  it("capturesSummaries is the one policy gate: true for both summary tiers, false for metadata_only (#259)", () => {
+    expect(capturesSummaries("safe_summary")).toBe(true);
+    expect(capturesSummaries("reasoning_summary")).toBe(true);
+    expect(capturesSummaries("metadata_only")).toBe(false);
+    // Every declared policy has an explicit answer — a new tier cannot fall through silently.
+    for (const policy of CAPTURE_POLICIES) expect(typeof capturesSummaries(policy)).toBe("boolean");
   });
   it("newId prefixes and is unique", () => {
     const a = newId("evt"); const b = newId("evt");

@@ -15,12 +15,18 @@ export const EVENT_TYPES = [
   "runtime.container.started", "runtime.container.stopped",
   "runtime.codex.started", "runtime.codex.first_output", "runtime.codex.completed", "runtime.codex.failed",
   "runtime.postcheck.started", "runtime.postcheck.completed", "runtime.postcheck.failed",
-  "model.request", "model.completed", "model.message",
+  "model.request", "model.completed", "model.message", "model.reasoning",
   "tool.call.started", "tool.call.completed", "tool.call.failed",
   "workspace.changed", "policy.denied", "redaction.applied", "limit.exceeded",
   "error.recorded", "telemetry.degraded", "trace.truncated", "capability.unavailable",
 ] as const;
-export const CAPTURE_POLICIES = ["metadata_only", "safe_summary"] as const;
+export const CAPTURE_POLICIES = ["metadata_only", "safe_summary", "reasoning_summary"] as const;
+
+/** #259: `reasoning_summary` is a strict superset of `safe_summary` (everything it captures, plus bounded
+ * redacted reasoning summaries). Every "does this policy store summary text?" gate goes through here —
+ * never compare against "safe_summary" directly, or the superset tier silently loses its base captures. */
+export const capturesSummaries = (policy: CapturePolicy): boolean =>
+  policy === "safe_summary" || policy === "reasoning_summary";
 
 export const statusSchema = z.enum(STATUSES);
 export const categorySchema = z.enum(CATEGORIES);

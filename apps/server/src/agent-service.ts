@@ -12,7 +12,7 @@ import {
   type SpanHandle,
 } from "./glassbox/emitter.js";
 import { redactText } from "./glassbox/redact.js";
-import { newId, type TraceStatus } from "./glassbox/schema.js";
+import { capturesSummaries, newId, type TraceStatus } from "./glassbox/schema.js";
 import { PostCheckRunner } from "./postcheck-runner.js";
 import { JsonStore } from "./store.js";
 import type {
@@ -512,7 +512,7 @@ export class AgentService {
       attributes: { promptBytes: Buffer.byteLength(prompt, "utf8"), configHash: run.configHash!, workspace: agentAtStart.workspaceName ?? path.basename(agentAtStart.workspacePath), ...options.tags },
       // #258: bounded prompt summary, opt-in only — same gate as the run.completed outcome summary.
       // The emitter's redactEvent scans it and would also strip it at metadata_only (policy_drop_summary).
-      ...(this.emitter.capturePolicy === "safe_summary"
+      ...(capturesSummaries(this.emitter.capturePolicy)
         ? { summary: { text: redactText(prompt).text.slice(0, 240), policy: "safe_summary" as const } }
         : {}),
     });
@@ -856,7 +856,7 @@ export class AgentService {
             reportedFailure: outcome.reportedFailure,
             ...(result.usage ?? {}),
           },
-          ...(this.emitter.capturePolicy === "safe_summary"
+          ...(capturesSummaries(this.emitter.capturePolicy)
             ? { summary: { text: outcome.summaryText, policy: "safe_summary" as const } }
             : {}),
           ...(result.threadId ? { sessionId: result.threadId } : {}),

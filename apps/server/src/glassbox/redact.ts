@@ -1,4 +1,4 @@
-import { REDACTION_RULESET_VERSION, type CapturePolicy, type ObservationEvent } from "./schema.js";
+import { REDACTION_RULESET_VERSION, capturesSummaries, type CapturePolicy, type ObservationEvent } from "./schema.js";
 
 export interface RedactOptions {
   policy: CapturePolicy;
@@ -77,7 +77,7 @@ export function redactEvent(event: ObservationEvent, options: RedactOptions): Ob
   let originalBytes: number | undefined;
   let storedBytes: number | undefined;
   if (event.summary) {
-    if (options.policy !== "safe_summary") { delete out.summary; rules.add("policy_drop_summary"); }
+    if (!capturesSummaries(options.policy)) { delete out.summary; rules.add("policy_drop_summary"); }
     else {
       const max = options.maxSummaryChars ?? 4096;
       const r = redactText(event.summary.text, extra); r.rules.forEach((x) => rules.add(x));

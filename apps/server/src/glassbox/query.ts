@@ -303,8 +303,9 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
   const toolSpans = flat.filter((span) =>
     span.category === "tool" && events.some((event) => event.spanId === span.spanId && event.type.startsWith("tool.call.")),
   );
-  // Turn spans only: a model.message (#258) is a content capture on its own instant span, not a call —
-  // counting it would double the calls its turn's modelCallsObserved already accounts for.
+  // Turn spans only: a model.message (#258) or model.reasoning (#259) is a content capture on its own
+  // instant span, not a call — counting it would double the calls its turn's modelCallsObserved already
+  // accounts for.
   const modelSpans = flat.filter((span) =>
     span.category === "model" && events.some((event) => event.spanId === span.spanId && (event.type === "model.request" || event.type === "model.completed")),
   );

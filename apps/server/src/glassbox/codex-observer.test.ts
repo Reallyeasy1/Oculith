@@ -207,6 +207,64 @@ describe("CodexStreamObserver", () => {
     },
   );
 
+  it("#259: reasoning summaries exist only under reasoning_summary; counts and stats are identical across all three policies", async () => {
+    // The Bearer token straddles the 240-char window: "Bearer " ends at 226 and only 14 token chars
+    // (< the pattern's 16 minimum) fit before the cut, so a slice-then-redact regression would miss the
+    // match and persist raw token chars. Redact-then-slice replaces the whole token first, and the
+    // 17-char placeholder ends at 236 — fully inside the window.
+    const secretReasoning = "r".repeat(218) + " Bearer " + "z".repeat(40);
+    const longReasoning = "PLAN " + "y".repeat(300);
+    const run = async (capturePolicy: "metadata_only" | "safe_summary" | "reasoning_summary") => {
+      const store = new MemoryTraceStore();
+      const em = new ObservationEmitter({ store, capturePolicy });
+      const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner");
+      const p = parsed();
+      for (const line of [
+        { type: "turn.started" },
+        { type: "item.completed", item: { id: "i1", type: "reasoning", text: secretReasoning } },
+        { type: "item.completed", item: { id: "i2", type: "command_execution", command: "ls", exit_code: 0, aggregated_output: "a.txt" } },
+        { type: "item.completed", item: { id: "i3", type: "reasoning", text: longReasoning } },
+        { type: "item.completed", item: { id: "i4", type: "agent_message", text: "Done" } },
+        { type: "turn.completed", usage: { input_tokens: 9, output_tokens: 3 } },
+      ]) parseCodexEventLine(JSON.stringify(line), p, obs);
+      obs.finish();
+      await em.flush();
+      return { events: await store.readRun("run-1"), stats: obs.stats() };
+    };
+
+    const reasoning = await run("reasoning_summary");
+    const safe = await run("safe_summary");
+    const meta = await run("metadata_only");
+
+    // reasoning_summary: one model.reasoning per observed reasoning item, parented like model.message.
+    const captured = reasoning.events.filter((e) => e.type === "model.reasoning");
+    expect(captured).toHaveLength(2);
+    expect(captured.every((e) => e.parentSpanId === "spn_rt" && e.category === "model" && e.phase === "instant" && e.status === "ok")).toBe(true);
+    expect(captured[0]!.attributes.reasoningBytes).toBe(Buffer.byteLength(secretReasoning, "utf8"));
+    expect(captured[0]!.summary?.text).toContain("[REDACTED:bearer]");
+    expect(captured[0]!.summary?.text).not.toContain("zzzz");
+    expect(captured[1]!.attributes.reasoningBytes).toBe(Buffer.byteLength(longReasoning, "utf8"));
+    expect(captured[1]!.summary?.text).toHaveLength(240);
+    // Superset: everything safe_summary captures is still there.
+    expect(reasoning.events.filter((e) => e.type === "model.message")).toHaveLength(1);
+    expect(reasoning.events.find((e) => e.type === "tool.call.completed")?.summary?.text).toContain("ls");
+
+    // safe_summary: ZERO model.reasoning, but model.message still present.
+    expect(safe.events.filter((e) => e.type === "model.reasoning")).toHaveLength(0);
+    expect(safe.events.filter((e) => e.type === "model.message")).toHaveLength(1);
+    // metadata_only: neither.
+    expect(meta.events.filter((e) => e.type === "model.reasoning" || e.type === "model.message")).toHaveLength(0);
+    // Reasoning text never leaks below the opt-in tier.
+    expect(JSON.stringify(safe.events)).not.toContain("PLAN");
+    expect(JSON.stringify(meta.events)).not.toContain("PLAN");
+
+    // #207 counting and the completion-summary stats are byte-identical across all three policies.
+    for (const result of [reasoning, safe, meta]) {
+      expect(result.events.find((e) => e.type === "model.completed")!.attributes.modelCallsObserved).toBe(2);
+      expect(result.stats).toEqual({ modelCalls: 2, toolCalls: 1, toolFailures: 0, sandboxDenials: 0 });
+    }
+  });
+
   it("#258: a failed command's summary carries the redacted output tail, bounded to the last 512 chars", async () => {
     const store = new MemoryTraceStore();
     const em = new ObservationEmitter({ store, capturePolicy: "safe_summary" });

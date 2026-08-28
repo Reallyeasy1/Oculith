@@ -54,7 +54,7 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().optional(),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-  GLASSBOX_CAPTURE_POLICY: z.enum(["metadata_only", "safe_summary"]).default("metadata_only"),
+  GLASSBOX_CAPTURE_POLICY: z.enum(["metadata_only", "safe_summary", "reasoning_summary"]).default("metadata_only"),
   GLASSBOX_DEMO_FAILURE: z.enum(["off", "timeout"]).default("off"),
   GLASSBOX_TRACE_DIR: z.string().optional(),
   // Retention (FR-14): 0 disables a knob. Defaults are conservative for a single-user demo box.
