@@ -286,6 +286,18 @@ step7() {
   else
     log "Regression case $case_id already exists for Run $run_id."
   fi
+  # The prefilled expected_tool matches the shell wrapper (powershell/bash), which any candidate still
+  # invokes - it cannot regress. The deterministic beat is post_check: npm test in the fresh template
+  # copy fails unless the agent actually fixed the test. Recreate the case with it when missing.
+  local has_post
+  has_post="$(call GET "/api/regression-cases/$case_id" | json 'd.regressionCase.assertions.some(a=>a.type==="post_check")')"
+  if [[ "$has_post" != "true" ]]; then
+    local rebuilt
+    rebuilt="$(call GET "/api/regression-cases/$case_id" | json 'JSON.stringify({name:d.regressionCase.name,prompt:d.regressionCase.prompt,workspaceTemplate:d.regressionCase.workspaceTemplate,sourceRunId:d.regressionCase.sourceRunId,baselineConfigHash:d.regressionCase.baselineConfigHash,assertions:[...d.regressionCase.assertions,{type:"post_check",command:"npm test"}]})')"
+    call DELETE "/api/regression-cases/$case_id" >/dev/null
+    case_id="$(call POST /api/regression-cases "$rebuilt" | json 'd.regressionCase.id')"
+    log "Case rebuilt as $case_id with the deterministic post_check (npm test) assertion."
+  fi
   call GET "/api/regression-cases/$case_id" | json 'd.regressionCase.assertions.map(a=>a.type).join(", ")' | { read -r kinds; echo "  assertions: $kinds"; }
   # The baseline EvalRun must record the GOOD configuration; step 2 keeps the instructions there.
   local instructions
