@@ -83,7 +83,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
           ))}
         </ul>
       )}
-      <div className="runs-table-wrap">
+      <div className="runs-table-wrap runs-table-wrap-scroll-hint">
         <table className="runs-table">
           <thead>
             <tr>

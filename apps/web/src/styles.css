@@ -1166,8 +1166,8 @@ textarea:focus {
   scrollbar-color: var(--purple) #ecebe5;
 }
 
-.runs-table-wrap::after {
-  content: "Scroll →";
+.runs-table-wrap-scroll-hint::after {
+  content: "Scroll →" / "";
   position: sticky;
   left: calc(100% - 74px);
   bottom: 4px;
@@ -1182,7 +1182,6 @@ textarea:focus {
 
 .runs-table {
   width: 100%;
-  min-width: 1040px;
   border-collapse: collapse;
   font-size: 12px;
 }
