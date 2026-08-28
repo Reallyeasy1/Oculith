@@ -45,6 +45,13 @@ Windows `local-process` (read-only sandbox); one redacted `metadata_only` export
 `docs/assets/demo/denial-trace-export.json`, and step 6 shows the denial from that recorded
 export and says so out loud.
 
+**The knowledge gate (#298):** the demo template is `fee-ledger` — a fee-calculation library
+whose tests assert SHA-256 checksums of the correct fee lines, so the expected numbers are
+not recoverable from any workspace file, test name, or failing-test output. Two plans need a
+business fact that lives only in the baseline instructions; the candidate configuration is
+the same persona with that one line removed, so its best fix fails `post_check` every time —
+the step-9 REGRESSION depends on knowledge, not on model mood or disobedience.
+
 ## The 9 steps
 
 Run `bash scripts/demo/run-demo.sh` once at 0:00; it walks 1→9 and prints every URL to
@@ -55,14 +62,14 @@ rehearsal (the script reuses them automatically on re-run) and the screenshots u
 | # | Step | Run / click | Say (one line) | Expected screen | Fallback |
 |---|------|-------------|----------------|-----------------|----------|
 | 1 | Pre-flight | `run-demo.sh` starts; terminal shows `Pre-flight OK` | "Everything you'll see is one script against the public API — no hidden state." | Terminal: runtime, sandbox, model configured | If any check fails the script names the exact `.env` fix; fix and re-run `run-demo.sh 1` |
-| 2 | Seed | (script) creates **Demo Agent** from `node-lib-with-failing-test` | "Repo Doctor: a real Node library whose test suite is red." | Sidebar shows Demo Agent | Agent already exists → script says so and continues |
-| 3 | Baseline Run | (script) sends the fix-the-test task; ~70 s | "The agent finds the bug, fixes it, and proves it with npm test." | Runs list: row flips queued → running → **ok** | A failed Run here means bad credentials — the script says exactly that; re-run `run-demo.sh 3`. Fallback: the rehearsal's ok Run is already in the list |
+| 2 | Seed | (script) creates **Demo Agent** from `fee-ledger` | "Repo Doctor: a fee-calculation library whose test suite is red — and the fix needs a business fact the agent's instructions carry." | Sidebar shows Demo Agent | Agent already exists → script says so and continues |
+| 3 | Baseline Run | (script) sends the fix-the-test task; ~70 s | "The agent applies the billing context from its configuration, fixes src/fees.js, and proves it with npm test." | Runs list: row flips queued → running → **ok** | A failed Run here means bad credentials — the script says exactly that; re-run `run-demo.sh 3`. Fallback: the rehearsal's ok Run is already in the list |
 | 4 | Open trace | Click the printed `/?run=<id>` URL (or the ok row) | "One correlated, privacy-safe trace: every model turn and tool call, no prompt text stored." | Trace detail: span tree, metrics, Outcome line | Any pre-existing ok Run's trace tells the same story |
 | 5 | Failure beat | (script) shows the pre-seeded timeout Run; click its URL | "Failures are first-class: deterministic fixture, same Run path — first-failure focus lands on `codex exec`." | Trace banner: **timeout**, Jump to failing span | Pre-seeded in pre-flight #4; if missing, the script prints the gate instructions — skip to 6 and show it after |
 | 6 | Denial beat | (script) prints the recorded export summary; open `docs/assets/demo/denial-trace-export.json` | "Sandbox denials are evidence too — this is a real recorded trace from our Windows sandbox round, because the judged Docker box can't do Landlock; we say that honestly." | Terminal: `25 denials`, sample `sandbox_declined` command | The export file is committed — it cannot fail; screenshots as backup |
-| 7 | Save the case | (script) prefill API saves a regression case from the baseline Run, then runs the baseline EvalRun | "The good Run becomes a regression case — assertions inferred from evidence, including a post_check that re-runs npm test in a fresh workspace, then proven green." | All runs → Regression cases row; EvalRun **N/N passed** | Case/EvalRun already exist → reused; UI path: trace → *Save as regression case* |
-| 8 | Candidate config | (script) PATCHes the Agent's instructions: *do not run tests* | "Someone 'optimises' the agent to skip tests — a config change that looks harmless." | (terminal only; config hash changes) | PATCH is idempotent; re-run `run-demo.sh 8` |
-| 9 | Candidate + compare | (script) runs the candidate EvalRun, fetches the comparison; open **All runs → Compare evaluations**, pick baseline vs candidate, click Compare | "GlassBox catches it: the platform re-runs npm test in the candidate's fresh workspace and the check itself fails — not just tool-usage compliance — with evidence links to both traces." | Red **REGRESSION** banner, regressed rows highlighted | If the model ran the tools anyway (its latitude), re-run `run-demo.sh 9` for a fresh candidate EvalRun, or show the rehearsal's recorded comparison |
+| 7 | Save the case | (script) prefill API saves a regression case from the baseline Run, then runs the baseline EvalRun | "The good Run becomes a regression case — including a post_check that re-runs the checksum suite in a fresh workspace, then proven green." | All runs → Regression cases row; EvalRun **N/N passed** | Case/EvalRun already exist → reused; UI path: trace → *Save as regression case* |
+| 8 | Candidate config | (script) PATCHes the Agent's instructions: *the billing context line is removed* | "Someone 'tidies up' the instructions — one deleted line, looks harmless." | (terminal only; config hash changes) | PATCH is idempotent; re-run `run-demo.sh 8` |
+| 9 | Candidate + compare | (script) runs the candidate EvalRun, fetches the comparison; open **All runs → Compare evaluations**, pick baseline vs candidate, click Compare | "GlassBox catches it: without that knowledge the candidate's best fix fails the checksum suite — post_check regresses deterministically, with evidence links to both traces." | Red **REGRESSION** banner, regressed rows highlighted | A no-regression here means a stale pre-gate EvalRun was reused — the script already re-runs a fresh candidate; the rehearsal's recorded comparison is the last resort |
 
 Total budget: step 3 ≈ 70 s live; every other step is seconds. Steps 5 and 6 are recorded
 evidence by design — the demo never depends on the model being in a good mood.
