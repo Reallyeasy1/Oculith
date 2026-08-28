@@ -337,7 +337,11 @@ export class AgentService {
   /** A missing or oversized template is a client error (400), not a server fault, wherever a case names one. */
   private async templateHash(name: string): Promise<string> {
     try { return await this.workspaces.templateHash(name); }
-    catch (error) { throw new HttpError(400, error instanceof Error ? error.message : "Unable to hash workspace template"); }
+    catch (error) {
+      // a missing directory is the caller's mistake; never echo the server's filesystem path back
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new HttpError(400, `Workspace template not found: ${name}`);
+      throw new HttpError(400, error instanceof Error ? error.message : "Unable to hash workspace template");
+    }
   }
 
   async createRegressionCase(input: Omit<RegressionCase, "id" | "createdAt" | "templateHash">): Promise<RegressionCase> {
