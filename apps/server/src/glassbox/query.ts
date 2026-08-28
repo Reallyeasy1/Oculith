@@ -41,6 +41,7 @@ export interface TraceMetrics {
   terminalStatus: TraceStatus;
   toolCalls: number;
   toolFailures: number;
+  toolIdentities?: string[] | undefined;
   modelCalls: number;
   timeToFirstToolMs?: number | undefined;
   timeSplit: { modelMs: number; toolMs: number; containerStartMs: number };
@@ -264,6 +265,18 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
   const containerStarted = events.find((event) => event.type === "runtime.container.started");
   const codexStarted = events.find((event) => event.type === "runtime.codex.started");
   const spanDuration = (span: Span): number => span.durationMs ?? 0;
+  // A model.turn span is wall-clock turn time and wraps the tool calls made inside it: subtract the
+  // overlap so modelMs and toolMs do not double-count (#129/#130).
+  const spanEnd = (span: Span): number => span.endedAt ? Date.parse(span.endedAt) : Date.parse(span.startedAt) + spanDuration(span);
+  const overlapMs = (a: Span, b: Span): number =>
+    Math.max(0, Math.min(spanEnd(a), spanEnd(b)) - Math.max(Date.parse(a.startedAt), Date.parse(b.startedAt)));
+  const modelOnlyMs = (span: Span): number =>
+    Math.max(0, spanDuration(span) - toolSpans.reduce((total, tool) => total + overlapMs(span, tool), 0));
+  const toolIdentities = [...new Set(toolSpans.map((span) => {
+    const program = typeof span.attributes.program === "string" ? span.attributes.program : "";
+    const argument0 = typeof span.attributes.argument0 === "string" ? span.attributes.argument0 : "";
+    return [program, argument0].filter(Boolean).join(" ");
+  }).filter(Boolean))].slice(0, 3);
   const metrics: TraceMetrics = {
     ...(durationMs !== undefined ? { durationMs } : {}),
     terminalStatus: status,
@@ -272,12 +285,13 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
       span.status === "error" || span.status === "timeout" || span.status === "cancelled" ||
       events.some((event) => event.spanId === span.spanId && event.type === "tool.call.failed"),
     ).length,
+    ...(toolIdentities.length > 0 ? { toolIdentities } : {}),
     modelCalls: modelSpans.length,
     ...(firstRunEvent && firstToolEvent
       ? { timeToFirstToolMs: Math.max(0, Date.parse(firstToolEvent.timestamp) - Date.parse(firstRunEvent.timestamp)) }
       : {}),
     timeSplit: {
-      modelMs: modelSpans.reduce((total, span) => total + spanDuration(span), 0),
+      modelMs: modelSpans.reduce((total, span) => total + modelOnlyMs(span), 0),
       toolMs: toolSpans.reduce((total, span) => total + spanDuration(span), 0),
       containerStartMs: containerStarted && codexStarted
         ? Math.max(0, Date.parse(codexStarted.timestamp) - Date.parse(containerStarted.timestamp))

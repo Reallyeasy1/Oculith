@@ -165,6 +165,33 @@ describe("buildTrace", () => {
       timeSplit: { modelMs: 10, toolMs: 10, containerStartMs: 10 },
     });
   });
+  it("subtracts tool time nested inside a model.turn so the time split does not double-count", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "model.request", category: "model", spanId: "turn-1", parentSpanId: "rt", phase: "start", status: "running", name: "model.turn" }),
+      ev({ type: "tool.call.started", category: "tool", spanId: "tool-1", parentSpanId: "rt", phase: "start", status: "running" }),
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tool-1", parentSpanId: "rt", phase: "end", status: "ok" }),
+      ev({ type: "model.completed", category: "model", spanId: "turn-1", parentSpanId: "rt", phase: "end", status: "ok", name: "model.turn" }),
+      ev({ type: "run.completed", category: "control", spanId: "done", parentSpanId: "svc", status: "ok" }),
+    ];
+    // turn spans 30ms of wall clock; the tool inside it takes 10ms, so the model itself gets 20ms.
+    expect(buildTrace(events, { capturePolicy: "metadata_only" }).summary.metrics.timeSplit).toEqual({ modelMs: 20, toolMs: 10, containerStartMs: 0 });
+  });
+  it("reconstructs paired tool durations and keeps only the first three bounded identities", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "tool.call.started", category: "tool", spanId: "tool-1", parentSpanId: "rt", phase: "start", status: "running", name: "shell:python3", attributes: { program: "python3", argument0: "missing_script.py" } }),
+      ev({ type: "tool.call.failed", category: "tool", spanId: "tool-1", parentSpanId: "rt", phase: "end", status: "error", name: "shell:python3", attributes: { program: "python3", argument0: "missing_script.py", exitCode: 2 } }),
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tool-2", parentSpanId: "rt", status: "ok", attributes: { program: "npm", argument0: "test" } }),
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tool-3", parentSpanId: "rt", status: "ok", attributes: { program: "git", argument0: "status" } }),
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tool-4", parentSpanId: "rt", status: "ok", attributes: { program: "node", argument0: "check.js" } }),
+      ev({ type: "run.completed", category: "control", spanId: "done", parentSpanId: "svc", status: "ok" }),
+    ];
+    const view = buildTrace(events, { capturePolicy: "metadata_only" });
+    const first = flattenSpans(view.spans).find((span) => span.spanId === "tool-1");
+    expect(first).toMatchObject({ incomplete: false, durationMs: 10, attributes: { program: "python3", argument0: "missing_script.py" } });
+    expect(view.summary.metrics.toolIdentities).toEqual(["python3 missing_script.py", "npm test", "git status"]);
+  });
   it("handled tool failure keeps parent ok; cancelled never rolls up ok; open spans are incomplete", () => {
     seq = 0;
     const handled = [root(), svcStart(), rtStart(),

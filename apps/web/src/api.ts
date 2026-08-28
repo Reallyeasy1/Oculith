@@ -88,6 +88,8 @@ export const api = {
     ),
   trace: (runId: string) => request<TraceView>("/api/runs/" + runId + "/trace"),
   listRegressionCases: () => request<{ cases: RegressionCase[] }>("/api/regression-cases"),
+  // Read-only prefill (#158): nothing is persisted until saveRunAsRegressionCase.
+  regressionCaseDraft: (runId: string) => request<{ draft: { name: string; assertions: Assertion[] } }>("/api/runs/" + runId + "/regression-case"),
   saveRunAsRegressionCase: (runId: string, body: { name: string; assertions: Assertion[] }) =>
     request<{ regressionCase: RegressionCase }>("/api/runs/" + runId + "/regression-case", {
       method: "POST",
