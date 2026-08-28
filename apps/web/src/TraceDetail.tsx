@@ -358,7 +358,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
                 {row.hasChildren ? (row.expanded ? "▾" : "▸") : "·"}
               </button>
               <span className={"status status-" + s.status}><span aria-hidden="true">{STATUS_ICON[s.status]}</span>{spanStatusLabel(s, summary.endedReason)}</span>
-              <span className="trace-name" title={[s.attributes.program, s.attributes.argument0].filter((value) => typeof value === "string" && value.length > 0).join(" ") || undefined}>{s.name}</span>
+              <span className="trace-name" title={[[s.attributes.program, s.attributes.argument0].filter((value) => typeof value === "string" && value.length > 0).join(" "), s.error?.message].filter(Boolean).join("\n") || undefined}>{s.name}</span>
               <span className="trace-cat">{s.category}</span>
               <span className="trace-badges">
                 {s.incomplete && <span className="badge badge-warn">incomplete</span>}
