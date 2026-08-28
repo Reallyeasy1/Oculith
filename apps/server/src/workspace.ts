@@ -1,5 +1,7 @@
-import { cp, mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { snapshotWorkspace } from "./workspace-snapshot.js";
 import type { Agent } from "./types.js";
 
 const NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -61,6 +63,19 @@ export class WorkspaceManager {
       }
     }
     return templates.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /** sha256 over the template tree (sorted relative paths + file contents): the same content hashes the same wherever it is copied. */
+  async templateHash(name: string): Promise<string> {
+    const source = this.templatePath(name);
+    await this.templateSize(source); // symlink and size limits apply before anything is read
+    const snapshot = await snapshotWorkspace(source);
+    const hash = createHash("sha256");
+    for (const relative of [...snapshot.files.keys()].sort()) {
+      const sha256 = snapshot.files.get(relative)!.sha256 ?? createHash("sha256").update(await readFile(path.join(source, relative))).digest("hex");
+      hash.update(relative + "\0" + sha256 + "\0");
+    }
+    return hash.digest("hex");
   }
 
   async create(agent: Agent, allowExisting = false, template?: string): Promise<void> {

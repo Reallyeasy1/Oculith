@@ -39,7 +39,7 @@ const updateAgentBody = createAgentBody.partial().refine(
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
 });
-const evalRunBody = z.object({ agentId: z.string().uuid(), caseIds: z.array(z.string().uuid()).min(1).max(20).refine((ids) => new Set(ids).size === ids.length, "caseIds must be unique") });
+const evalRunBody = z.object({ agentId: z.string().uuid(), caseIds: z.array(z.string().uuid()).min(1).max(20).refine((ids) => new Set(ids).size === ids.length, "caseIds must be unique"), force: z.boolean().optional() });
 // A case is always derived from the trace evidence. The UI may only name it or remove an
 // automatically proposed assertion; it cannot supply a different prompt or template.
 const regressionCaseFromRunBody = z.object({
@@ -255,7 +255,7 @@ export async function createApp(
       const agent = service.getAgent(body.agentId);
       body.caseIds.forEach((id) => service.getRegressionCase(id));
       const snapshot = configSnapshot(agent, config);
-      const evalRun = await service.createEvalRun({ caseIds: body.caseIds, target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } });
+      const evalRun = await service.createEvalRun({ caseIds: body.caseIds, target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } }, { force: body.force });
       void new EvalRunner(service, glassbox).execute(evalRun.id).catch(async (error) => {
         await service.updateEvalRun(evalRun.id, (item) => { item.status = "failed"; item.completedAt = new Date().toISOString(); item.results.push({ caseId: "", results: [], error: error instanceof Error ? error.message : String(error) }); });
       });

@@ -299,8 +299,14 @@ export class AgentService {
     return item;
   }
 
-  async createRegressionCase(input: Omit<RegressionCase, "id" | "createdAt">): Promise<RegressionCase> {
-    const item: RegressionCase = { ...input, id: randomUUID(), createdAt: now() };
+  /** A missing or oversized template is a client error (400), not a server fault, wherever a case names one. */
+  private async templateHash(name: string): Promise<string> {
+    try { return await this.workspaces.templateHash(name); }
+    catch (error) { throw new HttpError(400, error instanceof Error ? error.message : "Unable to hash workspace template"); }
+  }
+
+  async createRegressionCase(input: Omit<RegressionCase, "id" | "createdAt" | "templateHash">): Promise<RegressionCase> {
+    const item: RegressionCase = { ...input, templateHash: await this.templateHash(input.workspaceTemplate), id: randomUUID(), createdAt: now() };
     await this.store.mutate((database) => database.regressionCases.push(item));
     return item;
   }
@@ -318,8 +324,16 @@ export class AgentService {
     if (!item) throw new HttpError(404, "Eval Run not found");
     return item;
   }
-  async createEvalRun(input: Omit<EvalRun, "id" | "createdAt" | "runIds" | "results" | "status">): Promise<EvalRun> {
-    const item: EvalRun = { ...input, id: randomUUID(), runIds: [], results: [], status: "running", createdAt: now() };
+  /** Recomputes each case's template hash; a template edited since the case was recorded is refused unless `force`. */
+  async createEvalRun(input: Omit<EvalRun, "id" | "createdAt" | "runIds" | "results" | "status" | "templateHashes" | "templateHashMismatch">, options: { force?: boolean | undefined } = {}): Promise<EvalRun> {
+    const templateHashes: Record<string, string> = {};
+    let mismatch = false;
+    for (const regressionCase of input.caseIds.map((id) => this.getRegressionCase(id))) {
+      const current = (templateHashes[regressionCase.workspaceTemplate] ??= await this.templateHash(regressionCase.workspaceTemplate));
+      if (regressionCase.templateHash !== undefined && regressionCase.templateHash !== current) mismatch = true;
+    }
+    if (mismatch && !options.force) throw new HttpError(409, "template changed since the case was recorded");
+    const item: EvalRun = { ...input, templateHashes, ...(mismatch ? { templateHashMismatch: true } : {}), id: randomUUID(), runIds: [], results: [], status: "running", createdAt: now() };
     await this.store.mutate((database) => database.evalRuns.push(item));
     return item;
   }
@@ -470,13 +484,14 @@ export class AgentService {
     const agent = this.getAgent(input.agentId);
     let materialized = false;
     try {
+      const templateHash = await this.workspaces.templateHash(input.workspaceTemplate);
       const workspacePath = await this.workspaces.materializeEvalWorkspace(runId, input.workspaceTemplate, agent);
       materialized = true;
       return await this.sendMessage(input.agentId, input.prompt, undefined, {
         runId,
         workspacePath,
         workspaceName: input.workspaceTemplate,
-        ...(input.tags ? { tags: input.tags } : {}),
+        tags: { ...input.tags, templateHash },
         persistMessages: false,
         persistThread: false,
         ...(this.config.keepEvalWorkspaces ? {} : { cleanup: () => this.workspaces.removeEvalWorkspace(runId) }),
