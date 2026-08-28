@@ -282,6 +282,8 @@ async function closeResources() {
   eq(await page.locator(`${RUNS_TABLE} th`, { hasText: /^Outcome$/ }).count(), 1, "Runs table exposes the Outcome column");
   ok((await page.locator("#runs-heading").innerText()).includes("E2E GlassBox"), "Runs table is scoped to the selected Agent");
   eq(await page.locator(`${RUNS_TABLE} th`, { hasText: /^Agent$/ }).count(), 0, "Agent column is hidden in the Agent view");
+  eq((await page.locator(`${RUNS_TABLE} tbody tr`).first().locator("td").nth(1).innerText()).trim(), "managed", "managed workspace UUID is rendered as 'managed'");
+  eq(await page.locator(`${RUNS_TABLE} tbody tr`).first().locator("td").nth(1).getAttribute("title"), agent.id, "managed workspace keeps its UUID in the tooltip");
   await openTraceByKeyboard(page, okRun.run.id);
   const exportLink = page.getByRole("link", { name: "Export JSON" });
   eq(await exportLink.getAttribute("href"), "/api/traces/" + okRun.run.traceId + "/export", "Export JSON link targets the redacted trace export (#154)");
@@ -328,10 +330,19 @@ async function closeResources() {
   const rows = () => page.locator(`${RUNS_TABLE} tbody tr`);
   await page.locator(".create-button").click();
   await page.locator(".modal input[placeholder='Frontend Builder']").fill("E2E Empty");
+  const workspaceOption = page.locator(`#workspace-names-create option[value="${agent.workspaceName}"]`);
+  const workspaceOptionLabel = await workspaceOption.getAttribute("label");
+  ok(workspaceOptionLabel && workspaceOptionLabel.startsWith(agent.workspaceName + " · "), "workspace option exposes its descriptive label in the browser");
+  await page.locator(".modal input[list=workspace-names-create]").fill(agent.workspaceName);
   await page.locator(".modal .button-primary").click();
   await page.locator(".agent-header h1", { hasText: "E2E Empty" }).waitFor({ timeout: 10_000 });
   await page.locator(".runs-empty", { hasText: "No Runs for this Agent yet." }).waitFor({ timeout: 10_000 });
   eq(await rows().count(), 0, "new Agent under 'All': no rows from the other Agent");
+  await page.locator(".agent-header button", { hasText: "Settings" }).click();
+  const settingsHelp = page.locator(".settings-panel .form-help");
+  ok((await settingsHelp.innerText()).includes("Shared with E2E GlassBox"), "Settings identifies the Agent sharing the current workspace");
+  ok((await settingsHelp.innerText()).includes("Switching resets this Agent's Codex conversation thread"), "Settings warns that switching resets the Codex thread");
+  await page.locator(".settings-panel button", { hasText: "×" }).click();
   const pressedFilter = () => page.locator(".runs-filters button[aria-pressed=true]").textContent(); // textContent: CSS capitalises innerText
   eq(await pressedFilter(), "all", "quick filter stays on 'All' across the Agent switch");
   await page.locator(".agent-card", { hasText: "E2E GlassBox" }).click();
