@@ -1,6 +1,6 @@
 # UAT coverage record
 
-_What has been tested, how, and what has not. Last updated 28 August 2026 (main `3c99341`). Automated coverage comes from `npm run check` (unit tests, guard self-test, build) and the E2E lane (`npm run test:e2e`); manual coverage comes from the six UAT rounds below. This record is updated at the end of every UAT round._
+_What has been tested, how, and what has not. Last updated 28 August 2026, evening (main `a47447f`). Automated coverage comes from `npm run check` (unit tests, guard self-test, build) and the E2E lane (`npm run test:e2e`); manual coverage comes from the seven UAT rounds below. This record is updated at the end of every UAT round._
 
 ## 1. UAT rounds
 
@@ -11,6 +11,7 @@ _What has been tested, how, and what has not. Last updated 28 August 2026 (main 
 | 3 | 27 Aug, 02:45–03:00 | Observability value: what does the trace tell an operator? | Four live scenarios through the API + Playwright, one forensic trace | ok ≠ success, model-time blindness, tool identity/duration, exit hints, baselines, live Runs hidden, audit actors, restart honesty, chip semantics, drawer overlap → #129–#138 ([report](https://claude.ai/code/artifact/25d8f2af-092f-45f7-b2a3-aaaf976f5435)) |
 | 4 | 27 Aug, 14:40–15:20 | Feature surfacing: is every merged feature reachable? | API probes, Playwright walkthrough of dialogs and views, one template-backed Run driven end to end | "0 files changed" evidence bug (#153, fixed in #159), export API-only, workspace UUID column and free-text field, exit hints missing from the drawer, prefill create semantics, chip spacing → #153–#158; demo-fixture notes on #92 ([report](https://claude.ai/code/artifact/1baef811-f38c-4a3a-9107-ca297ed2429d)) |
 | 5 | 28 Aug, 11:15–11:35 | The Verify chain through the real UI after #151/#152/#179/#189/#197/#125/#124 landed | Playwright (system Chrome) + API against a production build on the container runtime; 3 live Runs (Playground 43 s, two EvalRuns 34 s / 33 s), 25 screenshots | 30 checks: 27 pass, 2 fail, 1 not reachable. Save-case modal is not a modal (fixed same day), `ENOENT` path leak in the template 400 (fixed same day), Runs table 1527 px at 1366 → #199, cold-load "model not configured" flicker → #200, page-level scroll below 1366 + clipped brand → #201, template Runs always "Needs attention" + evidence re-scroll → #202 |
+| 7 | 28 Aug, 18:40–19:20 | Post-merge verification of #224/#225/#227/#231 on the dev runtime (`local-process`, Windows, real Ark model), driven end to end through the browser | Playwright MCP against `npm run dev` (:5173 → :3000), `APP_AUTH_TOKEN` set; 3 live Runs (3m13s / 2m49s / 3m59s, 300–470k tokens each), 2 EvalRuns, 1 comparison; 4 screenshots | `modelCallsObserved` verified against production evidence (22 calls on a 321k-token single-turn Run — pre-#231 this read 1); per-layer Evidence badges ("model observed · tool observed"); EvalRun template-hash provenance on the case row; comparison view (No-regression branch, deltas, evidence links); Live strip during all runs; **real `policy.denied` evidence at last** (Windows local-process sandbox resolves to read-only → 20–25 denials/Run, first-denial focus card correct) — the round-4 "not demonstrable" note was container-path-specific. Findings: Logs panel carries only 2 lines/Run → #232 (fixed same day: #199 table containment, #200 cold-load flash, #233 favicon, #234 comparison mismatch banner all merged); runtime card label says "application container" while Runs say `local-process`; #202 noise confirmed (all ok Runs "Needs attention" via recovered chips) |
 | 6 | 28 Aug, 13:45–14:10 | The 17 PRs merged after round 5 (tool/model spans, outcome line, restart honesty, exit hints, evidence chips, workspace picker, export link, drawer docking, keyboard, badges, prefill draft, run logs, baselines, evaluation store) plus the #210 restart-wipe hotfix | Playwright + API against a production build on the container runtime; 2 live Runs; 14 screenshots | 60 checks: 47 pass, 0 fail, 13 not reachable. Findings: the Outcome line is invisible under the default capture policy (runbook note added), the Logs panel carries only two lines per Run (#214), a shared managed workspace showed a raw UUID, exit 128/134/139/143 had no hint — all fixed or filed |
 
 Scenarios driven in round 3 (all on the container runtime with deepseek-v4-flash): hello-world file + run (177 s, 9 tool calls, 2 failed); `curl` a URL in an image without `curl` (task failed, Run `ok`); run a missing script then create it (tool failure + recovery); a long task stopped after 12 s (cancel evidence); yesterday's restart-cut Run (forensic). Round 4 additionally created an Agent from the `node-lib-with-failing-test` template and had it fix the failing test (39 s, 5 tool calls, 1 recovered), then saved the Run as a Regression Case through the API.
@@ -78,7 +79,9 @@ Legend — **Unit**: vitest in `apps/server` / `apps/web`; **E2E**: step of `scr
 
 Last green run: **180 checks** on `main` `3c99341` (28 Aug, after the 25-PR merge; an earlier run on `333d4e3` caught the boot-order wipe fixed in #210); the lane's Runs-table selectors are scoped to the Runs section since the overview also renders regression-case and comparison tables as `.runs-table`. Known lane issue: driver processes can linger after exit (#148); stale processes on the controller machine caused the only "flaky" toolchain runs seen so far.
 
-## 4. Not yet tested (proposed round 7 — the paths round 6 could not reach)
+Round 7 additionally cleared several items from this list: `RUNTIME_PROVIDER=local-process` (the whole round ran on it), the browser flow with `APP_AUTH_TOKEN` set, Create-Agent-from-template through the form, sandbox denials as real product evidence, and the comparison UI's no-regression branch with live EvalRuns.
+
+## 4. Not yet tested (proposed round 8 — the paths rounds 6–7 could not reach)
 
 - Template-hash mismatch 409 and `force` through the API (needs a copy of a template edited after the case was recorded); the dashboard cannot send `force` yet (#215).
 - Restart honesty in the UI (#136): needs a Run cut by a server restart — round 6 could not restart the instance under test.
@@ -93,14 +96,13 @@ Last green run: **180 checks** on `main` `3c99341` (28 Aug, after the 25-PR merg
 - Retention/eviction with a small `GLASSBOX_MAX_DISK_MB`; the `evicted` chip.
 - Output cap (`CODEX_MAX_OUTPUT_BYTES`) → `limit.exceeded`; the real 600 s timeout.
 - `GLASSBOX_CAPTURE_POLICY=safe_summary`: redacted command heads in the drawer; seeded secret in a command argument.
-- `RUNTIME_PROVIDER=local-process`.
-- UI-driven flows: Create Agent from a template through the form, workspace switch from Settings, delete an Agent that has Runs, the Playground chat error states.
-- Browser flow with `APP_AUTH_TOKEN` set.
+- UI-driven flows: workspace switch from Settings, delete an Agent that has Runs, the Playground chat error states.
 - Docker Compose profile (`docs/DEPLOYMENT.md`) up/down.
 - Large traces (event cap, `trace.truncated`) and the tree's default expansion above 40 spans.
-- Sandbox denial (needs a product path — see #92).
-- Verify UI (#88, #89) and EvalRun/comparison (#142, #144) once they land.
+- Sandbox denial **on the container runtime** (round 7 demonstrated it on Windows local-process only; the judged Docker path still runs `danger-full-access` — see #92).
+- The `REGRESSION` branch of the comparison banner and the new #234 template-mismatch banner (needs a template edited between two EvalRuns).
+- The enriched run logs (#232) once merged: line content, warn level, denial coalescing in the panel.
 
 ## 5. Test data left on the local instance
 
-Agents "UAT Baseline", "Demo", "Frontend Builder" (from rounds 1–3) and "UAT4 Template" (round 4, template-backed; its Run is a working example of the template flow); two Regression Cases created from that Run (one auto-named by the prefill route, one renamed). Safe to delete.
+Agents "UAT Baseline", "Demo", "Frontend Builder" (from rounds 1–3) and "UAT4 Template" (round 4, template-backed; its Run is a working example of the template flow); two Regression Cases created from that Run (one auto-named by the prefill route, one renamed). Round 7 ran against a fresh dev-state root and left Agent "UAT Round 7 Agent" with 3 Runs, one Regression Case and two 4/4-passed EvalRuns — a ready-made comparison demo dataset. Safe to delete.
