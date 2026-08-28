@@ -245,6 +245,14 @@ const isRestartCancel = (e: ObservationEvent): boolean => e.type === "run.cancel
 export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: CapturePolicy; degraded?: boolean | undefined; truncated?: boolean | undefined }): TraceView {
   const events = [...input].sort((a, b) => a.sequence - b.sequence || a.timestamp.localeCompare(b.timestamp));
   const spans = reconstructSpans(events);
+  // Spans are a derived presentation view, so enrich their error copy without changing the persisted events that
+  // back exports and evidence. This also covers handled tool failures on an otherwise-ok Run, where there is no
+  // FailureFocus diagnosis to carry the operator hint.
+  for (const span of spans.values()) {
+    if (!span.error) continue;
+    const message = formatFailureMessage(span.error.message);
+    if (message !== undefined && message !== span.error.message) span.error = { ...span.error, message };
+  }
   const tree = buildTree(spans);
   const flat = flattenSpans(tree);
   const first = events[0];

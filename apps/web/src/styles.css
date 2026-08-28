@@ -1340,6 +1340,12 @@ textarea:focus {
   scroll-margin-top: 72px;
 }
 
+.trace-export-error {
+  margin: 0 0 12px;
+  color: var(--red);
+  font-size: 12px;
+}
+
 /* Compact Playground while a trace is open (issue #35): agent name, status, Expand. */
 .playground-bar {
   max-width: 1180px;
