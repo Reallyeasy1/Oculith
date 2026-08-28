@@ -12,6 +12,7 @@ import type { ObservationEmitter } from "./glassbox/emitter.js";
 import { buildTrace, projectAudit, type TraceView } from "./glassbox/query.js";
 import { CATEGORIES, SCHEMA_VERSION, STATUSES } from "./glassbox/schema.js";
 import type { RunIndexEntry, TraceStore } from "./glassbox/store.js";
+import { executionStatusOf, isFresh, rollupRun, summaryFromView, traceStatusOf, type RunSummary, type RunSummaryStore } from "./glassbox/summary.js";
 import type { RunLogStore } from "./run-log-store.js";
 import { caseFromRun, regressionCaseInput } from "./eval/cases.js";
 import { EvalRunner } from "./eval/runner.js";
@@ -39,12 +40,18 @@ const updateAgentBody = createAgentBody.partial().refine(
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
 });
-const evalRunBody = z.object({ agentId: z.string().uuid(), caseIds: z.array(z.string().uuid()).min(1).max(20).refine((ids) => new Set(ids).size === ids.length, "caseIds must be unique") });
+const evalRunBody = z.object({ agentId: z.string().uuid(), caseIds: z.array(z.string().uuid()).min(1).max(20).refine((ids) => new Set(ids).size === ids.length, "caseIds must be unique"), force: z.boolean().optional() });
+// A case is always derived from the trace evidence. The UI may only name it or remove an
+// automatically proposed assertion; it cannot supply a different prompt or template.
+const regressionCaseFromRunBody = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  assertions: regressionCaseInput.shape.assertions.optional(),
+});
 
 export async function createApp(
   config: AppConfig,
   service: AgentService,
-  glassbox?: { emitter: ObservationEmitter; store: TraceStore; logs?: RunLogStore | undefined },
+  glassbox?: { emitter: ObservationEmitter; store: TraceStore; summaries?: RunSummaryStore | undefined; logs?: RunLogStore | undefined },
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -253,20 +260,30 @@ export async function createApp(
       const agent = service.getAgent(body.agentId);
       body.caseIds.forEach((id) => service.getRegressionCase(id));
       const snapshot = configSnapshot(agent, config);
-      const evalRun = await service.createEvalRun({ caseIds: body.caseIds, target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } });
+      const evalRun = await service.createEvalRun({ caseIds: body.caseIds, target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } }, { force: body.force });
       void new EvalRunner(service, glassbox).execute(evalRun.id).catch(async (error) => {
         await service.updateEvalRun(evalRun.id, (item) => { item.status = "failed"; item.completedAt = new Date().toISOString(); item.results.push({ caseId: "", results: [], error: error instanceof Error ? error.message : String(error) }); });
       });
       return reply.code(202).send({ evalRun });
     });
-    app.post("/api/runs/:id/regression-case", async (request, reply) => {
-      const run = service.getRun(runIdParams.parse(request.params).id);
+    // Derives the case from the Run's trace evidence; 409 without a template, 400 when the Run cannot be a baseline.
+    const draftFor = async (params: unknown) => {
+      const run = service.getRun(runIdParams.parse(params).id);
       const template = service.getAgent(run.agentId).workspaceTemplate;
       if (!template) throw new HttpError(409, "This Run did not start from a template-backed workspace");
-      let input;
-      try { input = caseFromRun(run, await viewFor(run.id), template); }
+      try { return caseFromRun(run, await viewFor(run.id), template); }
       catch (error) { throw new HttpError(400, error instanceof Error ? error.message : "Unable to create regression case"); }
-      const regressionCase = await service.createRegressionCase({ ...input, sourceRunId: run.id });
+    };
+    // Prefill is read-only (#158): the dialog edits the draft, then POST below is the single create.
+    app.get("/api/runs/:id/regression-case", async (request) => ({ draft: await draftFor(request.params) }));
+    app.post("/api/runs/:id/regression-case", async (request, reply) => {
+      const requested = regressionCaseFromRunBody.parse(request.body ?? {});
+      const input = await draftFor(request.params);
+      const regressionCase = await service.createRegressionCase({
+        ...input,
+        ...(requested.name ? { name: requested.name } : {}),
+        ...(requested.assertions ? { assertions: requested.assertions } : {}),
+      });
       return reply.code(201).send({ regressionCase });
     });
     app.get("/api/runs", async (request) => {
@@ -278,23 +295,29 @@ export async function createApp(
       // the page can still come back under `limit` even though older matching runs exist.
       const runs = service.allRuns().filter((r) => (!q.agentId || r.agentId === q.agentId) && (!q.from || r.createdAt >= q.from) && (!q.to || r.createdAt <= q.to))
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, q.limit * 2);
+      // Stored summaries are the read model (#168): one snapshot per request, no NDJSON read for a fresh row.
+      const known = new Map(((await glassbox.summaries?.query()) ?? []).map((s) => [s.runId, s]));
+      const rollup = glassbox.summaries ? { traces: glassbox.store, emitter: glassbox.emitter, summaries: glassbox.summaries } : undefined;
+      const empty = (runId: string): RunSummary => summaryFromView(buildTrace([], { capturePolicy: glassbox.emitter.capturePolicy, degraded: glassbox.emitter.isDegraded(runId) }));
       const items = [];
       for (const run of runs) {
         const entry = index.get(run.id);
-        // No index entry means no stored events, so skip the NDJSON read entirely: the empty view
-        // falls through to the record-derived status branch below.
-        const view = entry
-          ? await viewFor(run.id, entry)
-          : buildTrace([], { capturePolicy: glassbox.emitter.capturePolicy, degraded: glassbox.emitter.isDegraded(run.id) });
-        const status = view.summary.eventCount ? view.summary.status : run.status === "completed" ? "ok" : run.status === "failed" ? "error" : run.status === "cancelled" ? "cancelled" : "running";
+        const cached = known.get(run.id);
+        // No index entry means no stored events (the empty summary falls through to the record-derived status
+        // below). A missing or stale summary of a finished Run is rolled up and stored once; a running Run is
+        // rebuilt from its trace on every poll and not stored — its terminal event writes the record.
+        const s: RunSummary = !entry ? empty(run.id)
+          : isFresh(cached, entry) ? cached
+          : rollup && entry.status !== "running" ? (await rollupRun(rollup, run.id, entry)) ?? empty(run.id)
+          : summaryFromView(await viewFor(run.id, entry));
+        const status = s.eventCount ? traceStatusOf(s.executionStatus) : run.status === "completed" ? "ok" : run.status === "failed" ? "error" : run.status === "cancelled" ? "cancelled" : "running";
         if (q.status && status !== q.status) continue;
-        const s = view.summary;
-        items.push({ runId: run.id, traceId: run.traceId ?? s.traceId, agentId: run.agentId, agentName: agents.get(run.agentId) ?? "", workspace: s.workspace, status, startedAt: s.startedAt ?? run.createdAt, durationMs: s.durationMs, endedReason: s.endedReason,
+        items.push({ runId: run.id, traceId: run.traceId ?? s.traceId, agentId: run.agentId, agentName: agents.get(run.agentId) ?? "", workspace: s.workspace, status, startedAt: s.startedAt ?? run.createdAt, durationMs: s.durationMs, endedReason: s.endedReason, interruptedAfterMs: s.interruptedAfterMs,
           firstFailingStep: s.firstFailingStep, eventCount: s.eventCount, runtime: config.runtimeProvider, model: config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default",
-          usage: s.usage, workspaceChanges: s.workspaceChanges, capabilities: s.capabilities, toolCalls: s.metrics.toolCalls, toolFailures: s.metrics.toolFailures,
+          usage: s.usage, workspaceChanges: s.workspaceChanges, outcome: s.outcome, capabilities: s.capabilities, toolCalls: s.metrics.toolCalls, toolFailures: s.metrics.toolFailures, toolIdentities: s.metrics.toolIdentities,
           tokens: s.metrics.tokens?.output !== undefined ? { output: s.metrics.tokens.output } : undefined,
-          denials: s.denials, actions: s.audit.actions, configHash: s.configHash ?? run.configHash, configSnapshot: run.configSnapshot,
-          degraded: s.degraded, truncated: s.truncated, evicted: s.evicted, redacted: s.redactedEvents > 0, lastEventAt: view.events.at(-1)?.timestamp });
+          denials: s.denials, actions: s.actions, executionStatus: executionStatusOf(status), taskOutcome: s.taskOutcome, configHash: s.configHash ?? run.configHash, configSnapshot: run.configSnapshot,
+          degraded: s.degraded, truncated: s.truncated, evicted: s.evicted, redacted: s.redactedEvents > 0, lastEventAt: s.lastEventAt });
         if (items.length >= q.limit) break;
       }
       return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, runs: items };

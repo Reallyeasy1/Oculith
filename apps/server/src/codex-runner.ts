@@ -66,12 +66,20 @@ export function parseCodexEventLine(
     sink?.onThreadStarted(event.thread_id);
   }
 
+  if (event.type === "turn.started") {
+    sink?.onTurnStarted();
+  }
+
   if (event.type === "item.completed" && event.item && typeof event.item === "object") {
     const item = event.item as Record<string, unknown>;
     sink?.onItemCompleted(item);
     if (item.type === "agent_message" && typeof item.text === "string") {
       parsed.messages.push(item.text);
     }
+  }
+
+  if (event.type === "item.started" && event.item && typeof event.item === "object") {
+    sink?.onItemStarted(event.item as Record<string, unknown>);
   }
 
   if (event.type === "turn.completed" && event.usage && typeof event.usage === "object") {
@@ -158,6 +166,7 @@ export class CodexRunner implements AgentRunner {
     }
 
     const timeoutMs = request.timeoutMs ?? this.config.codexTimeoutMs;
+    const runtimeStartedAt = Date.now();
     const span = request.trace
       ? this.emitter.startSpan({
           traceId: request.trace.traceId,
@@ -214,6 +223,7 @@ export class CodexRunner implements AgentRunner {
     let stderr = "";
     let stderrBytes = 0;
     let totalBytes = 0;
+    let firstOutputObserved = false;
 
     const consume = (chunk: Buffer, target: "stdout" | "stderr") => {
       totalBytes += chunk.byteLength;
@@ -223,6 +233,15 @@ export class CodexRunner implements AgentRunner {
         return;
       }
       if (target === "stdout") {
+        if (!firstOutputObserved && chunk.byteLength > 0 && request.trace && span) {
+          firstOutputObserved = true;
+          this.emitter.emit({
+            ...request.trace, spanId: newId("spn"), parentSpanId: span.spanId, ...RUNNER_ACTOR,
+            type: "runtime.codex.first_output", category: "runtime", name: "codex first output", status: "ok",
+            source: { component: "AgentRunner", adapter: "CodexRunner", observed: true },
+            attributes: { latencyMs: Math.max(0, Date.now() - runtimeStartedAt) },
+          });
+        }
         stdout += chunk.toString("utf8");
         const lines = stdout.split(/\r?\n/);
         stdout = lines.pop() ?? "";

@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AppConfig } from "./config.js";
 import { isModelConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
 import { createTraceContext, type TraceContext } from "./glassbox/context.js";
+import { describeFinalMessage } from "./glassbox/codex-observer.js";
 import {
   createDefaultEmitter,
   type ObservationEmitter,
@@ -27,6 +29,8 @@ import type { RunLogStore } from "./run-log-store.js";
 import { boundedChangedPaths, diffWorkspace, snapshotWorkspace } from "./workspace-snapshot.js";
 
 const now = () => new Date().toISOString();
+const HEARTBEAT_INTERVAL_MS = 15_000;
+export const serverHeartbeatPath = (dataDirectory: string) => path.join(dataDirectory, "server-heartbeat.json");
 
 interface AppLogger {
   child(bindings: Record<string, unknown>): { info(message: string): void; error(error: unknown, message?: string): void };
@@ -77,6 +81,7 @@ export function configHash(snapshot: AgentConfigSnapshot): string {
 }
 
 export class AgentService {
+  private heartbeatTimer: NodeJS.Timeout | undefined;
   private readonly activeExecutions = new Map<string, Promise<void>>();
   private readonly cancellationRequests = new Set<string>();
   private readonly spans = new Map<
@@ -98,12 +103,15 @@ export class AgentService {
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
     private readonly emitter: ObservationEmitter = createDefaultEmitter(),
+    /** Fires after a Run's terminal event is emitted (Run end and restart-cancel); wired to the summary rollup (#168). */
+    private readonly onRunEnded?: ((runId: string) => void) | undefined,
     private readonly runLogs?: RunLogStore | undefined,
   ) {}
 
   setLogger(logger: AppLogger): void { this.appLogger = logger; }
 
   async initialize(): Promise<void> {
+    const lastSeenAt = await this.readHeartbeat();
     await this.store.initialize();
     await this.workspaces.initialize();
     const interrupted: AgentRun[] = [];
@@ -151,9 +159,40 @@ export class AgentService {
         name: "run.cancelled",
         status: "cancelled",
         source: { component: "AgentService", observed: true },
-        attributes: { reason: "server_restart" },
+        attributes: { reason: "server_restart", ...(lastSeenAt ? { lastSeenAt } : {}) },
       });
+      this.onRunEnded?.(run.id);
     }
+  }
+
+  private async readHeartbeat(): Promise<string | undefined> {
+    try {
+      const value = JSON.parse(await readFile(serverHeartbeatPath(this.config.dataDirectory), "utf8")) as { lastSeenAt?: unknown };
+      if (typeof value.lastSeenAt !== "string" || Number.isNaN(Date.parse(value.lastSeenAt))) return undefined;
+      return new Date(value.lastSeenAt).toISOString();
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async writeHeartbeat(): Promise<void> {
+    const target = serverHeartbeatPath(this.config.dataDirectory);
+    const temporary = target + ".tmp";
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(temporary, JSON.stringify({ lastSeenAt: now() }) + "\n", "utf8");
+    await rename(temporary, target);
+  }
+
+  async startHeartbeat(): Promise<void> {
+    this.stopHeartbeat();
+    await this.writeHeartbeat();
+    this.heartbeatTimer = setInterval(() => void this.writeHeartbeat().catch(() => undefined), HEARTBEAT_INTERVAL_MS);
+    this.heartbeatTimer.unref();
+  }
+
+  stopHeartbeat(): void {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = undefined;
   }
 
   listAgents(): Agent[] {
@@ -305,8 +344,18 @@ export class AgentService {
     return item;
   }
 
-  async createRegressionCase(input: Omit<RegressionCase, "id" | "createdAt">): Promise<RegressionCase> {
-    const item: RegressionCase = { ...input, id: randomUUID(), createdAt: now() };
+  /** A missing or oversized template is a client error (400), not a server fault, wherever a case names one. */
+  private async templateHash(name: string): Promise<string> {
+    try { return await this.workspaces.templateHash(name); }
+    catch (error) {
+      // a missing directory is the caller's mistake; never echo the server's filesystem path back
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new HttpError(400, `Workspace template not found: ${name}`);
+      throw new HttpError(400, error instanceof Error ? error.message : "Unable to hash workspace template");
+    }
+  }
+
+  async createRegressionCase(input: Omit<RegressionCase, "id" | "createdAt" | "templateHash">): Promise<RegressionCase> {
+    const item: RegressionCase = { ...input, templateHash: await this.templateHash(input.workspaceTemplate), id: randomUUID(), createdAt: now() };
     await this.store.mutate((database) => database.regressionCases.push(item));
     return item;
   }
@@ -324,8 +373,16 @@ export class AgentService {
     if (!item) throw new HttpError(404, "Eval Run not found");
     return item;
   }
-  async createEvalRun(input: Omit<EvalRun, "id" | "createdAt" | "runIds" | "results" | "status">): Promise<EvalRun> {
-    const item: EvalRun = { ...input, id: randomUUID(), runIds: [], results: [], status: "running", createdAt: now() };
+  /** Recomputes each case's template hash; a template edited since the case was recorded is refused unless `force`. */
+  async createEvalRun(input: Omit<EvalRun, "id" | "createdAt" | "runIds" | "results" | "status" | "templateHashes" | "templateHashMismatch">, options: { force?: boolean | undefined } = {}): Promise<EvalRun> {
+    const templateHashes: Record<string, string> = {};
+    let mismatch = false;
+    for (const regressionCase of input.caseIds.map((id) => this.getRegressionCase(id))) {
+      const current = (templateHashes[regressionCase.workspaceTemplate] ??= await this.templateHash(regressionCase.workspaceTemplate));
+      if (regressionCase.templateHash !== undefined && regressionCase.templateHash !== current) mismatch = true;
+    }
+    if (mismatch && !options.force) throw new HttpError(409, "template changed since the case was recorded");
+    const item: EvalRun = { ...input, templateHashes, ...(mismatch ? { templateHashMismatch: true } : {}), id: randomUUID(), runIds: [], results: [], status: "running", createdAt: now() };
     await this.store.mutate((database) => database.evalRuns.push(item));
     return item;
   }
@@ -476,13 +533,14 @@ export class AgentService {
     const agent = this.getAgent(input.agentId);
     let materialized = false;
     try {
+      const templateHash = await this.workspaces.templateHash(input.workspaceTemplate);
       const workspacePath = await this.workspaces.materializeEvalWorkspace(runId, input.workspaceTemplate, agent);
       materialized = true;
       return await this.sendMessage(input.agentId, input.prompt, undefined, {
         runId,
         workspacePath,
         workspaceName: input.workspaceTemplate,
-        ...(input.tags ? { tags: input.tags } : {}),
+        tags: { ...input.tags, templateHash },
         persistMessages: false,
         persistThread: false,
         ...(this.config.keepEvalWorkspaces ? {} : { cleanup: () => this.workspaces.removeEvalWorkspace(runId) }),
@@ -502,6 +560,7 @@ export class AgentService {
       codexAvailable: await this.runner.isAvailable(),
       codexSandboxMode: this.config.codexSandboxMode,
       runtimeProvider: this.config.runtimeProvider,
+      glassboxStore: this.config.glassboxStore,
       containerEngine:
         this.config.runtimeProvider === "container"
           ? this.config.containerEngine
@@ -659,6 +718,7 @@ export class AgentService {
         agent.updatedAt = completedAt;
       });
       if (ids && service) {
+        const outcome = describeFinalMessage(result.output);
         this.emitter.emit({
           ...ids,
           spanId: newId("spn"),
@@ -669,9 +729,14 @@ export class AgentService {
           status: "ok",
           source: { component: "AgentService", observed: true },
           attributes: {
-            outputBytes: Buffer.byteLength(result.output, "utf8"),
+            outputBytes: outcome.finalMessageBytes,
+            finalMessageBytes: outcome.finalMessageBytes,
+            reportedFailure: outcome.reportedFailure,
             ...(result.usage ?? {}),
           },
+          ...(this.emitter.capturePolicy === "safe_summary"
+            ? { summary: { text: outcome.summaryText, policy: "safe_summary" as const } }
+            : {}),
           ...(result.threadId ? { sessionId: result.threadId } : {}),
         });
         service.end("ok", { type: "agent_service.run.completed" });
@@ -734,6 +799,7 @@ export class AgentService {
       }
     } finally {
       this.spans.delete(run.id);
+      this.onRunEnded?.(run.id);
       await options.cleanup?.();
     }
   }

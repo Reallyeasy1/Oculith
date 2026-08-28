@@ -69,6 +69,7 @@ async function harness(runner: AgentRunner, env: Record<string, string> = {}, st
     new WorkspaceManager(path.join(root, "ws")),
     runner,
     emitter,
+    undefined,
     runLogStore,
   );
   await service.initialize();

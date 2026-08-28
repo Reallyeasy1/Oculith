@@ -172,6 +172,7 @@ export class ContainerCodexRunner implements AgentRunner {
 
     const name = containerName(request.agentId, this.config.runtimeInstanceId);
     const timeoutMs = request.timeoutMs ?? this.config.codexTimeoutMs;
+    const runtimeStartedAt = Date.now();
     const traceBase = request.trace
       ? {
           traceId: request.trace.traceId,
@@ -258,6 +259,7 @@ export class ContainerCodexRunner implements AgentRunner {
     let stderr = "";
     let stderrBytes = 0;
     let totalBytes = 0;
+    let firstOutputObserved = false;
 
     const consume = (chunk: Buffer, target: "stdout" | "stderr") => {
       totalBytes += chunk.byteLength;
@@ -267,6 +269,14 @@ export class ContainerCodexRunner implements AgentRunner {
         return;
       }
       if (target === "stdout") {
+        if (!firstOutputObserved && chunk.byteLength > 0 && traceBase && span) {
+          firstOutputObserved = true;
+          this.emitter.emit({
+            ...traceBase, spanId: newId("spn"), parentSpanId: span.spanId,
+            type: "runtime.codex.first_output", category: "runtime", name: "codex first output", status: "ok",
+            attributes: { latencyMs: Math.max(0, Date.now() - runtimeStartedAt) },
+          });
+        }
         stdout += chunk.toString("utf8");
         const lines = stdout.split(/\r?\n/);
         stdout = lines.pop() ?? "";

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { CodexStreamObserver } from "./codex-observer.js";
+import { CodexStreamObserver, describeFinalMessage } from "./codex-observer.js";
 import { ObservationEmitter } from "./emitter.js";
 import { MemoryTraceStore } from "./store.js";
 import { parseCodexEventLine, type ParsedEvents } from "../codex-runner.js";
@@ -36,10 +36,17 @@ const lines = [
     },
   }),
   JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Done" } }),
+  JSON.stringify({ type: "turn.started" }),
   JSON.stringify({ type: "turn.completed", usage: { input_tokens: 100, cached_input_tokens: 40, output_tokens: 7 } }),
 ] as const;
 
 describe("CodexStreamObserver", () => {
+  it("derives bounded outcome metadata from a deterministic failure phrase list", () => {
+    expect(describeFinalMessage("curl is NOT INSTALLED on this image")).toMatchObject({ reportedFailure: true, finalMessageBytes: 35 });
+    expect(describeFinalMessage("Everything completed successfully").reportedFailure).toBe(false);
+    expect(describeFinalMessage("x".repeat(300)).summaryText).toHaveLength(240);
+  });
+
   it("maps observed items to tool/workspace/model events, never stores reasoning, and redacts commands", async () => {
     const store = new MemoryTraceStore();
     const em = new ObservationEmitter({ store, capturePolicy: "safe_summary" });
@@ -54,7 +61,9 @@ describe("CodexStreamObserver", () => {
     expect(events.map((e) => e.type)).toEqual([
       "tool.call.completed",
       "tool.call.failed",
+      "tool.call.completed",
       "workspace.changed",
+      "model.request",
       "model.completed",
     ]);
     expect(events.every((e) => e.parentSpanId === "spn_rt" && e.source.observed)).toBe(true);
@@ -65,10 +74,37 @@ describe("CodexStreamObserver", () => {
     expect(events[0]!.attributes.program).toBe("curl");
     expect(events[0]!.summary?.text).toContain("[REDACTED:bearer]");
     expect(events[1]).toMatchObject({ status: "error", error: { type: "exit_code", message: "exit code 1" } });
-    expect(events[2]!.attributes).toMatchObject({ fileCount: 2, added: 1, updated: 1 });
-    expect(events[3]!.attributes).toEqual({ inputTokens: 100, cachedInputTokens: 40, outputTokens: 7 });
+    expect(events[2]!.attributes).toEqual({ tool: "file_change" });
+    expect(events[3]!.attributes).toMatchObject({ fileCount: 2, added: 1, updated: 1 });
+    expect(events[4]).toMatchObject({ name: "model.turn", phase: "start", status: "running", attributes: { turnIndex: 1 } });
+    expect(events[5]).toMatchObject({ name: "model.turn", phase: "end", status: "ok", attributes: { turnIndex: 1, inputTokens: 100, cachedInputTokens: 40, outputTokens: 7 } });
+    expect(events[5]!.spanId).toBe(events[4]!.spanId);
     expect(JSON.stringify(events)).not.toContain("SECRET THOUGHTS");
     expect(events.some((e) => e.type === "capability.unavailable")).toBe(false);
+  });
+
+  it("emits one timed model.turn span per turn and leaves a cut-short turn incomplete", async () => {
+    const store = new MemoryTraceStore();
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner");
+    const p = parsed();
+    for (const line of [
+      JSON.stringify({ type: "turn.started" }),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 10, output_tokens: 2 } }),
+      JSON.stringify({ type: "turn.started" }),
+    ]) parseCodexEventLine(line, p, obs);
+    obs.finish("cancelled");
+    await em.flush();
+
+    const events = await store.readRun("run-1");
+    expect(events.map((event) => [event.name, event.phase])).toEqual([
+      ["model.turn", "start"],
+      ["model.turn", "end"],
+      ["model.turn", "start"],
+    ]);
+    expect(events[0]!.spanId).toBe(events[1]!.spanId);
+    expect(events[2]!.spanId).not.toBe(events[0]!.spanId);
+    expect(events.map((event) => event.attributes.turnIndex)).toEqual([1, 1, 2]);
   });
 
   it("metadata_only keeps command text and its secrets out entirely", async () => {
@@ -107,7 +143,7 @@ describe("CodexStreamObserver", () => {
     });
   });
 
-  it("treats a non-fatal item error and a null exit code as neither failure nor tool evidence", async () => {
+  it("treats item.started with a null exit code as running tool evidence, not a failure", async () => {
     const store = new MemoryTraceStore();
     const em = new ObservationEmitter({ store, capturePolicy: "safe_summary" });
     const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner");
@@ -130,7 +166,56 @@ describe("CodexStreamObserver", () => {
     await em.flush();
 
     const events = await store.readRun("run-1");
-    expect(events.map((e) => e.type)).toEqual(["capability.unavailable"]);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: "tool.call.started", phase: "start", status: "running" });
+  });
+
+  it("pairs command item lifecycle events and redacts the bounded first argument under metadata_only", async () => {
+    const store = new MemoryTraceStore();
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner");
+    const command = "curl ark-11111111-2222-3333-4444-555555555555-abcdef";
+    const p = parsed();
+    parseCodexEventLine(JSON.stringify({ type: "item.started", item: { id: "item-secret", type: "command_execution", command, exit_code: null, status: "in_progress" } }), p, obs);
+    parseCodexEventLine(JSON.stringify({ type: "item.completed", item: { id: "item-secret", type: "command_execution", command, exit_code: 0, status: "completed" } }), p, obs);
+    await em.flush();
+
+    const events = await store.readRun("run-1");
+    expect(events.map((event) => [event.type, event.phase])).toEqual([
+      ["tool.call.started", "start"],
+      ["tool.call.completed", "end"],
+    ]);
+    expect(events[0]!.spanId).toBe(events[1]!.spanId);
+    expect(events[1]!.attributes).toMatchObject({ program: "curl", argument0: "[REDACTED:ark_key]", exitCode: 0 });
+    expect(JSON.stringify(events)).not.toContain("11111111-2222");
+  });
+
+  it("unwraps the shell wrapper so argument0 is the script's first token (E3/E4, E5 shapes)", async () => {
+    const store = new MemoryTraceStore();
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner");
+    const p = parsed();
+    const bash = "/bin/bash -lc 'python3 missing_script.py --token ark-11111111-2222-3333-4444-555555555555-abcdef'";
+    parseCodexEventLine(JSON.stringify({ type: "item.started", item: { id: "item_2", type: "command_execution", command: bash, aggregated_output: "", exit_code: null, status: "in_progress" } }), p, obs);
+    parseCodexEventLine(JSON.stringify({ type: "item.completed", item: { id: "item_2", type: "command_execution", command: bash, aggregated_output: "", exit_code: 2, status: "completed" } }), p, obs);
+    // E5 verbatim: a quoted absolute powershell.exe path, -Command, a double-quoted script with escaped inner quotes.
+    const ps = JSON.stringify({ type: "item.completed", item: { id: "item_3", type: "command_execution", command: '"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Set-Content -LiteralPath .\\hello.txt -Value \\"hello\\"; cat .\\hello.txt"', aggregated_output: "", exit_code: 0, status: "completed" } });
+    parseCodexEventLine(ps, p, obs);
+    parseCodexEventLine(JSON.stringify({ type: "item.completed", item: { id: "item_4", type: "command_execution", command: "ls", aggregated_output: "", exit_code: 0, status: "completed" } }), p, obs);
+    await em.flush();
+
+    const events = await store.readRun("run-1");
+    expect(events.map((e) => [e.type, e.attributes.program, e.attributes.argument0])).toEqual([
+      ["tool.call.started", "bash", "python3"],
+      ["tool.call.failed", "bash", "python3"],
+      ["tool.call.completed", "powershell.exe", "Set-Content"],
+      ["tool.call.completed", "ls", undefined],
+    ]);
+    expect(events[1]!.spanId).toBe(events[0]!.spanId);
+    expect(events[1]).toMatchObject({ phase: "end", error: { type: "exit_code", message: "exit code 2" } });
+    expect(events[2]!.phase).toBe("instant");
+    expect(JSON.stringify(events)).not.toContain("missing_script");
+    expect(JSON.stringify(events)).not.toContain("11111111-2222");
   });
 
   it("records a declined command (exit_code -1) as a denied tool failure", async () => {
@@ -232,7 +317,7 @@ describe("CodexStreamObserver", () => {
     const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
     const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner");
     obs.onError("Reconnecting... 1/5");
-    parseCodexEventLine(lines[6]!, parsed(), obs);
+    parseCodexEventLine(lines[7]!, parsed(), obs);
     obs.finish();
     await em.flush();
 
@@ -286,10 +371,11 @@ describe.skipIf(!existsSync(fixtureDir))("CodexStreamObserver against real captu
     expect(failure!.attributes.exitCode).toBe(-1);
   });
 
-  it("codex-0.111-turn-failed.jsonl degrades to capability.unavailable plus one error.recorded", async () => {
+  it("codex-0.111-turn-failed.jsonl keeps the started model turn plus one error.recorded", async () => {
     const { events, parsed: p } = await feed("codex-0.111-turn-failed.jsonl", "metadata_only", "error");
     const types = events.map((e) => e.type);
-    expect(types).toContain("capability.unavailable");
+    expect(types).toContain("model.request");
+    expect(types).not.toContain("capability.unavailable");
     expect(types.filter((t) => t === "error.recorded")).toHaveLength(1);
     // trap 1: turn.failed nests its message under error.message.
     expect(p.errors.at(-1)).toContain("401 Unauthorized");
