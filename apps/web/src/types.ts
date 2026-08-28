@@ -274,6 +274,7 @@ export interface TraceView {
 }
 
 export interface RunLogLine {
+  runId: string;
   time: string;
   level: string;
   msg: string;

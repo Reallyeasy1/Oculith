@@ -14,7 +14,7 @@ export interface RunLogLine {
   err?: string | undefined;
 }
 
-export type RunLogViewLine = Pick<RunLogLine, "time" | "level" | "msg"> &
+export type RunLogViewLine = Pick<RunLogLine, "runId" | "time" | "level" | "msg"> &
   Partial<Pick<RunLogLine, "component" | "spanId" | "err">>;
 
 const LOG_SECRET_ASSIGNMENT = /\b(?:token|secret|password|api[_-]?key)\s*=\s*[^\s]+/gi;
@@ -77,6 +77,7 @@ export class RunLogStore {
           const line = JSON.parse(raw) as RunLogLine;
           if (line.runId === runId && (!options.level || line.level === options.level)) {
             lines.push({
+              runId: line.runId,
               time: line.time,
               level: line.level,
               msg: line.msg,

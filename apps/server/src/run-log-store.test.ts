@@ -26,6 +26,8 @@ describe("RunLogStore", () => {
     const result = await store.readRun("run-1", { level: "error", limit: 2 });
     expect(result.lines).toHaveLength(2);
     expect(result.lines.every((line) => line.level === "error")).toBe(true);
+    // a caller holding lines from several Runs must still be able to attribute them (#75)
+    expect(result.lines.every((line) => line.runId === "run-1")).toBe(true);
     expect(result.truncated).toBe(true);
   });
 });
