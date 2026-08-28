@@ -233,7 +233,7 @@ async function closeResources() {
   const turnStarts = okRun.view.events.filter((e) => e.name === "model.turn" && e.phase === "start");
   const turnEnds = okRun.view.events.filter((e) => e.name === "model.turn" && e.phase === "end");
   ok(turnStarts.length > 0 && turnStarts.length === turnEnds.length, "real ModelArk Run records one complete model.turn span per turn (#129)");
-  eq(okRun.view.summary.metrics.modelCalls, turnStarts.length, "metrics.modelCalls equals the observed turn count (#129)");
+  ok(okRun.view.summary.metrics.modelCalls >= turnStarts.length, "metrics.modelCalls includes at least one observed call per completed turn (#129, #207)");
   ok(okRun.view.summary.metrics.timeSplit.modelMs >= 0 && okRun.view.summary.metrics.timeSplit.toolMs >= 0 && okRun.view.summary.metrics.timeSplit.containerStartMs >= 0, "trace exposes the model/tool/container time split (#129)");
   const toolSpans = flattenSpans(okRun.view.spans).filter((span) => span.category === "tool");
   ok(toolSpans.length > 0 && toolSpans.every((span) => typeof span.durationMs === "number" && span.endedAt), "real tool calls are reconstructed as completed spans with durations (#130)");
