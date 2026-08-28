@@ -131,10 +131,14 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
       : "";
 
   const openSaveCase = () => {
-    setCaseName("Case: " + (run?.agentName ?? "Run") + " · " + runId.slice(0, 8));
-    setCaseAssertions(prefillAssertions(view));
+    // The server derives the draft from the same trace it will persist from; nothing is saved until Save.
+    setCaseName("");
+    setCaseAssertions([]);
     setCaseError(null);
     setShowSaveCase(true);
+    api.regressionCaseDraft(runId)
+      .then(({ draft }) => { setCaseName(draft.name); setCaseAssertions(draft.assertions); })
+      .catch((reason) => setCaseError(reason instanceof Error ? reason.message : String(reason)));
   };
   const saveCase = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -393,6 +397,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
               <input autoFocus value={caseName} onChange={(event) => setCaseName(event.target.value)} maxLength={120} required />
             </label>
             <div className="assertion-list" aria-label="Prefilled assertions">
+              {caseAssertions.length === 0 && !caseError && <p className="trace-muted">Deriving checks from the trace…</p>}
               {caseAssertions.map((assertion, index) => (
                 <div key={assertionLabel(assertion) + index}>
                   <code>{assertionLabel(assertion)}</code>
@@ -420,15 +425,6 @@ function assertionLabel(assertion: Assertion): string {
     case "max_duration_ms": return "finishes within " + assertion.max + " ms";
     case "post_check": return "post-check: " + assertion.command;
   }
-}
-
-function prefillAssertions(view: TraceView): Assertion[] {
-  const programs = [...new Set(view.events.filter((event) => event.category === "tool" && typeof event.attributes.program === "string").map((event) => String(event.attributes.program)))].slice(0, 3);
-  const toolCalls = new Set(view.events.filter((event) => event.category === "tool" && event.type.startsWith("tool.call.")).map((event) => event.spanId)).size;
-  const assertions: Assertion[] = [{ type: "terminal_status", expected: "ok" }, ...programs.map((program) => ({ type: "expected_tool" as const, program }))];
-  if (toolCalls > 0) assertions.push({ type: "max_tool_calls", max: toolCalls * 2 });
-  if (view.summary.durationMs !== undefined) assertions.push({ type: "max_duration_ms", max: Math.ceil(view.summary.durationMs * 1.5) });
-  return assertions;
 }
 
 function AuditTable({ rows, error, onOpenSpan }: { rows: AuditRow[] | null; error: string | null; onOpenSpan: (spanId: string) => void }) {

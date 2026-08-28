@@ -261,19 +261,23 @@ export async function createApp(
       });
       return reply.code(202).send({ evalRun });
     });
-    app.post("/api/runs/:id/regression-case", async (request, reply) => {
-      const run = service.getRun(runIdParams.parse(request.params).id);
-      const requested = regressionCaseFromRunBody.parse(request.body ?? {});
+    // Derives the case from the Run's trace evidence; 409 without a template, 400 when the Run cannot be a baseline.
+    const draftFor = async (params: unknown) => {
+      const run = service.getRun(runIdParams.parse(params).id);
       const template = service.getAgent(run.agentId).workspaceTemplate;
       if (!template) throw new HttpError(409, "This Run did not start from a template-backed workspace");
-      let input;
-      try { input = caseFromRun(run, await viewFor(run.id), template); }
+      try { return caseFromRun(run, await viewFor(run.id), template); }
       catch (error) { throw new HttpError(400, error instanceof Error ? error.message : "Unable to create regression case"); }
+    };
+    // Prefill is read-only (#158): the dialog edits the draft, then POST below is the single create.
+    app.get("/api/runs/:id/regression-case", async (request) => ({ draft: await draftFor(request.params) }));
+    app.post("/api/runs/:id/regression-case", async (request, reply) => {
+      const requested = regressionCaseFromRunBody.parse(request.body ?? {});
+      const input = await draftFor(request.params);
       const regressionCase = await service.createRegressionCase({
         ...input,
         ...(requested.name ? { name: requested.name } : {}),
         ...(requested.assertions ? { assertions: requested.assertions } : {}),
-        sourceRunId: run.id,
       });
       return reply.code(201).send({ regressionCase });
     });

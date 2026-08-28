@@ -256,6 +256,7 @@ let server = null;
   await page.getByRole("button", { name: "Save as regression case" }).click();
   const caseDialog = page.locator(".regression-case-modal");
   await caseDialog.waitFor({ timeout: 5_000 });
+  await caseDialog.locator(".assertion-list > div").first().waitFor({ timeout: 5_000 }); // the draft is fetched after the dialog opens (#158)
   ok((await caseDialog.locator(".assertion-list > div").count()) >= 1, "save dialog shows inferred assertions");
   await caseDialog.getByRole("button", { name: "Save regression case", exact: true }).click();
   await caseDialog.waitFor({ state: "detached", timeout: 10_000 });
