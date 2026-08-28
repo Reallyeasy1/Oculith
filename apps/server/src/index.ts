@@ -16,6 +16,7 @@ const config = loadConfig();
 await writeCodexConfig(config);
 
 const store = new JsonStore(path.join(config.dataDirectory, "launchpad.json"));
+await store.initialize(); // before anything seeds or rolls up into it; AgentService.initialize() re-reads the same file
 const workspaces = new WorkspaceManager(config.workspaceRoot, config.workspaceTemplatesDirectory);
 const runLogs = new RunLogStore(path.join(config.dataDirectory, "logs"), config.glassboxLogMaxMb * 1024 * 1024);
 await runLogs.initialize();

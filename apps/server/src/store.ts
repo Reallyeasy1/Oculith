@@ -17,6 +17,7 @@ const emptyDatabase = (): Database => ({
 export class JsonStore {
   private data: Database = emptyDatabase();
   private queue: Promise<void> = Promise.resolve();
+  private loaded = false;
 
   constructor(private readonly filePath: string) {}
 
@@ -35,6 +36,7 @@ export class JsonStore {
       }
       await this.persist();
     }
+    this.loaded = true;
   }
 
   snapshot(): Database {
@@ -42,6 +44,9 @@ export class JsonStore {
   }
 
   async mutate<T>(mutation: (database: Database) => T | Promise<T>): Promise<T> {
+    // A write before initialize() would persist the empty default database over the real file (28 Aug incident:
+    // the evaluation store seeded its definitions at boot before the file was read and every Agent was wiped).
+    if (!this.loaded) throw new Error("JsonStore.mutate() called before initialize()");
     let result!: T;
     const operation = this.queue.then(async () => {
       const next = structuredClone(this.data);
