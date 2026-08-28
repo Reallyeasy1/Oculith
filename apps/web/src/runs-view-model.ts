@@ -49,9 +49,15 @@ export function evidenceBadges(run: RunListItem): EvidenceBadge[] {
     }));
 }
 
-/** error ∪ timeout ∪ cancelled ∪ degraded ∪ any tool failure/denial — the default Runs filter (#35, #131). */
+/**
+ * error ∪ timeout ∪ cancelled ∪ degraded ∪ agent-reported failure ∪ any denial ∪ tool failures on a non-ok Run —
+ * the default Runs filter (#35, #131, #202).
+ * #202 ruling: recovery alone is not attention-worthy. An ok Run whose tool failures all preceded a successful
+ * completion keeps its `recovered after N failures` chip as evidence but is informational, not attention.
+ * Denials stay attention-worthy even on an ok Run — they are policy evidence.
+ */
 export function needsAttention(run: RunListItem): boolean {
-  return run.outcome?.reportedFailure === true || run.degraded || run.toolFailures > 0 || run.denials > 0 || run.status === "error" || run.status === "timeout" || run.status === "cancelled";
+  return run.outcome?.reportedFailure === true || run.degraded || run.denials > 0 || (run.status !== "ok" && run.toolFailures > 0) || run.status === "error" || run.status === "timeout" || run.status === "cancelled";
 }
 
 /** Running Runs, newest first — the "Live now" strip, independent of the quick filter (#131). */
