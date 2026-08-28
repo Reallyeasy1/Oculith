@@ -9,6 +9,7 @@ import { HttpError } from "./errors.js";
 import { configHash, configSnapshot, type AgentService } from "./agent-service.js";
 import { createTraceContext, type TraceContext } from "./glassbox/context.js";
 import type { ObservationEmitter } from "./glassbox/emitter.js";
+import type { EvaluationStore } from "./glassbox/evaluation.js";
 import { buildTrace, projectAudit, type TraceView } from "./glassbox/query.js";
 import { CATEGORIES, SCHEMA_VERSION, STATUSES } from "./glassbox/schema.js";
 import type { RunIndexEntry, TraceStore } from "./glassbox/store.js";
@@ -50,7 +51,7 @@ const regressionCaseFromRunBody = z.object({
 export async function createApp(
   config: AppConfig,
   service: AgentService,
-  glassbox?: { emitter: ObservationEmitter; store: TraceStore; summaries?: RunSummaryStore | undefined },
+  glassbox?: { emitter: ObservationEmitter; store: TraceStore; summaries?: RunSummaryStore | undefined; evaluations?: EvaluationStore | undefined },
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -261,6 +262,14 @@ export async function createApp(
       });
       return reply.code(202).send({ evalRun });
     });
+    if (glassbox.evaluations) {
+      app.get("/api/evaluators", async () => ({ evaluators: await glassbox.evaluations!.listDefinitions() }));
+      app.get("/api/runs/:id/evaluations", async (request) => {
+        const { id } = runIdParams.parse(request.params);
+        service.getRun(id);
+        return { evaluations: await glassbox.evaluations!.resultsForRun(id) };
+      });
+    }
     // Derives the case from the Run's trace evidence; 409 without a template, 400 when the Run cannot be a baseline.
     const draftFor = async (params: unknown) => {
       const run = service.getRun(runIdParams.parse(params).id);

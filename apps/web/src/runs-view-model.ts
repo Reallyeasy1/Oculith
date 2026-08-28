@@ -1,4 +1,4 @@
-import type { RunListItem, TraceStatus } from "./types";
+import type { RunListItem, TraceStatus, Workspace } from "./types";
 
 // Pure helpers for RunsView. Render only what the API returned — no client-side status inference.
 
@@ -8,12 +8,45 @@ export const QUICK_FILTERS: QuickFilter[] = ["attention", "all", "failed", "runn
 
 export const FILTER_LABEL: Partial<Record<QuickFilter, string>> = { attention: "Needs attention", timeout: "Timed out" };
 
+export function workspaceLabel(workspace: string | undefined, agentId: string): { text: string; title?: string } {
+  if (!workspace) return { text: "—" };
+  return workspace === agentId ? { text: "managed", title: workspace } : { text: workspace };
+}
+
+export function workspaceOptionLabel(workspace: Workspace): string {
+  const agents = `${workspace.agents.length} ${workspace.agents.length === 1 ? "agent" : "agents"}`;
+  return `${workspace.name} · ${agents} · ${workspace.managed ? "managed" : "unmanaged"} · ${workspace.fileCount} files`;
+}
+
 /** #132 chip tooltip — the flag is a derived phrase match on the final message, not an evaluator judgement. */
 export const REPORTED_FAILURE_HINT = "Derived: the agent's final message contains a failure phrase (e.g. \"not installed\", \"unable to\"). Not an evaluator judgement.";
 
 /** Tool failures + denials an ok Run worked around (#131); 0 unless the Run ended ok. */
 export function recoveredFailures(run: RunListItem): number {
   return run.status === "ok" ? run.toolFailures + run.denials : 0;
+}
+
+export interface EvidenceBadge {
+  label: string;
+  title: string;
+  warn: boolean;
+}
+
+/** Keep absence claims layer-specific: zero observed calls is not the same as missing evidence. */
+export function evidenceBadges(run: RunListItem): EvidenceBadge[] {
+  if (run.status === "ok") {
+    return run.toolCalls === 0
+      ? [{ label: "no tool calls", title: "This Run completed successfully without any observed tool calls.", warn: false }]
+      : [];
+  }
+  if (run.status === "running") return [];
+  return (["model", "tool"] as const)
+    .filter((layer) => run.capabilities[layer] === "unknown")
+    .map((layer) => ({
+      label: `${layer}: no evidence`,
+      title: `No ${layer} events were observed and the Run did not end ok, so nothing can be said about this layer; absence proves nothing.`,
+      warn: true,
+    }));
 }
 
 /** error ∪ timeout ∪ cancelled ∪ degraded ∪ any tool failure/denial — the default Runs filter (#35, #131). */

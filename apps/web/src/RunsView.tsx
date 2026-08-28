@@ -4,6 +4,7 @@ import {
   FILTER_LABEL,
   QUICK_FILTERS,
   REPORTED_FAILURE_HINT,
+  evidenceBadges,
   STATUS_ICON,
   formatClock,
   formatDuration,
@@ -14,15 +15,9 @@ import {
   recoveredFailures,
   sortNewestFirst,
   summarizeRuns,
+  workspaceLabel,
   type QuickFilter,
 } from "./runs-view-model";
-
-function noEvidenceTitle(run: RunListItem): string {
-  const layers = [run.capabilities.model === "unknown" ? "model" : "", run.capabilities.tool === "unknown" ? "tool" : ""].filter(Boolean).join(" and ");
-  return run.status === "timeout" || run.status === "cancelled" || run.status === "running"
-    ? `No ${layers} evidence — the Run was cut short before calls were observed.`
-    : `No ${layers} calls observed in this Run.`;
-}
 
 interface Props {
   runs: RunListItem[];
@@ -50,7 +45,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
       <div className="playground-topbar">
         <div>
           <span className="eyebrow">GlassBox</span>
-          <h2 id="runs-heading">{title}</h2>
+          <h2 id="runs-heading" tabIndex={-1}>{title}</h2>
         </div>
         <div className="runs-filters" role="group" aria-label="Quick filters">
           {QUICK_FILTERS.map((item) => (
@@ -108,9 +103,10 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
             {visible.map((run) => (
               <tr
                 key={run.runId}
+                data-run-id={run.runId}
                 tabIndex={0}
                 className={run.runId === selectedRunId ? "selected" : undefined}
-                aria-label={"Open trace for " + (run.agentName || run.runId) + ", " + run.status}
+                aria-label={"Open trace for " + (run.agentName || run.runId) + ", " + run.status + ", " + formatClock(run.startedAt)}
                 onClick={() => onOpenTrace(run.runId)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
@@ -129,7 +125,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                   )}
                 </td>
                 {showAgent && <td>{run.agentName || run.agentId}</td>}
-                <td>{run.workspace ?? "—"}</td>
+                <td title={workspaceLabel(run.workspace, run.agentId).title}>{workspaceLabel(run.workspace, run.agentId).text}</td>
                 <td>{formatClock(run.startedAt)}</td>
                 <td>{formatRunDuration(run.durationMs, run.endedReason, run.interruptedAfterMs)}</td>
                 <td className="runs-outcome" title={run.outcome?.text}>{run.outcome?.text ?? (run.outcome?.reportedFailure ? <span className="badge badge-warn" title={REPORTED_FAILURE_HINT}>agent reported failure</span> : "—")}</td>
@@ -141,17 +137,19 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 <td className="runs-runtime" title={run.runtime + " · " + run.model}>{run.runtime} · {run.model}</td>
                 <td>{formatUsage(run.usage)}</td>
                 <td title={run.toolIdentities?.join(", ")}>
-                  <span>{run.toolCalls}{run.toolFailures > 0 && <> · {run.toolFailures} failed</>}</span>{" "}
-                  {run.redacted && <span className="badge">redacted</span>}
-                  {run.denials > 0 && <span className="badge badge-warn">denied {run.denials}</span>}
-                  {run.actions > 0 && <span className="badge">actions {run.actions}</span>}
-                  {run.degraded && <span className="badge badge-warn">degraded</span>}
-                  {run.truncated && <span className="badge badge-warn">truncated</span>}
-                  {run.evicted && <span className="badge badge-warn">evicted</span>}
-                  {(run.capabilities.model === "unknown" || run.capabilities.tool === "unknown") && (
-                    <span className="badge" title={noEvidenceTitle(run)}>no evidence</span>
-                  )}
-                  {run.workspaceChanges && <span className="badge">{run.workspaceChanges.added + run.workspaceChanges.modified + run.workspaceChanges.removed} files changed</span>}
+                  <span className="tool-call-summary">
+                    <span>{run.toolCalls}{run.toolFailures > 0 && <> · {run.toolFailures} failed</>}</span>
+                    {run.redacted && <span className="badge">redacted</span>}
+                    {run.denials > 0 && <span className="badge badge-warn">denied {run.denials}</span>}
+                    {run.actions > 0 && <span className="badge">actions {run.actions}</span>}
+                    {run.degraded && <span className="badge badge-warn">degraded</span>}
+                    {run.truncated && <span className="badge badge-warn">truncated</span>}
+                    {run.evicted && <span className="badge badge-warn">evicted</span>}
+                    {evidenceBadges(run).map((badge) => (
+                      <span key={badge.label} className={"badge" + (badge.warn ? " badge-warn" : "")} title={badge.title}>{badge.label}</span>
+                    ))}
+                    {run.workspaceChanges && <span className="badge">{run.workspaceChanges.added + run.workspaceChanges.modified + run.workspaceChanges.removed} files changed</span>}
+                  </span>
                 </td>
                 <td>{formatClock(run.lastEventAt)}</td>
               </tr>
