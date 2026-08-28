@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import type { Assertion, AuditRow, ObservationEvent, RunListItem, Span, TraceView } from "./types";
+import type { Assertion, AuditRow, ObservationEvent, RunListItem, RunLogLine, Span, TraceView } from "./types";
 import { REPORTED_FAILURE_HINT, STATUS_ICON, formatClock, formatDuration, formatRunDuration, formatUsage, workspaceLabel } from "./runs-view-model";
 import {
   CATEGORIES,
@@ -53,6 +53,9 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
   const [expandedState, setExpanded] = useState<Set<string> | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [logs, setLogs] = useState<RunLogLine[]>([]);
+  const [logsTruncated, setLogsTruncated] = useState(false);
+  const [logLevel, setLogLevel] = useState("");
   const [showSaveCase, setShowSaveCase] = useState(false);
   const saveCaseRef = useRef<HTMLFormElement>(null);
   const onSaveCaseKeyDown = useFocusTrap(saveCaseRef, () => { if (!savingCase) setShowSaveCase(false); }, String(showSaveCase));
@@ -71,6 +74,9 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
   // Once per open (App keys this component by runId): bring the header + banner into the first viewport.
   const sectionRef = useRef<HTMLElement>(null);
   useEffect(() => { sectionRef.current?.scrollIntoView({ block: "start" }); }, []);
+  useEffect(() => {
+    void api.logs(runId, logLevel).then((result) => { setLogs(result.lines); setLogsTruncated(result.truncated); }).catch(() => undefined);
+  }, [logLevel, runId]);
 
   const byId = useMemo(() => (view ? indexSpans(view.spans) : new Map<string, Span>()), [view]);
   // Per-row redaction comes from the full event list: the server only nests intermediate events under
@@ -193,6 +199,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
         else if (row.span.parentSpanId && byId.has(row.span.parentSpanId)) focusRow(row.span.parentSpanId);
         break;
       case "Enter": case " ": setOpenId(id); break;
+      case "Escape": onClose(); break;
       default: return;
     }
     event.preventDefault();
@@ -290,10 +297,10 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
           <div>
             <strong>{failure.kind === "denied" ? "First denial" : "First actionable " + failure.kind}: {failure.name}</strong>
             <span className="trace-banner-meta">{failure.category} · {failure.component}{failure.message ? " · " + failure.message : ""}</span>
-            <p className="trace-diagnosis">{failure.diagnosis}</p>
+            <p id="trace-diagnosis" className="trace-diagnosis">{failure.diagnosis}</p>
           </div>
           {failingSpan && (
-            <button type="button" className="button button-primary" onClick={jump} autoFocus>Jump to failing span</button>
+            <button type="button" className="button button-primary" onClick={jump} aria-describedby="trace-diagnosis">Jump to failing span</button>
           )}
         </div>
       )}
@@ -415,7 +422,33 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
         </>
       )}
 
-      {!showAudit && openSpan && <SpanDrawer span={openSpan} view={view} parentName={openSpan.parentSpanId ? byId.get(openSpan.parentSpanId)?.name : undefined} onClose={closeDrawer} />}
+      {!showAudit && (
+        <>
+          <details className="trace-logs">
+            <summary>Logs · {logs.length}{logsTruncated ? "+" : ""}</summary>
+            <label>Level
+              <select value={logLevel} onChange={(event) => setLogLevel(event.target.value)}>
+                <option value="">all</option>
+                <option value="info">info</option>
+                <option value="error">error</option>
+              </select>
+            </label>
+            {logs.length === 0 ? <p className="runs-empty">No log lines carry this Run&apos;s id.</p> : (
+              <ol className="run-logs">
+                {logs.map((line, index) => (
+                  <li key={line.time + ":" + index}>
+                    <time>{formatClock(line.time)}</time> <strong>{line.level}</strong>{" "}
+                    {line.spanId && byId.has(line.spanId) ? <button type="button" onClick={() => focusRow(line.spanId!)}>{line.msg}</button> : <span>{line.msg}</span>}
+                    {line.err && <small>{line.err}</small>}
+                  </li>
+                ))}
+              </ol>
+            )}
+          </details>
+
+          {openSpan && <SpanDrawer span={openSpan} view={view} parentName={openSpan.parentSpanId ? byId.get(openSpan.parentSpanId)?.name : undefined} onClose={closeDrawer} />}
+        </>
+      )}
       {showSaveCase && (
         <div className="modal-backdrop" onMouseDown={() => !savingCase && setShowSaveCase(false)}>
           <form ref={saveCaseRef} className="modal regression-case-modal" role="dialog" aria-modal="true" aria-labelledby="save-case-title" onSubmit={saveCase} onMouseDown={(event) => event.stopPropagation()} onKeyDown={onSaveCaseKeyDown}>
@@ -497,16 +530,18 @@ function Field({ label, children, className }: { label: string; children: React.
 
 const FOCUSABLE = 'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
-/** Dialog keyboard contract shared by the span drawer and the save-case modal: autofocus, Tab cycles inside, Escape closes. */
+/** Dialog keyboard contract shared by the span drawer and the save-case modal: autofocus, Tab cycles inside, Escape closes.
+ *  A `[data-autofocus]` element (e.g. a tabindex=-1 heading) wins the initial focus so a screen reader announces the title first (#103). */
 function useFocusTrap(ref: React.RefObject<HTMLElement | null>, onClose: () => void, focusKey: string) {
-  useEffect(() => { ref.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus(); }, [ref, focusKey]);
+  useEffect(() => { ref.current?.querySelector<HTMLElement>("[data-autofocus], " + FOCUSABLE)?.focus(); }, [ref, focusKey]);
   return (event: React.KeyboardEvent) => {
     if (event.key === "Escape") { event.preventDefault(); onClose(); return; }
     if (event.key !== "Tab" || !ref.current) return;
     const items = Array.from(ref.current.querySelectorAll<HTMLElement>(FOCUSABLE));
     const first = items[0], last = items[items.length - 1];
     if (!first || !last) return;
-    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    // Shift+Tab from the first item, or from a non-tabbable autofocus target ahead of it, wraps to the last item.
+    if (event.shiftKey && (document.activeElement === first || !items.includes(document.activeElement as HTMLElement))) { event.preventDefault(); last.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   };
 }
@@ -529,7 +564,7 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
       <div className="span-drawer-head">
         <div>
           <span className="eyebrow">Span · {span.category}</span>
-          <h3 id="span-drawer-title">{identity || span.name}</h3>
+          <h3 id="span-drawer-title" tabIndex={-1} data-autofocus>{identity || span.name}</h3>
         </div>
         <button type="button" className="button button-ghost" onClick={onClose} aria-label="Close span details">×</button>
       </div>

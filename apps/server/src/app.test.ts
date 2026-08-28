@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import path from "node:path";
+import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
@@ -6,7 +9,8 @@ import type { AgentService } from "./agent-service.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
 import type { EvaluationStore } from "./glassbox/evaluation.js";
 import { MemoryTraceStore } from "./glassbox/store.js";
-import type { RunSummaryStore } from "./glassbox/summary.js";
+import { RunLogStore } from "./run-log-store.js";
+import type { RunSummary, RunSummaryStore } from "./glassbox/summary.js";
 
 const service = {
   listAgents: () => [],
@@ -133,6 +137,28 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     await app.close();
   });
 
+  it("serves one Run's log lines under auth, bounded, with truncation reported (#75)", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "run-logs-"));
+    const logs = new RunLogStore(dir, 1_000_000);
+    await logs.initialize();
+    const line = (runId: string, n: number) => ({ time: new Date(n).toISOString(), level: n % 2 ? "error" : "info", msg: "line " + n, runId, traceId: "trc_" + runId, agentId: "agt-9" });
+    for (let n = 0; n < 4; n++) await logs.append(line("run-9", n));
+    await logs.append(line("run-8", 9));
+    const svc = { ...service, getRun: (id: string) => { if (id !== "run-9") throw new HttpError(404, "Run not found"); return { id }; } } as unknown as AgentService;
+    const store = new MemoryTraceStore();
+    const app = await createApp(config(), svc, { emitter: new ObservationEmitter({ store, capturePolicy: "metadata_only" }), store, logs });
+    expect((await app.inject({ method: "GET", url: "/api/runs/run-9/logs" })).statusCode).toBe(401);
+    const get = (url: string) => app.inject({ method: "GET", url, headers: auth });
+    const all = (await get("/api/runs/run-9/logs")).json();
+    expect(all).toEqual({ lines: [0, 1, 2, 3].map((n) => ({ time: new Date(n).toISOString(), level: n % 2 ? "error" : "info", msg: "line " + n })), truncated: false });
+    const bounded = (await get("/api/runs/run-9/logs?level=error&limit=1")).json();
+    expect(bounded).toEqual({ lines: [{ time: new Date(3).toISOString(), level: "error", msg: "line 3" }], truncated: true });
+    expect((await get("/api/runs/run-9/logs?limit=9999")).statusCode).toBe(400);
+    expect((await get("/api/runs/nope/logs")).statusCode).toBe(404);
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
   it("lists runs and serves a trace with schemaVersion and capturePolicy", async () => {
     const store = new MemoryTraceStore(); const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
     const ids = { traceId: "trc_9", runId: "run-9", agentId: "agt-9" };
@@ -182,6 +208,29 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     expect(schemaVersion).toBe("1.0"); expect(Number.isNaN(Date.parse(exportedAt))).toBe(false);
     expect(JSON.stringify(view)).toBe(trace.body);
     expect((await get("/api/traces/nope/export")).json()).toEqual({ error: "Trace not found" });
+    await app.close();
+  });
+
+  it("serves an Agent's rolling baseline from the newest terminal summaries", async () => {
+    const store = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const agentId = "87654321-4321-4321-8321-cba987654321";
+    const makeSummary = (index: number): RunSummary => ({
+      runId: `run-${index}`, traceId: `trace-${index}`, agentId, capturePolicy: "metadata_only",
+      executionStatus: "completed", taskOutcome: "unknown", startedAt: `2026-08-${String(index).padStart(2, "0")}T00:00:00.000Z`,
+      durationMs: index * 1_000, metrics: { terminalStatus: "ok", toolCalls: index, toolFailures: 0, modelCalls: 1,
+        tokens: { input: index * 100, output: index * 10 }, retries: 0, denials: 0 },
+      usage: { inputTokens: index * 100, outputTokens: index * 10 }, denials: 0, actions: 0,
+      capabilities: { model: "observed", tool: "observed" }, degraded: false, truncated: false, evicted: false,
+      redactedEvents: 0, eventCount: 1, rollupVersion: 1, updatedAt: "2026-08-28T00:00:00.000Z",
+    });
+    const summaries = { query: async () => [makeSummary(3), makeSummary(2), makeSummary(1)] } as unknown as RunSummaryStore;
+    const svc = { ...service, getAgent: (id: string) => { if (id !== agentId) throw new HttpError(404, "Agent not found"); return { id }; } } as unknown as AgentService;
+    const app = await createApp(config({ GLASSBOX_PRICE_PER_MTOK_INPUT: "2", GLASSBOX_PRICE_PER_MTOK_OUTPUT: "4" }), svc, { emitter, store, summaries });
+    const result = await app.inject({ method: "GET", url: `/api/agents/${agentId}/runs/baseline`, headers: auth });
+    expect(result.statusCode).toBe(200);
+    expect(result.json().baseline).toMatchObject({ sampleCount: 3, windowSize: 20, durationMs: { median: 2_000, p90: 3_000 }, inputTokens: { median: 200, p90: 300 }, toolCalls: { median: 2, p90: 3 }, estimatedCostUsd: { median: 0.00048, p90: 0.00072 } });
+    expect((await app.inject({ method: "GET", url: "/api/agents/12345678-1234-4234-8234-123456789abc/runs/baseline", headers: auth })).statusCode).toBe(404);
     await app.close();
   });
 

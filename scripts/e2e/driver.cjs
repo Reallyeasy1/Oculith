@@ -128,6 +128,7 @@ async function openApp(page) {
 
 async function openTraceByKeyboard(page, runId) {
   const row = page.locator(`${RUNS_TABLE} tbody tr`).first();
+  ok(/^Open trace for .+, .+, .+$/.test(await row.getAttribute("aria-label")), "Runs row has a unique name including Agent, status, and start time (#103)");
   await row.focus();
   eq(await page.evaluate(() => document.activeElement && document.activeElement.tagName), "TR", "Runs row takes focus");
   await page.keyboard.press("Enter");
@@ -150,7 +151,9 @@ async function drawerRoundTrip(page) {
   await page.keyboard.press("Enter");
   const dialog = page.locator("[role=dialog]");
   await dialog.waitFor({ timeout: 5_000 });
-  ok(await page.evaluate(() => !!(document.activeElement && document.activeElement.closest("[role=dialog]"))), "Drawer takes focus on open");
+  eq(await page.evaluate(() => document.activeElement && document.activeElement.id), "span-drawer-title", "Drawer heading takes focus on open (#103)");
+  await page.keyboard.press("Shift+Tab");
+  ok(await page.evaluate(() => !!(document.activeElement && document.activeElement.closest("[role=dialog]"))), "Shift+Tab from the heading stays inside the drawer");
   for (let i = 0; i < 6; i++) await page.keyboard.press("Tab");
   ok(await page.evaluate(() => !!(document.activeElement && document.activeElement.closest("[role=dialog]"))), "Focus stays inside the drawer after 6 Tabs");
   await page.keyboard.press("Escape");
@@ -211,6 +214,7 @@ async function closeResources() {
   const okRun = await runTask(agent.id, "Write a file named e2e-check.txt in the workspace containing exactly this line, then reply with exactly the same line and nothing else:\n" + SECRET_LINE);
   eq(okRun.run.status, "completed", "baseline run completed (" + okRun.run.id + ")");
   eq(okRun.view.summary.status, "ok", "trace status ok");
+  ok(/^[0-9a-f]{16}$/.test(okRun.view.summary.configHash), "baseline trace carries the stable configHash (#90)");
   ok(okRun.view.summary.outcome && typeof okRun.view.summary.outcome.finalMessageBytes === "number", "trace summary carries final-message outcome metadata");
   ok(typeof okRun.view.summary.outcome.text === "string" && okRun.view.summary.outcome.text.length <= 240, "safe-summary outcome text is present and bounded to 240 characters");
   ok(okRun.view.events.some((e) => e.type === "runtime.container.started") && okRun.view.events.some((e) => e.type === "runtime.container.stopped"), "trace shows the real container start/stop spans");
@@ -285,6 +289,13 @@ async function closeResources() {
   eq((await page.locator(`${RUNS_TABLE} tbody tr`).first().locator("td").nth(1).innerText()).trim(), "managed", "managed workspace UUID is rendered as 'managed'");
   eq(await page.locator(`${RUNS_TABLE} tbody tr`).first().locator("td").nth(1).getAttribute("title"), agent.id, "managed workspace keeps its UUID in the tooltip");
   await openTraceByKeyboard(page, okRun.run.id);
+  const expandPlayground = page.locator("button", { hasText: "Expand Playground" });
+  await expandPlayground.click();
+  const collapsePlayground = page.locator("button", { hasText: "Collapse Playground" });
+  await collapsePlayground.waitFor({ timeout: 5_000 });
+  await collapsePlayground.click();
+  await expandPlayground.waitFor({ timeout: 5_000 });
+  ok(true, "Playground toggle names both Expand and Collapse states (#103)");
   const exportLink = page.getByRole("link", { name: "Export JSON" });
   eq(await exportLink.getAttribute("href"), "/api/traces/" + okRun.run.traceId + "/export", "Export JSON link targets the redacted trace export (#154)");
   const downloadPromise = page.waitForEvent("download");
@@ -323,8 +334,11 @@ async function closeResources() {
   const regressionCase = (await api("/api/regression-cases")).json().cases.find((item) => item.sourceRunId === okRun.run.id);
   ok(regressionCase, "saving the baseline trace creates a regression case");
   sweep("DOM (ok trace)", await glassboxText(page));
-  await page.locator("button", { hasText: "Close trace" }).click();
-  eq(await page.locator(".trace-detail").count(), 0, "Close trace returns to the Runs table");
+  await page.locator("[role=treeitem]").first().focus();
+  await page.keyboard.press("Escape");
+  await page.locator(".trace-detail").waitFor({ state: "detached", timeout: 5_000 });
+  await page.waitForFunction((runId) => document.activeElement && document.activeElement.getAttribute("data-run-id") === runId, okRun.run.id, { timeout: 5_000 });
+  ok(true, "Escape on the tree closes the trace and restores focus to its Runs row (#103)");
 
   console.log("\n[4b] UI: Runs follow the selected Agent; All runs spans Agents with the summary strip (#70)");
   const rows = () => page.locator(`${RUNS_TABLE} tbody tr`);
@@ -398,16 +412,32 @@ async function closeResources() {
   console.log("\n[5] restart with GLASSBOX_DEMO_FAILURE=timeout (gated fixture through the real runner)");
   await stopServer(server);
   server = await startServer({ GLASSBOX_DEMO_FAILURE: "timeout" });
-  const badRun = await runTask(agent.id, "Reply with the single word: pong");
+  const badRun = await runTask(agent.id, "Run the shell command `sleep 10`, wait for it to finish, then reply with the single word: pong");
   eq(badRun.run.status, "failed", "gated run failed (" + badRun.run.id + ")");
   eq(badRun.view.summary.status, "timeout", "trace status timeout");
   eq(badRun.view.summary.failure && badRun.view.summary.failure.kind, "timeout", "first-failure focus is the timeout");
   eq(badRun.view.summary.failure.name, "codex exec", "failing span is `codex exec`");
-  eq((await api("/api/runs")).json().runs.find((r) => r.runId === badRun.run.id).firstFailingStep, "codex exec", "/api/runs firstFailingStep = codex exec");
+  const badListed = (await api("/api/runs")).json().runs.find((r) => r.runId === badRun.run.id);
+  eq(badListed.firstFailingStep, "codex exec", "/api/runs firstFailingStep = codex exec");
+  eq(badListed.denials, badRun.view.summary.denials, "/api/runs denial count equals the trace summary (#90)");
+  eq(badListed.configHash, badRun.view.summary.configHash, "/api/runs configHash equals the trace summary (#90)");
+  eq(badRun.view.summary.configHash, okRun.view.summary.configHash, "unchanged Agent hashes the same config on a new Run after the restart (#90)");
   const badAudit = (await api("/api/runs/" + badRun.run.id + "/audit")).json().audit;
   ok(badAudit.some((row) => row.outcome === "timeout"), "/audit includes the gated timeout evidence");
+  const badEventIds = new Set(badRun.view.events.map((event) => event.eventId));
+  ok(badAudit.every((row) => badEventIds.has(row.eventId) && badRun.view.events.some((event) => event.spanId === row.spanId)), "every audit row resolves to stored event/span evidence (#90)");
+  const toolSpanIds = new Set(badRun.view.events.filter((event) => event.type.startsWith("tool.call.")).map((event) => event.spanId));
+  const modelSpanIds = new Set(badRun.view.events.filter((event) => event.type.startsWith("model.")).map((event) => event.spanId));
+  eq(badRun.view.summary.metrics.toolCalls, toolSpanIds.size, "toolCalls metric equals a direct span count (#90)");
+  eq(badRun.view.summary.metrics.modelCalls, modelSpanIds.size, "modelCalls metric equals a direct span count (#90)");
+  eq(badRun.view.summary.metrics.denials, badRun.view.events.filter((event) => event.type === "policy.denied").length, "denials metric equals a direct event count (#90)");
   // A turn.started can arrive before the 3 s cut (#129 marks the model observed on it), so only the absence claim is asserted.
   ok(badRun.view.summary.capabilities.model !== "unavailable" && badRun.view.summary.capabilities.tool !== "unavailable", "capabilities never read unavailable on a cut-short run (#60): " + JSON.stringify(badRun.view.summary.capabilities));
+  const badLogsResponse = await api("/api/runs/" + badRun.run.id + "/logs");
+  eq(badLogsResponse.status, 200, "/logs resolves for the gated timeout Run");
+  const badLogs = badLogsResponse.json().lines;
+  ok(badLogs.some((line) => line.level === "error" && /timed out/i.test(line.msg + " " + (line.err || ""))), "/logs carries the runner timeout line");
+  sweep("/api/runs/" + badRun.run.id + "/logs", badLogsResponse.text);
   const stopped = badRun.view.events.find((e) => e.type === "runtime.container.stopped");
   eq(stopped && stopped.attributes.cleanup, "rm --force", "container teardown evidence: runtime.container.stopped cleanup=rm --force");
   ok(badRun.view.events.some((e) => e.type === "run.timed_out" && /3000/.test(e.error && e.error.message)), "run.timed_out names the 3000 ms fixture timeout");
@@ -419,7 +449,15 @@ async function closeResources() {
   await openApp(page);
   await page.locator(".runs-filters button", { hasText: "Timed out" }).click();
   eq(await page.locator(`${RUNS_TABLE} tbody tr`).count(), 1, "'Timed out' quick filter leaves exactly the gated run");
+  const timeoutRow = page.locator(`${RUNS_TABLE} tbody tr`).first();
+  const configColumn = (await page.locator(`${RUNS_TABLE} th`).allTextContents()).findIndex((header) => header.trim() === "Config");
+  ok(configColumn >= 0, "Runs table exposes the Config column (#90)");
+  eq(await timeoutRow.locator("td").nth(configColumn).locator("code").innerText(), badRun.view.summary.configHash.slice(0, 8), "Runs row renders the Run configHash (#90)");
+  // The POC lane runs danger-full-access, so denials is 0 here: the badge must be absent exactly then.
+  eq(await timeoutRow.locator(".badge", { hasText: /^denied / }).count(), badRun.view.summary.denials > 0 ? 1 : 0, "Runs row denial badge agrees with the denial count (#90)");
   await openTraceByKeyboard(page, badRun.run.id);
+  const metricsText = await page.locator(".trace-summary dt", { hasText: /^Metrics$/ }).locator("..").locator("dd").innerText();
+  ok(metricsText.includes(badRun.view.summary.metrics.toolCalls + " tool calls") && metricsText.includes(badRun.view.summary.metrics.modelCalls + " model calls"), "Trace header renders the verified metrics row (#90)");
   await page.locator(".trace-detail button", { hasText: /^Audit$/ }).click();
   const auditTable = page.locator(".audit-table");
   await auditTable.waitFor({ timeout: 5_000 });
@@ -434,6 +472,7 @@ async function closeResources() {
   const banner = page.locator(".trace-banner");
   ok((await banner.innerText()).includes("timeout"), "first-failure banner is shown");
   const jump = page.locator("button", { hasText: "Jump to failing span" });
+  eq(await jump.getAttribute("aria-describedby"), "trace-diagnosis", "Jump is described by the diagnosis paragraph (#103)");
   await page.setViewportSize({ width: 1366, height: 768 });
   await page.locator("[role=treeitem]").first().click();
   const dialog = page.locator("[role=dialog]");
@@ -480,9 +519,13 @@ async function closeResources() {
   const ndjson = fs.readdirSync(traceDir, { recursive: true }).filter((f) => String(f).endsWith(".ndjson"));
   ok(ndjson.length >= 2, ndjson.length + " NDJSON trace files under " + traceDir);
   for (const f of ndjson) sweep("file " + f, fs.readFileSync(path.join(traceDir, String(f)), "utf8"));
+  const logDir = path.join(ROOT, "data", "logs");
+  const logFiles = fs.readdirSync(logDir).filter((f) => f.startsWith("server.ndjson"));
+  ok(logFiles.length >= 1 && logFiles.length <= 3, logFiles.length + " bounded server NDJSON log file(s) under " + logDir);
+  for (const f of logFiles) sweep("log file " + f, fs.readFileSync(path.join(logDir, f), "utf8"));
   sweep("/api/runs", (await api("/api/runs")).text);
   for (const r of [okRun, badRun]) {
-    for (const url of ["/api/runs/" + r.run.id + "/trace", "/api/traces/" + r.run.traceId + "/events", "/api/traces/" + r.run.traceId + "/export"]) {
+    for (const url of ["/api/runs/" + r.run.id + "/trace", "/api/runs/" + r.run.id + "/audit", "/api/runs/" + r.run.id + "/logs", "/api/traces/" + r.run.traceId + "/audit", "/api/traces/" + r.run.traceId + "/events", "/api/traces/" + r.run.traceId + "/export"]) {
       const res = await api(url);
       eq(res.status, 200, url + " resolves (a 404 body would be trivially secret-free)");
       sweep(url, res.text);

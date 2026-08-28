@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
 import { agentPayload } from "./agent-form";
-import type { Agent, AgentRun, EvalRun, Message, RegressionCase, RunListItem, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
+import type { Agent, AgentRun, AgentRunBaseline, EvalRun, Message, RegressionCase, RunListItem, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
 import RunsView from "./RunsView";
 import TraceDetail from "./TraceDetail";
 import Overview from "./Overview";
@@ -55,6 +55,7 @@ export default function App() {
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
   const [runs, setRuns] = useState<RunListItem[]>([]);
+  const [runBaseline, setRunBaseline] = useState<AgentRunBaseline | null>(null);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [templates, setTemplates] = useState<WorkspaceTemplate[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
@@ -90,6 +91,13 @@ export default function App() {
   selectedRunIdRef.current = selectedRunId;
   viewRef.current = view;
 
+  // Escape/Close hands focus back to the Run's row; if a quick filter hides that row, the Runs heading keeps the keyboard user anchored (#103).
+  const closeTrace = useCallback(() => {
+    const runId = selectedRunIdRef.current;
+    setSelectedRunId(null);
+    requestAnimationFrame(() => (document.querySelector<HTMLElement>(`[data-run-id="${runId}"]`) ?? document.getElementById("runs-heading"))?.focus());
+  }, []);
+
   const selected = useMemo(
     () => agents.find((agent) => agent.id === selectedId) ?? null,
     [agents, selectedId],
@@ -124,11 +132,14 @@ export default function App() {
     const overview = viewRef.current === "overview";
     const agentId = selectedIdRef.current;
     const scope = overview ? "overview" : agentId;
-    if (!scope) { setRuns([]); return; }
+    if (!scope) { setRuns([]); setRunBaseline(null); return; }
     try {
-      const result = await api.listRuns(overview ? { limit: 200 } : { agentId: agentId!, limit: 100 });
+      const [result, baselineResult] = await Promise.all([
+        api.listRuns(overview ? { limit: 200 } : { agentId: agentId!, limit: 100 }),
+        overview ? Promise.resolve(null) : api.runBaseline(agentId!).catch(() => null),
+      ]);
       const stillCurrent = (viewRef.current === "overview" ? "overview" : selectedIdRef.current) === scope;
-      if (mountedRef.current && stillCurrent) setRuns(result.runs);
+      if (mountedRef.current && stillCurrent) { setRuns(result.runs); setRunBaseline(baselineResult?.baseline ?? null); }
     } catch {
       // ponytail: runs table goes stale, baseline keeps working (invariant 12)
     }
@@ -629,6 +640,11 @@ export default function App() {
                 </p>
               </div>
               <div className="header-actions">
+                {selectedRunId && playgroundExpanded && (
+                  <button className="button button-ghost" onClick={() => setPlaygroundExpanded(false)}>
+                    Collapse Playground
+                  </button>
+                )}
                 <button
                   className="button button-ghost"
                   onClick={() => setShowSettings((value) => !value)}
@@ -857,7 +873,7 @@ export default function App() {
             focusEventId={focusEventId}
             onFocusHandled={() => setFocusEventId(null)}
             onCaseSaved={refreshRegressionCases}
-            onClose={() => setSelectedRunId(null)}
+            onClose={closeTrace}
           />
         )}
         {/* runs are server-scoped already; the filter only keeps another Agent's rows out of the DOM across a switch */}
@@ -869,6 +885,7 @@ export default function App() {
           showAgent={view === "overview"}
           title={view === "agent" && selected ? "Runs · " + selected.name : "Runs"}
           emptyText={view === "agent" && selected ? "No Runs for this Agent yet." : "No Runs observed yet."}
+          baseline={view === "agent" ? runBaseline : null}
         />
       </main>
 

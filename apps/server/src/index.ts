@@ -10,12 +10,16 @@ import { scheduleRollup } from "./glassbox/summary.js";
 import { createRunner } from "./runner-factory.js";
 import { JsonStore } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
+import { RunLogStore } from "./run-log-store.js";
 
 const config = loadConfig();
 await writeCodexConfig(config);
 
 const store = new JsonStore(path.join(config.dataDirectory, "launchpad.json"));
+await store.initialize(); // before anything seeds or rolls up into it; AgentService.initialize() re-reads the same file
 const workspaces = new WorkspaceManager(config.workspaceRoot, config.workspaceTemplatesDirectory);
+const runLogs = new RunLogStore(path.join(config.dataDirectory, "logs"), config.glassboxLogMaxMb * 1024 * 1024);
+await runLogs.initialize();
 
 const glassboxLog = (message: string, meta: Record<string, unknown>) =>
   console.warn("[glassbox]", message, JSON.stringify(meta));
@@ -45,11 +49,11 @@ const summaries = await openSummaryStore(config, store);
 const evaluations = new JsonEvaluationStore(store, summaries);
 await evaluations.initialize();
 const rollup = { traces: traceStore, emitter, summaries, log: glassboxLog };
-const service = new AgentService(config, store, workspaces, runner, emitter, (runId) => void scheduleRollup(rollup, runId));
+const service = new AgentService(config, store, workspaces, runner, emitter, (runId) => void scheduleRollup(rollup, runId), runLogs);
 await service.initialize();
 await service.startHeartbeat();
 
-const app = await createApp(config, service, { emitter, store: traceStore, summaries, evaluations });
+const app = await createApp(config, service, { emitter, store: traceStore, summaries, evaluations, logs: runLogs });
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");

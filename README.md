@@ -216,6 +216,7 @@ cp deploy/volcengine/terraform.tfvars.example \
 | `GLASSBOX_STORE` | `json` | `json` keeps Run summaries in `launchpad.json`; `postgres` stores them in PostgreSQL (`docker compose --profile postgres up`). Traces stay NDJSON either way. |
 | `DATABASE_URL` | — | Required when `GLASSBOX_STORE=postgres`. |
 | `GLASSBOX_MAX_DISK_MB` | `200` | At startup, while trace files exceed this, compact the oldest finished Runs first (running Runs are never touched). `0` disables. |
+| `GLASSBOX_PRICE_PER_MTOK_INPUT` / `GLASSBOX_PRICE_PER_MTOK_OUTPUT` | — | Optional display-only token prices per million; when configured, Runs show an estimated cost. |
 
 See [.env.example](.env.example) for all Runtime and resource-limit options.
 
