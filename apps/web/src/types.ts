@@ -53,7 +53,6 @@ export interface AgentRun {
     inputTokens?: number;
     cachedInputTokens?: number;
     outputTokens?: number;
-    reasoningOutputTokens?: number;
   } | null;
   createdAt: string;
   traceId?: string;
