@@ -2,7 +2,7 @@
 //   npx vitest run apps/web/src/runs-view-model.test.ts
 import { describe, expect, it } from "vitest";
 import type { RunListItem, TraceStatus } from "./types";
-import { ERROR_HEAD_CHARS, collapseRequestId, errorHead, evidenceBadges, formatCost, formatRunDuration, formatUsage, liveRuns, matchesFilter, needsAttention, outlierLabel, pluralize, recoveredFailures, runOutlier, summarizeRuns, workspaceLabel, workspaceOptionLabel } from "./runs-view-model";
+import { ERROR_HEAD_CHARS, collapseRequestId, errorHead, evidenceBadges, formatCost, formatRunDuration, formatUsage, liveRuns, matchesFilter, needsAttention, outlierLabel, pluralize, recoveredFailures, runOutlier, SESSION_INPUT_TOKENS_ADVISORY_THRESHOLD, sessionHealth, summarizeRuns, workspaceLabel, workspaceOptionLabel } from "./runs-view-model";
 
 function run(status: TraceStatus, degraded = false, agentId = "a", agentName = "A", extra: Partial<RunListItem> = {}): RunListItem {
   return {
@@ -92,6 +92,28 @@ describe("formatUsage", () => {
   it("keeps small usage exact and compacts wide token counts", () => {
     expect(formatUsage({ inputTokens: 37384, cachedInputTokens: 12_400, outputTokens: 383 })).toBe("37k in · 12k cached · 383 out");
     expect(formatUsage({ inputTokens: 999, outputTokens: 1200 })).toBe("999 in · 1.2k out");
+    expect(formatUsage({ inputTokens: 2_100_000, outputTokens: 0 })).toBe("2.1M in · 0 out");
+  });
+});
+
+describe("sessionHealth (#257)", () => {
+  const turn = (sessionId: string | undefined, inputTokens?: number) =>
+    run("ok", false, "a", "A", { ...(sessionId ? { sessionId } : {}), ...(inputTokens === undefined ? {} : { usage: { inputTokens } }) });
+
+  it("is empty with no thread or no Runs on the thread", () => {
+    expect(sessionHealth([turn("thr-other", 50)], null)).toEqual({ turns: 0, inputTokens: 0, advisory: false });
+    expect(sessionHealth([], "thr-1")).toEqual({ turns: 0, inputTokens: 0, advisory: false });
+    expect(sessionHealth([turn("thr-other", 50), turn(undefined, 50)], "thr-1")).toEqual({ turns: 0, inputTokens: 0, advisory: false });
+  });
+
+  it("counts only the current thread's Runs and sums their input tokens; missing usage counts as 0", () => {
+    const runs = [turn("thr-1", 100), turn("thr-other", 9_999), turn("thr-1"), turn(undefined, 42), turn("thr-1", 25)];
+    expect(sessionHealth(runs, "thr-1")).toEqual({ turns: 3, inputTokens: 125, advisory: false });
+  });
+
+  it("turns advisory exactly at the cumulative input-token threshold", () => {
+    expect(sessionHealth([turn("thr-1", SESSION_INPUT_TOKENS_ADVISORY_THRESHOLD - 1)], "thr-1").advisory).toBe(false);
+    expect(sessionHealth([turn("thr-1", SESSION_INPUT_TOKENS_ADVISORY_THRESHOLD - 1), turn("thr-1", 1)], "thr-1").advisory).toBe(true);
   });
 });
 

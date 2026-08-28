@@ -8,7 +8,7 @@ import TraceDetail from "./TraceDetail";
 import Overview from "./Overview";
 import CompareView from "./CompareView";
 import { refreshIntervalMs } from "./trace-view-model";
-import { workspaceOptionLabel } from "./runs-view-model";
+import { formatCount, LONG_SESSION_HINT, sessionHealth, workspaceOptionLabel } from "./runs-view-model";
 import { runtimeCardModel } from "./system-view-model";
 
 const starterPrompts = [
@@ -812,6 +812,18 @@ export default function App() {
                 <div className="session-info">
                   <span className="pulse" />
                   {selected.codexThreadId ? "Session connected" : "New session"}
+                  {selected.codexThreadId && (() => {
+                    // #257: derived from the Runs list this view already polls — advisory only, no auto-reset.
+                    const health = sessionHealth(runs, selected.codexThreadId);
+                    return (
+                      <span
+                        className={"session-health" + (health.advisory ? " session-health-warn" : "")}
+                        title={health.advisory ? LONG_SESSION_HINT : undefined}
+                      >
+                        Session: {health.turns} {health.turns === 1 ? "turn" : "turns"} · {formatCount(health.inputTokens)} tokens in
+                      </span>
+                    );
+                  })()}
                 </div>
               </div>
 
