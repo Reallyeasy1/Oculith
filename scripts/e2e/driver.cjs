@@ -128,6 +128,7 @@ async function openApp(page) {
 
 async function openTraceByKeyboard(page, runId) {
   const row = page.locator(`${RUNS_TABLE} tbody tr`).first();
+  ok(/^Open trace for .+, .+, .+$/.test(await row.getAttribute("aria-label")), "Runs row has a unique name including Agent, status, and start time (#103)");
   await row.focus();
   eq(await page.evaluate(() => document.activeElement && document.activeElement.tagName), "TR", "Runs row takes focus");
   await page.keyboard.press("Enter");
@@ -150,7 +151,9 @@ async function drawerRoundTrip(page) {
   await page.keyboard.press("Enter");
   const dialog = page.locator("[role=dialog]");
   await dialog.waitFor({ timeout: 5_000 });
-  ok(await page.evaluate(() => !!(document.activeElement && document.activeElement.closest("[role=dialog]"))), "Drawer takes focus on open");
+  eq(await page.evaluate(() => document.activeElement && document.activeElement.id), "span-drawer-title", "Drawer heading takes focus on open (#103)");
+  await page.keyboard.press("Shift+Tab");
+  ok(await page.evaluate(() => !!(document.activeElement && document.activeElement.closest("[role=dialog]"))), "Shift+Tab from the heading stays inside the drawer");
   for (let i = 0; i < 6; i++) await page.keyboard.press("Tab");
   ok(await page.evaluate(() => !!(document.activeElement && document.activeElement.closest("[role=dialog]"))), "Focus stays inside the drawer after 6 Tabs");
   await page.keyboard.press("Escape");
@@ -282,7 +285,21 @@ async function closeResources() {
   eq(await page.locator(`${RUNS_TABLE} th`, { hasText: /^Outcome$/ }).count(), 1, "Runs table exposes the Outcome column");
   ok((await page.locator("#runs-heading").innerText()).includes("E2E GlassBox"), "Runs table is scoped to the selected Agent");
   eq(await page.locator(`${RUNS_TABLE} th`, { hasText: /^Agent$/ }).count(), 0, "Agent column is hidden in the Agent view");
+  eq((await page.locator(`${RUNS_TABLE} tbody tr`).first().locator("td").nth(1).innerText()).trim(), "managed", "managed workspace UUID is rendered as 'managed'");
+  eq(await page.locator(`${RUNS_TABLE} tbody tr`).first().locator("td").nth(1).getAttribute("title"), agent.id, "managed workspace keeps its UUID in the tooltip");
   await openTraceByKeyboard(page, okRun.run.id);
+  const expandPlayground = page.locator("button", { hasText: "Expand Playground" });
+  await expandPlayground.click();
+  const collapsePlayground = page.locator("button", { hasText: "Collapse Playground" });
+  await collapsePlayground.waitFor({ timeout: 5_000 });
+  await collapsePlayground.click();
+  await expandPlayground.waitFor({ timeout: 5_000 });
+  ok(true, "Playground toggle names both Expand and Collapse states (#103)");
+  const exportLink = page.getByRole("link", { name: "Export JSON" });
+  eq(await exportLink.getAttribute("href"), "/api/traces/" + okRun.run.traceId + "/export", "Export JSON link targets the redacted trace export (#154)");
+  const downloadPromise = page.waitForEvent("download");
+  await exportLink.click();
+  eq((await downloadPromise).suggestedFilename(), "trace-" + okRun.run.traceId + ".json", "authenticated UI export keeps the trace filename (#154)");
   const timeSplitField = page.locator(".trace-summary dt", { hasText: /^Time split$/ });
   await timeSplitField.waitFor({ timeout: 10_000 });
   ok((await timeSplitField.locator("..").innerText()).includes("model"), "Trace header renders the observed time split (#129)");
@@ -316,22 +333,35 @@ async function closeResources() {
   const regressionCase = (await api("/api/regression-cases")).json().cases.find((item) => item.sourceRunId === okRun.run.id);
   ok(regressionCase, "saving the baseline trace creates a regression case");
   sweep("DOM (ok trace)", await glassboxText(page));
-  await page.locator("button", { hasText: "Close trace" }).click();
-  eq(await page.locator(".trace-detail").count(), 0, "Close trace returns to the Runs table");
+  await page.locator("[role=treeitem]").first().focus();
+  await page.keyboard.press("Escape");
+  await page.locator(".trace-detail").waitFor({ state: "detached", timeout: 5_000 });
+  await page.waitForFunction((runId) => document.activeElement && document.activeElement.getAttribute("data-run-id") === runId, okRun.run.id, { timeout: 5_000 });
+  ok(true, "Escape on the tree closes the trace and restores focus to its Runs row (#103)");
 
   console.log("\n[4b] UI: Runs follow the selected Agent; All runs spans Agents with the summary strip (#70)");
   const rows = () => page.locator(`${RUNS_TABLE} tbody tr`);
   await page.locator(".create-button").click();
   await page.locator(".modal input[placeholder='Frontend Builder']").fill("E2E Empty");
+  const workspaceOption = page.locator(`#workspace-names-create option[value="${agent.workspaceName}"]`);
+  const workspaceOptionLabel = await workspaceOption.getAttribute("label");
+  ok(workspaceOptionLabel && workspaceOptionLabel.startsWith(agent.workspaceName + " · "), "workspace option exposes its descriptive label in the browser");
+  await page.locator(".modal input[list=workspace-names-create]").fill(agent.workspaceName);
   await page.locator(".modal .button-primary").click();
   await page.locator(".agent-header h1", { hasText: "E2E Empty" }).waitFor({ timeout: 10_000 });
   await page.locator(".runs-empty", { hasText: "No Runs for this Agent yet." }).waitFor({ timeout: 10_000 });
   eq(await rows().count(), 0, "new Agent under 'All': no rows from the other Agent");
+  await page.locator(".agent-header button", { hasText: "Settings" }).click();
+  const settingsHelp = page.locator(".settings-panel .form-help");
+  ok((await settingsHelp.innerText()).includes("Shared with E2E GlassBox"), "Settings identifies the Agent sharing the current workspace");
+  ok((await settingsHelp.innerText()).includes("Switching resets this Agent's Codex conversation thread"), "Settings warns that switching resets the Codex thread");
+  await page.locator(".settings-panel button", { hasText: "×" }).click();
   const pressedFilter = () => page.locator(".runs-filters button[aria-pressed=true]").textContent(); // textContent: CSS capitalises innerText
   eq(await pressedFilter(), "all", "quick filter stays on 'All' across the Agent switch");
   await page.locator(".agent-card", { hasText: "E2E GlassBox" }).click();
   await rows().first().waitFor({ timeout: 10_000 });
   eq(await rows().count(), 1, "first Agent again: exactly its one Run");
+  eq(await rows().first().locator(".tool-call-summary").evaluate((node) => getComputedStyle(node).gap), "6px", "Tool-call badges have explicit spacing (#157)");
   eq(await page.locator(".agent-card[aria-current=page] strong").textContent(), "E2E GlassBox", "sidebar marks the selected Agent aria-current=page");
   const allRuns = page.locator(".agent-card", { hasText: "All runs" });
   await allRuns.focus();
@@ -421,12 +451,37 @@ async function closeResources() {
   eq(await page.evaluate(() => document.activeElement && document.activeElement.getAttribute("role")), "treeitem", "Enter on an audit row returns focus to its evidence span");
   const banner = page.locator(".trace-banner");
   ok((await banner.innerText()).includes("timeout"), "first-failure banner is shown");
-  await page.locator("button", { hasText: "Jump to failing span" }).click();
+  const jump = page.locator("button", { hasText: "Jump to failing span" });
+  eq(await jump.getAttribute("aria-describedby"), "trace-diagnosis", "Jump is described by the diagnosis paragraph (#103)");
+  await page.setViewportSize({ width: 1366, height: 768 });
+  await page.locator("[role=treeitem]").first().click();
   const dialog = page.locator("[role=dialog]");
   await dialog.waitFor({ timeout: 5_000 });
+  const narrowLayout = await page.evaluate(() => {
+    const drawer = document.querySelector(".span-drawer").getBoundingClientRect();
+    const tree = document.querySelector(".trace-tree").getBoundingClientRect();
+    const jumpButton = Array.from(document.querySelectorAll("button")).find((button) => button.textContent.includes("Jump to failing span")).getBoundingClientRect();
+    return { position: getComputedStyle(document.querySelector(".span-drawer")).position, drawerY: drawer.y, treeBottom: tree.bottom, jumpRight: jumpButton.right, viewportWidth: innerWidth };
+  });
+  eq(narrowLayout.position, "static", "1366 px drawer docks below the tree");
+  ok(narrowLayout.drawerY >= narrowLayout.treeBottom && narrowLayout.jumpRight <= narrowLayout.viewportWidth, "1366 px drawer does not cover the tree or Jump button");
+  if (process.env.E2E_DRAWER_SCREENSHOT_DIR) {
+    fs.mkdirSync(process.env.E2E_DRAWER_SCREENSHOT_DIR, { recursive: true });
+    await page.screenshot({ path: path.join(process.env.E2E_DRAWER_SCREENSHOT_DIR, "drawer-1366.png"), fullPage: true });
+  }
+  await jump.click();
   eq(await dialog.locator("#span-drawer-title").innerText(), "codex exec", "Jump opens the drawer on `codex exec`");
   ok((await dialog.innerText()).includes("timeout"), "drawer shows the timeout status");
   ok(await page.evaluate(() => !!(document.activeElement && document.activeElement.closest("[role=dialog]"))), "Jump moves focus into the drawer");
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  const wideLayout = await page.evaluate(() => {
+    const drawer = document.querySelector(".span-drawer").getBoundingClientRect();
+    const jumpButton = Array.from(document.querySelectorAll("button")).find((button) => button.textContent.includes("Jump to failing span")).getBoundingClientRect();
+    return { drawerLeft: drawer.left, jumpRight: jumpButton.right };
+  });
+  ok(wideLayout.jumpRight <= wideLayout.drawerLeft, "1920 px trace reserves the drawer width without covering Jump");
+  if (process.env.E2E_DRAWER_SCREENSHOT_DIR) await page.screenshot({ path: path.join(process.env.E2E_DRAWER_SCREENSHOT_DIR, "drawer-1920.png"), fullPage: true });
+  await page.setViewportSize({ width: 1400, height: 1000 });
   sweep("DOM (drawer)", await dialog.innerText());
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached", timeout: 5_000 });

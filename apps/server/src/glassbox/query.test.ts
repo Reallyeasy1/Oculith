@@ -56,6 +56,25 @@ describe("buildTrace", () => {
     const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
     expect(summary.failure?.diagnosis).toContain("command not found");
   });
+  it("formats exit-code hints on recovered spans without changing stored events", () => {
+    seq = 0;
+    const failedTool = ev({
+      type: "tool.call.failed", category: "tool", spanId: "tool", parentSpanId: "rt", status: "error",
+      name: "shell:missing-command", error: { type: "exit_code", message: "exit code 127" },
+    });
+    const events = [root(), svcStart(), rtStart(), failedTool,
+      ev({ type: "runtime.codex.completed", category: "runtime", spanId: "rt", phase: "end", status: "ok" }),
+      ev({ type: "run.completed", category: "control", spanId: "done", parentSpanId: "svc", status: "ok" })];
+
+    const view = buildTrace(events, { capturePolicy: "metadata_only" });
+    const tool = flattenSpans(view.spans).find((span) => span.spanId === "tool");
+
+    expect(view.summary.status).toBe("ok");
+    expect(view.summary.failure).toBeUndefined();
+    expect(tool?.error?.message).toBe("exit code 127 — command not found — the program is missing from the runtime image");
+    expect(failedTool.error?.message).toBe("exit code 127");
+    expect(view.events.find((event) => event.eventId === failedTool.eventId)?.error?.message).toBe("exit code 127");
+  });
   it("uses the formatted exit code in failure focus and diagnosis", () => {
     seq = 0;
     const events = [root(), svcStart(), rtStart(),

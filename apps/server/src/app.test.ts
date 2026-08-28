@@ -7,6 +7,7 @@ import { loadConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
+import type { EvaluationStore } from "./glassbox/evaluation.js";
 import { MemoryTraceStore } from "./glassbox/store.js";
 import { RunLogStore } from "./run-log-store.js";
 
@@ -266,6 +267,24 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     expect(bad.json()).toHaveProperty("details");
     expect((await app.inject({ method: "GET", url: "/api/runs/not-a-uuid", headers: auth })).statusCode).toBe(400);
     expect((await app.inject({ method: "GET", url: "/api/nope", headers: auth })).statusCode).toBe(404);
+    await app.close();
+  });
+
+  it("lists evaluator definitions and current evaluations for an existing Run", async () => {
+    const store = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const runId = "019f3fa8-44d2-7b60-b413-1a0b2c3d4e5f";
+    const definition = { id: "task_completion", name: "Task Completion", version: 1, type: "llm_judge" as const, rubric: "rubric", minScore: 1, maxScore: 5, passThreshold: 4, config: {}, setsTaskOutcome: true, createdAt: "2026-08-28T00:00:00.000Z" };
+    const result = { runId, evaluatorId: definition.id, evaluatorVersion: 1, score: 5, passed: true, explanation: "completed", evidenceEventIds: ["evt-1"], metadata: {}, evaluatedAt: "2026-08-28T01:00:00.000Z" };
+    const evaluations = {
+      listDefinitions: async () => [definition],
+      resultsForRun: async (id: string) => id === runId ? [result] : [],
+    } as unknown as EvaluationStore;
+    const svc = { ...service, getRun: (id: string) => { if (id !== runId) throw new HttpError(404, "Run not found"); return { id }; } } as unknown as AgentService;
+    const app = await createApp(config(), svc, { emitter, store, evaluations });
+    expect((await app.inject({ method: "GET", url: "/api/evaluators", headers: auth })).json()).toEqual({ evaluators: [definition] });
+    expect((await app.inject({ method: "GET", url: `/api/runs/${runId}/evaluations`, headers: auth })).json()).toEqual({ evaluations: [result] });
+    expect((await app.inject({ method: "GET", url: "/api/runs/019f3fa8-44d2-7b60-b413-1a0b2c3d4e60/evaluations", headers: auth })).statusCode).toBe(404);
     await app.close();
   });
 

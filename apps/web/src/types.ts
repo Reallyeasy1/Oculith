@@ -17,6 +17,15 @@ export interface Agent {
   updatedAt: string;
 }
 
+export interface Workspace {
+  name: string;
+  path: string;
+  agents: string[];
+  fileCount: number;
+  lastModified: string;
+  managed: boolean;
+}
+
 export interface Message {
   id: string;
   agentId: string;
@@ -298,6 +307,17 @@ export interface EvalRun {
 export interface EvalComparison {
   cases: { caseId: string; assertions: { type: string; baseline?: EvalResult; candidate?: EvalResult; delta?: number; regression: boolean }[]; regression: boolean; traceLinks: { baseline?: string; candidate?: string } }[];
   regressions: number; templateMismatch?: boolean;
+}
+
+export interface EvaluatorDefinition {
+  id: string; name: string; version: number; type: "deterministic" | "llm_judge"; rubric: string; model?: string;
+  minScore: number; maxScore: number; passThreshold: number; config: Record<string, string | number | boolean | null>;
+  setsTaskOutcome: boolean; createdAt: string;
+}
+export interface EvaluationResult {
+  runId: string; evaluatorId: string; evaluatorVersion: number; score?: number; passed: boolean; explanation: string;
+  evidenceEventIds: string[]; evaluatorModel?: string; metadata: Record<string, string | number | boolean | null>;
+  evaluatedAt: string; jobId?: string;
 }
 
 // Mirrors WorkspaceManager.listTemplates(): a bad template (symlink, over limits) is reported, not a 500.

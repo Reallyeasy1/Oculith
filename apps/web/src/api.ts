@@ -1,4 +1,4 @@
-import type { Agent, AgentRun, Assertion, AuditRow, CapturePolicy, EvalRun, Message, RegressionCase, RunListItem, RunLogLine, SystemInfo, TraceView, WorkspaceTemplate } from "./types";
+import type { Agent, AgentRun, Assertion, AuditRow, CapturePolicy, EvalRun, Message, RegressionCase, RunListItem, RunLogLine, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -59,7 +59,7 @@ export const api = {
     request<{ archivedWorkspace: string }>("/api/agents/" + id, {
       method: "DELETE",
     }),
-  listWorkspaces: () => request<{ workspaces: { name: string; path: string; agents: string[]; fileCount: number; lastModified: string; managed: boolean }[] }>("/api/workspaces"),
+  listWorkspaces: () => request<{ workspaces: Workspace[] }>("/api/workspaces"),
   listWorkspaceTemplates: () => request<{ templates: WorkspaceTemplate[] }>("/api/workspace-templates"),
   startAgent: (id: string) =>
     request<{ agent: Agent }>("/api/agents/" + id + "/start", {
@@ -107,4 +107,16 @@ export const api = {
     }),
   logs: (runId: string, level = "") => request<{ lines: RunLogLine[]; truncated: boolean }>("/api/runs/" + runId + "/logs?" + new URLSearchParams({ limit: "500", ...(level ? { level } : {}) })),
   audit: (runId: string) => request<{ schemaVersion: string; capturePolicy: CapturePolicy; audit: AuditRow[] }>("/api/runs/" + runId + "/audit"),
+  exportTrace: async (traceId: string): Promise<{ blob: Blob; filename: string }> => {
+    const response = await fetch("/api/traces/" + encodeURIComponent(traceId) + "/export", {
+      headers: authToken ? { Authorization: "Bearer " + authToken } : undefined,
+    });
+    if (!response.ok) {
+      const data = (await response.json().catch(() => ({}))) as { error?: string };
+      throw new ApiError(data.error ?? "Export failed", response.status);
+    }
+    const disposition = response.headers.get("Content-Disposition") ?? "";
+    const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? "trace-" + traceId + ".json";
+    return { blob: await response.blob(), filename };
+  },
 };

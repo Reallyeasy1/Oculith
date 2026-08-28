@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type { Assertion, AuditRow, ObservationEvent, RunListItem, RunLogLine, Span, TraceView } from "./types";
-import { REPORTED_FAILURE_HINT, STATUS_ICON, formatClock, formatDuration, formatRunDuration, formatUsage } from "./runs-view-model";
+import { REPORTED_FAILURE_HINT, STATUS_ICON, formatClock, formatDuration, formatRunDuration, formatUsage, workspaceLabel } from "./runs-view-model";
 import {
   CATEGORIES,
   DRAWER_EVENT_CAP,
   EMPTY_FILTER,
   STATUSES,
   barGeometry,
+  capabilityBadgeLabel,
   capabilityCopy,
   defaultExpanded,
   formatAttribute,
+  isFailed,
   indexSpans,
   interruptedSpanDurationMs,
   isFilterActive,
@@ -21,14 +23,14 @@ import {
 } from "./trace-view-model";
 
 // Three capability states (PRD §8): observed | unavailable | unknown. Unknown remains pending while a
-// Run is live; only an ended Run can say it was cut short. Short badge copy; long form in `title`.
+// Run is live; only a failed Run turns it into a warning (#137) — an ok chat-only Run legitimately has no tool evidence.
 function CapabilityBadge({ layer, state, status }: {
   layer: "model" | "tool";
   state: "observed" | "unavailable" | "unknown";
   status: TraceView["summary"]["status"];
 }) {
   const copy = capabilityCopy(state, status);
-  return <span className="badge" title={layer + ": " + copy.title}>{layer} {copy.label}</span>;
+  return <span className={"badge" + (state === "unknown" && isFailed(status) ? " badge-warn" : "")} title={layer + ": " + copy.title}>{capabilityBadgeLabel(layer, state, status)}</span>;
 }
 
 interface Props {
@@ -64,6 +66,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
   const [showAudit, setShowAudit] = useState(false);
   const [auditRows, setAuditRows] = useState<AuditRow[] | null>(null);
   const [auditError, setAuditError] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   // Bumped whenever focus must move programmatically (keyboard nav, Jump, drawer close); the effect below
   // runs after the target row has rendered, which matters when Jump expands a collapsed path.
@@ -129,6 +132,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
 
   const { summary } = view;
   const failure = summary.failure;
+  const workspace = workspaceLabel(summary.workspace ?? run?.workspace, summary.agentId || run?.agentId || "");
   const failingSpan = failure && byId.get(failure.spanId);
   const openSpan = openId ? byId.get(openId) : undefined;
   const saveReason = summary.status !== "ok"
@@ -195,6 +199,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
         else if (row.span.parentSpanId && byId.has(row.span.parentSpanId)) focusRow(row.span.parentSpanId);
         break;
       case "Enter": case " ": setOpenId(id); break;
+      case "Escape": onClose(); break;
       default: return;
     }
     event.preventDefault();
@@ -212,8 +217,23 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
     setFocusReq((n) => n + 1);
   };
 
+  const downloadExport = async () => {
+    setExportError(null);
+    try {
+      const { blob, filename } = await api.exportTrace(summary.traceId);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      anchor.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (reason) {
+      setExportError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
   return (
-    <section ref={sectionRef} className="runs-view trace-detail" aria-labelledby="trace-heading">
+    <section ref={sectionRef} className={"runs-view trace-detail" + (openSpan ? " trace-detail-with-drawer" : "")} aria-labelledby="trace-heading">
       <div className="playground-topbar trace-header">
         <div>
           <span className="eyebrow">Trace · schema {summary.schemaVersion} · {summary.capturePolicy}</span>
@@ -223,15 +243,25 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
           </h2>
         </div>
         <div className="header-actions">
+          <a
+            className="button button-ghost"
+            href={"/api/traces/" + encodeURIComponent(summary.traceId) + "/export"}
+            download={"trace-" + summary.traceId + ".json"}
+            onClick={(event) => { event.preventDefault(); void downloadExport(); }}
+          >
+            Export JSON
+          </a>
           <button type="button" className="button button-ghost" onClick={openSaveCase} disabled={Boolean(saveReason)} title={saveReason || undefined}>Save as regression case</button>
           <button type="button" className="button button-ghost" onClick={onClose}>Close trace</button>
         </div>
       </div>
 
+      {exportError && <p className="trace-export-error" role="alert">Export failed: {exportError}</p>}
+
       <dl className="trace-summary">
         <Field label="Trace">{summary.traceId || "—"}</Field>
         <Field label="Agent">{run?.agentName || summary.agentId || "—"}</Field>
-        <Field label="Workspace">{summary.workspace ?? run?.workspace ?? "—"}</Field>
+        <Field label="Workspace"><span title={workspace.title}>{workspace.text}</span></Field>
         <Field label="Runtime / model" className="trace-runtime"><span title={run ? run.runtime + " · " + run.model : undefined}>{run ? run.runtime + " · " + run.model : "—"}</span></Field>
         <Field label="Session">{summary.sessionId ?? <span className="trace-muted">not observed</span>}</Field>
         <Field label="Start">{formatClock(summary.startedAt)}</Field>
@@ -267,10 +297,10 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
           <div>
             <strong>{failure.kind === "denied" ? "First denial" : "First actionable " + failure.kind}: {failure.name}</strong>
             <span className="trace-banner-meta">{failure.category} · {failure.component}{failure.message ? " · " + failure.message : ""}</span>
-            <p className="trace-diagnosis">{failure.diagnosis}</p>
+            <p id="trace-diagnosis" className="trace-diagnosis">{failure.diagnosis}</p>
           </div>
           {failingSpan && (
-            <button type="button" className="button button-primary" onClick={jump} autoFocus>Jump to failing span</button>
+            <button type="button" className="button button-primary" onClick={jump} aria-describedby="trace-diagnosis">Jump to failing span</button>
           )}
         </div>
       )}
@@ -364,7 +394,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
                 {row.hasChildren ? (row.expanded ? "▾" : "▸") : "·"}
               </button>
               <span className={"status status-" + s.status}><span aria-hidden="true">{STATUS_ICON[s.status]}</span>{spanStatusLabel(s, summary.endedReason)}</span>
-              <span className="trace-name" title={[s.attributes.program, s.attributes.argument0].filter((value) => typeof value === "string" && value.length > 0).join(" ") || undefined}>{s.name}</span>
+              <span className="trace-name" title={[[s.attributes.program, s.attributes.argument0].filter((value) => typeof value === "string" && value.length > 0).join(" "), s.error?.message].filter(Boolean).join("\n") || undefined}>{s.name}</span>
               <span className="trace-cat">{s.category}</span>
               <span className="trace-badges">
                 {s.incomplete && <span className="badge badge-warn">incomplete</span>}
@@ -500,16 +530,18 @@ function Field({ label, children, className }: { label: string; children: React.
 
 const FOCUSABLE = 'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
-/** Dialog keyboard contract shared by the span drawer and the save-case modal: autofocus, Tab cycles inside, Escape closes. */
+/** Dialog keyboard contract shared by the span drawer and the save-case modal: autofocus, Tab cycles inside, Escape closes.
+ *  A `[data-autofocus]` element (e.g. a tabindex=-1 heading) wins the initial focus so a screen reader announces the title first (#103). */
 function useFocusTrap(ref: React.RefObject<HTMLElement | null>, onClose: () => void, focusKey: string) {
-  useEffect(() => { ref.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus(); }, [ref, focusKey]);
+  useEffect(() => { ref.current?.querySelector<HTMLElement>("[data-autofocus], " + FOCUSABLE)?.focus(); }, [ref, focusKey]);
   return (event: React.KeyboardEvent) => {
     if (event.key === "Escape") { event.preventDefault(); onClose(); return; }
     if (event.key !== "Tab" || !ref.current) return;
     const items = Array.from(ref.current.querySelectorAll<HTMLElement>(FOCUSABLE));
     const first = items[0], last = items[items.length - 1];
     if (!first || !last) return;
-    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    // Shift+Tab from the first item, or from a non-tabbable autofocus target ahead of it, wraps to the last item.
+    if (event.shiftKey && (document.activeElement === first || !items.includes(document.activeElement as HTMLElement))) { event.preventDefault(); last.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   };
 }
@@ -532,7 +564,7 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
       <div className="span-drawer-head">
         <div>
           <span className="eyebrow">Span · {span.category}</span>
-          <h3 id="span-drawer-title">{identity || span.name}</h3>
+          <h3 id="span-drawer-title" tabIndex={-1} data-autofocus>{identity || span.name}</h3>
         </div>
         <button type="button" className="button button-ghost" onClick={onClose} aria-label="Close span details">×</button>
       </div>

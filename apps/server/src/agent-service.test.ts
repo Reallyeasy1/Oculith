@@ -12,6 +12,8 @@ import { WorkspaceManager } from "./workspace.js";
 import { createTraceContext } from "./glassbox/context.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
 import { MemoryTraceStore, type TraceStore } from "./glassbox/store.js";
+import { JsonEvaluationStore } from "./glassbox/evaluation.js";
+import { JsonRunSummaryStore } from "./glassbox/summary.js";
 
 class FakeRunner implements AgentRunner {
   async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -266,19 +268,28 @@ const settle = async (service: AgentService, runId: string) => {
 
 describe("GlassBox control-plane adapter", () => {
   it("runs persisted regression cases serially through isolated ordinary Runs", async () => {
-    const { service, store, emitter, config } = await makeTraced();
+    const { service, store, emitter, config, jsonStore } = await makeTraced();
+    const summaries = new JsonRunSummaryStore(jsonStore);
+    const evaluations = new JsonEvaluationStore(jsonStore, summaries);
+    await evaluations.initialize();
     await mkdir(path.join(config.workspaceTemplatesDirectory, "fixture"), { recursive: true });
     const agent = await service.createAgent({ name: "Eval target", instructions: "complete the task" });
     const snapshot = configSnapshot(agent, config);
-    const regressionCase = await service.createRegressionCase({ name: "case", prompt: "do it", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions: [{ type: "terminal_status", expected: "ok" }] });
+    const regressionCase = await service.createRegressionCase({ name: "case", prompt: "do it", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions: [{ type: "terminal_status", expected: "ok" }, { type: "expected_tool", program: "git" }, { type: "expected_tool", program: "npm" }] });
     expect(regressionCase.templateHash).toMatch(/^[0-9a-f]{64}$/);
     const evalRun = await service.createEvalRun({ caseIds: [regressionCase.id], target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } });
     expect(evalRun).toMatchObject({ templateHashes: { fixture: regressionCase.templateHash } });
     expect(evalRun.templateHashMismatch).toBeUndefined();
-    await new EvalRunner(service, { emitter, store }).execute(evalRun.id);
+    await new EvalRunner(service, { emitter, store, summaries, evaluations }).execute(evalRun.id);
     const finished = service.getEvalRun(evalRun.id);
     expect(finished).toMatchObject({ status: "completed", runIds: [expect.any(String)] });
-    expect(finished.results[0]).toMatchObject({ caseId: regressionCase.id, runId: finished.runIds[0], results: [expect.objectContaining({ type: "terminal_status", pass: true })] });
+    expect(finished.results[0]).toMatchObject({ caseId: regressionCase.id, runId: finished.runIds[0], results: expect.arrayContaining([expect.objectContaining({ type: "terminal_status", pass: true })]) });
+    // One result per (run, evaluator, version): the two expected_tool assertions fold into one failed verdict (FakeRunner calls no tool).
+    expect((await evaluations.resultsForRun(finished.runIds[0]!)).map(({ evaluatorId, evaluatorVersion, passed, jobId, metadata }) => ({ evaluatorId, evaluatorVersion, passed, jobId, metadata })).sort((a, b) => a.evaluatorId.localeCompare(b.evaluatorId))).toEqual([
+      { evaluatorId: "expected_tool", evaluatorVersion: 1, passed: false, jobId: evalRun.id, metadata: { assertions: 2 } },
+      { evaluatorId: "terminal_status", evaluatorVersion: 1, passed: true, jobId: evalRun.id, metadata: { expected: "ok", observed: "ok" } },
+    ]);
+    expect(await summaries.get(finished.runIds[0]!)).toMatchObject({ taskOutcome: "unknown" });
     await emitter.flush();
     expect((await store.readRun(finished.runIds[0]!)).find((event) => event.type === "run.created")?.attributes).toMatchObject({ evalRunId: evalRun.id, caseId: regressionCase.id, templateHash: regressionCase.templateHash });
   });
