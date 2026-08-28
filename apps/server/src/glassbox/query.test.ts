@@ -383,6 +383,30 @@ describe("buildTrace", () => {
     expect(v.summary.failure).toMatchObject({ kind: "degraded", component: "GlassBox", path: [] });
     expect(v.summary.failure!.diagnosis).toMatch(/trace store was unavailable/i);
   });
+  it("projects capability unavailability independently for each layer", () => {
+    seq = 0;
+    const modelOnly = buildTrace([
+      ev({ type: "model.completed", category: "model", spanId: "model", attributes: { inputTokens: 1 } }),
+      ev({ type: "capability.unavailable", category: "runtime", spanId: "cap", attributes: { model: false, tool: true } }),
+    ], { capturePolicy: "metadata_only" });
+    expect(modelOnly.summary.capabilities).toEqual({ model: "observed", tool: "unavailable" });
+
+    const toolOnly = buildTrace([
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tool" }),
+      ev({ type: "capability.unavailable", category: "runtime", spanId: "cap", attributes: { model: true, tool: false } }),
+    ], { capturePolicy: "metadata_only" });
+    expect(toolOnly.summary.capabilities).toEqual({ model: "unavailable", tool: "observed" });
+  });
+  it("diagnosis names only the tool layer when model evidence exists and the declaration is tool-only", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "model.completed", category: "model", spanId: "model", parentSpanId: "rt", attributes: { inputTokens: 1 } }),
+      ev({ type: "capability.unavailable", category: "runtime", spanId: "cap", parentSpanId: "rt", attributes: { model: false, tool: true } }),
+      ev({ type: "run.failed", category: "control", spanId: "failed", parentSpanId: "svc", status: "error" })];
+    const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(summary.failure?.diagnosis).toContain("No tool-level details were available from the runtime.");
+    expect(summary.failure?.diagnosis).not.toMatch(/model/i);
+  });
   it("guards against a span-parent cycle: pathTo terminates and visits each id once", () => {
     seq = 0;
     const events = [

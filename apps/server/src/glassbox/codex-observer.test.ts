@@ -212,7 +212,25 @@ describe("CodexStreamObserver", () => {
     expect(events[0]).toMatchObject({
       type: "capability.unavailable",
       actorType: "service", actorId: "runner",
-      attributes: { model: false, tool: false },
+      attributes: { model: true, tool: true },
+    });
+  });
+
+  it.each([
+    ["model", { model: false, tool: true }],
+    ["tool", { model: true, tool: false }],
+  ] as const)("declares only the missing %s counterpart unavailable", async (observed, unavailable) => {
+    const store = new MemoryTraceStore();
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner");
+    if (observed === "model") obs.onTurnStarted();
+    else obs.onItemCompleted({ type: "command_execution", command: "true", exit_code: 0 });
+    obs.finish();
+    await em.flush();
+
+    const events = await store.readRun("run-1");
+    expect(events.find((event) => event.type === "capability.unavailable")).toMatchObject({
+      attributes: unavailable,
     });
   });
 
@@ -239,8 +257,9 @@ describe("CodexStreamObserver", () => {
     await em.flush();
 
     const events = await store.readRun("run-1");
-    expect(events).toHaveLength(1);
+    expect(events).toHaveLength(2);
     expect(events[0]).toMatchObject({ type: "tool.call.started", phase: "start", status: "running" });
+    expect(events[1]).toMatchObject({ type: "capability.unavailable", attributes: { model: true, tool: false } });
   });
 
   it("pairs command item lifecycle events and redacts the bounded first argument under metadata_only", async () => {
@@ -395,7 +414,8 @@ describe("CodexStreamObserver", () => {
     await em.flush();
 
     const events = await store.readRun("run-1");
-    expect(events.map((e) => e.type)).toEqual(["model.completed"]);
+    expect(events.map((e) => e.type)).toEqual(["model.completed", "capability.unavailable"]);
+    expect(events[1]!.attributes).toEqual({ model: false, tool: true });
   });
 });
 
@@ -450,7 +470,9 @@ describe.skipIf(!existsSync(fixtureDir))("CodexStreamObserver against real captu
     const { events, parsed: p } = await feed("codex-0.111-turn-failed.jsonl", "metadata_only", "error");
     const types = events.map((e) => e.type);
     expect(types).toContain("model.request");
-    expect(types).not.toContain("capability.unavailable");
+    expect(events.find((event) => event.type === "capability.unavailable")).toMatchObject({
+      attributes: { model: false, tool: true },
+    });
     expect(types.filter((t) => t === "error.recorded")).toHaveLength(1);
     // trap 1: turn.failed nests its message under error.message.
     expect(p.errors.at(-1)).toContain("401 Unauthorized");

@@ -320,13 +320,13 @@ export class CodexStreamObserver implements CodexStreamSink {
         error: { type: "codex_error", message: this.lastError.slice(0, 2048) },
       });
     }
-    if (this.sawAnyEvent && !this.sawTool && !this.sawModel && (outcome === "ok" || outcome === "error")) {
+    if (this.sawAnyEvent && (!this.sawTool || !this.sawModel) && (outcome === "ok" || outcome === "error")) {
       this.emitter.emit({
         ...this.base("capability.unavailable", "capability.unavailable"),
         ...RUNNER_ACTOR,
         category: "runtime",
         status: "unset",
-        attributes: { model: false, tool: false },
+        attributes: { model: !this.sawModel, tool: !this.sawTool },
       });
     }
   }
