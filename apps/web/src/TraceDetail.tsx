@@ -63,6 +63,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
   const [showAudit, setShowAudit] = useState(false);
   const [auditRows, setAuditRows] = useState<AuditRow[] | null>(null);
   const [auditError, setAuditError] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   // Bumped whenever focus must move programmatically (keyboard nav, Jump, drawer close); the effect below
   // runs after the target row has rendered, which matters when Jump expands a collapsed path.
@@ -208,6 +209,21 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
     setFocusReq((n) => n + 1);
   };
 
+  const downloadExport = async () => {
+    setExportError(null);
+    try {
+      const { blob, filename } = await api.exportTrace(summary.traceId);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      anchor.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (reason) {
+      setExportError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
   return (
     <section ref={sectionRef} className="runs-view trace-detail" aria-labelledby="trace-heading">
       <div className="playground-topbar trace-header">
@@ -219,10 +235,20 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
           </h2>
         </div>
         <div className="header-actions">
+          <a
+            className="button button-ghost"
+            href={"/api/traces/" + encodeURIComponent(summary.traceId) + "/export"}
+            download={"trace-" + summary.traceId + ".json"}
+            onClick={(event) => { event.preventDefault(); void downloadExport(); }}
+          >
+            Export JSON
+          </a>
           <button type="button" className="button button-ghost" onClick={openSaveCase} disabled={Boolean(saveReason)} title={saveReason || undefined}>Save as regression case</button>
           <button type="button" className="button button-ghost" onClick={onClose}>Close trace</button>
         </div>
       </div>
+
+      {exportError && <p className="trace-export-error" role="alert">Export failed: {exportError}</p>}
 
       <dl className="trace-summary">
         <Field label="Trace">{summary.traceId || "—"}</Field>

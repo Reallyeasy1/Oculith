@@ -283,6 +283,11 @@ async function closeResources() {
   ok((await page.locator("#runs-heading").innerText()).includes("E2E GlassBox"), "Runs table is scoped to the selected Agent");
   eq(await page.locator(`${RUNS_TABLE} th`, { hasText: /^Agent$/ }).count(), 0, "Agent column is hidden in the Agent view");
   await openTraceByKeyboard(page, okRun.run.id);
+  const exportLink = page.getByRole("link", { name: "Export JSON" });
+  eq(await exportLink.getAttribute("href"), "/api/traces/" + okRun.run.traceId + "/export", "Export JSON link targets the redacted trace export (#154)");
+  const downloadPromise = page.waitForEvent("download");
+  await exportLink.click();
+  eq((await downloadPromise).suggestedFilename(), "trace-" + okRun.run.traceId + ".json", "authenticated UI export keeps the trace filename (#154)");
   const timeSplitField = page.locator(".trace-summary dt", { hasText: /^Time split$/ });
   await timeSplitField.waitFor({ timeout: 10_000 });
   ok((await timeSplitField.locator("..").innerText()).includes("model"), "Trace header renders the observed time split (#129)");
