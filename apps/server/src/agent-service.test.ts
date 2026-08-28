@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -271,13 +271,42 @@ describe("GlassBox control-plane adapter", () => {
     const agent = await service.createAgent({ name: "Eval target", instructions: "complete the task" });
     const snapshot = configSnapshot(agent, config);
     const regressionCase = await service.createRegressionCase({ name: "case", prompt: "do it", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions: [{ type: "terminal_status", expected: "ok" }] });
+    expect(regressionCase.templateHash).toMatch(/^[0-9a-f]{64}$/);
     const evalRun = await service.createEvalRun({ caseIds: [regressionCase.id], target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } });
+    expect(evalRun).toMatchObject({ templateHashes: { fixture: regressionCase.templateHash } });
+    expect(evalRun.templateHashMismatch).toBeUndefined();
     await new EvalRunner(service, { emitter, store }).execute(evalRun.id);
     const finished = service.getEvalRun(evalRun.id);
     expect(finished).toMatchObject({ status: "completed", runIds: [expect.any(String)] });
     expect(finished.results[0]).toMatchObject({ caseId: regressionCase.id, runId: finished.runIds[0], results: [expect.objectContaining({ type: "terminal_status", pass: true })] });
     await emitter.flush();
-    expect((await store.readRun(finished.runIds[0]!)).find((event) => event.type === "run.created")?.attributes).toMatchObject({ evalRunId: evalRun.id, caseId: regressionCase.id });
+    expect((await store.readRun(finished.runIds[0]!)).find((event) => event.type === "run.created")?.attributes).toMatchObject({ evalRunId: evalRun.id, caseId: regressionCase.id, templateHash: regressionCase.templateHash });
+  });
+
+  it("refuses an EvalRun whose template changed since the case was recorded unless forced", async () => {
+    const { service, config, jsonStore } = await makeTraced();
+    const template = path.join(config.workspaceTemplatesDirectory, "fixture");
+    await mkdir(template, { recursive: true });
+    await writeFile(path.join(template, "starting.txt"), "v1", "utf8");
+    const agent = await service.createAgent({ name: "Eval target", instructions: "complete the task" });
+    const snapshot = configSnapshot(agent, config);
+    const target = { agentId: agent.id, snapshot, configHash: configHash(snapshot) };
+    const regressionCase = await service.createRegressionCase({ name: "case", prompt: "do it", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions: [{ type: "terminal_status", expected: "ok" }] });
+    await writeFile(path.join(template, "starting.txt"), "v2", "utf8");
+    await expect(service.createEvalRun({ caseIds: [regressionCase.id], target })).rejects.toMatchObject({ statusCode: 409, message: "template changed since the case was recorded" });
+    const forced = await service.createEvalRun({ caseIds: [regressionCase.id], target }, { force: true });
+    expect(forced.templateHashMismatch).toBe(true);
+    expect(forced.templateHashes!.fixture).not.toBe(regressionCase.templateHash);
+    // a case saved before hashes existed is unknown, never refused
+    await service.createRegressionCase({ name: "legacy", prompt: "do it", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions: [{ type: "terminal_status", expected: "ok" }] });
+    const legacy = service.listRegressionCases().find((item) => item.name === "legacy")!;
+    await jsonStore.mutate((database) => { delete database.regressionCases.find((item) => item.id === legacy.id)!.templateHash; });
+    await writeFile(path.join(template, "starting.txt"), "v3", "utf8");
+    expect((await service.createEvalRun({ caseIds: [legacy.id], target })).templateHashMismatch).toBeUndefined();
+    await expect(service.createRegressionCase({ name: "missing", prompt: "x", workspaceTemplate: "nope", baselineConfigHash: "b", assertions: [{ type: "terminal_status", expected: "ok" }] })).rejects.toMatchObject({ statusCode: 400 });
+    // a template deleted after the case was recorded is a 400 at EvalRun creation, not a 500
+    await rm(template, { recursive: true, force: true });
+    await expect(service.createEvalRun({ caseIds: [regressionCase.id], target })).rejects.toMatchObject({ statusCode: 400 });
   });
 
   it("records a throwing case and still runs the remaining cases", async () => {
@@ -323,7 +352,7 @@ describe("GlassBox control-plane adapter", () => {
       }
     }
     const runner = new CapturingRunner();
-    const { service, store, emitter, config } = await makeTraced(runner);
+    const { service, store, emitter, config, workspaces } = await makeTraced(runner);
     await mkdir(path.join(config.workspaceTemplatesDirectory, "fixture"), { recursive: true });
     await writeFile(path.join(config.workspaceTemplatesDirectory, "fixture", "starting.txt"), "template starting state", "utf8");
     const agent = await service.createAgent({ name: "Evaluator", instructions: "Run the supplied regression case." });
@@ -351,7 +380,7 @@ describe("GlassBox control-plane adapter", () => {
     await expect.poll(async () => stat(isolatedRequest.workspacePath).then(() => true, () => false)).toBe(false);
 
     const created = (await store.readRun(run.id)).find((event) => event.type === "run.created");
-    expect(created?.attributes).toMatchObject({ evalRunId: "eval-1", caseId: "case-1", configHash: run.configHash });
+    expect(created?.attributes).toMatchObject({ evalRunId: "eval-1", caseId: "case-1", configHash: run.configHash, templateHash: await workspaces.templateHash("fixture") });
   });
 
   it("links the Run to a trace and emits root, control and terminal events in order", async () => {

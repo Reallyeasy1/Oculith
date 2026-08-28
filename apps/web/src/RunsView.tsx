@@ -83,7 +83,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
           ))}
         </ul>
       )}
-      <div className="runs-table-wrap">
+      <div className="runs-table-wrap runs-table-wrap-scroll-hint">
         <table className="runs-table">
           <thead>
             <tr>
@@ -136,7 +136,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 <td title={run.configSnapshot ? JSON.stringify(run.configSnapshot) : undefined}>
                   <code>{run.configHash?.slice(0, 8) ?? "—"}</code>
                 </td>
-                <td>{run.runtime} · {run.model}</td>
+                <td className="runs-runtime" title={run.runtime + " · " + run.model}>{run.runtime} · {run.model}</td>
                 <td>{formatUsage(run.usage)}</td>
                 <td>
                   <span>{run.toolCalls}{run.toolFailures > 0 && <> · {run.toolFailures} failed</>}</span>{" "}

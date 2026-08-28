@@ -37,11 +37,17 @@ const view: TraceView = {
 };
 
 describe("trace-view-model", () => {
-  it("expands roots plus the failure path by default and omits collapsed subtrees from the rows", () => {
+  it("expands a small successful trace completely but keeps large traces bounded", () => {
+    const small = { ...view, summary: { ...view.summary, spanCount: 6, failure: undefined } };
+    expect(defaultExpanded(small).size).toBe(6);
+    const large = { ...view, summary: { ...view.summary, spanCount: 41, failure: undefined } };
+    expect(defaultExpanded(large)).toEqual(new Set(["root"]));
+  });
+  it("expands every small trace by default", () => {
     const expanded = defaultExpanded(view);
-    expect([...expanded].sort()).toEqual(["a", "a1", "root"]);
+    expect([...expanded].sort()).toEqual(["a", "a1", "b", "b1", "b2", "root"]);
     const ids = visibleRows(view.spans, expanded, EMPTY_FILTER).map((r) => r.span.spanId);
-    expect(ids).toEqual(["root", "a", "a1", "b"]); // b collapsed → b1/b2 not rendered
+    expect(ids).toEqual(["root", "a", "a1", "b", "b1", "b2"]);
   });
 
   it("keeps ancestors as context and auto-expands when a filter is active", () => {
