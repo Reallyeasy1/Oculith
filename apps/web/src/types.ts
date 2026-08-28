@@ -291,5 +291,16 @@ export interface EvalComparison {
   regressions: number; templateMismatch?: boolean;
 }
 
+export interface EvaluatorDefinition {
+  id: string; name: string; version: number; type: "deterministic" | "llm_judge"; rubric: string; model?: string;
+  minScore: number; maxScore: number; passThreshold: number; config: Record<string, string | number | boolean | null>;
+  setsTaskOutcome: boolean; createdAt: string;
+}
+export interface EvaluationResult {
+  runId: string; evaluatorId: string; evaluatorVersion: number; score?: number; passed: boolean; explanation: string;
+  evidenceEventIds: string[]; evaluatorModel?: string; metadata: Record<string, string | number | boolean | null>;
+  evaluatedAt: string; jobId?: string;
+}
+
 // Mirrors WorkspaceManager.listTemplates(): a bad template (symlink, over limits) is reported, not a 500.
 export type WorkspaceTemplate = { name: string; fileCount: number; bytes: number } | { name: string; error: string };
