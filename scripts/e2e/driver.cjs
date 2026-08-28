@@ -403,6 +403,9 @@ async function closeResources() {
   const completedCaseRow = page.locator(".regression-cases .runs-table tbody tr", { hasText: regressionCase.name });
   await completedCaseRow.waitFor({ timeout: 10_000 });
   ok((await completedCaseRow.innerText()).includes(evaluation.id.slice(0, 8)), "case list shows the completed EvalRun id");
+  const evaluationTemplateHash = evaluation.templateHashes?.[regressionCase.workspaceTemplate];
+  ok(typeof evaluationTemplateHash === "string", "EvalRun carries its template hash provenance (#215)");
+  ok((await completedCaseRow.locator("td").nth(5).innerText()).includes(regressionCase.workspaceTemplate + " " + evaluationTemplateHash.slice(0, 8)), "case list displays the EvalRun template hash provenance (#215)");
   ok((await api("/api/runs")).json().runs.some((item) => evaluation.runIds.includes(item.runId)), "candidate ordinary Run appears in the Runs list");
   if (process.env.E2E_SCREENSHOT) { await page.setViewportSize({ width: 1366, height: 768 }); await page.screenshot({ path: process.env.E2E_SCREENSHOT }); await page.setViewportSize({ width: 1400, height: 1000 }); }
   sweep("DOM (overview)", await glassboxText(page));
