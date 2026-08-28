@@ -10,6 +10,7 @@ import { configHash, configSnapshot, type AgentService } from "./agent-service.j
 import { createTraceContext, type TraceContext } from "./glassbox/context.js";
 import type { ObservationEmitter } from "./glassbox/emitter.js";
 import type { EvaluationStore } from "./glassbox/evaluation.js";
+import type { EvaluationJobWorker } from "./glassbox/jobs.js";
 import { MetricStore, metricQueryBody } from "./glassbox/metrics.js";
 import { ReliabilityService, reliabilityCompareQuerySchema, reliabilityQuerySchema } from "./glassbox/reliability.js";
 import { buildTrace, projectAudit, type TraceView } from "./glassbox/query.js";
@@ -55,7 +56,7 @@ const regressionCaseFromRunBody = z.object({
 export async function createApp(
   config: AppConfig,
   service: AgentService,
-  glassbox?: { emitter: ObservationEmitter; store: TraceStore; summaries?: RunSummaryStore | undefined; evaluations?: EvaluationStore | undefined; logs?: RunLogStore | undefined },
+  glassbox?: { emitter: ObservationEmitter; store: TraceStore; summaries?: RunSummaryStore | undefined; evaluations?: EvaluationStore | undefined; jobs?: EvaluationJobWorker | undefined; logs?: RunLogStore | undefined },
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -290,6 +291,33 @@ export async function createApp(
         service.getAgent(query.agentId);
         return { capturePolicy: glassbox.emitter.capturePolicy, ...(await reliability.compare(query)) };
       });
+    }
+    if (glassbox.jobs) {
+      const jobs = glassbox.jobs;
+      // #170: historical evaluation runs as a background job — the POST only enqueues (202), progress is
+      // polled. Only terminal statuses are selectable; the worker never evaluates a running Run.
+      const evaluationJobBody = z.object({
+        evaluatorId: z.string().trim().min(1).max(80),
+        evaluatorVersion: z.number().int().min(1).optional(),
+        filter: z.object({
+          agentId: z.string().uuid().optional(),
+          // Real configHashes are hex (agent-service.ts); rejecting anything else keeps free text
+          // (a pasted secret included) out of the persisted, served job record.
+          configHash: z.string().regex(/^[0-9a-f]{1,64}$/i).optional(),
+          from: z.string().datetime().optional(),
+          to: z.string().datetime().optional(),
+          executionStatus: z.enum(["completed", "failed", "timeout", "cancelled"]).optional(),
+        }).optional(),
+        force: z.boolean().optional(),
+        concurrency: z.number().int().min(1).max(2).optional(),
+      });
+      app.post("/api/evaluation-jobs", async (request, reply) =>
+        reply.code(202).send({ job: await jobs.enqueue(evaluationJobBody.parse(request.body)) }));
+      app.get("/api/evaluation-jobs", async () => ({ jobs: await jobs.list() }));
+      app.get("/api/evaluation-jobs/:id", async (request) =>
+        ({ job: await jobs.getOrThrow(runIdParams.parse(request.params).id) }));
+      app.post("/api/evaluation-jobs/:id/resume", async (request, reply) =>
+        reply.code(202).send({ job: await jobs.resume(runIdParams.parse(request.params).id) }));
     }
     if (glassbox.evaluations) {
       app.get("/api/evaluators", async () => ({ evaluators: await glassbox.evaluations!.listDefinitions() }));

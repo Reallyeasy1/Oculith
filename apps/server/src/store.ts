@@ -12,6 +12,7 @@ const emptyDatabase = (): Database => ({
   runSummaries: [],
   evaluatorDefinitions: [],
   evaluationResults: [],
+  evaluationJobs: [],
 });
 
 export class JsonStore {
@@ -29,7 +30,7 @@ export class JsonStore {
       if (parsed.version !== 1 || !Array.isArray(parsed.agents)) {
         throw new Error("Unsupported database format");
       }
-      this.data = { ...parsed, regressionCases: Array.isArray(parsed.regressionCases) ? parsed.regressionCases : [], evalRuns: Array.isArray(parsed.evalRuns) ? parsed.evalRuns : [], runSummaries: Array.isArray(parsed.runSummaries) ? parsed.runSummaries : [], evaluatorDefinitions: Array.isArray(parsed.evaluatorDefinitions) ? parsed.evaluatorDefinitions : [], evaluationResults: Array.isArray(parsed.evaluationResults) ? parsed.evaluationResults : [] };
+      this.data = { ...parsed, regressionCases: Array.isArray(parsed.regressionCases) ? parsed.regressionCases : [], evalRuns: Array.isArray(parsed.evalRuns) ? parsed.evalRuns : [], runSummaries: Array.isArray(parsed.runSummaries) ? parsed.runSummaries : [], evaluatorDefinitions: Array.isArray(parsed.evaluatorDefinitions) ? parsed.evaluatorDefinitions : [], evaluationResults: Array.isArray(parsed.evaluationResults) ? parsed.evaluationResults : [], evaluationJobs: Array.isArray(parsed.evaluationJobs) ? parsed.evaluationJobs : [] };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;

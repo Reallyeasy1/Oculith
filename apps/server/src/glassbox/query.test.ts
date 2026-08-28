@@ -202,6 +202,17 @@ describe("buildTrace", () => {
       timeSplit: { modelMs: 10, toolMs: 10, containerStartMs: 10 },
     });
   });
+  it("prefers the observed per-call count over the single-turn span count for modelCalls (#207)", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "model.request", category: "model", spanId: "turn-1", parentSpanId: "rt", phase: "start", status: "running", name: "model.turn" }),
+      ev({ type: "model.completed", category: "model", spanId: "turn-1", parentSpanId: "rt", phase: "end", status: "ok", name: "model.turn", attributes: { turnIndex: 1, modelCallsObserved: 4, inputTokens: 10 } }),
+      // A second turn cut short before any item evidence still counts as at least one call.
+      ev({ type: "model.request", category: "model", spanId: "turn-2", parentSpanId: "rt", phase: "start", status: "running", name: "model.turn" }),
+      ev({ type: "run.cancelled", category: "control", spanId: "cancel", parentSpanId: "svc", status: "cancelled" }),
+    ];
+    expect(buildTrace(events, { capturePolicy: "metadata_only" }).summary.metrics.modelCalls).toBe(5);
+  });
   it("subtracts tool time nested inside a model.turn so the time split does not double-count", () => {
     seq = 0;
     const events = [root(), svcStart(), rtStart(),

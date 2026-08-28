@@ -33,6 +33,19 @@ export function describeFinalMessage(text: string): { finalMessageBytes: number;
   };
 }
 
+/** Bounded identity (#130): basename of the program plus its first argument, 64 chars max. Codex wraps every
+ * command as `/bin/bash -lc '<script>'` (E3/E4) or `powershell.exe -Command "<script>"` (E5), so the first
+ * argument of a shell wrapper is the script's own first token — `bash python3`, not `bash -lc`. */
+export function commandIdentity(command: string): { program: string } | { program: string; argument0: string } {
+  const tokenize = (text: string): string[] => text.trim().match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+  const unquote = (token: string): string => token.replace(/^(?:"|')|(?:"|')$/g, "");
+  const tokens = tokenize(command);
+  const program = path.win32.basename(unquote(tokens[0] ?? "")).slice(0, 40);
+  const script = /^-(?:l?c|Command)$/i.test(tokens[1] ?? "") && tokens[2] ? tokenize(unquote(tokens[2]))[0] : undefined;
+  const argument0 = (script ?? (tokens[1] ? unquote(tokens[1]) : undefined))?.slice(0, 64);
+  return { program, ...(argument0 ? { argument0 } : {}) };
+}
+
 const USAGE_KEYS: Record<string, string> = {
   input_tokens: "inputTokens",
   cached_input_tokens: "cachedInputTokens",
@@ -43,7 +56,9 @@ const USAGE_KEYS: Record<string, string> = {
 /**
  * Turns an observed Codex event stream into ObservationEvents. Mapping is pinned to the captures
  * catalogued in `docs/CODEX_EVENTS.md` — nothing here is inferred from a schema we have not seen:
- *  - `reasoning` items are never captured (no chain-of-thought, deliberately unmapped, E7).
+ *  - `reasoning` items are never captured (no chain-of-thought, deliberately unmapped, E7); only their
+ *    count is kept, as a per-turn model-call proxy (#207) — codex exec emits exactly one turn per
+ *    prompt, so the turn span alone cannot distinguish one model call from many.
  *  - an `item.type === "error"` is a non-fatal notice on every Ark run (E8) and is dropped.
  *  - top-level `error` lines are retry noise (E11); the last one is buffered and only surfaces as a
  *    single `error.recorded` when the run itself fails.
@@ -60,6 +75,8 @@ export class CodexStreamObserver implements CodexStreamSink {
   private lastError: string | undefined;
   private turnIndex = 0;
   private activeTurn: { spanId: string; turnIndex: number } | undefined;
+  private observedCalls = 0;
+  private unpairedReasoning = 0;
   private readonly activeItems = new Map<string, { spanId: string; kind: string }>();
 
   constructor(
@@ -95,6 +112,13 @@ export class CodexStreamObserver implements CodexStreamSink {
   onTurnStarted(): void {
     this.sawAnyEvent = true;
     this.sawModel = true;
+    // A turn abandoned without turn.completed (E12 turn.failed) must not donate its item count to the
+    // next turn — buildTrace already floors the abandoned span at one call. Items seen before any
+    // turn.started (out-of-order streams) still belong to the turn that is opening now.
+    if (this.activeTurn) {
+      this.observedCalls = 0;
+      this.unpairedReasoning = 0;
+    }
     const turn = { spanId: newId("spn"), turnIndex: ++this.turnIndex };
     this.activeTurn = turn;
     this.emitter.emit({
@@ -106,19 +130,6 @@ export class CodexStreamObserver implements CodexStreamSink {
     });
   }
 
-  /** Bounded identity (#130): basename of the program plus its first argument, 64 chars max. Codex wraps every
-   * command as `/bin/bash -lc '<script>'` (E3/E4) or `powershell.exe -Command "<script>"` (E5), so the first
-   * argument of a shell wrapper is the script's own first token — `bash python3`, not `bash -lc`. */
-  private commandIdentity(command: string): { program: string } | { program: string; argument0: string } {
-    const tokenize = (text: string): string[] => text.trim().match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
-    const unquote = (token: string): string => token.replace(/^(?:"|')|(?:"|')$/g, "");
-    const tokens = tokenize(command);
-    const program = path.win32.basename(unquote(tokens[0] ?? "")).slice(0, 40);
-    const script = /^-(?:l?c|Command)$/i.test(tokens[1] ?? "") && tokens[2] ? tokenize(unquote(tokens[2]))[0] : undefined;
-    const argument0 = (script ?? (tokens[1] ? unquote(tokens[1]) : undefined))?.slice(0, 64);
-    return { program, ...(argument0 ? { argument0 } : {}) };
-  }
-
   onItemStarted(item: Record<string, unknown>): void {
     const kind = str(item.type);
     if (!kind || !["command_execution", "file_change", "mcp_tool_call", "web_search"].includes(kind)) return;
@@ -128,7 +139,7 @@ export class CodexStreamObserver implements CodexStreamSink {
     const id = str(item.id);
     if (id) this.activeItems.set(id, { spanId, kind });
     const command = str(item.command) ?? "";
-    const identity = kind === "command_execution" ? this.commandIdentity(command) : undefined;
+    const identity = kind === "command_execution" ? commandIdentity(command) : undefined;
     this.emitter.emit({
       ...this.base("tool.call.started", identity ? "shell:" + identity.program : kind, spanId),
       category: "tool",
@@ -143,6 +154,16 @@ export class CodexStreamObserver implements CodexStreamSink {
   onItemCompleted(item: Record<string, unknown>): void {
     this.sawAnyEvent = true;
     const kind = str(item.type);
+    if (kind === "reasoning") {
+      // Each reasoning item is one model call (#207). Count only — the text stays unmapped (E7).
+      this.observedCalls++;
+      this.unpairedReasoning++;
+    } else if (kind === "agent_message") {
+      // A message produced by the same call as its reasoning is not a second call; without one
+      // (non-reasoning models) the message is the only evidence the call happened.
+      if (this.unpairedReasoning > 0) this.unpairedReasoning--;
+      else this.observedCalls++;
+    }
     if (kind === "command_execution") {
       this.commandExecution(item);
     } else if (kind === "file_change") {
@@ -151,8 +172,9 @@ export class CodexStreamObserver implements CodexStreamSink {
     } else if (kind === "mcp_tool_call" || kind === "web_search") {
       this.completeGenericTool(item, kind);
     }
-    // agent_message: the runner's final output, not trace content.
-    // reasoning: deliberately never captured. error: non-fatal notice (E8), not a failure.
+    // agent_message: the runner's final output, not trace content (counted above only).
+    // reasoning: deliberately never captured (counted above only).
+    // error: non-fatal notice (E8), not a failure.
   }
 
   private commandExecution(item: Record<string, unknown>): void {
@@ -165,7 +187,7 @@ export class CodexStreamObserver implements CodexStreamSink {
     const failed = declined || (exitCode !== undefined && exitCode !== 0);
     // win32.basename strips both "/" and "\\" on every platform, so an absolute exe path (which on
     // Windows carries the user profile) never reaches the store.
-    const identity = this.commandIdentity(command);
+    const identity = commandIdentity(command);
     const active = str(item.id) ? this.activeItems.get(str(item.id)!) : undefined;
     if (str(item.id)) this.activeItems.delete(str(item.id)!);
     this.emitter.emit({
@@ -261,9 +283,17 @@ export class CodexStreamObserver implements CodexStreamSink {
       category: "model",
       ...(this.activeTurn ? { phase: "end" as const } : {}),
       status: "ok",
-      attributes: { turnIndex: turn.turnIndex, ...attributes },
+      // modelCallsObserved (#207) is the count of reasoning/agent_message items seen this turn; when no
+      // item evidence arrived it is omitted rather than guessed (buildTrace floors the turn at one call).
+      attributes: {
+        turnIndex: turn.turnIndex,
+        ...(this.observedCalls > 0 ? { modelCallsObserved: this.observedCalls } : {}),
+        ...attributes,
+      },
     });
     this.activeTurn = undefined;
+    this.observedCalls = 0;
+    this.unpairedReasoning = 0;
   }
 
   /** Buffers only: a stream `error` line is a retry notice until the run actually fails (trap 3). */

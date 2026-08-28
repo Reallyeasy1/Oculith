@@ -302,6 +302,14 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
     Math.max(0, Math.min(spanEnd(a), spanEnd(b)) - Math.max(Date.parse(a.startedAt), Date.parse(b.startedAt)));
   const modelOnlyMs = (span: Span): number =>
     Math.max(0, spanDuration(span) - toolSpans.reduce((total, tool) => total + overlapMs(span, tool), 0));
+  // codex exec emits ONE model.turn per prompt, so the span count alone cannot see individual model
+  // calls (#207). The observer counts observed reasoning/agent_message items and stamps
+  // `modelCallsObserved` on the turn-end model.completed; prefer that, flooring each turn that ran
+  // (or was cut short mid-call) at one call. Traces without the attribute keep the old span count.
+  const modelCalls = modelSpans.reduce((total, span) => {
+    const observed = events.find((event) => event.spanId === span.spanId && event.type === "model.completed")?.attributes.modelCallsObserved;
+    return total + Math.max(1, typeof observed === "number" ? observed : 0);
+  }, 0);
   const toolIdentities = [...new Set(toolSpans.map((span) => {
     const program = typeof span.attributes.program === "string" ? span.attributes.program : "";
     const argument0 = typeof span.attributes.argument0 === "string" ? span.attributes.argument0 : "";
@@ -316,7 +324,7 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
       events.some((event) => event.spanId === span.spanId && event.type === "tool.call.failed"),
     ).length,
     ...(toolIdentities.length > 0 ? { toolIdentities } : {}),
-    modelCalls: modelSpans.length,
+    modelCalls,
     ...(firstRunEvent && firstToolEvent
       ? { timeToFirstToolMs: Math.max(0, Date.parse(firstToolEvent.timestamp) - Date.parse(firstRunEvent.timestamp)) }
       : {}),

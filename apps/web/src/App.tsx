@@ -369,7 +369,19 @@ export default function App() {
     if (!selected) return;
     setError(null);
     try {
-      const { evalRun } = await api.startEvalRun({ agentId: selected.id, caseIds: [regressionCase.id] });
+      const request = { agentId: selected.id, caseIds: [regressionCase.id] };
+      let result;
+      try {
+        result = await api.startEvalRun(request);
+      } catch (reason) {
+        if (!(reason instanceof ApiError) || reason.status !== 409 || !reason.message.includes("template changed")) throw reason;
+        const force = window.confirm(
+          "This workspace template changed after the regression case was recorded. Run against the current template anyway? The evaluation will be marked as a template-hash mismatch.",
+        );
+        if (!force) return;
+        result = await api.startEvalRun({ ...request, force: true });
+      }
+      const { evalRun } = result;
       setEvalRuns((current) => [evalRun, ...current.filter((item) => item.id !== evalRun.id)]);
       await refreshRuns();
       void pollEvalRun(evalRun.id).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
@@ -792,7 +804,8 @@ export default function App() {
                     </div>
                     <div className="thinking-row">
                       <Spinner />
-                      Codex is reading, editing, or running commands…
+                      {(activeRun.status === "running" && activeRun.currentActivity?.label) ||
+                        "Codex is reading, editing, or running commands…"}
                     </div>
                   </article>
                 )}
