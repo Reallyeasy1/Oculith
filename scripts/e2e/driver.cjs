@@ -164,6 +164,32 @@ const glassboxText = (page) => page.evaluate(() => Array.from(document.querySele
 
 // ---- main -------------------------------------------------------------------------------------------------------
 let server = null;
+let browser = null;
+let exitCode = 0;
+// Exits that skip the finally below (Ctrl+C, uncaught throw): Playwright kills Chrome on 'exit'; nothing else kills
+// the server child, and on Windows it is not in this console's job. kill() is synchronous, so 'exit' is enough.
+process.on("exit", () => { if (server) server.kill(); });
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => process.exit(130));
+
+async function flushOutput() {
+  await Promise.all([process.stdout, process.stderr].map((stream) => new Promise((resolve) => {
+    stream.write("", resolve);
+  })));
+}
+
+async function closeResources() {
+  const failures = [];
+  if (browser) {
+    try { await browser.close(); } catch (error) { failures.push(error); }
+    browser = null;
+  }
+  if (server) {
+    try { await stopServer(server); } catch (error) { failures.push(error); }
+    server = null;
+  }
+  if (failures.length > 0) throw new AggregateError(failures, "E2E resource cleanup failed");
+}
+
 (async () => {
   const { chromium } = loadPlaywright();
   const sweeps = [];
@@ -231,7 +257,7 @@ let server = null;
   eq(JSON.stringify(view), traceRes.text, "export body is byte-equal to /trace");
 
   console.log("\n[4] UI: Runs table → Enter → tree → drawer → focus trap → Escape → filters → Close");
-  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  browser = await chromium.launch({ channel: "chrome", headless: true });
   const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
   const pageErrors = [];
   const consoleErrors = [];
@@ -378,6 +404,7 @@ let server = null;
   sweep("DOM (timeout trace)", await glassboxText(page));
   eq(pageErrors.length, 0, "no uncaught page errors" + (consoleErrors.length ? " (console errors: " + consoleErrors.length + ")" : ""));
   await browser.close();
+  browser = null;
 
   console.log("\n[7] privacy sweep: seeded fakes absent from files, API, export, log, DOM");
   const traceDir = path.join(ROOT, "data", "traces");
@@ -424,10 +451,19 @@ let server = null;
   ok(queryP95 < 500, "query p95 < 500 ms");
 
   await stopServer(server);
+  server = null;
   console.log("\nE2E PASS — " + checks + " checks; runs " + okRun.run.id + " (ok) + " + badRun.run.id + " (timeout); append p95 " + appendP95.toFixed(1) + " ms, query p95 " + queryP95.toFixed(1) + " ms, redactedEvents " + redacted);
 })().catch(async (error) => {
   console.error("\nE2E FAIL: " + (error && error.stack || error));
-  process.exitCode = 1;
-  // Never leave the built server bound to the port; leftover containers are the poc script's exit trap.
-  if (server) await stopServer(server);
+  exitCode = 1;
+}).finally(async () => {
+  try {
+    // Always close Chromium and the built server, including assertion and browser-navigation failures.
+    await closeResources();
+  } catch (error) {
+    exitCode = 1;
+    console.error("\nE2E CLEANUP FAIL: " + (error && error.stack || error));
+  }
+  await flushOutput();
+  process.exit(exitCode);
 });
