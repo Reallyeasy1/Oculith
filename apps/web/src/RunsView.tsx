@@ -130,7 +130,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                   }
                 }}
               >
-                <td>
+                <td className="runs-status">
                   <span className={"status status-" + run.status}>
                     <span aria-hidden="true">{STATUS_ICON[run.status]}</span>
                     {run.status}
@@ -141,11 +141,11 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                   {outlier && <span className="badge badge-warn badge-outlier" title={outlierTitle}>{outlierLabel(outlier)}</span>}
                 </td>
                 {showAgent && <td>{run.agentName || run.agentId}</td>}
-                <td title={workspaceLabel(run.workspace, run.agentId).title}>{workspaceLabel(run.workspace, run.agentId).text}</td>
+                <td className="runs-workspace" title={workspaceLabel(run.workspace, run.agentId).title ?? workspaceLabel(run.workspace, run.agentId).text}>{workspaceLabel(run.workspace, run.agentId).text}</td>
                 <td>{formatClock(run.startedAt)}</td>
                 <td>{formatRunDuration(run.durationMs, run.endedReason, run.interruptedAfterMs)}</td>
                 <td className="runs-outcome" title={run.outcome?.text}>{run.outcome?.text ?? (run.outcome?.reportedFailure ? <span className="badge badge-warn" title={REPORTED_FAILURE_HINT}>agent reported failure</span> : "—")}</td>
-                <td>{run.firstFailingStep ?? "—"}</td>
+                <td className="runs-fail-step" title={run.firstFailingStep}>{run.firstFailingStep ?? "—"}</td>
                 <td>{run.eventCount}</td>
                 <td title={run.configSnapshot ? JSON.stringify(run.configSnapshot) : undefined}>
                   <code>{run.configHash?.slice(0, 8) ?? "—"}</code>
@@ -153,7 +153,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 <td className="runs-runtime" title={run.runtime + " · " + run.model}>{run.runtime} · {run.model}</td>
                 <td>{formatUsage(run.usage)}</td>
                 {showCost && <td>{formatCost(run.estimatedCostUsd)}</td>}
-                <td title={run.toolIdentities?.join(", ")}>
+                <td className="runs-tools" title={run.toolIdentities?.join(", ")}>
                   <span className="tool-call-summary">
                     <span>{run.toolCalls}{run.toolFailures > 0 && <> · {run.toolFailures} failed</>}</span>
                     {run.redacted && <span className="badge">redacted</span>}

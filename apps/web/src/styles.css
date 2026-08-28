@@ -1204,19 +1204,43 @@ textarea:focus {
 }
 
 .runs-runtime,
-.runs-outcome {
+.runs-outcome,
+.runs-workspace,
+.runs-fail-step {
   max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.runs-workspace {
+  max-width: 120px;
 }
 
 .runs-outcome {
   max-width: 280px;
 }
 
+/* #199: badge-heavy cells wrap into a stack instead of widening the whole table. */
+.runs-table .runs-status,
+.runs-table .runs-tools {
+  white-space: normal;
+}
+
+.runs-status {
+  max-width: 170px;
+}
+
+.runs-tools {
+  max-width: 220px;
+}
+
+.runs-tools .tool-call-summary {
+  display: flex;
+}
+
 .runs-table th,
 .runs-table td {
-  padding: 9px 14px;
+  padding: 8px 10px;
   text-align: left;
   white-space: nowrap;
   border-bottom: 1px solid #ecebe5;
@@ -1242,6 +1266,31 @@ textarea:focus {
 .runs-table tbody tr:focus-visible {
   outline: 2px solid var(--purple);
   outline-offset: -2px;
+}
+
+/* #199: on 1366-class laptops tighten the wide columns further so the common
+   columns fit the wrapper; anything left scrolls inside .runs-table-wrap. */
+@media (max-width: 1439px) {
+  .runs-table th,
+  .runs-table td {
+    padding: 8px;
+  }
+
+  .runs-runtime {
+    max-width: 120px;
+  }
+
+  .runs-outcome {
+    max-width: 200px;
+  }
+
+  .runs-fail-step {
+    max-width: 140px;
+  }
+
+  .runs-tools {
+    max-width: 190px;
+  }
 }
 
 .runs-empty {
