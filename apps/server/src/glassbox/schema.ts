@@ -15,7 +15,7 @@ export const EVENT_TYPES = [
   "runtime.container.started", "runtime.container.stopped",
   "runtime.codex.started", "runtime.codex.first_output", "runtime.codex.completed", "runtime.codex.failed",
   "runtime.postcheck.started", "runtime.postcheck.completed", "runtime.postcheck.failed",
-  "model.request", "model.completed",
+  "model.request", "model.completed", "model.message",
   "tool.call.started", "tool.call.completed", "tool.call.failed",
   "workspace.changed", "policy.denied", "redaction.applied", "limit.exceeded",
   "error.recorded", "telemetry.degraded", "trace.truncated", "capability.unavailable",

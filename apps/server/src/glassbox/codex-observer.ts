@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { RunnerLogger, RunnerRunStats, RunnerTraceContext } from "../types.js";
 import type { ObservationEmitter } from "./emitter.js";
+import { redactText } from "./redact.js";
 import { newId, type EventInput, type EventType } from "./schema.js";
 
 /** What `parseCodexEventLine` reports while it walks a `codex exec --json` stream.
@@ -181,6 +182,19 @@ export class CodexStreamObserver implements CodexStreamSink {
       // (non-reasoning models) the message is the only evidence the call happened.
       if (this.unpairedReasoning > 0) this.unpairedReasoning--;
       else this.observedCalls++;
+      // #258: every agent message (not just the final one) is captured as a bounded summary — but only
+      // under safe_summary. Its sole payload is content, so at metadata_only the event is not emitted at
+      // all (an empty shell would carry nothing an operator can use). Counting above is policy-independent.
+      if (this.emitter.capturePolicy === "safe_summary") {
+        const text = str(item.text) ?? "";
+        this.emitter.emit({
+          ...this.base("model.message", "model.message"),
+          category: "model",
+          status: "ok",
+          attributes: { messageBytes: Buffer.byteLength(text, "utf8") },
+          summary: { text: redactText(text).text.slice(0, 240), policy: "safe_summary" },
+        });
+      }
     }
     if (kind && ["command_execution", "file_change", "mcp_tool_call", "web_search"].includes(kind)) {
       // A message emitted after a tool result must come from a later model call — the model had to
@@ -195,9 +209,16 @@ export class CodexStreamObserver implements CodexStreamSink {
     } else if (kind === "mcp_tool_call" || kind === "web_search") {
       this.completeGenericTool(item, kind);
     }
-    // agent_message: the runner's final output, not trace content (counted above only).
     // reasoning: deliberately never captured (counted above only).
     // error: non-fatal notice (E8), not a failure.
+  }
+
+  /** #258: last 512 chars of `aggregated_output`, appended to tool summaries under safe_summary only.
+   * Redacted BEFORE slicing (same as the runner's stderr tail): a tail cut can drop the `Bearer `/key
+   * prefix a pattern anchors on and leak the bare token. The emitter's redactEvent scans it again. */
+  private outputTail(item: Record<string, unknown>): string | undefined {
+    const output = str(item.aggregated_output);
+    return output ? redactText(output).text.slice(-512) : undefined;
   }
 
   /** "shell:powershell.exe Get-ChildItem" — the same bounded identity the trace stores, nothing more. */
@@ -229,6 +250,7 @@ export class CodexStreamObserver implements CodexStreamSink {
     const identity = commandIdentity(command);
     const active = str(item.id) ? this.activeItems.get(str(item.id)!) : undefined;
     if (str(item.id)) this.activeItems.delete(str(item.id)!);
+    const tail = this.emitter.capturePolicy === "safe_summary" ? this.outputTail(item) : undefined;
     this.totals.toolCalls++;
     if (failed) this.totals.toolFailures++;
     if (declined) this.logDenial(identity);
@@ -245,8 +267,15 @@ export class CodexStreamObserver implements CodexStreamSink {
         ...(exitCode !== undefined ? { exitCode } : {}),
         outputBytes: bytes(item.aggregated_output),
       },
+      // #258: command text (1024) plus a redacted tail of the output — for failed tools this is the
+      // error text the operator previously never saw. Bounded well under the 4096 summary cap.
       ...(this.emitter.capturePolicy === "safe_summary"
-        ? { summary: { text: command.slice(0, 512), policy: "safe_summary" as const } }
+        ? {
+            summary: {
+              text: command.slice(0, 1024) + (tail !== undefined ? "\n--- output tail ---\n" + tail : ""),
+              policy: "safe_summary" as const,
+            },
+          }
         : {}),
       ...(failed
         ? {
@@ -273,6 +302,7 @@ export class CodexStreamObserver implements CodexStreamSink {
 
   private completeGenericTool(item: Record<string, unknown>, kind: string): void {
     this.sawTool = true;
+    const tail = this.emitter.capturePolicy === "safe_summary" ? this.outputTail(item) : undefined;
     const id = str(item.id);
     const active = id ? this.activeItems.get(id) : undefined;
     if (id) this.activeItems.delete(id);
@@ -288,6 +318,8 @@ export class CodexStreamObserver implements CodexStreamSink {
       ...(active ? { phase: "end" as const } : {}),
       status: failed ? "error" : "ok",
       attributes: { tool: kind },
+      // #258: when the stream reported output for this tool, keep its redacted tail under safe_summary.
+      ...(tail !== undefined ? { summary: { text: tail, policy: "safe_summary" as const } } : {}),
       ...(failed ? { error: { type: "tool_failed", message: kind + " failed" } } : {}),
     });
   }

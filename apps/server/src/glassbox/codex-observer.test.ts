@@ -63,6 +63,7 @@ describe("CodexStreamObserver", () => {
       "tool.call.failed",
       "tool.call.completed",
       "workspace.changed",
+      "model.message",
       "model.request",
       "model.completed",
     ]);
@@ -73,14 +74,19 @@ describe("CodexStreamObserver", () => {
     expect(events[0]!.attributes.exitCode).toBe(0);
     expect(events[0]!.attributes.program).toBe("curl");
     expect(events[0]!.summary?.text).toContain("[REDACTED:bearer]");
+    // #258: the tool summary carries a redacted tail of the observed output after the command text.
+    expect(events[0]!.summary?.text).toContain("\n--- output tail ---\nok");
     expect(events[1]).toMatchObject({ status: "error", error: { type: "exit_code", message: "exit code 1" } });
+    expect(events[1]!.summary?.text).toBe("npm test\n--- output tail ---\n1 failing");
     expect(events[2]!.attributes).toEqual({ tool: "file_change" });
     expect(events[3]!.attributes).toMatchObject({ fileCount: 2, added: 1, updated: 1 });
-    expect(events[4]).toMatchObject({ name: "model.turn", phase: "start", status: "running", attributes: { turnIndex: 1 } });
+    // #258: the agent message is captured as a bounded summary under safe_summary.
+    expect(events[4]).toMatchObject({ type: "model.message", phase: "instant", status: "ok", attributes: { messageBytes: 4 }, summary: { text: "Done", policy: "safe_summary" } });
+    expect(events[5]).toMatchObject({ name: "model.turn", phase: "start", status: "running", attributes: { turnIndex: 1 } });
     // The tool calls sit between the reasoning and the final message, so the message is evidence of a
     // second model call — the pre-tool reasoning item cannot absorb it (#230).
-    expect(events[5]).toMatchObject({ name: "model.turn", phase: "end", status: "ok", attributes: { turnIndex: 1, modelCallsObserved: 2, inputTokens: 100, cachedInputTokens: 40, outputTokens: 7 } });
-    expect(events[5]!.spanId).toBe(events[4]!.spanId);
+    expect(events[6]).toMatchObject({ name: "model.turn", phase: "end", status: "ok", attributes: { turnIndex: 1, modelCallsObserved: 2, inputTokens: 100, cachedInputTokens: 40, outputTokens: 7 } });
+    expect(events[6]!.spanId).toBe(events[5]!.spanId);
     expect(JSON.stringify(events)).not.toContain("SECRET THOUGHTS");
     expect(events.some((e) => e.type === "capability.unavailable")).toBe(false);
   });
@@ -157,6 +163,91 @@ describe("CodexStreamObserver", () => {
     expect(ends[0]!.attributes.modelCallsObserved).toBe(1);
     // The second turn produced no item evidence: no fabricated count.
     expect(ends[1]!.attributes).not.toHaveProperty("modelCallsObserved");
+  });
+
+  it.each(["safe_summary", "metadata_only"] as const)(
+    "#258: intermediate agent messages are captured only under safe_summary and never change the counts (%s)",
+    async (capturePolicy) => {
+      const store = new MemoryTraceStore();
+      const em = new ObservationEmitter({ store, capturePolicy });
+      const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner");
+      const p = parsed();
+      const intermediate = "Checking with Bearer abcdefghijklmnopqrstuvwxyz next";
+      for (const line of [
+        { type: "turn.started" },
+        { type: "item.completed", item: { id: "i1", type: "reasoning", text: "PLAN" } },
+        { type: "item.completed", item: { id: "i2", type: "agent_message", text: intermediate } },
+        { type: "item.completed", item: { id: "i3", type: "command_execution", command: "ls", exit_code: 0, aggregated_output: "a.txt" } },
+        { type: "item.completed", item: { id: "i4", type: "agent_message", text: "x".repeat(300) } },
+        { type: "turn.completed", usage: { input_tokens: 9, output_tokens: 3 } },
+      ]) parseCodexEventLine(JSON.stringify(line), p, obs);
+      obs.finish();
+      await em.flush();
+
+      const events = await store.readRun("run-1");
+      const messages = events.filter((e) => e.type === "model.message");
+      if (capturePolicy === "safe_summary") {
+        expect(messages).toHaveLength(2);
+        // Redacted, bounded, parented like every other observed event; messageBytes measures the original.
+        expect(messages[0]!.summary?.text).toContain("[REDACTED:bearer]");
+        expect(messages[0]!.summary?.text).not.toContain("abcdefghijklmnopqrstuvwxyz");
+        expect(messages[0]!.attributes.messageBytes).toBe(Buffer.byteLength(intermediate, "utf8"));
+        expect(messages[1]!.summary?.text).toHaveLength(240);
+        expect(messages[1]!.attributes.messageBytes).toBe(300);
+        expect(messages.every((e) => e.parentSpanId === "spn_rt" && e.category === "model" && e.phase === "instant")).toBe(true);
+      } else {
+        // The event's only payload is content: at metadata_only it is not emitted at all.
+        expect(messages).toHaveLength(0);
+        expect(JSON.stringify(events)).not.toContain("Checking with");
+      }
+      // #207 counting is policy-independent: reasoning pairs with the first message, the post-tool
+      // message is a second call.
+      expect(events.find((e) => e.type === "model.completed")!.attributes.modelCallsObserved).toBe(2);
+      expect(obs.stats()).toEqual({ modelCalls: 2, toolCalls: 1, toolFailures: 0, sandboxDenials: 0 });
+    },
+  );
+
+  it("#258: a failed command's summary carries the redacted output tail, bounded to the last 512 chars", async () => {
+    const store = new MemoryTraceStore();
+    const em = new ObservationEmitter({ store, capturePolicy: "safe_summary" });
+    const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner");
+    const secret = "Bearer abcdefghijklmnopqrstuvwxyz";
+    const output = "x".repeat(600) + "\nerror: auth failed using " + secret;
+    const command = "npm run deploy -- " + "y".repeat(1100);
+    parseCodexEventLine(
+      JSON.stringify({ type: "item.completed", item: { type: "command_execution", command, exit_code: 1, status: "completed", aggregated_output: output } }),
+      parsed(),
+      obs,
+    );
+    await em.flush();
+
+    const [e] = await store.readRun("run-1");
+    expect(e!.type).toBe("tool.call.failed");
+    const [commandPart, tail] = e!.summary!.text.split("\n--- output tail ---\n");
+    expect(commandPart).toBe(command.slice(0, 1024)); // #258: command bound raised 512 -> 1024
+    // The tail is the LAST 512 chars, so the error text at the end survives; the secret does not.
+    expect(tail).toContain("error: auth failed");
+    expect(tail).toContain("[REDACTED:bearer]");
+    expect(e!.summary!.text).not.toContain("abcdefghijklmnopqrstuvwxyz");
+    expect(output.slice(-512)).toHaveLength(512); // the seeded output really exceeded the tail bound
+  });
+
+  it("#258: redaction runs before the tail slice — a secret whose anchor is cut by the window still redacts", async () => {
+    const store = new MemoryTraceStore();
+    const em = new ObservationEmitter({ store, capturePolicy: "safe_summary" });
+    const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner");
+    // The token body extends past the -512 boundary: a slice-then-redact regression would cut off the
+    // "Bearer " anchor and persist ~505 bare token chars; redact-then-slice replaces the whole token first.
+    const output = "deploy log\n" + "Bearer " + "a".repeat(520);
+    parseCodexEventLine(
+      JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "npm run deploy", exit_code: 1, status: "completed", aggregated_output: output } }),
+      parsed(),
+      obs,
+    );
+    await em.flush();
+    const [e] = await store.readRun("run-1");
+    expect(e!.summary!.text).not.toContain("a".repeat(100));
+    expect(e!.summary!.text).toContain("[REDACTED:bearer]");
   });
 
   it("drops an abandoned turn's item count instead of donating it to the next turn", async () => {
