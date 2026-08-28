@@ -261,19 +261,23 @@ export async function createApp(
       });
       return reply.code(202).send({ evalRun });
     });
-    app.post("/api/runs/:id/regression-case", async (request, reply) => {
-      const run = service.getRun(runIdParams.parse(request.params).id);
-      const requested = regressionCaseFromRunBody.parse(request.body ?? {});
+    // Derives the case from the Run's trace evidence; 409 without a template, 400 when the Run cannot be a baseline.
+    const draftFor = async (params: unknown) => {
+      const run = service.getRun(runIdParams.parse(params).id);
       const template = service.getAgent(run.agentId).workspaceTemplate;
       if (!template) throw new HttpError(409, "This Run did not start from a template-backed workspace");
-      let input;
-      try { input = caseFromRun(run, await viewFor(run.id), template); }
+      try { return caseFromRun(run, await viewFor(run.id), template); }
       catch (error) { throw new HttpError(400, error instanceof Error ? error.message : "Unable to create regression case"); }
+    };
+    // Prefill is read-only (#158): the dialog edits the draft, then POST below is the single create.
+    app.get("/api/runs/:id/regression-case", async (request) => ({ draft: await draftFor(request.params) }));
+    app.post("/api/runs/:id/regression-case", async (request, reply) => {
+      const requested = regressionCaseFromRunBody.parse(request.body ?? {});
+      const input = await draftFor(request.params);
       const regressionCase = await service.createRegressionCase({
         ...input,
         ...(requested.name ? { name: requested.name } : {}),
         ...(requested.assertions ? { assertions: requested.assertions } : {}),
-        sourceRunId: run.id,
       });
       return reply.code(201).send({ regressionCase });
     });
@@ -305,7 +309,7 @@ export async function createApp(
         if (q.status && status !== q.status) continue;
         items.push({ runId: run.id, traceId: run.traceId ?? s.traceId, agentId: run.agentId, agentName: agents.get(run.agentId) ?? "", workspace: s.workspace, status, startedAt: s.startedAt ?? run.createdAt, durationMs: s.durationMs, endedReason: s.endedReason,
           firstFailingStep: s.firstFailingStep, eventCount: s.eventCount, runtime: config.runtimeProvider, model: config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default",
-          usage: s.usage, workspaceChanges: s.workspaceChanges, outcome: s.outcome, capabilities: s.capabilities, toolCalls: s.metrics.toolCalls, toolFailures: s.metrics.toolFailures,
+          usage: s.usage, workspaceChanges: s.workspaceChanges, outcome: s.outcome, capabilities: s.capabilities, toolCalls: s.metrics.toolCalls, toolFailures: s.metrics.toolFailures, toolIdentities: s.metrics.toolIdentities,
           tokens: s.metrics.tokens?.output !== undefined ? { output: s.metrics.tokens.output } : undefined,
           denials: s.denials, actions: s.actions, executionStatus: executionStatusOf(status), taskOutcome: s.taskOutcome, configHash: s.configHash ?? run.configHash, configSnapshot: run.configSnapshot,
           degraded: s.degraded, truncated: s.truncated, evicted: s.evicted, redacted: s.redactedEvents > 0, lastEventAt: s.lastEventAt });

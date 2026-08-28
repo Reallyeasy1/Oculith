@@ -139,7 +139,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 </td>
                 <td className="runs-runtime" title={run.runtime + " · " + run.model}>{run.runtime} · {run.model}</td>
                 <td>{formatUsage(run.usage)}</td>
-                <td>
+                <td title={run.toolIdentities?.join(", ")}>
                   <span>{run.toolCalls}{run.toolFailures > 0 && <> · {run.toolFailures} failed</>}</span>{" "}
                   {run.redacted && <span className="badge">redacted</span>}
                   {run.denials > 0 && <span className="badge badge-warn">denied {run.denials}</span>}

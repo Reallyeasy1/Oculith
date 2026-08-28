@@ -223,7 +223,7 @@ All `/api/*` routes except `/api/auth` and `/api/health` require `Authorization:
 | `GET /api/traces/:traceId/export` | redacted JSON download | `Content-Disposition: attachment; filename="trace-<traceId>.json"`, `exportedAt` |
 | `GET /api/runs/:runId/audit`, `GET /api/traces/:traceId/audit` | audit rows | section 6 |
 | `GET /api/workspaces`, `GET /api/workspace-templates` | in review (#106, #123) | |
-| `GET/POST /api/regression-cases`, `/:id`, `POST /api/runs/:id/regression-case` (prefill), `GET/POST /api/eval-runs`, `GET /api/eval-runs/:id`, `GET /api/eval-runs/:a/compare/:b` | in review (#128, #142, #144) | exact paths may change before merge |
+| `GET/POST /api/regression-cases`, `/:id`, `GET /api/runs/:id/regression-case` (read-only draft prefill, never persists), `POST /api/runs/:id/regression-case` (the single create from a Run; body `{ name?, assertions? }` may only rename or drop proposed assertions; 409 without a template, 400 when the Run cannot be a baseline), `GET/POST /api/eval-runs`, `GET /api/eval-runs/:id`, `GET /api/eval-runs/:a/compare/:b` | in review (#128, #142, #144) | exact paths may change before merge |
 
 ## 9. Configuration, runbook and verification
 

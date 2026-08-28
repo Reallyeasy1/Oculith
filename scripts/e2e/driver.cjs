@@ -160,10 +160,37 @@ async function drawerRoundTrip(page) {
 
 const errorsOnly = (page) => page.locator(".trace-detail .trace-check input[type=checkbox]");
 const countFailing = (spans) => spans.reduce((n, s) => n + (s.status === "error" || s.status === "timeout" ? 1 : 0) + countFailing(s.children || []), 0);
+const flattenSpans = (spans) => spans.flatMap((span) => [span, ...flattenSpans(span.children || [])]);
 const glassboxText = (page) => page.evaluate(() => Array.from(document.querySelectorAll(".runs-view")).map((n) => n.innerText).join("\n"));
 
 // ---- main -------------------------------------------------------------------------------------------------------
 let server = null;
+let browser = null;
+let exitCode = 0;
+// Exits that skip the finally below (Ctrl+C, uncaught throw): Playwright kills Chrome on 'exit'; nothing else kills
+// the server child, and on Windows it is not in this console's job. kill() is synchronous, so 'exit' is enough.
+process.on("exit", () => { if (server) server.kill(); });
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => process.exit(130));
+
+async function flushOutput() {
+  await Promise.all([process.stdout, process.stderr].map((stream) => new Promise((resolve) => {
+    stream.write("", resolve);
+  })));
+}
+
+async function closeResources() {
+  const failures = [];
+  if (browser) {
+    try { await browser.close(); } catch (error) { failures.push(error); }
+    browser = null;
+  }
+  if (server) {
+    try { await stopServer(server); } catch (error) { failures.push(error); }
+    server = null;
+  }
+  if (failures.length > 0) throw new AggregateError(failures, "E2E resource cleanup failed");
+}
+
 (async () => {
   const { chromium } = loadPlaywright();
   const sweeps = [];
@@ -187,9 +214,15 @@ let server = null;
   ok(okRun.view.summary.outcome && typeof okRun.view.summary.outcome.finalMessageBytes === "number", "trace summary carries final-message outcome metadata");
   ok(typeof okRun.view.summary.outcome.text === "string" && okRun.view.summary.outcome.text.length <= 240, "safe-summary outcome text is present and bounded to 240 characters");
   ok(okRun.view.events.some((e) => e.type === "runtime.container.started") && okRun.view.events.some((e) => e.type === "runtime.container.stopped"), "trace shows the real container start/stop spans");
+  const toolSpans = flattenSpans(okRun.view.spans).filter((span) => span.category === "tool");
+  ok(toolSpans.length > 0 && toolSpans.every((span) => typeof span.durationMs === "number" && span.endedAt), "real tool calls are reconstructed as completed spans with durations (#130)");
+  const commandSpan = toolSpans.find((span) => typeof span.attributes.program === "string" && typeof span.attributes.argument0 === "string");
+  ok(commandSpan && commandSpan.attributes.argument0.length <= 64, "metadata_only keeps a bounded program + first-argument identity (#130)");
   const listed = (await api("/api/runs")).json();
-  eq(listed.runs.find((r) => r.runId === okRun.run.id).status, "ok", "/api/runs lists the run as ok");
-  eq(listed.runs.find((r) => r.runId === okRun.run.id).outcome.text, okRun.view.summary.outcome.text, "/api/runs and Trace expose the same outcome text");
+  const listedRun = listed.runs.find((r) => r.runId === okRun.run.id);
+  eq(listedRun.status, "ok", "/api/runs lists the run as ok");
+  eq(listedRun.outcome.text, okRun.view.summary.outcome.text, "/api/runs and Trace expose the same outcome text");
+  ok(listedRun.toolIdentities.length > 0 && listedRun.toolIdentities.length <= 3, "Runs API lists at most three tool identities (#130)");
   console.log("      capabilities " + JSON.stringify(okRun.view.summary.capabilities) + ", redactedEvents " + okRun.view.summary.redactedEvents + ", events " + okRun.view.summary.eventCount);
 
   console.log("\n[2b] shared workspace: second Agent on the first's workspace, busy lock, switch (#64)");
@@ -234,7 +267,7 @@ let server = null;
   eq(JSON.stringify(view), traceRes.text, "export body is byte-equal to /trace");
 
   console.log("\n[4] UI: Runs table → Enter → tree → drawer → focus trap → Escape → filters → Close");
-  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  browser = await chromium.launch({ channel: "chrome", headless: true });
   const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
   const pageErrors = [];
   const consoleErrors = [];
@@ -246,6 +279,14 @@ let server = null;
   eq(await page.locator(`${RUNS_TABLE} th`, { hasText: /^Agent$/ }).count(), 0, "Agent column is hidden in the Agent view");
   await openTraceByKeyboard(page, okRun.run.id);
   await drawerRoundTrip(page);
+  await page.locator(".trace-detail input[type=search]").fill(commandSpan.attributes.program);
+  const identifiedTool = page.locator(".trace-name[title]").first();
+  await identifiedTool.waitFor({ timeout: 5_000 });
+  const identity = await identifiedTool.getAttribute("title");
+  await identifiedTool.locator("..").click();
+  eq(await page.locator("#span-drawer-title").innerText(), identity, "Tool drawer title exposes the bounded identity (#130)");
+  await page.locator("[aria-label='Close span details']").click();
+  await page.locator(".trace-detail input[type=search]").fill("");
   await errorsOnly(page).check();
   // The model may legitimately run a command that exits non-zero; the filter must agree with the API either way.
   const failingSpans = countFailing(okRun.view.spans);
@@ -260,6 +301,7 @@ let server = null;
   await page.getByRole("button", { name: "Save as regression case" }).click();
   const caseDialog = page.locator(".regression-case-modal");
   await caseDialog.waitFor({ timeout: 5_000 });
+  await caseDialog.locator(".assertion-list > div").first().waitFor({ timeout: 5_000 }); // the draft is fetched after the dialog opens (#158)
   ok((await caseDialog.locator(".assertion-list > div").count()) >= 1, "save dialog shows inferred assertions");
   await caseDialog.getByRole("button", { name: "Save regression case", exact: true }).click();
   await caseDialog.waitFor({ state: "detached", timeout: 10_000 });
@@ -381,6 +423,7 @@ let server = null;
   sweep("DOM (timeout trace)", await glassboxText(page));
   eq(pageErrors.length, 0, "no uncaught page errors" + (consoleErrors.length ? " (console errors: " + consoleErrors.length + ")" : ""));
   await browser.close();
+  browser = null;
 
   console.log("\n[7] privacy sweep: seeded fakes absent from files, API, export, log, DOM");
   const traceDir = path.join(ROOT, "data", "traces");
@@ -427,10 +470,19 @@ let server = null;
   ok(queryP95 < 500, "query p95 < 500 ms");
 
   await stopServer(server);
+  server = null;
   console.log("\nE2E PASS — " + checks + " checks; runs " + okRun.run.id + " (ok) + " + badRun.run.id + " (timeout); append p95 " + appendP95.toFixed(1) + " ms, query p95 " + queryP95.toFixed(1) + " ms, redactedEvents " + redacted);
 })().catch(async (error) => {
   console.error("\nE2E FAIL: " + (error && error.stack || error));
-  process.exitCode = 1;
-  // Never leave the built server bound to the port; leftover containers are the poc script's exit trap.
-  if (server) await stopServer(server);
+  exitCode = 1;
+}).finally(async () => {
+  try {
+    // Always close Chromium and the built server, including assertion and browser-navigation failures.
+    await closeResources();
+  } catch (error) {
+    exitCode = 1;
+    console.error("\nE2E CLEANUP FAIL: " + (error && error.stack || error));
+  }
+  await flushOutput();
+  process.exit(exitCode);
 });
