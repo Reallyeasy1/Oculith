@@ -45,4 +45,10 @@ describe("buildAgentRunBaseline", () => {
     expect(estimatedCost(summary(2), { inputPerMillion: 2 })).toBe(0.0004);
     expect(estimatedCost(summary(2), {})).toBeUndefined();
   });
+
+  it("prices cached input separately and falls back to the input rate", () => {
+    const cached = summary(2, { usage: { inputTokens: 200, cachedInputTokens: 50, outputTokens: 20 } });
+    expect(estimatedCost(cached, { inputPerMillion: 2, cachedInputPerMillion: 1, outputPerMillion: 4 })).toBe(0.00043);
+    expect(estimatedCost(cached, { inputPerMillion: 2 })).toBe(0.0004);
+  });
 });

@@ -4,10 +4,11 @@ import type { ObservationEmitter } from "../glassbox/emitter.js";
 import type { TraceStore } from "../glassbox/store.js";
 import type { EvaluationStore } from "../glassbox/evaluation.js";
 import { rollupRun, type RunSummaryStore } from "../glassbox/summary.js";
+import type { TokenPricing } from "../glassbox/cost.js";
 import { evaluateAll } from "./evaluators.js";
 
 export class EvalRunner {
-  constructor(private readonly service: AgentService, private readonly glassbox: { emitter: ObservationEmitter; store: TraceStore; summaries?: RunSummaryStore | undefined; evaluations?: EvaluationStore | undefined }) {}
+  constructor(private readonly service: AgentService, private readonly glassbox: { emitter: ObservationEmitter; store: TraceStore; summaries?: RunSummaryStore | undefined; evaluations?: EvaluationStore | undefined; pricing?: TokenPricing | undefined }) {}
 
   async execute(evalRunId: string): Promise<void> {
     const evalRun = this.service.getEvalRun(evalRunId);
@@ -26,7 +27,7 @@ export class EvalRunner {
         // FR-21 adapter: one EvaluationResult per (run, evaluator, version), so several assertions of one type fold
         // into one verdict (all must pass) instead of the last write shadowing the others. The summary row must
         // exist before putResult (setTaskOutcome 404s otherwise) — rollupRun is idempotent, so roll up here.
-        if (this.glassbox.evaluations && this.glassbox.summaries && await rollupRun({ traces: this.glassbox.store, emitter: this.glassbox.emitter, summaries: this.glassbox.summaries }, run.id)) {
+        if (this.glassbox.evaluations && this.glassbox.summaries && await rollupRun({ traces: this.glassbox.store, emitter: this.glassbox.emitter, summaries: this.glassbox.summaries, pricing: this.glassbox.pricing }, run.id)) {
           const evaluatedAt = new Date().toISOString();
           const byType = new Map<string, typeof results>();
           for (const result of results) byType.set(result.type, [...(byType.get(result.type) ?? []), result]);

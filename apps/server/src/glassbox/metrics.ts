@@ -10,7 +10,7 @@ import type { ExecutionStatus, RunSummary, RunSummaryStore, TaskOutcome } from "
  * `task_completion`, comes from `EvaluationResult`s parameterised by evaluator id + version. The two planes
  * are labelled (`kind`) and never folded into one number, and every response carries provenance.
  */
-export const METRIC_NAMES = ["execution_completion", "tool_failure_rate", "tool_calls", "tool_failures", "tokens", "latency", "denials", "task_completion"] as const;
+export const METRIC_NAMES = ["execution_completion", "tool_failure_rate", "tool_calls", "tool_failures", "tokens", "latency", "denials", "estimated_cost_usd", "task_completion"] as const;
 export type MetricName = (typeof METRIC_NAMES)[number];
 export type MetricKind = "telemetry" | "evaluation";
 export const SCALAR_AGGREGATIONS = ["rate", "avg", "p50", "p95", "count"] as const;
@@ -33,6 +33,7 @@ export const METRIC_CATALOGUE: Record<MetricName, { kind: MetricKind; aggregatio
   tokens: { kind: "telemetry", aggregations: ["avg", "p50", "p95", "count"] },
   latency: { kind: "telemetry", aggregations: ["avg", "p50", "p95"] },
   denials: { kind: "telemetry", aggregations: ["count", "avg"] },
+  estimated_cost_usd: { kind: "telemetry", aggregations: ["rate", "avg", "p50", "p95"] },
   task_completion: { kind: "evaluation", aggregations: ["rate"] },
 };
 
@@ -206,6 +207,7 @@ export function computeMetric(query: MetricQuery, summaries: readonly RunSummary
       case "tokens": return tokensOf(s, query.tokens?.field ?? "total");
       case "latency": return s.durationMs;
       case "denials": return s.denials;
+      case "estimated_cost_usd": return s.estimatedCostUsd;
       case "task_completion": { const passed = verdicts?.get(s.runId); return passed === undefined ? undefined : passed ? 1 : 0; }
       case "tool_failure_rate": return undefined; // aggregated pairwise in cell(), never per-run
     }

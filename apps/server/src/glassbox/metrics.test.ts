@@ -109,6 +109,23 @@ describe("percentile (nearest-rank)", () => {
 });
 
 describe("computeMetric on the 30-summary fixture", () => {
+  it("aggregates persisted estimated cost across scalar and series queries", () => {
+    const rows = [
+      stub({ runId: "cost-1", startedAt: d(1, "00:10"), estimatedCostUsd: 0.001 }),
+      stub({ runId: "cost-2", startedAt: d(1, "01:10"), estimatedCostUsd: 0.003 }),
+      stub({ runId: "cost-3", startedAt: d(2, "00:10"), estimatedCostUsd: undefined }),
+    ];
+    const metric = (aggregation: MetricQuery["aggregation"]) => computeMetric(q({ metric: "estimated_cost_usd", aggregation }), rows);
+    expect(metric({ type: "rate" })).toMatchObject({ value: 0.002, provenance: { count: 3, sampled: 2 } });
+    expect(metric({ type: "avg" }).value).toBe(0.002);
+    expect(metric({ type: "p50" }).value).toBe(0.001);
+    expect(metric({ type: "p95" }).value).toBe(0.003);
+    expect(metric({ type: "series", bucket: "day", statistic: "avg" }).value).toEqual([
+      { bucket: "2026-08-01T00:00:00.000Z", value: 0.002, count: 2, sampled: 2 },
+      { bucket: "2026-08-02T00:00:00.000Z", value: null, count: 1, sampled: 0 },
+    ]);
+  });
+
   it("computes every telemetry metric x aggregation cell for cfg-a by hand", () => {
     // 18 runs; 16 terminal (a11, a17 running); 12 completed
     expect(scalar("execution_completion", "rate", { configHash: "cfg-a" })).toMatchObject({ kind: "telemetry", value: 12 / 16, provenance: { count: 18, sampled: 16 } });

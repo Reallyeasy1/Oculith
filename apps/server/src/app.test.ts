@@ -255,17 +255,17 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
       executionStatus: "completed", taskOutcome: "unknown", startedAt: `2026-08-${String(index).padStart(2, "0")}T00:00:00.000Z`,
       durationMs: index * 1_000, metrics: { terminalStatus: "ok", toolCalls: index, toolFailures: 0, modelCalls: 1,
         tokens: { input: index * 100, output: index * 10 }, retries: 0, denials: 0 },
-      usage: { inputTokens: index * 100, outputTokens: index * 10 }, denials: 0, actions: 0,
+      usage: { inputTokens: index * 100, cachedInputTokens: index * 20, outputTokens: index * 10 }, denials: 0, actions: 0,
       capabilities: { model: "observed", tool: "observed" }, degraded: false, truncated: false, evicted: false,
       redactedEvents: 0, eventCount: 1, rollupVersion: 1, updatedAt: "2026-08-28T00:00:00.000Z",
     });
     const queries: unknown[] = [];
     const summaries = { query: async (query: unknown) => { queries.push(query); return [makeSummary(3), makeSummary(2), makeSummary(1)]; } } as unknown as RunSummaryStore;
     const svc = { ...service, getAgent: (id: string) => { if (id !== agentId) throw new HttpError(404, "Agent not found"); return { id }; } } as unknown as AgentService;
-    const app = await createApp(config({ GLASSBOX_PRICE_PER_MTOK_INPUT: "2", GLASSBOX_PRICE_PER_MTOK_OUTPUT: "4" }), svc, { emitter, store, summaries });
+    const app = await createApp(config({ GLASSBOX_PRICE_PER_MTOK_INPUT: "2", GLASSBOX_PRICE_PER_MTOK_CACHED_INPUT: "1", GLASSBOX_PRICE_PER_MTOK_OUTPUT: "4" }), svc, { emitter, store, summaries });
     const result = await app.inject({ method: "GET", url: `/api/agents/${agentId}/runs/baseline`, headers: auth });
     expect(result.statusCode).toBe(200);
-    expect(result.json().baseline).toMatchObject({ sampleCount: 3, windowSize: 20, durationMs: { p50: 2_000, p95: 3_000 }, inputTokens: { p50: 200, p95: 300 }, toolCalls: { p50: 2, p95: 3 }, estimatedCostUsd: { p50: 0.00048, p95: 0.00072 } });
+    expect(result.json().baseline).toMatchObject({ sampleCount: 3, windowSize: 20, durationMs: { p50: 2_000, p95: 3_000 }, inputTokens: { p50: 200, p95: 300 }, toolCalls: { p50: 2, p95: 3 }, estimatedCostUsd: { p50: 0.00044, p95: 0.00066 } });
     // #213: the store query is bounded so the Postgres backend never scans an Agent's whole history.
     expect(queries).toEqual([{ agentId, limit: 40 }]);
     expect((await app.inject({ method: "GET", url: "/api/agents/12345678-1234-4234-8234-123456789abc/runs/baseline", headers: auth })).statusCode).toBe(404);
