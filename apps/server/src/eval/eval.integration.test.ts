@@ -53,7 +53,9 @@ describe("regression workflow integration", () => {
     expect(after.results[0]?.results.find((result) => result.type === "expected_tool")?.pass).toBe(false);
     expect(comparison.regressions).toBeGreaterThanOrEqual(1);
     expect(after.target.configHash).not.toBe(before.target.configHash);
-    expect(service.getRun(after.runIds[0]!).id).toBe(after.runIds[0]);
+    const candidateRun = service.getRun(after.runIds[0]!);
+    expect(candidateRun.id).toBe(after.runIds[0]);
+    expect(candidateRun.status).toBe("completed");
     await emitter.flush();
     const evidence = after.results[0]?.results.find((result) => result.type === "terminal_status")?.evidenceEventIds[0];
     expect((await store.readRun(after.runIds[0]!)).some((event) => event.eventId === evidence)).toBe(true);
