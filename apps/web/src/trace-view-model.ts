@@ -47,10 +47,10 @@ export function spanStatusLabel(span: Pick<Span, "status" | "incomplete">, ended
 }
 
 export function interruptedSpanDurationMs(span: Pick<Span, "startedAt" | "incomplete">, summary: TraceView["summary"]): number | undefined {
-  if (!span.incomplete || summary.endedReason !== "server_restart" || !summary.endedAt) return undefined;
+  if (!span.incomplete || summary.endedReason !== "server_restart" || !summary.startedAt || summary.interruptedAfterMs === undefined) return undefined;
   const start = Date.parse(span.startedAt);
-  const end = Date.parse(summary.endedAt);
-  return Number.isNaN(start) || Number.isNaN(end) ? undefined : Math.max(0, end - start);
+  const bound = Date.parse(summary.startedAt) + summary.interruptedAfterMs; // summary.endedAt is the next boot, not the cut
+  return Number.isNaN(start) || Number.isNaN(bound) ? undefined : Math.max(0, bound - start);
 }
 
 export function isFilterActive(f: TraceFilter): boolean {

@@ -252,7 +252,10 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
   const restart = terminal !== undefined && isRestartCancel(terminal);
   const clockEnd = restart ? events[events.indexOf(terminal) - 1]?.timestamp : endedAt;
   const durationMs = startedAt && clockEnd ? Math.max(0, Date.parse(clockEnd) - Date.parse(startedAt)) : undefined;
-  const interruptedAfterMs = restart && startedAt && endedAt ? Math.max(0, Date.parse(endedAt) - Date.parse(startedAt)) : undefined;
+  // The restart-cancel is stamped at the NEXT boot, which may be hours after the process died: the honest lower bound on
+  // how long the Run lived is the previous process's last heartbeat (run.cancelled.attributes.lastSeenAt), else the last evidence.
+  const lastSeenAt = restart && typeof terminal.attributes.lastSeenAt === "string" ? Date.parse(terminal.attributes.lastSeenAt) : NaN;
+  const interruptedAfterMs = restart && startedAt ? Math.max(durationMs ?? 0, Number.isNaN(lastSeenAt) ? 0 : lastSeenAt - Date.parse(startedAt)) : undefined;
   const usageEvents = events.filter((e) => e.type === "model.completed");
   const sum = (k: string) => usageEvents.reduce((n, e) => n + (typeof e.attributes[k] === "number" ? (e.attributes[k] as number) : 0), 0);
   // Presence-based, not truthiness-based: include a usage field whenever ANY model.completed event carries it

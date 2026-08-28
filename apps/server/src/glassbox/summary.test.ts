@@ -76,7 +76,7 @@ describe("summaryFromView", () => {
     seq = 0;
     const restart = [ev({ type: "run.started", category: "control", spanId: "s", status: "ok" }),
       ev({ type: "run.cancelled", category: "control", spanId: "c", status: "cancelled", actorType: "service", actorId: "server", attributes: { reason: "server_restart" } })];
-    expect(summaryFromView(buildTrace(restart, { capturePolicy: "metadata_only" }))).toMatchObject({ executionStatus: "cancelled", endedReason: "server_restart", interruptedAfterMs: 10 });
+    expect(summaryFromView(buildTrace(restart, { capturePolicy: "metadata_only" }))).toMatchObject({ executionStatus: "cancelled", endedReason: "server_restart", interruptedAfterMs: 0 });
     expect(summaryFromView(buildTrace([], { capturePolicy: "metadata_only" }))).toMatchObject({ executionStatus: "running", eventCount: 0 });
   });
 });
