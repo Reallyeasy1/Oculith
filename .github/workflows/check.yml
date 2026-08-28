@@ -1,0 +1,22 @@
+# Machine enforcement of the merge gate (issue #246): typecheck + tests + guard
+# self-tests + build on Linux, where the suite is authoritative (CLAUDE.md documents
+# Windows-only artifacts). No secrets: `npm run check` makes no model calls.
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
