@@ -301,6 +301,7 @@ Full list including container/resource limits: [.env.example](.env.example).
 
 ## Documentation
 
+- **[User guide](docs/USER_GUIDE.md)** — how to operate the product · **[Tutorial](docs/TUTORIAL.md)** — first login to a detected regression in ~15 minutes
 - [Track 1 problem statement](docs/PROBLEM_STATEMENT.md) · [PRD](docs/PRD.md) · [Architecture](docs/ARCHITECTURE.md)
 - [Observability roadmap](docs/OBSERVABILITY_ROADMAP.md) — the stance on inputs, outputs and reasoning
 - [UAT coverage](docs/UAT_COVERAGE.md) — what has been tested, how, and what remains
