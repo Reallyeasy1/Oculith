@@ -492,6 +492,11 @@ export class AgentService {
       status: "ok",
       source: { component: "AgentService", observed: true },
       attributes: { promptBytes: Buffer.byteLength(prompt, "utf8"), configHash: run.configHash!, workspace: agentAtStart.workspaceName ?? path.basename(agentAtStart.workspacePath), ...options.tags },
+      // #258: bounded prompt summary, opt-in only — same gate as the run.completed outcome summary.
+      // The emitter's redactEvent scans it and would also strip it at metadata_only (policy_drop_summary).
+      ...(this.emitter.capturePolicy === "safe_summary"
+        ? { summary: { text: redactText(prompt).text.slice(0, 240), policy: "safe_summary" as const } }
+        : {}),
     });
     this.spans.set(runId, {
       traceId: ctx.traceId,
