@@ -955,6 +955,28 @@ textarea:focus {
   margin-top: 20px;
 }
 
+.assertion-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 16px;
+}
+
+.assertion-list > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--paper);
+}
+
+.assertion-list code {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -1115,14 +1137,6 @@ textarea:focus {
   overflow: hidden;
 }
 
-.trace-detail {
-  container: trace-detail / inline-size;
-}
-
-.trace-detail-with-drawer {
-  padding-right: 460px;
-}
-
 .runs-view h2 {
   margin: 3px 0 0;
   font-size: 16px;
@@ -1148,12 +1162,39 @@ textarea:focus {
 
 .runs-table-wrap {
   overflow-x: auto;
+  position: relative;
+  scrollbar-color: var(--purple) #ecebe5;
+}
+
+.runs-table-wrap-scroll-hint::after {
+  content: "Scroll →" / "";
+  position: sticky;
+  left: calc(100% - 74px);
+  bottom: 4px;
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--muted);
+  font-size: 10px;
+  box-shadow: -6px 0 8px var(--paper);
 }
 
 .runs-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
+}
+
+.runs-runtime,
+.runs-outcome {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.runs-outcome {
+  max-width: 280px;
 }
 
 .runs-table th,
@@ -1286,6 +1327,8 @@ textarea:focus {
   padding-bottom: 8px;
   /* scrollIntoView on open leaves the compact Playground bar visible above the trace header. */
   scroll-margin-top: 72px;
+  /* Trace compaction queries key on this container, not the viewport (#138). */
+  container: trace-detail / inline-size;
 }
 
 /* Compact Playground while a trace is open (issue #35): agent name, status, Expand. */
@@ -1699,7 +1742,7 @@ textarea:focus {
   right: 0;
   bottom: 0;
   z-index: 15;
-  width: min(460px, 100%);
+  width: min(460px, calc(100vw - 76px));
   overflow-y: auto;
   padding: 20px 22px 28px;
   background: var(--paper);
@@ -1787,7 +1830,10 @@ textarea:focus {
   overflow-wrap: anywhere;
 }
 
-@container trace-detail (max-width: 720px) {
+/* One breakpoint set, on the trace container's content width. #124's viewport values (800 / 1099)
+   translated with the sidebar, page padding and border removed (800 → 654, 1099 → 753), so the tree
+   compacts the same way without a drawer and also when the docked drawer eats the width. */
+@container trace-detail (max-width: 660px) {
   .trace-detail > .trace-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1807,21 +1853,27 @@ textarea:focus {
   }
 }
 
-@container trace-detail (min-width: 721px) and (max-width: 1050px) {
+@container trace-detail (min-width: 661px) and (max-width: 760px) {
   .trace-detail > .trace-summary {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
-@media (max-width: 1499px) {
+/* Span drawer docking (#138). The drawer is fixed to the viewport, so where it lives is a viewport
+   decision: >= 1500 px the trace reserves 460 px beside it and may grow past the usual 1180 px so the
+   tree keeps its width; 801–1499 px it docks below the tree; <= 800 px it stays the #100 overlay
+   (min(460px, 100vw - 76px)). */
+@media (min-width: 1500px) {
   .trace-detail-with-drawer {
-    padding-right: 0;
+    max-width: 1640px;
+    padding-right: 460px;
   }
+}
 
+@media (min-width: 801px) and (max-width: 1499px) {
   .trace-detail-with-drawer .span-drawer {
     position: static;
     width: 100%;
-    max-height: none;
     border-top: 1px solid var(--line);
     border-left: 0;
     box-shadow: none;
@@ -1876,3 +1928,26 @@ textarea:focus {
   font-size: 12px;
   color: var(--muted);
 }
+
+.regression-cases {
+  margin-top: 18px;
+}
+
+.case-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.case-actions .button {
+  white-space: nowrap;
+}
+
+.comparison-view { margin-top: 18px; }
+.comparison-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; padding: 14px; }
+.comparison-controls label { display: grid; gap: 4px; font-size: 11px; color: var(--muted); }
+.comparison-banner { margin: 0 14px 14px; padding: 10px 12px; border-radius: 9px; }
+.comparison-banner.has-regression { color: #8d2727; background: #fbe5e5; border: 1px solid #e2aaaa; }
+.comparison-banner.no-regression { color: #277756; background: #dcf2e9; border: 1px solid #9ed8bb; }
+.comparison-regression { background: #fff5f5; }
+.evidence-link { border: 0; background: transparent; padding: 0; color: inherit; cursor: pointer; text-align: left; }
+.evidence-link:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
