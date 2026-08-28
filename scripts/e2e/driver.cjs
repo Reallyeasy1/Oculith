@@ -3,6 +3,8 @@
 // restart it with GLASSBOX_DEMO_FAILURE=timeout. Every check throws; exit code is the verdict.
 "use strict";
 const assert = require("node:assert/strict");
+// The overview also renders the regression-cases table as `.runs-table` (#88); scope Runs selectors to the Runs section.
+const RUNS_TABLE = 'section[aria-labelledby="runs-heading"] .runs-table';
 const { spawn, execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -121,11 +123,11 @@ async function openApp(page) {
   await attention.waitFor({ timeout: 15_000 });
   eq(await attention.getAttribute("aria-pressed"), "true", "Runs list opens on the 'Needs attention' filter");
   await page.locator(".runs-filters").getByRole("button", { name: /^all$/i }).click(); // DOM text is "all"; CSS capitalises it
-  await page.locator(".runs-table tbody tr").first().waitFor({ timeout: 15_000 });
+  await page.locator(`${RUNS_TABLE} tbody tr`).first().waitFor({ timeout: 15_000 });
 }
 
 async function openTraceByKeyboard(page, runId) {
-  const row = page.locator(".runs-table tbody tr").first();
+  const row = page.locator(`${RUNS_TABLE} tbody tr`).first();
   await row.focus();
   eq(await page.evaluate(() => document.activeElement && document.activeElement.tagName), "TR", "Runs row takes focus");
   await page.keyboard.press("Enter");
@@ -237,7 +239,7 @@ let server = null;
   page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); });
   await openApp(page);
   ok((await page.locator("#runs-heading").innerText()).includes("E2E GlassBox"), "Runs table is scoped to the selected Agent");
-  eq(await page.locator(".runs-table th", { hasText: /^Agent$/ }).count(), 0, "Agent column is hidden in the Agent view");
+  eq(await page.locator(`${RUNS_TABLE} th`, { hasText: /^Agent$/ }).count(), 0, "Agent column is hidden in the Agent view");
   await openTraceByKeyboard(page, okRun.run.id);
   await drawerRoundTrip(page);
   await errorsOnly(page).check();
@@ -264,7 +266,7 @@ let server = null;
   eq(await page.locator(".trace-detail").count(), 0, "Close trace returns to the Runs table");
 
   console.log("\n[4b] UI: Runs follow the selected Agent; All runs spans Agents with the summary strip (#70)");
-  const rows = () => page.locator(".runs-table tbody tr");
+  const rows = () => page.locator(`${RUNS_TABLE} tbody tr`);
   await page.locator(".create-button").click();
   await page.locator(".modal input[placeholder='Frontend Builder']").fill("E2E Empty");
   await page.locator(".modal .button-primary").click();
@@ -285,7 +287,7 @@ let server = null;
   eq(await pressedFilter(), "Needs attention", "overview opens on 'Needs attention'");
   await page.locator(".runs-filters").getByRole("button", { name: /^all$/i }).click();
   await rows().first().waitFor({ timeout: 10_000 });
-  eq(await page.locator(".runs-table th", { hasText: /^Agent$/ }).count(), 1, "overview shows the Agent column");
+  eq(await page.locator(`${RUNS_TABLE} th`, { hasText: /^Agent$/ }).count(), 1, "overview shows the Agent column");
   ok((await rows().first().innerText()).includes("E2E GlassBox"), "overview row names its Agent");
   const strip = Object.fromEntries(await page.locator(".summary-strip > div").evaluateAll((els) => els.map((el) => [el.querySelector("dt").textContent, Number(el.querySelector("dd").textContent)])));
   const statuses = await rows().locator(".status").allTextContents(); // textContent: the pill is CSS-uppercased
@@ -344,7 +346,7 @@ let server = null;
   console.log("\n[6] UI: Timed out filter → banner → Jump lands in the drawer on the failing span");
   await openApp(page);
   await page.locator(".runs-filters button", { hasText: "Timed out" }).click();
-  eq(await page.locator(".runs-table tbody tr").count(), 1, "'Timed out' quick filter leaves exactly the gated run");
+  eq(await page.locator(`${RUNS_TABLE} tbody tr`).count(), 1, "'Timed out' quick filter leaves exactly the gated run");
   await openTraceByKeyboard(page, badRun.run.id);
   await page.locator(".trace-detail button", { hasText: /^Audit$/ }).click();
   const auditTable = page.locator(".audit-table");
