@@ -160,6 +160,7 @@ async function drawerRoundTrip(page) {
 
 const errorsOnly = (page) => page.locator(".trace-detail .trace-check input[type=checkbox]");
 const countFailing = (spans) => spans.reduce((n, s) => n + (s.status === "error" || s.status === "timeout" ? 1 : 0) + countFailing(s.children || []), 0);
+const flattenSpans = (spans) => spans.flatMap((span) => [span, ...flattenSpans(span.children || [])]);
 const glassboxText = (page) => page.evaluate(() => Array.from(document.querySelectorAll(".runs-view")).map((n) => n.innerText).join("\n"));
 
 // ---- main -------------------------------------------------------------------------------------------------------
@@ -211,8 +212,14 @@ async function closeResources() {
   eq(okRun.run.status, "completed", "baseline run completed (" + okRun.run.id + ")");
   eq(okRun.view.summary.status, "ok", "trace status ok");
   ok(okRun.view.events.some((e) => e.type === "runtime.container.started") && okRun.view.events.some((e) => e.type === "runtime.container.stopped"), "trace shows the real container start/stop spans");
+  const toolSpans = flattenSpans(okRun.view.spans).filter((span) => span.category === "tool");
+  ok(toolSpans.length > 0 && toolSpans.every((span) => typeof span.durationMs === "number" && span.endedAt), "real tool calls are reconstructed as completed spans with durations (#130)");
+  const commandSpan = toolSpans.find((span) => typeof span.attributes.program === "string" && typeof span.attributes.argument0 === "string");
+  ok(commandSpan && commandSpan.attributes.argument0.length <= 64, "metadata_only keeps a bounded program + first-argument identity (#130)");
   const listed = (await api("/api/runs")).json();
-  eq(listed.runs.find((r) => r.runId === okRun.run.id).status, "ok", "/api/runs lists the run as ok");
+  const listedRun = listed.runs.find((r) => r.runId === okRun.run.id);
+  eq(listedRun.status, "ok", "/api/runs lists the run as ok");
+  ok(listedRun.toolIdentities.length > 0 && listedRun.toolIdentities.length <= 3, "Runs API lists at most three tool identities (#130)");
   console.log("      capabilities " + JSON.stringify(okRun.view.summary.capabilities) + ", redactedEvents " + okRun.view.summary.redactedEvents + ", events " + okRun.view.summary.eventCount);
 
   console.log("\n[2b] shared workspace: second Agent on the first's workspace, busy lock, switch (#64)");
@@ -268,6 +275,14 @@ async function closeResources() {
   eq(await page.locator(`${RUNS_TABLE} th`, { hasText: /^Agent$/ }).count(), 0, "Agent column is hidden in the Agent view");
   await openTraceByKeyboard(page, okRun.run.id);
   await drawerRoundTrip(page);
+  await page.locator(".trace-detail input[type=search]").fill(commandSpan.attributes.program);
+  const identifiedTool = page.locator(".trace-name[title]").first();
+  await identifiedTool.waitFor({ timeout: 5_000 });
+  const identity = await identifiedTool.getAttribute("title");
+  await identifiedTool.locator("..").click();
+  eq(await page.locator("#span-drawer-title").innerText(), identity, "Tool drawer title exposes the bounded identity (#130)");
+  await page.locator("[aria-label='Close span details']").click();
+  await page.locator(".trace-detail input[type=search]").fill("");
   await errorsOnly(page).check();
   // The model may legitimately run a command that exits non-zero; the filter must agree with the API either way.
   const failingSpans = countFailing(okRun.view.spans);

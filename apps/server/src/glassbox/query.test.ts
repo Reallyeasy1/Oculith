@@ -142,6 +142,21 @@ describe("buildTrace", () => {
       tokens: { input: 3, cachedInput: 2, output: 1 }, retries: 1, denials: 1,
     });
   });
+  it("reconstructs paired tool durations and keeps only the first three bounded identities", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "tool.call.started", category: "tool", spanId: "tool-1", parentSpanId: "rt", phase: "start", status: "running", name: "shell:python3", attributes: { program: "python3", argument0: "missing_script.py" } }),
+      ev({ type: "tool.call.failed", category: "tool", spanId: "tool-1", parentSpanId: "rt", phase: "end", status: "error", name: "shell:python3", attributes: { program: "python3", argument0: "missing_script.py", exitCode: 2 } }),
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tool-2", parentSpanId: "rt", status: "ok", attributes: { program: "npm", argument0: "test" } }),
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tool-3", parentSpanId: "rt", status: "ok", attributes: { program: "git", argument0: "status" } }),
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tool-4", parentSpanId: "rt", status: "ok", attributes: { program: "node", argument0: "check.js" } }),
+      ev({ type: "run.completed", category: "control", spanId: "done", parentSpanId: "svc", status: "ok" }),
+    ];
+    const view = buildTrace(events, { capturePolicy: "metadata_only" });
+    const first = flattenSpans(view.spans).find((span) => span.spanId === "tool-1");
+    expect(first).toMatchObject({ incomplete: false, durationMs: 10, attributes: { program: "python3", argument0: "missing_script.py" } });
+    expect(view.summary.metrics.toolIdentities).toEqual(["python3 missing_script.py", "npm test", "git status"]);
+  });
   it("handled tool failure keeps parent ok; cancelled never rolls up ok; open spans are incomplete", () => {
     seq = 0;
     const handled = [root(), svcStart(), rtStart(),
