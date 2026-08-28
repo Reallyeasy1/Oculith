@@ -150,9 +150,9 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     expect((await app.inject({ method: "GET", url: "/api/runs/run-9/logs" })).statusCode).toBe(401);
     const get = (url: string) => app.inject({ method: "GET", url, headers: auth });
     const all = (await get("/api/runs/run-9/logs")).json();
-    expect(all).toEqual({ lines: [0, 1, 2, 3].map((n) => ({ runId: "run-9", time: new Date(n).toISOString(), level: n % 2 ? "error" : "info", msg: "line " + n })), truncated: false });
+    expect(all).toEqual({ lines: [0, 1, 2, 3].map((n) => ({ time: new Date(n).toISOString(), level: n % 2 ? "error" : "info", msg: "line " + n })), truncated: false });
     const bounded = (await get("/api/runs/run-9/logs?level=error&limit=1")).json();
-    expect(bounded).toEqual({ lines: [{ runId: "run-9", time: new Date(3).toISOString(), level: "error", msg: "line 3" }], truncated: true });
+    expect(bounded).toEqual({ lines: [{ time: new Date(3).toISOString(), level: "error", msg: "line 3" }], truncated: true });
     expect((await get("/api/runs/run-9/logs?limit=9999")).statusCode).toBe(400);
     expect((await get("/api/runs/nope/logs")).statusCode).toBe(404);
     await app.close();
