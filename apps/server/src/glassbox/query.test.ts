@@ -397,6 +397,16 @@ describe("buildTrace", () => {
     ], { capturePolicy: "metadata_only" });
     expect(toolOnly.summary.capabilities).toEqual({ model: "unavailable", tool: "observed" });
   });
+  it("diagnosis names only the tool layer when model evidence exists and the declaration is tool-only", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "model.completed", category: "model", spanId: "model", parentSpanId: "rt", attributes: { inputTokens: 1 } }),
+      ev({ type: "capability.unavailable", category: "runtime", spanId: "cap", parentSpanId: "rt", attributes: { model: false, tool: true } }),
+      ev({ type: "run.failed", category: "control", spanId: "failed", parentSpanId: "svc", status: "error" })];
+    const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(summary.failure?.diagnosis).toContain("No tool-level details were available from the runtime.");
+    expect(summary.failure?.diagnosis).not.toMatch(/model/i);
+  });
   it("guards against a span-parent cycle: pathTo terminates and visits each id once", () => {
     seq = 0;
     const events = [

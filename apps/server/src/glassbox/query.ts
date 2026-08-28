@@ -204,6 +204,17 @@ function formatElapsed(ms: number | undefined): string {
   return minutes + "m " + String(seconds).padStart(2, "0") + "s";
 }
 
+// Before per-layer declarations, the sole capability.unavailable marker carried { model: false, tool: false }
+// while meaning that both layers were unavailable. Retain that interpretation for persisted traces.
+function unavailableLayers(events: ObservationEvent[]): { model: boolean; tool: boolean } {
+  const declaration = events.find((e) => e.type === "capability.unavailable");
+  const legacyAllUnavailable = declaration?.attributes.model === false && declaration.attributes.tool === false;
+  return {
+    model: legacyAllUnavailable || declaration?.attributes.model === true,
+    tool: legacyAllUnavailable || declaration?.attributes.tool === true,
+  };
+}
+
 function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, status: TraceStatus, degraded: boolean, durationMs: number | undefined, interruptedAfterMs?: number): FailureFocus | undefined {
   const denial = events.find((e) => e.type === "policy.denied");
   // A handled ordinary tool error is not actionable after an ok terminal, but a policy decision is:
@@ -230,7 +241,7 @@ function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, stat
   const elapsed = formatElapsed(durationMs);
   const secs = durationMs === undefined ? "an unknown duration" : (durationMs / 1000).toFixed(1) + " s";
   const cleanup = events.find((e) => e.type === "runtime.container.stopped" || (e.type === "runtime.codex.failed" && e.attributes.terminationSignal));
-  const capability = events.find((e) => e.type === "capability.unavailable");
+  const capability = unavailableLayers(events);
   const diagnosis = [
     kind === "denied"
       ? `sandbox declined \`${String(first.attributes.program || first.name)}\``
@@ -238,7 +249,13 @@ function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, stat
       ? `Run interrupted by a server restart after ${formatElapsed(interruptedAfterMs)}; last trace evidence was ${elapsed} after the Run started; ${open ? `the ${open.category} span ${open.name} never closed` : "no open span was recorded"}.`
       : `Run ${status} in ${first.source.component} after ${secs}. First actionable ${kind}: ${first.name}${target.message ? " — " + target.message : ""}.`,
     cleanup ? `Cleanup evidence: ${cleanup.name}${typeof cleanup.attributes.exitCode === "number" ? " (exit " + formatExitCode(cleanup.attributes.exitCode) + ")" : ""}${cleanup.attributes.terminationSignal ? " via " + String(cleanup.attributes.terminationSignal) : ""}.` : "",
-    capability ? "No model/tool-level details were available from the runtime." : "",
+    capability.model && capability.tool
+      ? "No model/tool-level details were available from the runtime."
+      : capability.model
+      ? "No model-level details were available from the runtime."
+      : capability.tool
+      ? "No tool-level details were available from the runtime."
+      : "",
     degraded ? "Trace store was degraded during this Run; evidence may be incomplete." : "",
   ].filter(Boolean).join(" ");
   return { kind, ...target, path, diagnosis };
@@ -352,12 +369,7 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
   const evicted = events.some(isEvictionMarker);
   const failure = focusFailure(events, spans, status, degraded, durationMs, interruptedAfterMs);
   const auditRows = projectAudit(events);
-  const capabilityDeclaration = events.find((e) => e.type === "capability.unavailable");
-  // Before per-layer declarations, the sole marker carried { model: false, tool: false } while
-  // meaning that both layers were unavailable. Retain that interpretation for persisted traces.
-  const legacyAllUnavailable = capabilityDeclaration?.attributes.model === false && capabilityDeclaration.attributes.tool === false;
-  const declaredUnavailable = (layer: "model" | "tool"): boolean =>
-    legacyAllUnavailable || capabilityDeclaration?.attributes[layer] === true;
+  const unavailable = unavailableLayers(events);
   const workspace = events.find((event) => event.type === "run.created" && typeof event.attributes.workspace === "string")?.attributes.workspace;
   // Two emitters share this type: the runtime stream's file_change report ({ fileCount, added, updated, deleted })
   // and the platform's before/after disk snapshot ({ added, modified, removed, bytesDelta, paths }). The snapshot
@@ -392,7 +404,7 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
       actors: [...new Set(auditRows.map((row) => row.actor.type + "/" + row.actor.id))].sort(),
     },
     degraded, truncated, evicted, usage, metrics, configHash, workspaceChanges, outcome,
-    capabilities: { model: events.some((e) => e.category === "model") ? "observed" : declaredUnavailable("model") ? "unavailable" : "unknown", tool: events.some((e) => e.category === "tool") ? "observed" : declaredUnavailable("tool") ? "unavailable" : "unknown" },
+    capabilities: { model: events.some((e) => e.category === "model") ? "observed" : unavailable.model ? "unavailable" : "unknown", tool: events.some((e) => e.category === "tool") ? "observed" : unavailable.tool ? "unavailable" : "unknown" },
     firstFailingStep: failure && failure.kind !== "degraded" ? failure.name : undefined, failure,
   };
   return { summary, spans: tree, events };
