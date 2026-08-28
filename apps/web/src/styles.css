@@ -579,6 +579,13 @@ textarea:focus {
   margin-top: 13px;
 }
 
+.form-help {
+  margin: 6px 0 0;
+  color: #66645d;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .panel-footer {
   margin-top: 13px;
   display: flex;
@@ -1327,6 +1334,12 @@ textarea:focus {
   padding-bottom: 8px;
   /* scrollIntoView on open leaves the compact Playground bar visible above the trace header. */
   scroll-margin-top: 72px;
+}
+
+.trace-export-error {
+  margin: 0 0 12px;
+  color: var(--red);
+  font-size: 12px;
 }
 
 /* Compact Playground while a trace is open (issue #35): agent name, status, Expand. */

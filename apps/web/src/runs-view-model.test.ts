@@ -2,7 +2,7 @@
 //   npx vitest run apps/web/src/runs-view-model.test.ts
 import { describe, expect, it } from "vitest";
 import type { RunListItem, TraceStatus } from "./types";
-import { formatRunDuration, formatUsage, liveRuns, matchesFilter, needsAttention, recoveredFailures, summarizeRuns } from "./runs-view-model";
+import { evidenceBadges, formatRunDuration, formatUsage, liveRuns, matchesFilter, needsAttention, recoveredFailures, summarizeRuns, workspaceLabel, workspaceOptionLabel } from "./runs-view-model";
 
 function run(status: TraceStatus, degraded = false, agentId = "a", agentName = "A", extra: Partial<RunListItem> = {}): RunListItem {
   return {
@@ -110,5 +110,40 @@ describe("liveRuns", () => {
     const newer = run("running", false, "b", "B", { runId: "new", startedAt: "2026-08-27T10:05:00Z", toolFailures: 1 });
     expect(liveRuns([run("ok"), older, run("error"), newer]).map((r) => r.runId)).toEqual(["new", "old"]);
     expect(liveRuns([run("ok"), run("error")])).toEqual([]);
+  });
+});
+
+describe("workspace presentation", () => {
+  it("hides managed workspace UUIDs while retaining them as tooltip evidence", () => {
+    expect(workspaceLabel("agent-uuid", "agent-uuid")).toEqual({ text: "managed", title: "agent-uuid" });
+    expect(workspaceLabel("shared-repo", "agent-uuid")).toEqual({ text: "shared-repo" });
+    expect(workspaceLabel(undefined, "agent-uuid")).toEqual({ text: "—" });
+  });
+
+  it("describes selectable workspaces with sharing and file-count context", () => {
+    expect(workspaceOptionLabel({ name: "shared-repo", path: "/work/shared-repo", agents: ["a", "b"], fileCount: 7, lastModified: "2026-08-27T00:00:00Z", managed: false }))
+      .toBe("shared-repo · 2 agents · unmanaged · 7 files");
+  });
+});
+
+describe("evidenceBadges", () => {
+  it("calls out a successful Run with zero tools without implying missing evidence", () => {
+    expect(evidenceBadges(run("ok"))).toEqual([
+      expect.objectContaining({ label: "no tool calls", warn: false }),
+    ]);
+  });
+
+  it("names only unknown layers on ended Runs", () => {
+    expect(evidenceBadges(run("cancelled", false, "a", "A", {
+      capabilities: { model: "unknown", tool: "observed" },
+    }))).toEqual([expect.objectContaining({ label: "model: no evidence", warn: true })]);
+    expect(evidenceBadges(run("timeout"))).toEqual([
+      expect.objectContaining({ label: "model: no evidence" }),
+      expect.objectContaining({ label: "tool: no evidence" }),
+    ]);
+  });
+
+  it("does not warn about evidence while a Run is still live", () => {
+    expect(evidenceBadges(run("running"))).toEqual([]);
   });
 });

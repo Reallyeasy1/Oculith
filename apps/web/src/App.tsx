@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
 import { agentPayload } from "./agent-form";
-import type { Agent, AgentRun, EvalRun, Message, RegressionCase, RunListItem, SystemInfo, TraceView, WorkspaceTemplate } from "./types";
+import type { Agent, AgentRun, EvalRun, Message, RegressionCase, RunListItem, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
 import RunsView from "./RunsView";
 import TraceDetail from "./TraceDetail";
 import Overview from "./Overview";
 import CompareView from "./CompareView";
 import { refreshIntervalMs } from "./trace-view-model";
+import { workspaceOptionLabel } from "./runs-view-model";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -54,7 +55,7 @@ export default function App() {
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
   const [runs, setRuns] = useState<RunListItem[]>([]);
-  const [workspaces, setWorkspaces] = useState<{ name: string; path: string }[]>([]);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [templates, setTemplates] = useState<WorkspaceTemplate[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [trace, setTrace] = useState<TraceView | null>(null);
@@ -100,6 +101,11 @@ export default function App() {
     () => agents.find((agent) => agent.id === selectedId) ?? null,
     [agents, selectedId],
   );
+  const selectedWorkspaceName = selected?.workspaceName ?? selected?.workspacePath.split(/[\\/]/).at(-1) ?? "";
+  const selectedWorkspace = workspaces.find((workspace) => workspace.name === selectedWorkspaceName);
+  const sharingAgents = selectedWorkspace?.agents
+    .filter((id) => id !== selected?.id)
+    .map((id) => agents.find((agent) => agent.id === id)?.name ?? id) ?? [];
 
   const refreshAgents = useCallback(async () => {
     const { agents: next } = await api.listAgents();
@@ -693,6 +699,7 @@ export default function App() {
                   Workspace
                   <input
                     list="workspace-names-settings"
+                    aria-describedby="workspace-help-settings"
                     value={form.workspace}
                     onChange={(event) => setForm({ ...form, workspace: event.target.value })}
                     pattern="[a-z0-9][a-z0-9._-]{0,63}"
@@ -700,8 +707,14 @@ export default function App() {
                   />
                 </label>
                 <datalist id="workspace-names-settings">
-                  {workspaces.map((workspace) => <option key={workspace.name} value={workspace.name}>{workspace.path}</option>)}
+                  {workspaces.map((workspace) => <option key={workspace.name} value={workspace.name} label={workspaceOptionLabel(workspace)} />)}
                 </datalist>
+                <p className="form-help" id="workspace-help-settings">
+                  Current workspace: <strong>{selectedWorkspace?.managed ? "managed" : selectedWorkspaceName}</strong>
+                  {selectedWorkspace?.managed && <> (<code>{selectedWorkspaceName}</code>)</>}
+                  {sharingAgents.length > 0 ? ` · Shared with ${sharingAgents.join(", ")}.` : " · No other Agents share it."}
+                  {" "}Switching resets this Agent&apos;s Codex conversation thread.
+                </p>
                 <label>
                   System instructions
                   <textarea
@@ -912,6 +925,7 @@ export default function App() {
               Workspace
               <input
                 list="workspace-names-create"
+                aria-describedby="workspace-help-create"
                 placeholder="Leave blank for a managed workspace"
                 value={form.workspace}
                 onChange={(event) => setForm({ ...form, workspace: event.target.value })}
@@ -919,8 +933,9 @@ export default function App() {
               />
             </label>
             <datalist id="workspace-names-create">
-              {workspaces.map((workspace) => <option key={workspace.name} value={workspace.name}>{workspace.path}</option>)}
+              {workspaces.map((workspace) => <option key={workspace.name} value={workspace.name} label={workspaceOptionLabel(workspace)} />)}
             </datalist>
+            <p className="form-help" id="workspace-help-create">Choose an existing workspace to share it, enter a new name, or leave blank for a managed workspace.</p>
             <label>
               Start from
               <select value={form.template} onChange={(event) => setForm({ ...form, template: event.target.value })}>
