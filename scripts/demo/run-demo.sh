@@ -293,7 +293,7 @@ step7() {
   has_post="$(call GET "/api/regression-cases/$case_id" | json 'd.regressionCase.assertions.some(a=>a.type==="post_check")')"
   if [[ "$has_post" != "true" ]]; then
     local rebuilt
-    rebuilt="$(call GET "/api/regression-cases/$case_id" | json 'JSON.stringify({name:d.regressionCase.name,prompt:d.regressionCase.prompt,workspaceTemplate:d.regressionCase.workspaceTemplate,sourceRunId:d.regressionCase.sourceRunId,baselineConfigHash:d.regressionCase.baselineConfigHash,assertions:[...d.regressionCase.assertions,{type:"post_check",command:"npm test"}]})')"
+    rebuilt="$(call GET "/api/regression-cases/$case_id" | json 'JSON.stringify({name:d.regressionCase.name,prompt:d.regressionCase.prompt,workspaceTemplate:d.regressionCase.workspaceTemplate,sourceRunId:d.regressionCase.sourceRunId,baselineConfigHash:d.regressionCase.baselineConfigHash,assertions:[...d.regressionCase.assertions,{type:"post_check",command:"npm test"}]}).replace(/[^\x20-\x7e]/g,c=>"\\u"+("000"+c.charCodeAt(0).toString(16)).slice(-4))')"
     call DELETE "/api/regression-cases/$case_id" >/dev/null
     case_id="$(call POST /api/regression-cases "$rebuilt" | json 'd.regressionCase.id')"
     log "Case rebuilt as $case_id with the deterministic post_check (npm test) assertion."
