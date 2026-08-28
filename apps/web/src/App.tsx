@@ -78,6 +78,9 @@ export default function App() {
   const lastMessageIdRef = useRef<string | null | undefined>(undefined);
   const selectedIdRef = useRef<string | null>(null);
   const selectedRunIdRef = useRef<string | null>(null);
+  // Preserve the requested run through the first render, when the URL-sync effect clears
+  // an as-yet unopened trace.
+  const pendingDeepLinkRef = useRef(new URLSearchParams(window.location.search).get("run"));
   const viewRef = useRef(view);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
@@ -155,7 +158,24 @@ export default function App() {
 
   const bootstrap = useCallback(async () => {
     await Promise.all([refreshAgents(), refreshRuns(), refreshRegressionCases(), refreshEvalRuns(), api.system().then(setSystem), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces)), api.listWorkspaceTemplates().then((result) => setTemplates(result.templates))]);
+    const runId = pendingDeepLinkRef.current;
+    if (!runId) return;
+    try {
+      const { run } = await api.run(runId);
+      setSelectedId(run.agentId);
+      setView("agent");
+      requestAnimationFrame(() => { if (mountedRef.current) { setSelectedRunId(runId); setPlaygroundExpanded(false); } });
+    } catch {
+      // A shared or stale link should fall back to the ordinary landing state without an error banner.
+    }
   }, [refreshAgents, refreshEvalRuns, refreshRegressionCases, refreshRuns]);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (selectedRunId) url.searchParams.set("run", selectedRunId);
+    else url.searchParams.delete("run");
+    window.history.replaceState(null, "", url);
+  }, [selectedRunId]);
 
   useEffect(() => {
     mountedRef.current = true;
