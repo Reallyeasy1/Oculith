@@ -286,21 +286,21 @@ step7() {
   else
     log "Regression case $case_id already exists for Run $run_id."
   fi
-  # The prefilled expected_tool matches the shell wrapper (powershell/bash), which any candidate still
-  # invokes - it cannot regress. The deterministic beat is post_check: npm test in the fresh template
-  # copy fails unless the agent actually fixed the test. Recreate the case with it when missing.
   # The prefilled expected_tool names the shell wrapper (powershell.exe/bash), which any candidate
-  # still invokes — it cannot regress. Since #283 expected_tool also matches argument0, so the case
-  # asserts "npm": the baseline runs npm test, the test-skipping candidate does not. (post_check
-  # returns here once #282 wires a workspace runner into EvalRuns.)
-  local has_npm
-  has_npm="$(call GET "/api/regression-cases/$case_id" | json 'd.regressionCase.assertions.some(a=>a.type==="expected_tool"&&a.program==="npm")')"
-  if [[ "$has_npm" != "true" ]]; then
+  # still invokes — it cannot regress, so the case is rebuilt to assert "npm" (#283): the baseline
+  # runs npm test, the test-skipping candidate does not. Since #282 post_check assertions execute
+  # for real (PostCheckRunner in the eval workspace), the case also carries post_check "npm test" —
+  # the primary deterministic signal: it re-runs the suite in the fresh template copy and fails
+  # unless the agent actually fixed the test. The command must be on GLASSBOX_POSTCHECK_ALLOWLIST
+  # (default "npm test"). expected_tool npm stays as the secondary signal.
+  local has_both
+  has_both="$(call GET "/api/regression-cases/$case_id" | json 'd.regressionCase.assertions.some(a=>a.type==="expected_tool"&&a.program==="npm")&&d.regressionCase.assertions.some(a=>a.type==="post_check")')"
+  if [[ "$has_both" != "true" ]]; then
     local rebuilt
-    rebuilt="$(call GET "/api/regression-cases/$case_id" | json 'JSON.stringify({name:d.regressionCase.name,prompt:d.regressionCase.prompt,workspaceTemplate:d.regressionCase.workspaceTemplate,sourceRunId:d.regressionCase.sourceRunId,baselineConfigHash:d.regressionCase.baselineConfigHash,assertions:d.regressionCase.assertions.filter(a=>a.type!=="post_check").map(a=>a.type==="expected_tool"?{type:"expected_tool",program:"npm"}:a)}).replace(/[^\x20-\x7e]/g,c=>"\\u"+("000"+c.charCodeAt(0).toString(16)).slice(-4))')"
+    rebuilt="$(call GET "/api/regression-cases/$case_id" | json 'JSON.stringify({name:d.regressionCase.name,prompt:d.regressionCase.prompt,workspaceTemplate:d.regressionCase.workspaceTemplate,sourceRunId:d.regressionCase.sourceRunId,baselineConfigHash:d.regressionCase.baselineConfigHash,assertions:d.regressionCase.assertions.filter(a=>a.type!=="post_check").map(a=>a.type==="expected_tool"?{type:"expected_tool",program:"npm"}:a).concat([{type:"post_check",command:"npm test"}])}).replace(/[^\x20-\x7e]/g,c=>"\\u"+("000"+c.charCodeAt(0).toString(16)).slice(-4))')"
     call DELETE "/api/regression-cases/$case_id" >/dev/null
     case_id="$(call POST /api/regression-cases "$rebuilt" | json 'd.regressionCase.id')"
-    log "Case rebuilt as $case_id asserting expected_tool npm (#283) — the deterministic regression signal."
+    log "Case rebuilt as $case_id asserting expected_tool npm + post_check \"npm test\" (#282) — post_check is the deterministic signal."
   fi
   call GET "/api/regression-cases/$case_id" | json 'd.regressionCase.assertions.map(a=>a.type).join(", ")' | { read -r kinds; echo "  assertions: $kinds"; }
   # The baseline EvalRun must record the GOOD configuration; step 2 keeps the instructions there.
@@ -326,8 +326,9 @@ step8() {
     call PATCH "/api/agents/$agent_id" "$(node -e 'process.stdout.write(JSON.stringify({instructions:process.argv[1]}))' "$CANDIDATE_INSTRUCTIONS")" >/dev/null
     log "PATCHed \"$AGENT_NAME\": instructions now say to skip running tests."
   fi
-  echo "  This regresses the case's expected_tool assertions (npm/node never invoked) — the"
-  echo "  config hash changes, so the next EvalRun is a comparable candidate."
+  echo "  This regresses the case: post_check re-runs npm test in the candidate's fresh workspace"
+  echo "  and fails, and expected_tool npm regresses too (npm never invoked) — the config hash"
+  echo "  changes, so the next EvalRun is a comparable candidate."
 }
 
 step9() {
@@ -355,7 +356,7 @@ step9() {
     echo "  REGRESSION — $regressions assertion(s) regressed:"
     printf '%s' "$comparison" | json 'd.cases.flatMap(c=>c.assertions).filter(a=>a.regression).map(a=>a.type).join(", ")' | { read -r kinds; echo "    $kinds"; }
   else
-    log "WARN no regression detected — the candidate agent ran the tools anyway (model latitude)."
+    log "WARN no regression detected — the candidate agent fixed the test anyway (model latitude): post_check's npm test passed and npm was invoked."
     log "Fallback: re-run '$0 9' for a fresh candidate EvalRun, or show the recorded comparison."
   fi
   echo "  compare API: $public_url/api/eval-runs/$base_eval/compare/$cand_eval"
