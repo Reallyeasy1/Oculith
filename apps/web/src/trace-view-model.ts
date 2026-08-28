@@ -1,4 +1,5 @@
 import type { Category, Span, TraceStatus, TraceView } from "./types";
+import { formatCount } from "./runs-view-model";
 
 // Pure helpers for TraceDetail. Render only what the API returned — error path, diagnosis and
 // every flag come from `TraceView`; nothing here infers status or failure on its own.
@@ -18,6 +19,10 @@ export const CATEGORIES: Category[] = [
 export const STATUSES: TraceStatus[] = ["running", "ok", "error", "cancelled", "timeout", "unset"];
 
 export const DRAWER_EVENT_CAP = 200;
+
+export function formatReasoningTokens(tokens: TraceView["summary"]["metrics"]["tokens"]): string {
+  return tokens?.reasoning === undefined ? "" : `${formatCount(tokens.reasoning)} reasoning tokens`;
+}
 
 export function refreshIntervalMs(status: TraceStatus | undefined): number {
   return status === "running" ? 1_500 : 5_000;

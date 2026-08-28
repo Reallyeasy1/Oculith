@@ -7,7 +7,7 @@ import type { RunIndexEntry, TraceStore } from "./store.js";
 import { estimatedCost, type TokenPricing } from "./cost.js";
 
 /** Bump when `summaryFromView` changes shape or meaning; `npm run glassbox:backfill` then rewrites older records. */
-export const ROLLUP_VERSION = 7; // 7: persisted estimatedCostUsd (#249)
+export const ROLLUP_VERSION = 8; // 7: persisted estimatedCostUsd (#249); 8: reasoningOutputTokens in usage/metrics (#247)
 
 export type ExecutionStatus = "running" | "completed" | "failed" | "timeout" | "cancelled";
 export type TaskOutcome = "passed" | "failed" | "unknown";

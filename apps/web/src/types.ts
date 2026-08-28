@@ -108,6 +108,7 @@ export interface RunListItem {
     inputTokens?: number;
     cachedInputTokens?: number;
     outputTokens?: number;
+    reasoningOutputTokens?: number;
   };
   capabilities: { model: "observed" | "unavailable" | "unknown"; tool: "observed" | "unavailable" | "unknown" };
   toolCalls: number;
@@ -200,6 +201,7 @@ export interface TraceSummary {
     inputTokens?: number;
     cachedInputTokens?: number;
     outputTokens?: number;
+    reasoningOutputTokens?: number;
   };
   metrics: {
     durationMs?: number;
@@ -210,7 +212,7 @@ export interface TraceSummary {
     modelCalls: number;
     timeToFirstToolMs?: number;
     timeSplit: { modelMs: number; toolMs: number; containerStartMs: number };
-    tokens?: { input?: number; cachedInput?: number; output?: number };
+    tokens?: { input?: number; cachedInput?: number; output?: number; reasoning?: number };
     retries: number;
     denials: number;
   };
