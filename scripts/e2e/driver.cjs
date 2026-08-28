@@ -214,6 +214,7 @@ async function closeResources() {
   const okRun = await runTask(agent.id, "Write a file named e2e-check.txt in the workspace containing exactly this line, then reply with exactly the same line and nothing else:\n" + SECRET_LINE);
   eq(okRun.run.status, "completed", "baseline run completed (" + okRun.run.id + ")");
   eq(okRun.view.summary.status, "ok", "trace status ok");
+  ok(/^[0-9a-f]{16}$/.test(okRun.view.summary.configHash), "baseline trace carries the stable configHash (#90)");
   ok(okRun.view.summary.outcome && typeof okRun.view.summary.outcome.finalMessageBytes === "number", "trace summary carries final-message outcome metadata");
   ok(typeof okRun.view.summary.outcome.text === "string" && okRun.view.summary.outcome.text.length <= 240, "safe-summary outcome text is present and bounded to 240 characters");
   ok(okRun.view.events.some((e) => e.type === "runtime.container.started") && okRun.view.events.some((e) => e.type === "runtime.container.stopped"), "trace shows the real container start/stop spans");
@@ -411,14 +412,25 @@ async function closeResources() {
   console.log("\n[5] restart with GLASSBOX_DEMO_FAILURE=timeout (gated fixture through the real runner)");
   await stopServer(server);
   server = await startServer({ GLASSBOX_DEMO_FAILURE: "timeout" });
-  const badRun = await runTask(agent.id, "Reply with the single word: pong");
+  const badRun = await runTask(agent.id, "Run the shell command `sleep 10`, wait for it to finish, then reply with the single word: pong");
   eq(badRun.run.status, "failed", "gated run failed (" + badRun.run.id + ")");
   eq(badRun.view.summary.status, "timeout", "trace status timeout");
   eq(badRun.view.summary.failure && badRun.view.summary.failure.kind, "timeout", "first-failure focus is the timeout");
   eq(badRun.view.summary.failure.name, "codex exec", "failing span is `codex exec`");
-  eq((await api("/api/runs")).json().runs.find((r) => r.runId === badRun.run.id).firstFailingStep, "codex exec", "/api/runs firstFailingStep = codex exec");
+  const badListed = (await api("/api/runs")).json().runs.find((r) => r.runId === badRun.run.id);
+  eq(badListed.firstFailingStep, "codex exec", "/api/runs firstFailingStep = codex exec");
+  eq(badListed.denials, badRun.view.summary.denials, "/api/runs denial count equals the trace summary (#90)");
+  eq(badListed.configHash, badRun.view.summary.configHash, "/api/runs configHash equals the trace summary (#90)");
+  eq(badRun.view.summary.configHash, okRun.view.summary.configHash, "unchanged Agent hashes the same config on a new Run after the restart (#90)");
   const badAudit = (await api("/api/runs/" + badRun.run.id + "/audit")).json().audit;
   ok(badAudit.some((row) => row.outcome === "timeout"), "/audit includes the gated timeout evidence");
+  const badEventIds = new Set(badRun.view.events.map((event) => event.eventId));
+  ok(badAudit.every((row) => badEventIds.has(row.eventId) && badRun.view.events.some((event) => event.spanId === row.spanId)), "every audit row resolves to stored event/span evidence (#90)");
+  const toolSpanIds = new Set(badRun.view.events.filter((event) => event.type.startsWith("tool.call.")).map((event) => event.spanId));
+  const modelSpanIds = new Set(badRun.view.events.filter((event) => event.type.startsWith("model.")).map((event) => event.spanId));
+  eq(badRun.view.summary.metrics.toolCalls, toolSpanIds.size, "toolCalls metric equals a direct span count (#90)");
+  eq(badRun.view.summary.metrics.modelCalls, modelSpanIds.size, "modelCalls metric equals a direct span count (#90)");
+  eq(badRun.view.summary.metrics.denials, badRun.view.events.filter((event) => event.type === "policy.denied").length, "denials metric equals a direct event count (#90)");
   // A turn.started can arrive before the 3 s cut (#129 marks the model observed on it), so only the absence claim is asserted.
   ok(badRun.view.summary.capabilities.model !== "unavailable" && badRun.view.summary.capabilities.tool !== "unavailable", "capabilities never read unavailable on a cut-short run (#60): " + JSON.stringify(badRun.view.summary.capabilities));
   const stopped = badRun.view.events.find((e) => e.type === "runtime.container.stopped");
@@ -432,7 +444,15 @@ async function closeResources() {
   await openApp(page);
   await page.locator(".runs-filters button", { hasText: "Timed out" }).click();
   eq(await page.locator(`${RUNS_TABLE} tbody tr`).count(), 1, "'Timed out' quick filter leaves exactly the gated run");
+  const timeoutRow = page.locator(`${RUNS_TABLE} tbody tr`).first();
+  const configColumn = (await page.locator(`${RUNS_TABLE} th`).allTextContents()).findIndex((header) => header.trim() === "Config");
+  ok(configColumn >= 0, "Runs table exposes the Config column (#90)");
+  eq(await timeoutRow.locator("td").nth(configColumn).locator("code").innerText(), badRun.view.summary.configHash.slice(0, 8), "Runs row renders the Run configHash (#90)");
+  // The POC lane runs danger-full-access, so denials is 0 here: the badge must be absent exactly then.
+  eq(await timeoutRow.locator(".badge", { hasText: /^denied / }).count(), badRun.view.summary.denials > 0 ? 1 : 0, "Runs row denial badge agrees with the denial count (#90)");
   await openTraceByKeyboard(page, badRun.run.id);
+  const metricsText = await page.locator(".trace-summary dt", { hasText: /^Metrics$/ }).locator("..").locator("dd").innerText();
+  ok(metricsText.includes(badRun.view.summary.metrics.toolCalls + " tool calls") && metricsText.includes(badRun.view.summary.metrics.modelCalls + " model calls"), "Trace header renders the verified metrics row (#90)");
   await page.locator(".trace-detail button", { hasText: /^Audit$/ }).click();
   const auditTable = page.locator(".audit-table");
   await auditTable.waitFor({ timeout: 5_000 });
@@ -496,7 +516,7 @@ async function closeResources() {
   for (const f of ndjson) sweep("file " + f, fs.readFileSync(path.join(traceDir, String(f)), "utf8"));
   sweep("/api/runs", (await api("/api/runs")).text);
   for (const r of [okRun, badRun]) {
-    for (const url of ["/api/runs/" + r.run.id + "/trace", "/api/traces/" + r.run.traceId + "/events", "/api/traces/" + r.run.traceId + "/export"]) {
+    for (const url of ["/api/runs/" + r.run.id + "/trace", "/api/runs/" + r.run.id + "/audit", "/api/traces/" + r.run.traceId + "/audit", "/api/traces/" + r.run.traceId + "/events", "/api/traces/" + r.run.traceId + "/export"]) {
       const res = await api(url);
       eq(res.status, 200, url + " resolves (a 404 body would be trivially secret-free)");
       sweep(url, res.text);
