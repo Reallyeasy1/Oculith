@@ -11,6 +11,7 @@ import {
   type ObservationEmitter,
   type SpanHandle,
 } from "./glassbox/emitter.js";
+import { redactText } from "./glassbox/redact.js";
 import { newId, type TraceStatus } from "./glassbox/schema.js";
 import { JsonStore } from "./store.js";
 import type {
@@ -660,8 +661,10 @@ export class AgentService {
                   void runnerLogger?.info(message).catch(() => undefined);
                 },
                 error: (message: string, error?: unknown) => {
-                  pino?.error(error, message);
-                  void runnerLogger?.error(message, error === undefined ? undefined : String(error)).catch(() => undefined);
+                  // Never hand pino the Error itself: its err serializer writes message/stack verbatim to stdout.
+                  const detail = error === undefined ? undefined : redactText(String(error)).text.slice(0, 2_048);
+                  pino?.error(detail ? { detail } : {}, message);
+                  void runnerLogger?.error(message, detail).catch(() => undefined);
                 },
               },
             }
@@ -745,9 +748,12 @@ export class AgentService {
       const completedAt = now();
       const cancelled = error instanceof RunCancelledError;
       const message = error instanceof Error ? error.message : String(error);
-      const logMessage = /timed out/i.test(message) ? "Runner timed out" : "Runner failed";
-      pino?.error(error, logMessage);
-      await runnerLogger?.error(logMessage, message).catch(() => undefined);
+      if (!cancelled) {
+        const logMessage = /timed out/i.test(message) ? "Runner timed out" : "Runner failed";
+        const detail = redactText(message).text.slice(0, 2_048);
+        pino?.error({ detail }, logMessage);
+        await runnerLogger?.error(logMessage, detail).catch(() => undefined);
+      }
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);

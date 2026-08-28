@@ -341,9 +341,11 @@ export class CodexRunner implements AgentRunner {
         throw new Error(message);
       }
       if (exitCode !== 0) {
-        // Bounded: raw stderr is up to 16 KB and error.message is capped at 2048 by the schema — an
-        // oversized message would get the whole span end quarantined and the terminal evidence lost.
-        const message = "Codex exited with code " + exitCode;
+        // Bounded: error.message is capped at 2048 by the schema — an oversized message would get the
+        // whole span end quarantined. The structured codex error event is already redacted by redactEvent;
+        // raw stderr is not a fallback here, it reaches the trace only as the safe_summary tail (#75).
+        const detail = parsed.errors.at(-1);
+        const message = "Codex exited with code " + exitCode + (detail ? ": " + detail.slice(0, 1024) : "");
         span?.end("error", {
           type: "runtime.codex.failed",
           attributes: endAttrs,

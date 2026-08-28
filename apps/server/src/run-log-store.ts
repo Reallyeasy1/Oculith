@@ -64,6 +64,7 @@ export class RunLogStore {
     };
   }
 
+  // ponytail: full scan of up to keep × maxBytes per request; add a per-Run offset index if /logs latency matters.
   async readRun(runId: string, options: { level?: string | undefined; limit: number }): Promise<{ lines: RunLogViewLine[]; truncated: boolean }> {
     const lines: RunLogViewLine[] = [];
     const files = [...Array(Math.max(0, this.keep - 1)).keys()].reverse().map((index) => this.file + "." + (index + 1)).concat(this.file);

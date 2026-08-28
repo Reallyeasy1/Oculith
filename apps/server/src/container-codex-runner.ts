@@ -374,7 +374,8 @@ export class ContainerCodexRunner implements AgentRunner {
       }
       if (exitCode !== 0) {
         // Bounded: see CodexRunner — an oversized error.message would quarantine the span end.
-        const message = this.config.containerEngine + " Runtime exited with code " + exitCode;
+        const detail = parsed.errors.at(-1);
+        const message = this.config.containerEngine + " Runtime exited with code " + exitCode + (detail ? ": " + detail.slice(0, 1024) : "");
         endSpans("error", { type: "exit_code", message });
         throw new Error(message);
       }

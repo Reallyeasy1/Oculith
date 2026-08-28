@@ -381,7 +381,7 @@ async function closeResources() {
   console.log("\n[5] restart with GLASSBOX_DEMO_FAILURE=timeout (gated fixture through the real runner)");
   await stopServer(server);
   server = await startServer({ GLASSBOX_DEMO_FAILURE: "timeout" });
-  const badRun = await runTask(agent.id, "Run the shell command `sleep 10`, wait for it to finish, then reply with the single word: pong");
+  const badRun = await runTask(agent.id, "Reply with the single word: pong");
   eq(badRun.run.status, "failed", "gated run failed (" + badRun.run.id + ")");
   eq(badRun.view.summary.status, "timeout", "trace status timeout");
   eq(badRun.view.summary.failure && badRun.view.summary.failure.kind, "timeout", "first-failure focus is the timeout");
@@ -397,7 +397,7 @@ async function closeResources() {
   ok(badLogs.some((line) => line.level === "error" && /timed out/i.test(line.msg + " " + (line.err || ""))), "/logs carries the runner timeout line");
   sweep("/api/runs/" + badRun.run.id + "/logs", badLogsResponse.text);
   const stopped = badRun.view.events.find((e) => e.type === "runtime.container.stopped");
-  ok(stopped && ["signal", "rm --force"].includes(stopped.attributes.cleanup), "container teardown records either graceful signal or forced removal");
+  eq(stopped && stopped.attributes.cleanup, "rm --force", "container teardown evidence: runtime.container.stopped cleanup=rm --force");
   ok(badRun.view.events.some((e) => e.type === "run.timed_out" && /3000/.test(e.error && e.error.message)), "run.timed_out names the 3000 ms fixture timeout");
   await sleep(1_000);
   const leftover = execFileSync(ENGINE, ["ps", "--all", "--quiet", "--filter", "name=launchpad-" + INSTANCE], { encoding: "utf8" }).trim();

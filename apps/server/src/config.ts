@@ -63,7 +63,7 @@ const envSchema = z.object({
   GLASSBOX_MAX_DISK_MB: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.coerce.number().finite().min(0).default(200)),
   GLASSBOX_STORE: z.enum(["json", "postgres"]).default("json"),
   DATABASE_URL: z.string().min(1).optional(),
-  GLASSBOX_LOG_MAX_MB: z.coerce.number().positive().default(50),
+  GLASSBOX_LOG_MAX_MB: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.coerce.number().finite().positive().default(50)),
   /** Keep completed isolated evaluation workspaces for post-check/debugging; the default cleans them up. */
   KEEP_EVAL_WORKSPACES: z.enum(["0", "1"]).default("0"),
 });
