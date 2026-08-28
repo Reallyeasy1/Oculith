@@ -33,6 +33,12 @@ export interface RunUsage {
   outputTokens?: number;
 }
 
+/** Live "what is Codex doing right now" summary derived from the observed runtime stream. */
+export interface RunActivity {
+  kind: "thinking" | "command" | "file_change" | "web_search" | "mcp_tool_call";
+  label: string;
+}
+
 export interface AgentConfigSnapshot {
   instructions: string;
   modelProvider: "ark" | "openai";
@@ -60,7 +66,7 @@ export interface AgentRun {
   configHash?: string | undefined;
   configSnapshot?: AgentConfigSnapshot | undefined;
   /** Live activity observed from the runtime stream (#223); set best-effort while `running`, cleared on terminal states. */
-  currentActivity?: import("./glassbox/activity.js").RunActivity | undefined;
+  currentActivity?: RunActivity | undefined;
 }
 
 export interface RegressionCase {
@@ -141,7 +147,7 @@ export interface RunnerRequest {
   logger?: RunnerLogger | undefined;
   /** Best-effort live activity updates from the runtime stream; `null` means "nothing in flight".
    * Implementations must treat this as fire-and-forget — it must never throw into the run path. */
-  onActivity?: ((activity: import("./glassbox/activity.js").RunActivity | null) => void) | undefined;
+  onActivity?: ((activity: RunActivity | null) => void) | undefined;
 }
 
 export interface RunnerLogger {

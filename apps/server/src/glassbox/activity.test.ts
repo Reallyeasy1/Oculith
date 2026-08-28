@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { CodexActivityTracker, type RunActivity } from "./activity.js";
+import type { RunActivity } from "../types.js";
+import { CodexActivityTracker } from "./activity.js";
 import type { CodexStreamSink } from "./codex-observer.js";
 
 const collect = () => {

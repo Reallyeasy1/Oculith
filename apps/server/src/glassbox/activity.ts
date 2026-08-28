@@ -1,11 +1,6 @@
+import type { RunActivity } from "../types.js";
 import { commandIdentity, type CodexStreamSink } from "./codex-observer.js";
 import { redactText } from "./redact.js";
-
-/** Live "what is Codex doing right now" summary derived from the observed runtime stream. */
-export interface RunActivity {
-  kind: "thinking" | "command" | "file_change" | "web_search" | "mcp_tool_call";
-  label: string;
-}
 
 const THINKING: RunActivity = { kind: "thinking", label: "Thinking…" };
 /** Fail-closed label when a command's identity cannot be derived or redacted safely (invariant 2). */
