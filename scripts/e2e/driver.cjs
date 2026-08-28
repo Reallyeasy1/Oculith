@@ -361,6 +361,7 @@ async function closeResources() {
   await page.locator(".agent-card", { hasText: "E2E GlassBox" }).click();
   await rows().first().waitFor({ timeout: 10_000 });
   eq(await rows().count(), 1, "first Agent again: exactly its one Run");
+  eq(await rows().first().locator(".tool-call-summary").evaluate((node) => getComputedStyle(node).gap), "6px", "Tool-call badges have explicit spacing (#157)");
   eq(await page.locator(".agent-card[aria-current=page] strong").textContent(), "E2E GlassBox", "sidebar marks the selected Agent aria-current=page");
   const allRuns = page.locator(".agent-card", { hasText: "All runs" });
   await allRuns.focus();
@@ -447,12 +448,35 @@ async function closeResources() {
   ok((await banner.innerText()).includes("timeout"), "first-failure banner is shown");
   const jump = page.locator("button", { hasText: "Jump to failing span" });
   eq(await jump.getAttribute("aria-describedby"), "trace-diagnosis", "Jump is described by the diagnosis paragraph (#103)");
-  await jump.click();
+  await page.setViewportSize({ width: 1366, height: 768 });
+  await page.locator("[role=treeitem]").first().click();
   const dialog = page.locator("[role=dialog]");
   await dialog.waitFor({ timeout: 5_000 });
+  const narrowLayout = await page.evaluate(() => {
+    const drawer = document.querySelector(".span-drawer").getBoundingClientRect();
+    const tree = document.querySelector(".trace-tree").getBoundingClientRect();
+    const jumpButton = Array.from(document.querySelectorAll("button")).find((button) => button.textContent.includes("Jump to failing span")).getBoundingClientRect();
+    return { position: getComputedStyle(document.querySelector(".span-drawer")).position, drawerY: drawer.y, treeBottom: tree.bottom, jumpRight: jumpButton.right, viewportWidth: innerWidth };
+  });
+  eq(narrowLayout.position, "static", "1366 px drawer docks below the tree");
+  ok(narrowLayout.drawerY >= narrowLayout.treeBottom && narrowLayout.jumpRight <= narrowLayout.viewportWidth, "1366 px drawer does not cover the tree or Jump button");
+  if (process.env.E2E_DRAWER_SCREENSHOT_DIR) {
+    fs.mkdirSync(process.env.E2E_DRAWER_SCREENSHOT_DIR, { recursive: true });
+    await page.screenshot({ path: path.join(process.env.E2E_DRAWER_SCREENSHOT_DIR, "drawer-1366.png"), fullPage: true });
+  }
+  await jump.click();
   eq(await dialog.locator("#span-drawer-title").innerText(), "codex exec", "Jump opens the drawer on `codex exec`");
   ok((await dialog.innerText()).includes("timeout"), "drawer shows the timeout status");
   ok(await page.evaluate(() => !!(document.activeElement && document.activeElement.closest("[role=dialog]"))), "Jump moves focus into the drawer");
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  const wideLayout = await page.evaluate(() => {
+    const drawer = document.querySelector(".span-drawer").getBoundingClientRect();
+    const jumpButton = Array.from(document.querySelectorAll("button")).find((button) => button.textContent.includes("Jump to failing span")).getBoundingClientRect();
+    return { drawerLeft: drawer.left, jumpRight: jumpButton.right };
+  });
+  ok(wideLayout.jumpRight <= wideLayout.drawerLeft, "1920 px trace reserves the drawer width without covering Jump");
+  if (process.env.E2E_DRAWER_SCREENSHOT_DIR) await page.screenshot({ path: path.join(process.env.E2E_DRAWER_SCREENSHOT_DIR, "drawer-1920.png"), fullPage: true });
+  await page.setViewportSize({ width: 1400, height: 1000 });
   sweep("DOM (drawer)", await dialog.innerText());
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached", timeout: 5_000 });

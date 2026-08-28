@@ -227,7 +227,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
   };
 
   return (
-    <section ref={sectionRef} className="runs-view trace-detail" aria-labelledby="trace-heading">
+    <section ref={sectionRef} className={"runs-view trace-detail" + (openSpan ? " trace-detail-with-drawer" : "")} aria-labelledby="trace-heading">
       <div className="playground-topbar trace-header">
         <div>
           <span className="eyebrow">Trace · schema {summary.schemaVersion} · {summary.capturePolicy}</span>

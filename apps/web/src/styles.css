@@ -1287,6 +1287,17 @@ textarea:focus {
   letter-spacing: 0;
 }
 
+.tool-call-summary {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.tool-call-summary .badge {
+  margin-right: 0;
+}
+
 /* "Live now" strip (#131): running Runs above the table, whatever the quick filter says. */
 .live-strip {
   display: flex;
@@ -1334,6 +1345,8 @@ textarea:focus {
   padding-bottom: 8px;
   /* scrollIntoView on open leaves the compact Playground bar visible above the trace header. */
   scroll-margin-top: 72px;
+  /* Trace compaction queries key on this container, not the viewport (#138). */
+  container: trace-detail / inline-size;
 }
 
 .trace-export-error {
@@ -1841,7 +1854,10 @@ textarea:focus {
   overflow-wrap: anywhere;
 }
 
-@media (max-width: 800px) {
+/* One breakpoint set, on the trace container's content width. #124's viewport values (800 / 1099)
+   translated with the sidebar, page padding and border removed (800 → 654, 1099 → 753), so the tree
+   compacts the same way without a drawer and also when the docked drawer eats the width. */
+@container trace-detail (max-width: 690px) {
   .trace-detail > .trace-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1861,9 +1877,30 @@ textarea:focus {
   }
 }
 
-@media (min-width: 801px) and (max-width: 1099px) {
+@container trace-detail (min-width: 691px) and (max-width: 760px) {
   .trace-detail > .trace-summary {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* Span drawer docking (#138). The drawer is fixed to the viewport, so where it lives is a viewport
+   decision: >= 1500 px the trace reserves 460 px beside it and may grow past the usual 1180 px so the
+   tree keeps its width; 801–1499 px it docks below the tree; <= 800 px it stays the #100 overlay
+   (min(460px, 100vw - 76px)). */
+@media (min-width: 1500px) {
+  .trace-detail-with-drawer {
+    max-width: 1640px;
+    padding-right: 460px;
+  }
+}
+
+@media (min-width: 801px) and (max-width: 1499px) {
+  .trace-detail-with-drawer .span-drawer {
+    position: static;
+    width: 100%;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+    box-shadow: none;
   }
 }
 
