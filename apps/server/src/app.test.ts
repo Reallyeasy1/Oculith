@@ -184,6 +184,54 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     await app.close();
   });
 
+  it("prefills a regression draft idempotently and persists only through the create route", async () => {
+    const store = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const runId = "12345678-1234-4234-8234-123456789abc";
+    const agentId = "87654321-4321-4321-8321-cba987654321";
+    emitter.emit({
+      traceId: "trc-prefill", runId, agentId, spanId: "done", type: "run.completed", category: "control",
+      name: "run.completed", status: "ok", source: { component: "AgentService", observed: true },
+    });
+    await emitter.flush();
+    const persisted: unknown[] = [];
+    const svc = {
+      ...service,
+      getRun: (id: string) => {
+        expect(id).toBe(runId);
+        return { id: runId, agentId, prompt: "check the fixture", configHash: "baseline-hash" };
+      },
+      getAgent: (id: string) => {
+        expect(id).toBe(agentId);
+        return { id: agentId, workspaceTemplate: "fixture" };
+      },
+      listRegressionCases: () => persisted,
+      createRegressionCase: async (input: Record<string, unknown>) => {
+        const created = { ...input, id: "case-1", createdAt: "2026-08-28T00:00:00.000Z" };
+        persisted.push(created);
+        return created;
+      },
+    } as unknown as AgentService;
+    const app = await createApp(config(), svc, { emitter, store });
+    const prefill = () => app.inject({ method: "GET", url: `/api/runs/${runId}/regression-case`, headers: auth });
+    const first = await prefill();
+    const second = await prefill();
+    expect(first.statusCode).toBe(200);
+    expect(second.json()).toEqual(first.json());
+    expect(first.json()).toEqual({ draft: expect.objectContaining({
+      name: "Case from Run 12345678 · fixture", sourceRunId: runId, workspaceTemplate: "fixture",
+    }) });
+    expect(persisted).toHaveLength(0);
+
+    // The dialog posts only what it may change back to the Run route; the draft is re-derived server-side.
+    const { name, assertions } = first.json().draft;
+    const created = await app.inject({ method: "POST", url: `/api/runs/${runId}/regression-case`, headers: auth, payload: { name, assertions } });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().regressionCase).toMatchObject({ id: "case-1", name, sourceRunId: runId, baselineConfigHash: "baseline-hash" });
+    expect(persisted).toHaveLength(1);
+    await app.close();
+  });
+
   it("maps validation errors to 400 (static web build served in production)", async () => {
     // Regression (#60): `await app.register(fastifyStatic)` sat between the routes and setErrorHandler,
     // so the judged POC path answered every zod failure with Fastify's default 500.

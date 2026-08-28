@@ -271,6 +271,23 @@ describe("NdjsonTraceStore.cleanup (retention, FR-14)", () => {
     expect(buildTrace(after, { capturePolicy: "metadata_only" }).summary).toMatchObject({ evicted: true, truncated: true });
   });
 
+  it("keeps the start half of a model.turn span (#129) so its duration and completeness survive eviction", async () => {
+    const store = new NdjsonTraceStore(path.join(await tmp(), "traces")); await store.initialize();
+    const base = { runId: "turn", traceId: "trc_turn" };
+    const t = (ms: number) => new Date(T0 - 10 * DAY + ms).toISOString();
+    await store.append(ev(1, { ...base, type: "run.created", category: "control", phase: "start", status: "running", spanId: "root", timestamp: t(0) }));
+    await store.append(ev(2, { ...base, type: "model.request", category: "model", name: "model.turn", phase: "start", status: "running", spanId: "turn-1", parentSpanId: "root", timestamp: t(100), attributes: { turnIndex: 1 } }));
+    await store.append(ev(3, { ...base, type: "model.completed", category: "model", name: "model.turn", phase: "end", status: "ok", spanId: "turn-1", parentSpanId: "root", timestamp: t(900), attributes: { turnIndex: 1, inputTokens: 10 } }));
+    await store.append(ev(4, { ...base, type: "workspace.changed", category: "workspace", spanId: "ws", parentSpanId: "root", timestamp: t(950), attributes: { files: 3 } }));
+    await store.append(ev(5, { ...base, type: "run.completed", category: "control", phase: "end", status: "ok", spanId: "root", timestamp: t(1000) }));
+    const before = buildTrace(await store.readRun("turn"), { capturePolicy: "metadata_only" });
+    expect(before.summary).toMatchObject({ incompleteSpans: 0, metrics: { modelCalls: 1, timeSplit: { modelMs: 800 } } });
+    await store.cleanup({ retentionDays: 7, maxDiskMb: 0, now });
+    const after = await store.readRun("turn");
+    expect(after.map((e) => e.type)).toEqual(["run.created", "model.request", "model.completed", "run.completed", "trace.truncated"]);
+    expect(buildTrace(after, { capturePolicy: "metadata_only" }).summary).toMatchObject({ incompleteSpans: 0, usage: { inputTokens: 10 }, metrics: { modelCalls: 1, timeSplit: { modelMs: 800 } } });
+  });
+
   it("tombstone carries nothing content-bearing: attributes are exactly { reason, droppedEvents } and status is unset", async () => {
     const store = new NdjsonTraceStore(path.join(await tmp(), "traces")); await store.initialize();
     await seedRealRun(store);

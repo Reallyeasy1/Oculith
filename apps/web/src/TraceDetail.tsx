@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type { Assertion, AuditRow, ObservationEvent, RunListItem, Span, TraceView } from "./types";
-import { STATUS_ICON, formatClock, formatDuration, formatUsage } from "./runs-view-model";
+import { REPORTED_FAILURE_HINT, STATUS_ICON, formatClock, formatDuration, formatRunDuration, formatUsage } from "./runs-view-model";
 import {
   CATEGORIES,
   DRAWER_EVENT_CAP,
@@ -12,6 +12,7 @@ import {
   defaultExpanded,
   formatAttribute,
   indexSpans,
+  interruptedSpanDurationMs,
   isFilterActive,
   spanStatusLabel,
   timelineTicks,
@@ -51,6 +52,8 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
   const [focusId, setFocusId] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [showSaveCase, setShowSaveCase] = useState(false);
+  const saveCaseRef = useRef<HTMLFormElement>(null);
+  const onSaveCaseKeyDown = useFocusTrap(saveCaseRef, () => { if (!savingCase) setShowSaveCase(false); }, String(showSaveCase));
   const [caseName, setCaseName] = useState("");
   const [caseAssertions, setCaseAssertions] = useState<Assertion[]>([]);
   const [savingCase, setSavingCase] = useState(false);
@@ -129,10 +132,14 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
       : "";
 
   const openSaveCase = () => {
-    setCaseName("Case: " + (run?.agentName ?? "Run") + " · " + runId.slice(0, 8));
-    setCaseAssertions(prefillAssertions(view));
+    // The server derives the draft from the same trace it will persist from; nothing is saved until Save.
+    setCaseName("");
+    setCaseAssertions([]);
     setCaseError(null);
     setShowSaveCase(true);
+    api.regressionCaseDraft(runId)
+      .then(({ draft }) => { setCaseName(draft.name); setCaseAssertions(draft.assertions); })
+      .catch((reason) => setCaseError(reason instanceof Error ? reason.message : String(reason)));
   };
   const saveCase = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -222,13 +229,18 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
         <Field label="Runtime / model" className="trace-runtime"><span title={run ? run.runtime + " · " + run.model : undefined}>{run ? run.runtime + " · " + run.model : "—"}</span></Field>
         <Field label="Session">{summary.sessionId ?? <span className="trace-muted">not observed</span>}</Field>
         <Field label="Start">{formatClock(summary.startedAt)}</Field>
-        <Field label="Duration">{formatDuration(summary.durationMs)}{summary.endedReason === "server_restart" ? " observed · interrupted by restart" : ""}</Field>
+        <Field label="Duration">{formatRunDuration(summary.durationMs, summary.endedReason, summary.interruptedAfterMs)}</Field>
+        <Field label="Outcome">{summary.outcome?.text ?? (summary.outcome?.reportedFailure ? <span className="badge badge-warn" title={REPORTED_FAILURE_HINT}>agent reported failure</span> : "—")}</Field>
         <Field label="Events">{summary.eventCount} · {summary.spanCount} spans</Field>
         <Field label="Usage">{formatUsage(summary.usage)}</Field>
         <Field label="Metrics">
           {summary.metrics.toolCalls} tool calls · {summary.metrics.toolFailures} failed · {summary.metrics.modelCalls} model calls
           {summary.metrics.retries > 0 ? ` · ${summary.metrics.retries} retries` : ""}
           {summary.metrics.denials > 0 ? ` · ${summary.metrics.denials} denied` : ""}
+        </Field>
+        <Field label="Time split">
+          model {formatDuration(summary.metrics.timeSplit.modelMs)} · tools {formatDuration(summary.metrics.timeSplit.toolMs)} · start {formatDuration(summary.metrics.timeSplit.containerStartMs)}
+          {summary.metrics.timeToFirstToolMs !== undefined ? ` · first tool ${formatDuration(summary.metrics.timeToFirstToolMs)}` : ""}
         </Field>
         <Field label="Config hash">
           <code title={run?.configSnapshot ? JSON.stringify(run.configSnapshot) : undefined}>{summary.configHash ?? run?.configHash ?? "—"}</code>
@@ -346,7 +358,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
                 {row.hasChildren ? (row.expanded ? "▾" : "▸") : "·"}
               </button>
               <span className={"status status-" + s.status}><span aria-hidden="true">{STATUS_ICON[s.status]}</span>{spanStatusLabel(s, summary.endedReason)}</span>
-              <span className="trace-name">{s.name}</span>
+              <span className="trace-name" title={[s.attributes.program, s.attributes.argument0].filter((value) => typeof value === "string" && value.length > 0).join(" ") || undefined}>{s.name}</span>
               <span className="trace-cat">{s.category}</span>
               <span className="trace-badges">
                 {s.incomplete && <span className="badge badge-warn">incomplete</span>}
@@ -377,11 +389,11 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
       {!showAudit && openSpan && <SpanDrawer span={openSpan} view={view} parentName={openSpan.parentSpanId ? byId.get(openSpan.parentSpanId)?.name : undefined} onClose={closeDrawer} />}
       {showSaveCase && (
         <div className="modal-backdrop" onMouseDown={() => !savingCase && setShowSaveCase(false)}>
-          <form className="modal regression-case-modal" onSubmit={saveCase} onMouseDown={(event) => event.stopPropagation()}>
+          <form ref={saveCaseRef} className="modal regression-case-modal" role="dialog" aria-modal="true" aria-labelledby="save-case-title" onSubmit={saveCase} onMouseDown={(event) => event.stopPropagation()} onKeyDown={onSaveCaseKeyDown}>
             <div className="modal-heading">
               <div>
                 <span className="eyebrow">Regression case</span>
-                <h2>Save successful Run</h2>
+                <h2 id="save-case-title">Save successful Run</h2>
                 <p>These checks were inferred from the trace evidence. Remove any that should not become a stable expectation.</p>
               </div>
               <button type="button" onClick={() => setShowSaveCase(false)} disabled={savingCase} aria-label="Close save regression case">×</button>
@@ -391,6 +403,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
               <input autoFocus value={caseName} onChange={(event) => setCaseName(event.target.value)} maxLength={120} required />
             </label>
             <div className="assertion-list" aria-label="Prefilled assertions">
+              {caseAssertions.length === 0 && !caseError && <p className="trace-muted">Deriving checks from the trace…</p>}
               {caseAssertions.map((assertion, index) => (
                 <div key={assertionLabel(assertion) + index}>
                   <code>{assertionLabel(assertion)}</code>
@@ -418,15 +431,6 @@ function assertionLabel(assertion: Assertion): string {
     case "max_duration_ms": return "finishes within " + assertion.max + " ms";
     case "post_check": return "post-check: " + assertion.command;
   }
-}
-
-function prefillAssertions(view: TraceView): Assertion[] {
-  const programs = [...new Set(view.events.filter((event) => event.category === "tool" && typeof event.attributes.program === "string").map((event) => String(event.attributes.program)))].slice(0, 3);
-  const toolCalls = new Set(view.events.filter((event) => event.category === "tool" && event.type.startsWith("tool.call.")).map((event) => event.spanId)).size;
-  const assertions: Assertion[] = [{ type: "terminal_status", expected: "ok" }, ...programs.map((program) => ({ type: "expected_tool" as const, program }))];
-  if (toolCalls > 0) assertions.push({ type: "max_tool_calls", max: toolCalls * 2 });
-  if (view.summary.durationMs !== undefined) assertions.push({ type: "max_duration_ms", max: Math.ceil(view.summary.durationMs * 1.5) });
-  return assertions;
 }
 
 function AuditTable({ rows, error, onOpenSpan }: { rows: AuditRow[] | null; error: string | null; onOpenSpan: (spanId: string) => void }) {
@@ -464,16 +468,10 @@ function Field({ label, children, className }: { label: string; children: React.
 
 const FOCUSABLE = 'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
-function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: TraceView; parentName: string | undefined; onClose: () => void }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const events = useMemo(() => view.events.filter((e) => e.spanId === span.spanId), [view, span]);
-  const attempt = events[0]?.attempt;
-  const shown = events.slice(0, DRAWER_EVENT_CAP);
-  const workspaceChange = view.events.find((event) => event.type === "workspace.changed" && event.parentSpanId === span.spanId);
-
-  useEffect(() => { ref.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus(); }, [span.spanId]);
-
-  const onKeyDown = (event: React.KeyboardEvent) => {
+/** Dialog keyboard contract shared by the span drawer and the save-case modal: autofocus, Tab cycles inside, Escape closes. */
+function useFocusTrap(ref: React.RefObject<HTMLElement | null>, onClose: () => void, focusKey: string) {
+  useEffect(() => { ref.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus(); }, [ref, focusKey]);
+  return (event: React.KeyboardEvent) => {
     if (event.key === "Escape") { event.preventDefault(); onClose(); return; }
     if (event.key !== "Tab" || !ref.current) return;
     const items = Array.from(ref.current.querySelectorAll<HTMLElement>(FOCUSABLE));
@@ -482,13 +480,27 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   };
+}
+
+function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: TraceView; parentName: string | undefined; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const events = useMemo(() => view.events.filter((e) => e.spanId === span.spanId), [view, span]);
+  const attempt = events[0]?.attempt;
+  const shown = events.slice(0, DRAWER_EVENT_CAP);
+  const workspaceChange = view.events.find((event) => event.type === "workspace.changed" && event.parentSpanId === span.spanId);
+  const interruptedDuration = interruptedSpanDurationMs(span, view.summary);
+  const identity = [span.attributes.program, span.attributes.argument0]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .join(" ");
+
+  const onKeyDown = useFocusTrap(ref, onClose, span.spanId);
 
   return (
     <div ref={ref} className="span-drawer" role="dialog" aria-modal="true" aria-labelledby="span-drawer-title" onKeyDown={onKeyDown}>
       <div className="span-drawer-head">
         <div>
           <span className="eyebrow">Span · {span.category}</span>
-          <h3 id="span-drawer-title">{span.name}</h3>
+          <h3 id="span-drawer-title">{identity || span.name}</h3>
         </div>
         <button type="button" className="button button-ghost" onClick={onClose} aria-label="Close span details">×</button>
       </div>
@@ -501,8 +513,8 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
         <Field label="Parent">{parentName ?? span.parentSpanId ?? "— (root)"}</Field>
         <Field label="Source">{span.source.component}{span.source.adapter ? " / " + span.source.adapter : ""} <span className="badge">{span.source.observed ? "observed" : "unavailable"}</span></Field>
         <Field label="Started">{span.startedAt}</Field>
-        <Field label="Ended">{span.endedAt ?? "—"}</Field>
-        <Field label="Duration">{span.durationMs === 0 && !span.incomplete ? "instant" : formatDuration(span.durationMs)}</Field>
+        <Field label="Ended">{interruptedDuration !== undefined ? `never closed — server restarted at ${formatClock(view.summary.endedAt)}` : span.endedAt ?? "—"}</Field>
+        <Field label="Duration">{interruptedDuration !== undefined ? `≥ ${formatDuration(interruptedDuration)}` : span.durationMs === 0 && !span.incomplete ? "instant" : formatDuration(span.durationMs)}</Field>
         <Field label="Attempt">{attempt ?? "—"}</Field>
         <Field label="Sequence">{span.sequence}</Field>
       </dl>
