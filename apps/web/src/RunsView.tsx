@@ -3,9 +3,11 @@ import type { RunListItem } from "./types";
 import {
   FILTER_LABEL,
   QUICK_FILTERS,
+  REPORTED_FAILURE_HINT,
   STATUS_ICON,
   formatClock,
   formatDuration,
+  formatRunDuration,
   formatUsage,
   liveRuns,
   matchesFilter,
@@ -92,6 +94,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
               <th scope="col">Workspace</th>
               <th scope="col">Start</th>
               <th scope="col">Duration</th>
+              <th scope="col">Outcome</th>
               <th scope="col">First failing step</th>
               <th scope="col">Events</th>
               <th scope="col">Config</th>
@@ -128,7 +131,8 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 {showAgent && <td>{run.agentName || run.agentId}</td>}
                 <td>{run.workspace ?? "—"}</td>
                 <td>{formatClock(run.startedAt)}</td>
-                <td>{formatDuration(run.durationMs)}{run.endedReason === "server_restart" ? " · interrupted" : ""}</td>
+                <td>{formatRunDuration(run.durationMs, run.endedReason, run.interruptedAfterMs)}</td>
+                <td className="runs-outcome" title={run.outcome?.text}>{run.outcome?.text ?? (run.outcome?.reportedFailure ? <span className="badge badge-warn" title={REPORTED_FAILURE_HINT}>agent reported failure</span> : "—")}</td>
                 <td>{run.firstFailingStep ?? "—"}</td>
                 <td>{run.eventCount}</td>
                 <td title={run.configSnapshot ? JSON.stringify(run.configSnapshot) : undefined}>

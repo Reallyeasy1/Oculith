@@ -21,6 +21,18 @@ const num = (v: unknown): number | undefined => (typeof v === "number" ? v : und
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 const bytes = (v: unknown): number => Buffer.byteLength(str(v) ?? "", "utf8");
 
+const REPORTED_FAILURE_PHRASES = ["not installed", "could not", "unable to", "failed to", "permission denied"] as const;
+
+/** Bounded, deterministic outcome metadata. Callers may discard `text` immediately after this returns. */
+export function describeFinalMessage(text: string): { finalMessageBytes: number; reportedFailure: boolean; summaryText: string } {
+  const normalized = text.toLocaleLowerCase("en-US");
+  return {
+    finalMessageBytes: Buffer.byteLength(text, "utf8"),
+    reportedFailure: REPORTED_FAILURE_PHRASES.some((phrase) => normalized.includes(phrase)),
+    summaryText: text.slice(0, 240),
+  };
+}
+
 const USAGE_KEYS: Record<string, string> = {
   input_tokens: "inputTokens",
   cached_input_tokens: "cachedInputTokens",

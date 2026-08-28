@@ -8,6 +8,9 @@ export const QUICK_FILTERS: QuickFilter[] = ["attention", "all", "failed", "runn
 
 export const FILTER_LABEL: Partial<Record<QuickFilter, string>> = { attention: "Needs attention", timeout: "Timed out" };
 
+/** #132 chip tooltip — the flag is a derived phrase match on the final message, not an evaluator judgement. */
+export const REPORTED_FAILURE_HINT = "Derived: the agent's final message contains a failure phrase (e.g. \"not installed\", \"unable to\"). Not an evaluator judgement.";
+
 /** Tool failures + denials an ok Run worked around (#131); 0 unless the Run ended ok. */
 export function recoveredFailures(run: RunListItem): number {
   return run.status === "ok" ? run.toolFailures + run.denials : 0;
@@ -15,7 +18,7 @@ export function recoveredFailures(run: RunListItem): number {
 
 /** error ∪ timeout ∪ cancelled ∪ degraded ∪ any tool failure/denial — the default Runs filter (#35, #131). */
 export function needsAttention(run: RunListItem): boolean {
-  return run.degraded || run.toolFailures > 0 || run.denials > 0 || run.status === "error" || run.status === "timeout" || run.status === "cancelled";
+  return run.outcome?.reportedFailure === true || run.degraded || run.toolFailures > 0 || run.denials > 0 || run.status === "error" || run.status === "timeout" || run.status === "cancelled";
 }
 
 /** Running Runs, newest first — the "Live now" strip, independent of the quick filter (#131). */
@@ -88,6 +91,11 @@ export function formatDuration(ms: number | undefined): string {
   const minutes = Math.floor(ms / 60_000);
   const seconds = Math.round((ms % 60_000) / 1000);
   return minutes + "m " + String(seconds).padStart(2, "0") + "s";
+}
+
+export function formatRunDuration(durationMs: number | undefined, endedReason?: "server_restart", interruptedAfterMs?: number): string {
+  if (endedReason !== "server_restart") return formatDuration(durationMs);
+  return `≥ ${formatDuration(interruptedAfterMs)} · interrupted (last evidence +${formatDuration(durationMs)})`;
 }
 
 export function formatUsage(usage: RunListItem["usage"]): string {

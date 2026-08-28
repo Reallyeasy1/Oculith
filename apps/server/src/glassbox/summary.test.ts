@@ -61,10 +61,16 @@ describe("summaryFromView", () => {
       workspace: "ws", sessionId: undefined,
       metrics: s.metrics, usage: s.usage, denials: 1, actions: s.audit.actions, capabilities: s.capabilities, workspaceChanges: s.workspaceChanges,
       degraded: false, truncated: true, evicted: false, redactedEvents: 1, eventCount: 12,
-      firstFailingStep: s.firstFailingStep, endedReason: undefined, rollupVersion: ROLLUP_VERSION, updatedAt: t(0),
+      firstFailingStep: s.firstFailingStep, endedReason: undefined, interruptedAfterMs: undefined, rollupVersion: ROLLUP_VERSION, updatedAt: t(0),
     });
     expect(summary.metrics).toMatchObject({ terminalStatus: "error", toolCalls: 1, toolFailures: 1, modelCalls: 1, denials: 1, tokens: { input: 10, output: 5 } });
     expect(summary.actions).toBeGreaterThan(0);
+  });
+  it("carries the #132 outcome line from the terminal event into the stored summary", () => {
+    seq = 0;
+    const events = [ev({ type: "run.started", category: "control", spanId: "s", status: "ok" }),
+      ev({ type: "run.completed", category: "control", spanId: "e", status: "ok", attributes: { finalMessageBytes: 9, reportedFailure: true }, summary: { text: "Unable to", policy: "safe_summary" } })];
+    expect(summaryFromView(buildTrace(events, { capturePolicy: "safe_summary" })).outcome).toEqual({ text: "Unable to", finalMessageBytes: 9, reportedFailure: true });
   });
   it("maps every trace status onto an execution status; a restart-cancel keeps its reason", () => {
     const statuses = { ok: "completed", error: "failed", timeout: "timeout", cancelled: "cancelled" } as const;
@@ -76,7 +82,7 @@ describe("summaryFromView", () => {
     seq = 0;
     const restart = [ev({ type: "run.started", category: "control", spanId: "s", status: "ok" }),
       ev({ type: "run.cancelled", category: "control", spanId: "c", status: "cancelled", actorType: "service", actorId: "server", attributes: { reason: "server_restart" } })];
-    expect(summaryFromView(buildTrace(restart, { capturePolicy: "metadata_only" }))).toMatchObject({ executionStatus: "cancelled", endedReason: "server_restart" });
+    expect(summaryFromView(buildTrace(restart, { capturePolicy: "metadata_only" }))).toMatchObject({ executionStatus: "cancelled", endedReason: "server_restart", interruptedAfterMs: 0 });
     expect(summaryFromView(buildTrace([], { capturePolicy: "metadata_only" }))).toMatchObject({ executionStatus: "running", eventCount: 0 });
   });
 });

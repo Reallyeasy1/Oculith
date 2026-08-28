@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentService, configHash, configSnapshot } from "./agent-service.js";
+import { AgentService, configHash, configSnapshot, serverHeartbeatPath } from "./agent-service.js";
 import { EvalRunner } from "./eval/runner.js";
 import { RunCancelledError } from "./errors.js";
 import { loadConfig } from "./config.js";
@@ -235,8 +235,8 @@ class TimeoutRunner extends FakeRunner {
   }
 }
 
-async function makeTraced(runner: AgentRunner = new FakeRunner(), store: TraceStore = new MemoryTraceStore()) {
-  const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+async function makeTraced(runner: AgentRunner = new FakeRunner(), store: TraceStore = new MemoryTraceStore(), capturePolicy: "metadata_only" | "safe_summary" = "metadata_only") {
+  const emitter = new ObservationEmitter({ store, capturePolicy });
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
   temporaryDirectories.push(root);
   const config = loadConfig({
@@ -412,8 +412,35 @@ describe("GlassBox control-plane adapter", () => {
     expect(events.find((e) => e.type === "run.completed")!.attributes).toMatchObject({
       inputTokens: 12,
       outputTokens: 5,
+      finalMessageBytes: 16,
+      reportedFailure: false,
     });
     expect(JSON.stringify(events)).not.toContain("hello"); // prompt text is never stored
+  });
+
+  it("persists only outcome metadata under metadata_only and a redacted bounded summary under safe_summary", async () => {
+    const secret = "ark-12345678-1234-1234-1234-123456789abc";
+    const runner = new (class extends FakeRunner {
+      override async run(): Promise<RunnerResult> {
+        return { output: `Unable to continue with ${secret}`, threadId: "thread", usage: null };
+      }
+    })();
+    const metadata = await makeTraced(runner);
+    const metadataAgent = await metadata.service.createAgent({ name: "metadata outcome" });
+    const metadataRun = (await metadata.service.sendMessage(metadataAgent.id, "go")).run;
+    await settle(metadata.service, metadataRun.id); await metadata.emitter.flush();
+    const metadataEvent = (await metadata.store.readRun(metadataRun.id)).find((event) => event.type === "run.completed")!;
+    expect(metadataEvent.attributes).toMatchObject({ reportedFailure: true, finalMessageBytes: expect.any(Number) });
+    expect(metadataEvent.summary).toBeUndefined();
+    expect(JSON.stringify(metadataEvent)).not.toContain(secret);
+
+    const safe = await makeTraced(runner, new MemoryTraceStore(), "safe_summary");
+    const safeAgent = await safe.service.createAgent({ name: "safe outcome" });
+    const safeRun = (await safe.service.sendMessage(safeAgent.id, "go")).run;
+    await settle(safe.service, safeRun.id); await safe.emitter.flush();
+    const safeEvent = (await safe.store.readRun(safeRun.id)).find((event) => event.type === "run.completed")!;
+    expect(safeEvent.summary?.text).toContain("[REDACTED:ark_key]");
+    expect(JSON.stringify(safeEvent)).not.toContain(secret);
   });
 
   it("observes workspace path changes without storing file contents", async () => {
@@ -490,6 +517,8 @@ describe("GlassBox control-plane adapter", () => {
     const { run } = await service.sendMessage(agent.id, "x");
     await runnerReached;
     await emitter.flush();
+    const lastSeenAt = "2026-08-28T10:00:00.000Z";
+    await writeFile(serverHeartbeatPath(config.dataDirectory), JSON.stringify({ lastSeenAt }));
     // a second service on the same store simulates a process restart
     const restarted = new AgentService(config, jsonStore, workspaces, new FakeRunner(), emitter);
     await restarted.initialize();
@@ -506,7 +535,7 @@ describe("GlassBox control-plane adapter", () => {
       status: "cancelled",
       actorId: "server",
       actorType: "service",
-      attributes: { reason: "server_restart" },
+      attributes: { reason: "server_restart", lastSeenAt },
       parentSpanId: serviceSpan?.spanId,
     });
   });

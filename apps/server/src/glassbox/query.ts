@@ -24,6 +24,8 @@ export interface TraceSummary {
   audit: { actions: number; denials: number; actors: string[] };
   /** Set when the Run was closed by AgentService.initialize() after a restart: durationMs then stops at the last event observed before the restart. */
   endedReason?: "server_restart" | undefined;
+  /** Lower bound from Run start to the restart marker; unlike durationMs, this includes the unobserved gap. */
+  interruptedAfterMs?: number | undefined;
   degraded: boolean; truncated: boolean;
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
   evicted: boolean;
@@ -33,6 +35,8 @@ export interface TraceSummary {
   /** `unknown` = no evidence either way (run cut short before the stream said anything) — never claim `unavailable` from absence. */
   capabilities: { model: Capability; tool: Capability };
   workspaceChanges?: { added: number; modified: number; removed: number; bytesDelta: number; truncated: boolean } | undefined;
+  /** #132 — `text`: observed fact (redacted first 240 chars of the final message, safe_summary only); `reportedFailure`: derived deterministic phrase match, not a judgement. */
+  outcome?: { text?: string | undefined; finalMessageBytes: number; reportedFailure: boolean } | undefined;
   firstFailingStep?: string | undefined; failure?: FailureFocus | undefined;
 }
 
@@ -187,7 +191,16 @@ const formatFailureMessage = (message: string | undefined): string | undefined =
   return message?.replace(/\b((?:exited with|exit) code )(\d+)/i, (_, prefix: string, code: string) => prefix + formatExitCode(Number(code)));
 };
 
-function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, status: TraceStatus, degraded: boolean, durationMs: number | undefined): FailureFocus | undefined {
+function formatElapsed(ms: number | undefined): string {
+  if (ms === undefined) return "an unknown duration";
+  if (ms < 1000) return Math.round(ms) + " ms";
+  if (ms < 60_000) return (ms / 1000).toFixed(1) + " s";
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.round((ms % 60_000) / 1000);
+  return minutes + "m " + String(seconds).padStart(2, "0") + "s";
+}
+
+function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, status: TraceStatus, degraded: boolean, durationMs: number | undefined, interruptedAfterMs?: number): FailureFocus | undefined {
   const denial = events.find((e) => e.type === "policy.denied");
   // A handled ordinary tool error is not actionable after an ok terminal, but a policy decision is:
   // the Run may recover while operators still need to know what the sandbox declined.
@@ -210,6 +223,7 @@ function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, stat
     ? { spanId: open.spanId, eventId: events.find((e) => e.spanId === open.spanId)?.eventId ?? first.eventId, sequence: open.sequence, name: open.name, category: open.category, component: open.source.component, message: undefined }
     : { spanId: first.spanId, eventId: first.eventId, sequence: first.sequence, name: first.name, category: first.category, component: first.source.component, message: formatFailureMessage(first.error?.message) };
   const path = pathTo(spans, target.spanId);
+  const elapsed = formatElapsed(durationMs);
   const secs = durationMs === undefined ? "an unknown duration" : (durationMs / 1000).toFixed(1) + " s";
   const cleanup = events.find((e) => e.type === "runtime.container.stopped" || (e.type === "runtime.codex.failed" && e.attributes.terminationSignal));
   const capability = events.find((e) => e.type === "capability.unavailable");
@@ -217,7 +231,7 @@ function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, stat
     kind === "denied"
       ? `sandbox declined \`${String(first.attributes.program || first.name)}\``
       : isRestartCancel(first)
-      ? `Run interrupted by a server restart after ${secs} of observed activity; ${open ? `the ${open.category} span ${open.name} never closed` : "no open span was recorded"}.`
+      ? `Run interrupted by a server restart after ${formatElapsed(interruptedAfterMs)}; last trace evidence was ${elapsed} after the Run started; ${open ? `the ${open.category} span ${open.name} never closed` : "no open span was recorded"}.`
       : `Run ${status} in ${first.source.component} after ${secs}. First actionable ${kind}: ${first.name}${target.message ? " — " + target.message : ""}.`,
     cleanup ? `Cleanup evidence: ${cleanup.name}${typeof cleanup.attributes.exitCode === "number" ? " (exit " + formatExitCode(cleanup.attributes.exitCode) + ")" : ""}${cleanup.attributes.terminationSignal ? " via " + String(cleanup.attributes.terminationSignal) : ""}.` : "",
     capability ? "No model/tool-level details were available from the runtime." : "",
@@ -243,6 +257,10 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
   const restart = terminal !== undefined && isRestartCancel(terminal);
   const clockEnd = restart ? events[events.indexOf(terminal) - 1]?.timestamp : endedAt;
   const durationMs = startedAt && clockEnd ? Math.max(0, Date.parse(clockEnd) - Date.parse(startedAt)) : undefined;
+  // The restart-cancel is stamped at the NEXT boot, which may be hours after the process died: the honest lower bound on
+  // how long the Run lived is the previous process's last heartbeat (run.cancelled.attributes.lastSeenAt), else the last evidence.
+  const lastSeenAt = restart && typeof terminal.attributes.lastSeenAt === "string" ? Date.parse(terminal.attributes.lastSeenAt) : NaN;
+  const interruptedAfterMs = restart && startedAt ? Math.max(durationMs ?? 0, Number.isNaN(lastSeenAt) ? 0 : lastSeenAt - Date.parse(startedAt)) : undefined;
   const usageEvents = events.filter((e) => e.type === "model.completed");
   const sum = (k: string) => usageEvents.reduce((n, e) => n + (typeof e.attributes[k] === "number" ? (e.attributes[k] as number) : 0), 0);
   // Presence-based, not truthiness-based: include a usage field whenever ANY model.completed event carries it
@@ -312,7 +330,7 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
   const degraded = opts.degraded === true || events.some((e) => e.type === "telemetry.degraded");
   const truncated = opts.truncated === true || events.some((e) => e.type === "trace.truncated");
   const evicted = events.some(isEvictionMarker);
-  const failure = focusFailure(events, spans, status, degraded, durationMs);
+  const failure = focusFailure(events, spans, status, degraded, durationMs, interruptedAfterMs);
   const auditRows = projectAudit(events);
   const declaredUnavailable = events.some((e) => e.type === "capability.unavailable");
   const workspace = events.find((event) => event.type === "run.created" && typeof event.attributes.workspace === "string")?.attributes.workspace;
@@ -328,12 +346,19 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
     bytesDelta: Number(workspaceEvent.attributes.bytesDelta ?? 0),
     truncated: workspaceEvent.attributes.truncated === true,
   } : undefined;
+  const completion = events.find((event) => event.type === "run.completed");
+  const finalMessageBytes = completion?.attributes.finalMessageBytes;
+  const outcome = completion && typeof finalMessageBytes === "number" ? {
+    ...(completion.summary?.text !== undefined ? { text: completion.summary.text } : {}),
+    finalMessageBytes,
+    reportedFailure: completion.attributes.reportedFailure === true,
+  } : undefined;
   const summary: TraceSummary = {
     schemaVersion: SCHEMA_VERSION, capturePolicy: opts.capturePolicy,
     runId: first?.runId ?? "", traceId: first?.traceId ?? "", agentId: first?.agentId ?? "",
     sessionId: events.find((e) => e.sessionId)?.sessionId,
     ...(typeof workspace === "string" ? { workspace } : {}),
-    status, startedAt, endedAt, durationMs, endedReason: restart ? "server_restart" : undefined, eventCount: events.length, spanCount: flat.length,
+    status, startedAt, endedAt, durationMs, endedReason: restart ? "server_restart" : undefined, interruptedAfterMs, eventCount: events.length, spanCount: flat.length,
     incompleteSpans: flat.filter((s) => s.incomplete).length, redactedEvents: events.filter((e) => e.privacy.redacted).length,
     denials: events.filter((e) => e.type === "policy.denied").length,
     audit: {
@@ -341,7 +366,7 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
       denials: auditRows.filter((row) => row.outcome === "denied").length,
       actors: [...new Set(auditRows.map((row) => row.actor.type + "/" + row.actor.id))].sort(),
     },
-    degraded, truncated, evicted, usage, metrics, configHash, workspaceChanges,
+    degraded, truncated, evicted, usage, metrics, configHash, workspaceChanges, outcome,
     capabilities: { model: events.some((e) => e.category === "model") ? "observed" : declaredUnavailable ? "unavailable" : "unknown", tool: events.some((e) => e.category === "tool") ? "observed" : declaredUnavailable ? "unavailable" : "unknown" },
     firstFailingStep: failure && failure.kind !== "degraded" ? failure.name : undefined, failure,
   };
