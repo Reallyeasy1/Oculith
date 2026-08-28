@@ -12,6 +12,8 @@ export interface ComparisonAssertion {
 export interface EvalComparison {
   cases: { caseId: string; assertions: ComparisonAssertion[]; regression: boolean; traceLinks: { baseline?: string; candidate?: string } }[];
   regressions: number;
+  /** true when a template both EvalRuns used hashed differently at their starts; unknown (pre-#176) hashes never flag. */
+  templateMismatch: boolean;
 }
 
 export function compareEvalRuns(baseline: EvalRun, candidate: EvalRun): EvalComparison {
@@ -33,5 +35,6 @@ export function compareEvalRuns(baseline: EvalRun, candidate: EvalRun): EvalComp
     regressions += assertions.filter((item) => item.regression).length;
     return { caseId, assertions, regression, traceLinks: { ...(base?.runId ? { baseline: base.runId } : {}), ...(next?.runId ? { candidate: next.runId } : {}) } };
   });
-  return { cases, regressions };
+  const templateMismatch = Object.entries(baseline.templateHashes ?? {}).some(([name, hash]) => candidate.templateHashes?.[name] !== undefined && candidate.templateHashes[name] !== hash);
+  return { cases, regressions, templateMismatch };
 }

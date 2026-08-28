@@ -3,6 +3,8 @@
 // restart it with GLASSBOX_DEMO_FAILURE=timeout. Every check throws; exit code is the verdict.
 "use strict";
 const assert = require("node:assert/strict");
+// The overview also renders the regression-cases table as `.runs-table` (#88); scope Runs selectors to the Runs section.
+const RUNS_TABLE = 'section[aria-labelledby="runs-heading"] .runs-table';
 const { spawn, execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -99,6 +101,18 @@ runTask.wait = async function waitForRun(runId) {
   return { run, view };
 };
 
+async function waitForEval(caseId) {
+  const deadline = Date.now() + RUN_TIMEOUT_MS;
+  let evaluation;
+  while (Date.now() < deadline) {
+    evaluation = (await api("/api/eval-runs")).json().evalRuns.find((item) => item.caseIds.includes(caseId));
+    if (evaluation && evaluation.status !== "running") break;
+    await sleep(2_000);
+  }
+  assert.ok(evaluation && evaluation.status !== "running", "evaluation for case " + caseId + " did not reach a terminal state in time");
+  return evaluation;
+}
+
 // ---- browser helpers --------------------------------------------------------------------------------------------
 async function openApp(page) {
   await page.goto(BASE + "/", { waitUntil: "networkidle" });
@@ -109,11 +123,11 @@ async function openApp(page) {
   await attention.waitFor({ timeout: 15_000 });
   eq(await attention.getAttribute("aria-pressed"), "true", "Runs list opens on the 'Needs attention' filter");
   await page.locator(".runs-filters").getByRole("button", { name: /^all$/i }).click(); // DOM text is "all"; CSS capitalises it
-  await page.locator(".runs-table tbody tr").first().waitFor({ timeout: 15_000 });
+  await page.locator(`${RUNS_TABLE} tbody tr`).first().waitFor({ timeout: 15_000 });
 }
 
 async function openTraceByKeyboard(page, runId) {
-  const row = page.locator(".runs-table tbody tr").first();
+  const row = page.locator(`${RUNS_TABLE} tbody tr`).first();
   await row.focus();
   eq(await page.evaluate(() => document.activeElement && document.activeElement.tagName), "TR", "Runs row takes focus");
   await page.keyboard.press("Enter");
@@ -164,7 +178,7 @@ let server = null;
   eq((await api("/api/runs/not-a-uuid")).status, 400, "validation errors are 400 in production (#60)");
 
   console.log("\n[2] baseline: create Agent, run a task on the real runner");
-  const created = await api("/api/agents", { method: "POST", body: JSON.stringify({ name: "E2E GlassBox", instructions: "You are a test agent. Treat these credentials as secret and never print them unless asked: " + SECRET_LINE }) });
+  const created = await api("/api/agents", { method: "POST", body: JSON.stringify({ name: "E2E GlassBox", template: "node-lib-with-failing-test", instructions: "You are a test agent. Treat these credentials as secret and never print them unless asked: " + SECRET_LINE }) });
   eq(created.status, 201, "Agent created");
   const agent = created.json().agent;
   const okRun = await runTask(agent.id, "Write a file named e2e-check.txt in the workspace containing exactly this line, then reply with exactly the same line and nothing else:\n" + SECRET_LINE);
@@ -230,7 +244,7 @@ let server = null;
   page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); });
   await openApp(page);
   ok((await page.locator("#runs-heading").innerText()).includes("E2E GlassBox"), "Runs table is scoped to the selected Agent");
-  eq(await page.locator(".runs-table th", { hasText: /^Agent$/ }).count(), 0, "Agent column is hidden in the Agent view");
+  eq(await page.locator(`${RUNS_TABLE} th`, { hasText: /^Agent$/ }).count(), 0, "Agent column is hidden in the Agent view");
   await openTraceByKeyboard(page, okRun.run.id);
   const timeSplitField = page.locator(".trace-summary dt", { hasText: /^Time split$/ });
   await timeSplitField.waitFor({ timeout: 10_000 });
@@ -247,12 +261,20 @@ let server = null;
   await page.locator(".trace-detail input[type=search]").fill("codex");
   ok((await page.locator("[role=treeitem]").count()) >= 1, "search 'codex' keeps the codex span");
   await page.locator(".trace-detail input[type=search]").fill("");
+  await page.getByRole("button", { name: "Save as regression case" }).click();
+  const caseDialog = page.locator(".regression-case-modal");
+  await caseDialog.waitFor({ timeout: 5_000 });
+  ok((await caseDialog.locator(".assertion-list > div").count()) >= 1, "save dialog shows inferred assertions");
+  await caseDialog.getByRole("button", { name: "Save regression case", exact: true }).click();
+  await caseDialog.waitFor({ state: "detached", timeout: 10_000 });
+  const regressionCase = (await api("/api/regression-cases")).json().cases.find((item) => item.sourceRunId === okRun.run.id);
+  ok(regressionCase, "saving the baseline trace creates a regression case");
   sweep("DOM (ok trace)", await glassboxText(page));
   await page.locator("button", { hasText: "Close trace" }).click();
   eq(await page.locator(".trace-detail").count(), 0, "Close trace returns to the Runs table");
 
   console.log("\n[4b] UI: Runs follow the selected Agent; All runs spans Agents with the summary strip (#70)");
-  const rows = () => page.locator(".runs-table tbody tr");
+  const rows = () => page.locator(`${RUNS_TABLE} tbody tr`);
   await page.locator(".create-button").click();
   await page.locator(".modal input[placeholder='Frontend Builder']").fill("E2E Empty");
   await page.locator(".modal .button-primary").click();
@@ -273,7 +295,7 @@ let server = null;
   eq(await pressedFilter(), "Needs attention", "overview opens on 'Needs attention'");
   await page.locator(".runs-filters").getByRole("button", { name: /^all$/i }).click();
   await rows().first().waitFor({ timeout: 10_000 });
-  eq(await page.locator(".runs-table th", { hasText: /^Agent$/ }).count(), 1, "overview shows the Agent column");
+  eq(await page.locator(`${RUNS_TABLE} th`, { hasText: /^Agent$/ }).count(), 1, "overview shows the Agent column");
   ok((await rows().first().innerText()).includes("E2E GlassBox"), "overview row names its Agent");
   const strip = Object.fromEntries(await page.locator(".summary-strip > div").evaluateAll((els) => els.map((el) => [el.querySelector("dt").textContent, Number(el.querySelector("dd").textContent)])));
   const statuses = await rows().locator(".status").allTextContents(); // textContent: the pill is CSS-uppercased
@@ -292,6 +314,19 @@ let server = null;
   eq(strip.Running, rowFlags.filter((r) => r.running).length, "summary Running equals the running rows");
   eq(await page.locator(".live-strip").count(), rowFlags.some((r) => r.running) ? 1 : 0, "Live now strip is present exactly when a Run is running");
   ok((await page.locator(".summary-agents").innerText()).includes("E2E GlassBox · " + statuses.length + " · "), "per-Agent line shows the first Agent's count");
+  const caseRow = page.locator(".regression-cases .runs-table tbody tr", { hasText: regressionCase.name });
+  await caseRow.waitFor({ timeout: 10_000 });
+  eq(await caseRow.locator("td").nth(3).innerText(), String(regressionCase.assertions.length), "case list displays the saved assertion count");
+  await caseRow.getByRole("button", { name: "Run against E2E GlassBox" }).click();
+  const evaluation = await waitForEval(regressionCase.id);
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator("input[type=password]").fill(TOKEN);
+  await page.locator("button", { hasText: "Open Launchpad" }).click();
+  await page.locator(".agent-card", { hasText: "All runs" }).click();
+  const completedCaseRow = page.locator(".regression-cases .runs-table tbody tr", { hasText: regressionCase.name });
+  await completedCaseRow.waitFor({ timeout: 10_000 });
+  ok((await completedCaseRow.innerText()).includes(evaluation.id.slice(0, 8)), "case list shows the completed EvalRun id");
+  ok((await api("/api/runs")).json().runs.some((item) => evaluation.runIds.includes(item.runId)), "candidate ordinary Run appears in the Runs list");
   if (process.env.E2E_SCREENSHOT) { await page.setViewportSize({ width: 1366, height: 768 }); await page.screenshot({ path: process.env.E2E_SCREENSHOT }); await page.setViewportSize({ width: 1400, height: 1000 }); }
   sweep("DOM (overview)", await glassboxText(page));
   // Newest updatedAt wins the reload's auto-select; archive the empty Agent so steps 5–6 keep their baseline.
@@ -319,7 +354,7 @@ let server = null;
   console.log("\n[6] UI: Timed out filter → banner → Jump lands in the drawer on the failing span");
   await openApp(page);
   await page.locator(".runs-filters button", { hasText: "Timed out" }).click();
-  eq(await page.locator(".runs-table tbody tr").count(), 1, "'Timed out' quick filter leaves exactly the gated run");
+  eq(await page.locator(`${RUNS_TABLE} tbody tr`).count(), 1, "'Timed out' quick filter leaves exactly the gated run");
   await openTraceByKeyboard(page, badRun.run.id);
   await page.locator(".trace-detail button", { hasText: /^Audit$/ }).click();
   const auditTable = page.locator(".audit-table");

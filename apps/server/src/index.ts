@@ -4,6 +4,8 @@ import { createApp } from "./app.js";
 import { loadConfig, writeCodexConfig } from "./config.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
 import { NdjsonTraceStore } from "./glassbox/store.js";
+import { openSummaryStore } from "./glassbox/postgres-summary.js";
+import { scheduleRollup } from "./glassbox/summary.js";
 import { createRunner } from "./runner-factory.js";
 import { JsonStore } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -37,14 +39,18 @@ const emitter = new ObservationEmitter({
 for (const entry of traceStore.listRuns()) emitter.seedSequence(entry.traceId, entry.lastSequence);
 
 const runner = createRunner(config, emitter);
-const service = new AgentService(config, store, workspaces, runner, emitter);
+// Per-Run summaries (#168): rolled up after each terminal event, off the Run's path; the list route reads them.
+const summaries = await openSummaryStore(config, store);
+const rollup = { traces: traceStore, emitter, summaries, log: glassboxLog };
+const service = new AgentService(config, store, workspaces, runner, emitter, (runId) => void scheduleRollup(rollup, runId));
 await service.initialize();
 
-const app = await createApp(config, service, { emitter, store: traceStore });
+const app = await createApp(config, service, { emitter, store: traceStore, summaries });
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");
   await app.close();
+  await summaries.close?.();
   process.exit(0);
 };
 
