@@ -33,6 +33,7 @@ export interface TraceSummary {
   /** `unknown` = no evidence either way (run cut short before the stream said anything) — never claim `unavailable` from absence. */
   capabilities: { model: Capability; tool: Capability };
   workspaceChanges?: { added: number; modified: number; removed: number; bytesDelta: number; truncated: boolean } | undefined;
+  /** #132 — `text`: observed fact (redacted first 240 chars of the final message, safe_summary only); `reportedFailure`: derived deterministic phrase match, not a judgement. */
   outcome?: { text?: string | undefined; finalMessageBytes: number; reportedFailure: boolean } | undefined;
   firstFailingStep?: string | undefined; failure?: FailureFocus | undefined;
 }

@@ -8,6 +8,9 @@ export const QUICK_FILTERS: QuickFilter[] = ["attention", "all", "failed", "runn
 
 export const FILTER_LABEL: Partial<Record<QuickFilter, string>> = { attention: "Needs attention", timeout: "Timed out" };
 
+/** #132 chip tooltip — the flag is a derived phrase match on the final message, not an evaluator judgement. */
+export const REPORTED_FAILURE_HINT = "Derived: the agent's final message contains a failure phrase (e.g. \"not installed\", \"unable to\"). Not an evaluator judgement.";
+
 /** Tool failures + denials an ok Run worked around (#131); 0 unless the Run ended ok. */
 export function recoveredFailures(run: RunListItem): number {
   return run.status === "ok" ? run.toolFailures + run.denials : 0;

@@ -241,7 +241,7 @@ let server = null;
   page.on("pageerror", (e) => pageErrors.push(e.message));
   page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); });
   await openApp(page);
-  eq(await page.locator(".runs-table th", { hasText: /^Outcome$/ }).count(), 1, "Runs table exposes the Outcome column");
+  eq(await page.locator(`${RUNS_TABLE} th`, { hasText: /^Outcome$/ }).count(), 1, "Runs table exposes the Outcome column");
   ok((await page.locator("#runs-heading").innerText()).includes("E2E GlassBox"), "Runs table is scoped to the selected Agent");
   eq(await page.locator(`${RUNS_TABLE} th`, { hasText: /^Agent$/ }).count(), 0, "Agent column is hidden in the Agent view");
   await openTraceByKeyboard(page, okRun.run.id);
