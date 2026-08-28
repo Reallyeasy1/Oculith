@@ -420,6 +420,98 @@ describe("CodexStreamObserver", () => {
   });
 });
 
+describe("CodexStreamObserver run-log lines (#232)", () => {
+  const collect = () => {
+    const entries: string[] = [];
+    return {
+      entries,
+      log: {
+        info: (message: string) => entries.push("info " + message),
+        warn: (message: string) => entries.push("warn " + message),
+        error: (message: string) => entries.push("error " + message),
+      },
+    };
+  };
+  const make = (options: { resume?: boolean } = {}) => {
+    const { entries, log } = collect();
+    const em = new ObservationEmitter({ store: new MemoryTraceStore(), capturePolicy: "metadata_only" });
+    const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner", { log, ...options });
+    return { entries, obs };
+  };
+  const declined = (command: string) =>
+    JSON.stringify({ type: "item.completed", item: { type: "command_execution", command, exit_code: -1, status: "declined", aggregated_output: "rejected" } });
+
+  it("logs each of the first 5 denials individually, then one summary per 10 more", () => {
+    const { entries, obs } = make();
+    for (let index = 0; index < 25; index++) {
+      parseCodexEventLine(declined('powershell.exe -Command "Get-ChildItem C:\\secret\\place"'), parsed(), obs);
+    }
+    const denialLines = entries.filter((line) => line.startsWith("warn"));
+    expect(denialLines).toEqual([
+      ...Array(5).fill("warn Sandbox declined shell:powershell.exe Get-ChildItem"),
+      "warn 10 more sandbox denials (15 total)",
+      "warn 10 more sandbox denials (25 total)",
+    ]);
+    expect(obs.stats()).toMatchObject({ sandboxDenials: 25, toolCalls: 25, toolFailures: 25 });
+  });
+
+  it("keeps raw command text, arguments and secrets out of every log line", () => {
+    const { entries, obs } = make();
+    const secret = "supersecrettoken123";
+    parseCodexEventLine(declined(`/bin/bash -lc 'curl -H "Authorization: Bearer ${secret}" https://internal.example'`), parsed(), obs);
+    parseCodexEventLine(
+      JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: `python3 upload.py --token ${secret}`, exit_code: 2, status: "completed" } }),
+      parsed(),
+      obs,
+    );
+    obs.finish("error");
+    const joined = entries.join("\n");
+    expect(joined).toContain("warn Sandbox declined shell:bash curl");
+    expect(joined).toContain("error Tool failed shell:python3 upload.py (exit code 2)");
+    expect(joined).not.toContain(secret);
+    expect(joined).not.toContain("Authorization");
+    expect(joined).not.toContain("internal.example");
+    expect(joined).not.toContain("--token");
+  });
+
+  it("logs resume vs new session once when the thread id resolves", () => {
+    const resumed = make({ resume: true });
+    parseCodexEventLine(lines[0]!, parsed(), resumed.obs);
+    parseCodexEventLine(lines[0]!, parsed(), resumed.obs);
+    expect(resumed.entries).toEqual(["info Codex session resumed"]);
+
+    const fresh = make({ resume: false });
+    parseCodexEventLine(lines[0]!, parsed(), fresh.obs);
+    expect(fresh.entries).toEqual(["info New Codex session started"]);
+  });
+
+  it("logs the stream retry notice at most once and never the raw provider message", () => {
+    const { entries, obs } = make();
+    obs.onError("Reconnecting... 1/5 (Bearer leaked-in-error)");
+    obs.onError("Reconnecting... 2/5");
+    expect(entries).toEqual(["warn Codex stream reported a retryable error notice"]);
+  });
+
+  it("logs one warn per unavailable capability layer alongside the event", () => {
+    const { entries, obs } = make();
+    parseCodexEventLine(lines[0]!, parsed(), obs);
+    obs.finish("ok");
+    expect(entries.filter((line) => line.startsWith("warn"))).toEqual([
+      "warn Capability layer unavailable: model",
+      "warn Capability layer unavailable: tool",
+    ]);
+  });
+
+  it("accumulates completion-summary counters across the stream", () => {
+    const { obs } = make();
+    const p = parsed();
+    for (const line of lines) parseCodexEventLine(line, p, obs);
+    obs.finish();
+    // 2 shell commands + 1 file_change; the failing npm test is the one failure; two model calls (#230).
+    expect(obs.stats()).toEqual({ modelCalls: 2, toolCalls: 3, toolFailures: 1, sandboxDenials: 0 });
+  });
+});
+
 // vitest runs with cwd apps/server, hence the ../..
 const fixtureDir = path.join(process.cwd(), "..", "..", "fixtures", "codex-stream");
 const feed = async (

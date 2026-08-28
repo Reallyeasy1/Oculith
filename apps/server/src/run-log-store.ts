@@ -62,6 +62,7 @@ export class RunLogStore {
   child(bindings: Pick<RunLogLine, "runId" | "traceId" | "agentId"> & { component?: string | undefined }) {
     return {
       info: (msg: string) => this.append({ ...bindings, time: new Date().toISOString(), level: "info", msg }),
+      warn: (msg: string) => this.append({ ...bindings, time: new Date().toISOString(), level: "warn", msg }),
       error: (msg: string, err?: string) => this.append({ ...bindings, time: new Date().toISOString(), level: "error", msg, ...(err ? { err } : {}) }),
     };
   }

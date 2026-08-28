@@ -430,6 +430,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
               <select value={logLevel} onChange={(event) => setLogLevel(event.target.value)}>
                 <option value="">all</option>
                 <option value="info">info</option>
+                <option value="warn">warn</option>
                 <option value="error">error</option>
               </select>
             </label>

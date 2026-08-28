@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { RunnerTraceContext } from "../types.js";
+import type { RunnerLogger, RunnerRunStats, RunnerTraceContext } from "../types.js";
 import type { ObservationEmitter } from "./emitter.js";
 import { newId, type EventInput, type EventType } from "./schema.js";
 
@@ -66,6 +66,11 @@ const USAGE_KEYS: Record<string, string> = {
  *    reports { fileCount, added, updated, deleted } only. The platform's disk snapshot (AgentService, adapter
  *    WorkspaceSnapshot) is the honest source for `workspace.changed`; buildTrace prefers it over this report.
  */
+/** After this many individual denial log lines in a Run, further denials are coalesced. */
+const DENIAL_LOG_LIMIT = 5;
+/** One coalesced summary line per this many further denials. */
+const DENIAL_LOG_BATCH = 10;
+
 export class CodexStreamObserver implements CodexStreamSink {
   sessionId: string | undefined;
   private sawAnyEvent = false;
@@ -73,10 +78,12 @@ export class CodexStreamObserver implements CodexStreamSink {
   private sawModel = false;
   private finished = false;
   private lastError: string | undefined;
+  private retryNoticeLogged = false;
   private turnIndex = 0;
   private activeTurn: { spanId: string; turnIndex: number } | undefined;
   private observedCalls = 0;
   private unpairedReasoning = 0;
+  private readonly totals: RunnerRunStats = { modelCalls: 0, toolCalls: 0, toolFailures: 0, sandboxDenials: 0 };
   private readonly activeItems = new Map<string, { spanId: string; kind: string }>();
 
   constructor(
@@ -84,7 +91,15 @@ export class CodexStreamObserver implements CodexStreamSink {
     private readonly trace: RunnerTraceContext,
     private readonly parentSpanId: string,
     private readonly adapter: "CodexRunner" | "ContainerCodexRunner",
+    /** Optional per-Run log sink (#232). Lines carry only the bounded identities computed here —
+     * never raw command text, message content, or chain-of-thought (invariants 1/3/5). */
+    private readonly options: { log?: RunnerLogger | undefined; resume?: boolean | undefined } = {},
   ) {}
+
+  /** Bounded counters observed so far; returned on RunnerResult for the completion-summary line. */
+  stats(): RunnerRunStats {
+    return { ...this.totals };
+  }
 
   private base(type: EventType, name: string, spanId = newId("spn")): Omit<EventInput, "category"> {
     return {
@@ -106,7 +121,10 @@ export class CodexStreamObserver implements CodexStreamSink {
 
   onThreadStarted(threadId: string): void {
     this.sawAnyEvent = true;
+    const first = this.sessionId === undefined;
     this.sessionId = threadId;
+    // The thread id resolving is the moment we know whether Codex resumed or started fresh.
+    if (first) this.options.log?.info(this.options.resume ? "Codex session resumed" : "New Codex session started");
   }
 
   onTurnStarted(): void {
@@ -182,6 +200,22 @@ export class CodexStreamObserver implements CodexStreamSink {
     // error: non-fatal notice (E8), not a failure.
   }
 
+  /** "shell:powershell.exe Get-ChildItem" — the same bounded identity the trace stores, nothing more. */
+  private identityLabel(identity: ReturnType<typeof commandIdentity>): string {
+    return "shell:" + identity.program + ("argument0" in identity ? " " + identity.argument0 : "");
+  }
+
+  private logDenial(identity: ReturnType<typeof commandIdentity>): void {
+    const count = ++this.totals.sandboxDenials;
+    // Coalesce bursts: the first DENIAL_LOG_LIMIT denials get one line each; after that, one summary
+    // line per DENIAL_LOG_BATCH further denials, so a denial storm cannot flood the log sink.
+    if (count <= DENIAL_LOG_LIMIT) {
+      this.options.log?.warn("Sandbox declined " + this.identityLabel(identity));
+    } else if ((count - DENIAL_LOG_LIMIT) % DENIAL_LOG_BATCH === 0) {
+      this.options.log?.warn(DENIAL_LOG_BATCH + " more sandbox denials (" + count + " total)");
+    }
+  }
+
   private commandExecution(item: Record<string, unknown>): void {
     this.sawTool = true;
     const command = str(item.command) ?? "";
@@ -195,6 +229,10 @@ export class CodexStreamObserver implements CodexStreamSink {
     const identity = commandIdentity(command);
     const active = str(item.id) ? this.activeItems.get(str(item.id)!) : undefined;
     if (str(item.id)) this.activeItems.delete(str(item.id)!);
+    this.totals.toolCalls++;
+    if (failed) this.totals.toolFailures++;
+    if (declined) this.logDenial(identity);
+    else if (failed) this.options.log?.error("Tool failed " + this.identityLabel(identity) + " (exit code " + String(exitCode) + ")");
     this.emitter.emit({
       ...this.base(failed ? "tool.call.failed" : "tool.call.completed", "shell:" + identity.program, active?.spanId),
       category: "tool",
@@ -239,6 +277,11 @@ export class CodexStreamObserver implements CodexStreamSink {
     const active = id ? this.activeItems.get(id) : undefined;
     if (id) this.activeItems.delete(id);
     const failed = str(item.status) === "failed" || str(item.status) === "declined";
+    this.totals.toolCalls++;
+    if (failed) {
+      this.totals.toolFailures++;
+      this.options.log?.error("Tool failed " + kind);
+    }
     this.emitter.emit({
       ...this.base(failed ? "tool.call.failed" : "tool.call.completed", kind, active?.spanId),
       category: "tool",
@@ -296,6 +339,9 @@ export class CodexStreamObserver implements CodexStreamSink {
         ...attributes,
       },
     });
+    // Completion-summary counter: a completed turn is at least one model call (the same floor
+    // buildTrace applies when no item evidence arrived). ponytail: an abandoned turn adds nothing.
+    this.totals.modelCalls += this.observedCalls > 0 ? this.observedCalls : 1;
     this.activeTurn = undefined;
     this.observedCalls = 0;
     this.unpairedReasoning = 0;
@@ -305,6 +351,11 @@ export class CodexStreamObserver implements CodexStreamSink {
   onError(message: string): void {
     this.sawAnyEvent = true;
     this.lastError = message;
+    // Metadata-only notice, at most once per Run: the raw provider message stays out of the log.
+    if (!this.retryNoticeLogged) {
+      this.retryNoticeLogged = true;
+      this.options.log?.warn("Codex stream reported a retryable error notice");
+    }
   }
 
   /** Call once when the stream is done, with the run's real outcome. A non-`ok` outcome releases the
@@ -333,6 +384,8 @@ export class CodexStreamObserver implements CodexStreamSink {
         status: "unset",
         attributes: { model: !this.sawModel, tool: !this.sawTool },
       });
+      if (!this.sawModel) this.options.log?.warn("Capability layer unavailable: model");
+      if (!this.sawTool) this.options.log?.warn("Capability layer unavailable: tool");
     }
   }
 }

@@ -125,10 +125,19 @@ export interface UpdateAgentInput {
   workspace?: string | undefined;
 }
 
+/** Bounded per-Run counters observed from the runtime stream; feeds the completion-summary log line (#232). */
+export interface RunnerRunStats {
+  modelCalls: number;
+  toolCalls: number;
+  toolFailures: number;
+  sandboxDenials: number;
+}
+
 export interface RunnerResult {
   output: string;
   threadId: string | null;
   usage: RunUsage | null;
+  stats?: RunnerRunStats | undefined;
 }
 
 export interface RunnerTraceContext {
@@ -153,6 +162,7 @@ export interface RunnerRequest {
 
 export interface RunnerLogger {
   info(message: string): void;
+  warn(message: string): void;
   error(message: string, error?: unknown): void;
 }
 

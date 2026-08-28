@@ -14,6 +14,7 @@ import { ObservationEmitter } from "./glassbox/emitter.js";
 import { MemoryTraceStore, type TraceStore } from "./glassbox/store.js";
 import { JsonEvaluationStore } from "./glassbox/evaluation.js";
 import { JsonRunSummaryStore } from "./glassbox/summary.js";
+import { RunLogStore } from "./run-log-store.js";
 
 class FakeRunner implements AgentRunner {
   async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -346,9 +347,11 @@ async function makeTraced(runner: AgentRunner = new FakeRunner(), store: TraceSt
   });
   const jsonStore = new JsonStore(path.join(root, "data", "db.json"));
   const workspaces = new WorkspaceManager(path.join(root, "workspaces"), config.workspaceTemplatesDirectory);
-  const service = new AgentService(config, jsonStore, workspaces, runner, emitter);
+  const runLogs = new RunLogStore(path.join(root, "data", "logs"), 1_000_000);
+  await runLogs.initialize();
+  const service = new AgentService(config, jsonStore, workspaces, runner, emitter, undefined, runLogs);
   await service.initialize();
-  return { service, store, emitter, config, jsonStore, workspaces };
+  return { service, store, emitter, config, jsonStore, workspaces, runLogs };
 }
 
 const settle = async (service: AgentService, runId: string) => {
@@ -561,6 +564,60 @@ describe("GlassBox control-plane adapter", () => {
     expect(lines.join("\n")).toContain("Runner failed");
     expect(lines.join("\n")).toContain("[REDACTED:ark_key]");
     expect(lines.join("\n")).not.toContain(secret);
+  });
+
+  it("writes a per-Run log story: start, workspace summary, completion summary with runner stats (#232)", async () => {
+    const { service, runLogs } = await makeTraced(new (class extends FakeRunner {
+      override async run(request: RunnerRequest): Promise<RunnerResult> {
+        await writeFile(path.join(request.workspacePath, "artifact.txt"), "secret file contents", "utf8");
+        return {
+          output: "Completed: " + request.prompt,
+          threadId: "fake-thread",
+          usage: { inputTokens: 1234, outputTokens: 56 },
+          stats: { modelCalls: 20, toolCalls: 38, toolFailures: 2, sandboxDenials: 25 },
+        };
+      }
+    })());
+    const agent = await service.createAgent({ name: "logged" });
+    const { run } = await service.sendMessage(agent.id, "please use token=super-secret-prompt");
+    await settle(service, run.id);
+    await runLogs.flush();
+
+    const { lines } = await runLogs.readRun(run.id, { limit: 100 });
+    const messages = lines.map((line) => line.msg);
+    expect(messages).toContain("Run started");
+    expect(messages).toContain("Workspace changed: 1 added, 0 modified, 0 removed");
+    expect(messages.find((message) => message.startsWith("Run completed"))).toMatch(
+      /^Run completed: status=completed duration=\d+s modelCalls=20 toolCalls=38 toolFailures=2 sandboxDenials=25 tokensIn=1234 tokensOut=56$/,
+    );
+    // No raw content on any line: not the prompt, not workspace file contents (invariants 1/5).
+    const joined = JSON.stringify(lines);
+    expect(joined).not.toContain("super-secret-prompt");
+    expect(joined).not.toContain("secret file contents");
+  });
+
+  it("omits runner stats from the completion summary when the runner reported none", async () => {
+    const { service, runLogs } = await makeTraced();
+    const agent = await service.createAgent({ name: "statless" });
+    const { run } = await service.sendMessage(agent.id, "go");
+    await settle(service, run.id);
+    await runLogs.flush();
+    const { lines } = await runLogs.readRun(run.id, { limit: 100 });
+    expect(lines.map((line) => line.msg).find((message) => message.startsWith("Run completed"))).toMatch(
+      /^Run completed: status=completed duration=\d+s tokensIn=12 tokensOut=5$/,
+    );
+  });
+
+  it("logs a cancel with its duration at error level (#232)", async () => {
+    const { service, runLogs } = await makeTraced(new (class extends FakeRunner {
+      override async run(): Promise<RunnerResult> { throw new RunCancelledError(); }
+    })());
+    const agent = await service.createAgent({ name: "cancelled" });
+    const { run } = await service.sendMessage(agent.id, "go");
+    expect((await settle(service, run.id)).status).toBe("cancelled");
+    await runLogs.flush();
+    const { lines } = await runLogs.readRun(run.id, { level: "error", limit: 100 });
+    expect(lines.map((line) => line.msg).find((message) => message.startsWith("Run cancelled"))).toMatch(/^Run cancelled after \d+s$/);
   });
 
   it("observes workspace path changes without storing file contents", async () => {

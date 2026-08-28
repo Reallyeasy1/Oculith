@@ -35,7 +35,7 @@ const HEARTBEAT_INTERVAL_MS = 15_000;
 export const serverHeartbeatPath = (dataDirectory: string) => path.join(dataDirectory, "server-heartbeat.json");
 
 interface AppLogger {
-  child(bindings: Record<string, unknown>): { info(message: string): void; error(error: unknown, message?: string): void };
+  child(bindings: Record<string, unknown>): { info(message: string): void; warn?(message: string): void; error(error: unknown, message?: string): void };
 }
 
 type ExecutionOptions = {
@@ -590,6 +590,8 @@ export class AgentService {
     const logger = bindings ? this.runLogs?.child({ ...bindings, component: "AgentService" }) : undefined;
     const runnerLogger = bindings ? this.runLogs?.child({ ...bindings, component: "AgentRunner" }) : undefined;
     const pino = bindings ? this.appLogger?.child(bindings) : undefined;
+    const startedAtMs = Date.now();
+    const durationSeconds = () => Math.round((Date.now() - startedAtMs) / 1000);
     try {
       pino?.info("Run started");
       await logger?.info("Run started").catch(() => undefined);
@@ -693,6 +695,10 @@ export class AgentService {
                   pino?.info(message);
                   void runnerLogger?.info(message).catch(() => undefined);
                 },
+                warn: (message: string) => {
+                  pino?.warn?.(message);
+                  void runnerLogger?.warn(message).catch(() => undefined);
+                },
                 error: (message: string, error?: unknown) => {
                   // Never hand pino the Error itself: its err serializer writes message/stack verbatim to stdout.
                   const detail = error === undefined ? undefined : redactText(String(error)).text.slice(0, 2_048);
@@ -707,6 +713,9 @@ export class AgentService {
         const workspaceAfter = await snapshotWorkspace(agentAtStart.workspacePath).catch(() => undefined);
         if (workspaceAfter) {
           const changes = diffWorkspace(workspaceBefore, workspaceAfter);
+          const changesLine = `Workspace changed: ${changes.added.length} added, ${changes.modified.length} modified, ${changes.removed.length} removed`;
+          pino?.info(changesLine);
+          await logger?.info(changesLine).catch(() => undefined);
           this.emitter.emit({
             ...ids,
             spanId: newId("spn"),
@@ -728,8 +737,22 @@ export class AgentService {
         }
       }
       const completedAt = now();
-      pino?.info("Run completed");
-      await logger?.info("Run completed").catch(() => undefined);
+      // Completion summary (#232): metadata-only counters the runner observed, no content.
+      const summaryLine = [
+        "Run completed: status=completed duration=" + durationSeconds() + "s",
+        ...(result.stats
+          ? [
+              "modelCalls=" + result.stats.modelCalls,
+              "toolCalls=" + result.stats.toolCalls,
+              "toolFailures=" + result.stats.toolFailures,
+              "sandboxDenials=" + result.stats.sandboxDenials,
+            ]
+          : []),
+        ...(result.usage?.inputTokens !== undefined ? ["tokensIn=" + result.usage.inputTokens] : []),
+        ...(result.usage?.outputTokens !== undefined ? ["tokensOut=" + result.usage.outputTokens] : []),
+      ].join(" ");
+      pino?.info(summaryLine);
+      await logger?.info(summaryLine).catch(() => undefined);
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
@@ -783,10 +806,14 @@ export class AgentService {
       const cancelled = error instanceof RunCancelledError;
       const message = error instanceof Error ? error.message : String(error);
       if (!cancelled) {
-        const logMessage = /timed out/i.test(message) ? "Runner timed out" : "Runner failed";
+        const logMessage = (/timed out/i.test(message) ? "Runner timed out" : "Runner failed") + " after " + durationSeconds() + "s";
         const detail = redactText(message).text.slice(0, 2_048);
         pino?.error({ detail }, logMessage);
         await runnerLogger?.error(logMessage, detail).catch(() => undefined);
+      } else {
+        const logMessage = "Run cancelled after " + durationSeconds() + "s";
+        pino?.info(logMessage);
+        await logger?.error(logMessage).catch(() => undefined);
       }
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
