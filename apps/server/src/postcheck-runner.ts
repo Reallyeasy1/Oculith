@@ -107,7 +107,10 @@ export class PostCheckRunner {
     try {
       const outcome = await new Promise<{ code: number; signal: NodeJS.Signals | null }>((resolve, reject) => {
         child.once("error", reject);
-        child.once("close", (code, signal) => resolve({ code: code ?? 1, signal }));
+        // 'exit', not 'close': a check that daemonizes a grandchild (sleep 600 &) exits immediately but
+        // the orphan holds the stdio pipes open — 'close' would block the Run's completion path on it.
+        // Byte counters are best-effort; a late flush after exit is lost, which is fine for metadata.
+        child.once("exit", (code, signal) => resolve({ code: code ?? 1, signal }));
       });
       const durationMs = Date.now() - started;
       const result: PostCheckResult = {

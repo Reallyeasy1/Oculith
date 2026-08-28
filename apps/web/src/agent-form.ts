@@ -4,6 +4,8 @@ export interface AgentForm {
   instructions: string;
   workspace: string;
   template: string;
+  /** Always sent (even empty): "" tells the server to clear the stored command. */
+  verifyCommand: string;
 }
 
 // Form → API body. "" means "default" for workspace/template, and the server's zod regexes reject "",

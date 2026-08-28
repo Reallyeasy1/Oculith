@@ -24,6 +24,7 @@ const emptyForm = {
     "Help me build and test software in this workspace. Keep changes small and explain the result.",
   workspace: "",
   template: "",
+  verifyCommand: "",
 };
 
 function formatTime(value: string): string {
@@ -257,6 +258,7 @@ export default function App() {
         instructions: selected.instructions,
         workspace: selected.workspaceName ?? selected.workspacePath.split(/[\\/]/).at(-1) ?? "",
         template: selected.workspaceTemplate ?? "",
+        verifyCommand: selected.verifyCommand ?? "",
       });
     }
   }, [selected]);
@@ -760,6 +762,20 @@ export default function App() {
                     maxLength={10_000}
                   />
                 </label>
+                <label>
+                  Verify command
+                  <input
+                    value={form.verifyCommand}
+                    onChange={(event) => setForm({ ...form, verifyCommand: event.target.value })}
+                    placeholder="npm test"
+                    maxLength={500}
+                    aria-describedby="verify-command-help"
+                  />
+                </label>
+                <p className="form-help" id="verify-command-help">
+                  Runs in the workspace after every completed Run; its exit code becomes the Run&apos;s
+                  outcome. Leave empty to keep the derived phrase heuristic.
+                </p>
                 <div className="panel-footer">
                   <code title={selected.workspacePath}>{selected.workspaceName ?? selected.workspacePath}</code>
                   <button className="button button-primary" disabled={busy}>

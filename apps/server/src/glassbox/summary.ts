@@ -19,12 +19,12 @@ export const traceStatusOf = (status: ExecutionStatus): TraceStatus => TRACE_STA
 /**
  * Persisted per-Run rollup: `buildTrace(events).summary` + the outcome fields, written once at Run end so listing
  * and aggregation never re-read NDJSON. `executionStatus` is the process status; `taskOutcome` says whether the
- * task succeeded and is set only by the evaluation plane (never by events) — `unknown` until then.
+ * task succeeded and is set only by the evaluation plane or the Agent's post-run verify command (#253) — never by events; `unknown` until then.
  */
 export interface RunSummary {
   runId: string; traceId: string; agentId: string; configHash?: string | undefined; capturePolicy: CapturePolicy;
   executionStatus: ExecutionStatus; taskOutcome: TaskOutcome;
-  /** `evaluator:<id>@<version>` | `deterministic:<evalRunId>`; absent while `taskOutcome` is `unknown`. */
+  /** `evaluator:<id>@<version>` | `deterministic:<evalRunId>` | `post_check` (#253); absent while `taskOutcome` is `unknown`. */
   taskOutcomeSource?: string | undefined;
   startedAt?: string | undefined; endedAt?: string | undefined; durationMs?: number | undefined; lastEventAt?: string | undefined;
   workspace?: string | undefined; sessionId?: string | undefined;
@@ -130,12 +130,16 @@ export async function rollupRun(deps: RollupDeps, runId: string, entry?: RunInde
   return deps.summaries.upsert(summaryFromView(view));
 }
 
-/** Write path (invariant 3): waits for the terminal event to land, then rolls up; a failure is logged, never raised. */
-export function scheduleRollup(deps: RollupDeps, runId: string): Promise<void> {
-  return deps.emitter.flush().then(() => rollupRun(deps, runId)).then(
-    () => undefined,
-    (error) => { deps.log?.("summary.rollup_failed", { runId, error: String(error).slice(0, 200) }); },
-  );
+/** Write path (invariant 3): waits for the terminal event to land, then rolls up; a failure is logged, never raised.
+ * `outcome` (#253: the Agent's verifyCommand verdict) is stamped after the row exists, like the eval path does. */
+export function scheduleRollup(deps: RollupDeps, runId: string, outcome?: { taskOutcome: TaskOutcome; source: string } | undefined): Promise<void> {
+  return deps.emitter.flush()
+    .then(() => rollupRun(deps, runId))
+    .then((summary) => (outcome && summary ? deps.summaries.setTaskOutcome(runId, outcome.taskOutcome, outcome.source) : undefined))
+    .then(
+      () => undefined,
+      (error) => { deps.log?.("summary.rollup_failed", { runId, error: String(error).slice(0, 200) }); },
+    );
 }
 
 /** Rolls up every finished Run in the trace index whose summary is missing or older than `ROLLUP_VERSION`. Idempotent. */

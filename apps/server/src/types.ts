@@ -12,6 +12,8 @@ export interface Agent {
   workspaceName?: string | undefined;
   workspaceManaged?: boolean | undefined;
   workspaceTemplate?: string | undefined;
+  /** Operator-set shell command run in the workspace after every completed ordinary Run (#253); its exit code sets the Run's taskOutcome. */
+  verifyCommand?: string | undefined;
   codexThreadId: string | null;
   lastError: string | null;
   createdAt: string;
@@ -47,6 +49,8 @@ export interface AgentConfigSnapshot {
   runtimeProvider: "local-process" | "container";
   containerRuntimeImage: string;
   capturePolicy: "metadata_only" | "safe_summary";
+  /** sha256 of the Agent's verifyCommand (hashed like `instructions`); absent when none is set. */
+  verifyCommand?: string | undefined;
 }
 
 export interface AgentRun {
@@ -116,6 +120,7 @@ export interface CreateAgentInput {
   instructions?: string | undefined;
   workspace?: string | undefined;
   template?: string | undefined;
+  verifyCommand?: string | undefined;
 }
 
 export interface UpdateAgentInput {
@@ -123,6 +128,8 @@ export interface UpdateAgentInput {
   description?: string | undefined;
   instructions?: string | undefined;
   workspace?: string | undefined;
+  /** Empty string clears the command. */
+  verifyCommand?: string | undefined;
 }
 
 /** Bounded per-Run counters observed from the runtime stream; feeds the completion-summary log line (#232). */

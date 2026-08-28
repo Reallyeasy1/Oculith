@@ -11,6 +11,8 @@ export interface Agent {
   workspaceName?: string;
   workspaceManaged?: boolean;
   workspaceTemplate?: string;
+  /** Operator-set command run in the workspace after every completed Run (#253); its exit code sets the Run's taskOutcome. */
+  verifyCommand?: string;
   codexThreadId: string | null;
   lastError: string | null;
   createdAt: string;
@@ -68,6 +70,8 @@ export interface AgentConfigSnapshot {
   runtimeProvider: "local-process" | "container";
   containerRuntimeImage: string;
   capturePolicy: CapturePolicy;
+  /** sha256 of the Agent's verifyCommand; absent when none is set. */
+  verifyCommand?: string;
 }
 
 // --- GlassBox query types (mirrors apps/server/src/glassbox/{schema,query}.ts) ---

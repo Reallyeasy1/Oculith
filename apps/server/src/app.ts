@@ -37,6 +37,8 @@ const createAgentBody = z.object({
   instructions: z.string().max(10_000).optional(),
   workspace: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/).optional(),
   template: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/).optional(),
+  // #253: operator-set post-run verification; the service trims it and treats "" as "clear the command".
+  verifyCommand: z.string().max(500).optional(),
 });
 const updateAgentBody = createAgentBody.partial().refine(
   (value) => Object.keys(value).length > 0,
