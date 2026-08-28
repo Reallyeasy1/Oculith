@@ -13,7 +13,7 @@ export class PostgresRunSummaryStore implements RunSummaryStore {
   private readonly pool: pg.Pool;
 
   constructor(connectionString: string) {
-    this.pool = new pg.Pool({ connectionString, max: 4 });
+    this.pool = new pg.Pool({ connectionString, max: 4, connectionTimeoutMillis: 5000 });
   }
 
   /** Applies apps/server/sql/*.sql in name order; every file is idempotent, so this runs on each boot. */
@@ -27,15 +27,18 @@ export class PostgresRunSummaryStore implements RunSummaryStore {
     await this.pool.end();
   }
 
-  async upsert(s: RunSummary): Promise<void> {
-    await this.pool.query(
+  /** On conflict the rollup fields are replaced but `task_outcome` / `taskOutcomeSource` stay as the evaluation plane wrote them. */
+  async upsert(s: RunSummary): Promise<RunSummary> {
+    const { rows } = await this.pool.query<{ doc: RunSummary }>(
       `INSERT INTO runs_summary (run_id, agent_id, config_hash, started_at, execution_status, task_outcome, rollup_version, updated_at, doc)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (run_id) DO UPDATE SET agent_id = EXCLUDED.agent_id, config_hash = EXCLUDED.config_hash, started_at = EXCLUDED.started_at,
-         execution_status = EXCLUDED.execution_status, task_outcome = EXCLUDED.task_outcome, rollup_version = EXCLUDED.rollup_version,
-         updated_at = EXCLUDED.updated_at, doc = EXCLUDED.doc`,
+         execution_status = EXCLUDED.execution_status, rollup_version = EXCLUDED.rollup_version, updated_at = EXCLUDED.updated_at,
+         doc = EXCLUDED.doc || jsonb_strip_nulls(jsonb_build_object('taskOutcome', runs_summary.task_outcome, 'taskOutcomeSource', runs_summary.doc->'taskOutcomeSource'))
+       RETURNING doc`,
       [s.runId, s.agentId, s.configHash ?? null, s.startedAt ?? null, s.executionStatus, s.taskOutcome, s.rollupVersion, s.updatedAt, JSON.stringify(s)],
     );
+    return rows[0]!.doc;
   }
 
   async get(runId: string): Promise<RunSummary | undefined> {
@@ -79,6 +82,7 @@ export async function openSummaryStore(config: { glassboxStore: "json" | "postgr
   if (config.glassboxStore !== "postgres") return new JsonRunSummaryStore(json);
   if (!config.databaseUrl) throw new Error("GLASSBOX_STORE=postgres requires DATABASE_URL");
   const store = new PostgresRunSummaryStore(config.databaseUrl);
-  await store.migrate();
+  try { await store.migrate(); }
+  catch (error) { throw new Error(`Cannot reach DATABASE_URL (GLASSBOX_STORE=postgres): ${error instanceof Error ? error.message : String(error)}`); }
   return store;
 }

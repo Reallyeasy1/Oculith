@@ -50,6 +50,7 @@ const app = await createApp(config, service, { emitter, store: traceStore, summa
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");
   await app.close();
+  await summaries.close?.();
   process.exit(0);
 };
 

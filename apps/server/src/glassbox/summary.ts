@@ -54,6 +54,8 @@ export interface RunSummaryStore {
   /** Newest `startedAt` first. */
   query(query?: RunSummaryQuery): Promise<RunSummary[]>;
   setTaskOutcome(runId: string, outcome: TaskOutcome, source: string): Promise<void>;
+  /** Releases connections; the JSON backend has nothing to release. */
+  close?(): Promise<void>;
 }
 
 /** The single derivation: every field comes from the view so the summary and the trace endpoint can never disagree. */

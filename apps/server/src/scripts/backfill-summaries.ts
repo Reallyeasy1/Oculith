@@ -15,5 +15,7 @@ await store.initialize();
 const traces = new NdjsonTraceStore(config.traceDirectory, log);
 await traces.initialize();
 const emitter = new ObservationEmitter({ store: traces, capturePolicy: config.glassboxCapturePolicy, log });
-const report = await backfillSummaries({ traces, emitter, summaries: await openSummaryStore(config, store), log });
+const summaries = await openSummaryStore(config, store);
+const report = await backfillSummaries({ traces, emitter, summaries, log });
 console.log("[glassbox] backfill", JSON.stringify(report));
+await summaries.close?.();
