@@ -377,7 +377,7 @@ describe("GlassBox control-plane adapter", () => {
     const evalRun = await service.createEvalRun({ caseIds: [regressionCase.id], target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } });
     expect(evalRun).toMatchObject({ templateHashes: { fixture: regressionCase.templateHash } });
     expect(evalRun.templateHashMismatch).toBeUndefined();
-    await new EvalRunner(service, { emitter, store, summaries, evaluations }).execute(evalRun.id);
+    await new EvalRunner(service, { emitter, store, summaries, evaluations }, config).execute(evalRun.id);
     const finished = service.getEvalRun(evalRun.id);
     expect(finished).toMatchObject({ status: "completed", runIds: [expect.any(String)] });
     expect(finished.results[0]).toMatchObject({ caseId: regressionCase.id, runId: finished.runIds[0], results: expect.arrayContaining([expect.objectContaining({ type: "terminal_status", pass: true })]) });
@@ -393,7 +393,7 @@ describe("GlassBox control-plane adapter", () => {
     // A case whose deterministic assertions all pass marks the task passed.
     const passingCase = await service.createRegressionCase({ name: "passing", prompt: "do it", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions: [{ type: "terminal_status", expected: "ok" }] });
     const passingEvalRun = await service.createEvalRun({ caseIds: [passingCase.id], target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } });
-    await new EvalRunner(service, { emitter, store, summaries, evaluations }).execute(passingEvalRun.id);
+    await new EvalRunner(service, { emitter, store, summaries, evaluations }, config).execute(passingEvalRun.id);
     expect(await summaries.get(service.getEvalRun(passingEvalRun.id).runIds[0]!)).toMatchObject({ taskOutcome: "passed", taskOutcomeSource: `deterministic:${passingEvalRun.id}` });
   });
 
@@ -440,7 +440,7 @@ describe("GlassBox control-plane adapter", () => {
     const first = await service.createRegressionCase({ name: "first", prompt: "one", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions });
     const second = await service.createRegressionCase({ name: "second", prompt: "two", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions });
     const evalRun = await service.createEvalRun({ caseIds: [first.id, second.id], target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } });
-    await new EvalRunner(service, { emitter, store }).execute(evalRun.id);
+    await new EvalRunner(service, { emitter, store }, config).execute(evalRun.id);
     const finished = service.getEvalRun(evalRun.id);
     expect(finished.status).toBe("failed");
     expect(finished.completedAt).toEqual(expect.any(String));
@@ -474,7 +474,7 @@ describe("GlassBox control-plane adapter", () => {
     await settle(service, normal.id);
     expect(service.getAgent(agent.id).codexThreadId).toBe("fake-thread");
 
-    const { run } = await service.runIsolated({
+    const { run, workspacePath, cleanup } = await service.runIsolated({
       agentId: agent.id,
       workspaceTemplate: "fixture",
       prompt: "evaluate the case",
@@ -491,6 +491,10 @@ describe("GlassBox control-plane adapter", () => {
     await expect(readFile(path.join(agent.workspacePath, "starting.txt"), "utf8")).rejects.toThrow();
     expect(service.getAgent(agent.id).codexThreadId).toBe("fake-thread");
     expect(service.getMessages(agent.id)).toHaveLength(2); // the isolated prompt/output never enter normal chat history
+    // #282: the workspace outlives the Run (post_check needs it); the returned cleanup removes it.
+    expect(workspacePath).toBe(isolatedRequest.workspacePath);
+    await expect(stat(workspacePath).then(() => true)).resolves.toBe(true);
+    await cleanup();
     await expect.poll(async () => stat(isolatedRequest.workspacePath).then(() => true, () => false)).toBe(false);
 
     const created = (await store.readRun(run.id)).find((event) => event.type === "run.created");

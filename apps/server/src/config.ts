@@ -69,6 +69,12 @@ const envSchema = z.object({
   GLASSBOX_PRICE_PER_MTOK_OUTPUT: z.preprocess((value) => value === "" ? undefined : value, z.coerce.number().finite().nonnegative().optional()),
   /** Keep completed isolated evaluation workspaces for post-check/debugging; the default cleans them up. */
   KEEP_EVAL_WORKSPACES: z.enum(["0", "1"]).default("0"),
+  /**
+   * Comma-separated commands post_check assertions may execute in eval workspaces (#282). Same trust
+   * level as Agent.verifyCommand (#253): operator-set config, never case-authored text — any command
+   * not on this list fails the assertion closed.
+   */
+  GLASSBOX_POSTCHECK_ALLOWLIST: z.string().default("npm test"),
 });
 
 export type AppConfig = ReturnType<typeof loadConfig>;
@@ -130,6 +136,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     glassboxPricePerMtokCachedInput: env.GLASSBOX_PRICE_PER_MTOK_CACHED_INPUT ?? env.GLASSBOX_PRICE_PER_MTOK_INPUT,
     glassboxPricePerMtokOutput: env.GLASSBOX_PRICE_PER_MTOK_OUTPUT,
     keepEvalWorkspaces: env.KEEP_EVAL_WORKSPACES === "1",
+    postCheckAllowlist: env.GLASSBOX_POSTCHECK_ALLOWLIST.split(",").map((item) => item.trim()).filter(Boolean),
   };
 }
 

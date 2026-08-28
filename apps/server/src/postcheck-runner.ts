@@ -23,6 +23,8 @@ export interface PostCheckResult {
   stdoutBytes: number;
   stderrBytes: number;
   stderrTail: string;
+  /** Span the runtime.postcheck.* events were emitted under (set only when a trace context was given, #282). */
+  spanId?: string | undefined;
 }
 
 export function postCheckContainerName(): string {
@@ -67,10 +69,11 @@ export class PostCheckRunner {
     const args = container
       ? buildPostCheckContainerArgs(request, this.config, name)
       : ["-lc", request.command];
+    const spanId = newId("spn");
     const span = request.trace
       ? this.emitter.startSpan({
           ...request.trace,
-          spanId: newId("spn"),
+          spanId,
           type: "runtime.postcheck.started",
           category: "runtime",
           name: "post-check",
@@ -120,6 +123,7 @@ export class PostCheckRunner {
         stdoutBytes,
         stderrBytes,
         stderrTail,
+        ...(request.trace ? { spanId } : {}),
       };
       const status = timedOut ? "timeout" : outcome.code === 0 ? "ok" : "error";
       const safeTail = redactText(stderrTail).text.slice(-512);
