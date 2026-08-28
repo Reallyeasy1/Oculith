@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentRun, Message, RunListItem, SystemInfo, TraceView } from "./types";
+import { agentPayload } from "./agent-form";
+import type { Agent, AgentRun, EvalRun, Message, RegressionCase, RunListItem, SystemInfo, TraceView, WorkspaceTemplate } from "./types";
 import RunsView from "./RunsView";
 import TraceDetail from "./TraceDetail";
 import Overview from "./Overview";
+import CompareView from "./CompareView";
+import { refreshIntervalMs } from "./trace-view-model";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -16,6 +19,8 @@ const emptyForm = {
   description: "",
   instructions:
     "Help me build and test software in this workspace. Keep changes small and explain the result.",
+  workspace: "",
+  template: "",
 };
 
 function formatTime(value: string): string {
@@ -49,8 +54,13 @@ export default function App() {
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
   const [runs, setRuns] = useState<RunListItem[]>([]);
+  const [workspaces, setWorkspaces] = useState<{ name: string; path: string }[]>([]);
+  const [templates, setTemplates] = useState<WorkspaceTemplate[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [trace, setTrace] = useState<TraceView | null>(null);
+  const [focusEventId, setFocusEventId] = useState<string | null>(null);
+  const [regressionCases, setRegressionCases] = useState<RegressionCase[]>([]);
+  const [evalRuns, setEvalRuns] = useState<EvalRun[]>([]);
   // "agent" = the selected Agent's Runs under its Playground; "overview" = All runs across Agents (#70).
   const [view, setView] = useState<"overview" | "agent">("agent");
   // Opening a trace collapses the Playground to a bar so the trace header sits in the first viewport;
@@ -64,11 +74,14 @@ export default function App() {
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
   const messageEnd = useRef<HTMLDivElement>(null);
+  // undefined means this Agent's history has not loaded yet; null is a loaded, empty history.
+  const lastMessageIdRef = useRef<string | null | undefined>(undefined);
   const selectedIdRef = useRef<string | null>(null);
   const selectedRunIdRef = useRef<string | null>(null);
   const viewRef = useRef(view);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
+  const pollingEvalRunIds = useRef(new Set<string>());
   selectedIdRef.current = selectedId;
   selectedRunIdRef.current = selectedRunId;
   viewRef.current = view;
@@ -88,9 +101,10 @@ export default function App() {
     );
   }, []);
 
-  const refreshMessages = useCallback(async (agentId: string) => {
+  const refreshMessages = useCallback(async (agentId: string, establishBaseline = false) => {
     const result = await api.messages(agentId);
     if (mountedRef.current && selectedIdRef.current === agentId) {
+      if (establishBaseline) lastMessageIdRef.current = result.messages.at(-1)?.id ?? null;
       setMessages(result.messages);
     }
   }, []);
@@ -109,6 +123,16 @@ export default function App() {
     } catch {
       // ponytail: runs table goes stale, baseline keeps working (invariant 12)
     }
+  }, []);
+
+  const refreshRegressionCases = useCallback(async () => {
+    const result = await api.listRegressionCases();
+    if (mountedRef.current) setRegressionCases(result.cases);
+  }, []);
+
+  const refreshEvalRuns = useCallback(async () => {
+    const result = await api.listEvalRuns();
+    if (mountedRef.current) setEvalRuns(result.evalRuns);
   }, []);
 
   useEffect(() => { setRuns([]); void refreshRuns(); }, [refreshRuns, view, selectedId]); // clear the previous scope so the strip/table never show another scope for a round trip
@@ -130,8 +154,8 @@ export default function App() {
   }, [refreshTrace, selectedRunId]);
 
   const bootstrap = useCallback(async () => {
-    await Promise.all([refreshAgents(), refreshRuns(), api.system().then(setSystem)]);
-  }, [refreshAgents, refreshRuns]);
+    await Promise.all([refreshAgents(), refreshRuns(), refreshRegressionCases(), refreshEvalRuns(), api.system().then(setSystem), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces)), api.listWorkspaceTemplates().then((result) => setTemplates(result.templates))]);
+  }, [refreshAgents, refreshEvalRuns, refreshRegressionCases, refreshRuns]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -151,11 +175,12 @@ export default function App() {
   useEffect(() => {
     setActiveRun(null);
     setShowSettings(false);
+    lastMessageIdRef.current = undefined;
     if (!selectedId) {
       setMessages([]);
       return;
     }
-    void Promise.all([refreshMessages(selectedId), api.runs(selectedId)])
+    void Promise.all([refreshMessages(selectedId, true), api.runs(selectedId)])
       .then(([, result]) => {
         if (selectedIdRef.current !== selectedId) return;
         const latest = result.runs[0] ?? null;
@@ -177,21 +202,28 @@ export default function App() {
         name: selected.name,
         description: selected.description,
         instructions: selected.instructions,
+        workspace: selected.workspaceName ?? selected.workspacePath.split(/[\\/]/).at(-1) ?? "",
+        template: selected.workspaceTemplate ?? "",
       });
     }
   }, [selected]);
 
   useEffect(() => {
-    messageEnd.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, activeRun]);
+    const lastMessageId = messages.at(-1)?.id ?? null;
+    const previous = lastMessageIdRef.current;
+    lastMessageIdRef.current = lastMessageId;
+    if (previous !== undefined && lastMessageId !== null && lastMessageId !== previous) {
+      messageEnd.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [messages]);
 
   const createAgent = async (event: React.FormEvent) => {
     event.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      const { agent } = await api.createAgent(form);
-      await refreshAgents();
+      const { agent } = await api.createAgent(agentPayload(form, { template: true }));
+      await Promise.all([refreshAgents(), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces))]);
       setSelectedId(agent.id);
       setView("agent");
       setShowCreate(false);
@@ -206,11 +238,13 @@ export default function App() {
   const saveAgent = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!selected) return;
+    const currentWorkspace = selected.workspaceName ?? selected.workspacePath.split(/[\\/]/).at(-1) ?? "";
+    if (form.workspace !== currentWorkspace && !window.confirm("Switch workspace? This clears the Agent's existing Codex conversation thread.")) return;
     setBusy(true);
     setError(null);
     try {
-      await api.updateAgent(selected.id, form);
-      await refreshAgents();
+      await api.updateAgent(selected.id, agentPayload(form, { template: false }));
+      await Promise.all([refreshAgents(), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces))]);
       setShowSettings(false);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -272,6 +306,80 @@ export default function App() {
       pollingRunIds.current.delete(runId);
     }
   };
+
+  const pollEvalRun = async (evalRunId: string) => {
+    if (pollingEvalRunIds.current.has(evalRunId)) return;
+    pollingEvalRunIds.current.add(evalRunId);
+    try {
+      while (mountedRef.current) {
+        await new Promise((resolve) => window.setTimeout(resolve, 900));
+        if (!mountedRef.current) return;
+        const { evalRun } = await api.evalRun(evalRunId);
+        if (!mountedRef.current) return;
+        setEvalRuns((current) => [evalRun, ...current.filter((item) => item.id !== evalRun.id)]);
+        await refreshRuns();
+        if (evalRun.status !== "running") {
+          await Promise.all([refreshEvalRuns(), refreshRuns()]);
+          return;
+        }
+      }
+    } finally {
+      pollingEvalRunIds.current.delete(evalRunId);
+    }
+  };
+
+  const startEvaluation = async (regressionCase: RegressionCase) => {
+    if (!selected) return;
+    setError(null);
+    try {
+      const { evalRun } = await api.startEvalRun({ agentId: selected.id, caseIds: [regressionCase.id] });
+      setEvalRuns((current) => [evalRun, ...current.filter((item) => item.id !== evalRun.id)]);
+      await refreshRuns();
+      void pollEvalRun(evalRun.id).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
+  const deleteRegressionCase = async (regressionCase: RegressionCase) => {
+    if (!window.confirm("Delete regression case “" + regressionCase.name + "”?")) return;
+    setError(null);
+    try {
+      await api.deleteRegressionCase(regressionCase.id);
+      await Promise.all([refreshRegressionCases(), refreshEvalRuns()]);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
+  // The one dashboard refresh timer (#98). It covers both All runs and the selected Agent so Runs
+  // started outside this browser appear without a reload. Trace and poll failures stay soft.
+  useEffect(() => {
+    if (view === "agent" && !selectedId) return;
+    const refreshVisibleRuns = async () => {
+      await refreshRuns();
+      const openRunId = selectedRunIdRef.current;
+      if (openRunId) await refreshTrace(openRunId).catch(() => undefined);
+      // the overview's case rows show the latest evaluation; keep them live after a reload mid-evaluation
+      if (viewRef.current === "overview") await refreshEvalRuns().catch(() => undefined);
+      const agentId = selectedIdRef.current;
+      if (viewRef.current !== "agent" || !agentId) return;
+      try {
+        const result = await api.runs(agentId);
+        if (selectedIdRef.current !== agentId) return;
+        const latest = result.runs[0] ?? null;
+        setActiveRun(latest);
+        if (latest && ["queued", "running"].includes(latest.status)) {
+          void pollRun(latest.id, agentId).catch(() => undefined);
+        }
+      } catch {
+        // ponytail: keep the last good Agent/run state when a refresh tick fails (invariant 12)
+      }
+    };
+    const intervalMs = refreshIntervalMs(trace?.summary.status);
+    const id = window.setInterval(() => void refreshVisibleRuns(), intervalMs);
+    return () => window.clearInterval(id);
+  }, [selectedId, trace?.summary.status, view]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sendMessage = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -437,13 +545,15 @@ export default function App() {
       </aside>
 
       <main className="main">
-        {!system?.modelConfigured || !system?.codexAvailable ? (
+        {system === null ? (
+          <p className="runtime-connecting" role="status">Connecting to runtime…</p>
+        ) : !system.modelConfigured || !system.codexAvailable ? (
           <div className="config-banner">
             <span>!</span>
             <div>
               <strong>Runtime configuration needed</strong>
               <p>
-                {!system?.modelConfigured
+                {!system.modelConfigured
                   ? "Set MODEL_PROVIDER and its credentials in .env (ARK_API_KEY + ARK_MODEL, or OPENAI_API_KEY) before using the Playground."
                   : system.runtimeProvider === "container"
                     ? "The local container engine or Agent Runtime image is unavailable. Rerun npm run poc."
@@ -461,7 +571,7 @@ export default function App() {
         )}
 
         {view === "overview" ? (
-          <Overview runs={runs} onRefresh={refreshRuns} />
+          <><Overview runs={runs} cases={regressionCases} evalRuns={evalRuns} selectedAgent={selected} onRunCase={startEvaluation} onDeleteCase={deleteRegressionCase} /><CompareView evalRuns={evalRuns} onOpenEvidence={(runId, eventId) => { setFocusEventId(eventId ?? null); setSelectedRunId(runId); }} /></>
         ) : selected ? playgroundCollapsed ? (
           <div className="playground-bar">
             <div className="header-title-row">
@@ -486,6 +596,11 @@ export default function App() {
                   <StatusPill status={selected.status} />
                 </div>
                 <p>{selected.description || "A Codex coding Agent in an isolated workspace."}</p>
+                <p>
+                  Workspace <strong>{selected.workspaceName ?? selected.workspacePath.split(/[\\/]/).at(-1)}</strong>{" "}
+                  <code>{selected.workspacePath}</code>{" "}
+                  <button type="button" className="button button-ghost" onClick={() => void navigator.clipboard.writeText(selected.workspacePath)}>Copy path</button>
+                </p>
               </div>
               <div className="header-actions">
                 <button
@@ -543,6 +658,19 @@ export default function App() {
                   </label>
                 </div>
                 <label>
+                  Workspace
+                  <input
+                    list="workspace-names-settings"
+                    value={form.workspace}
+                    onChange={(event) => setForm({ ...form, workspace: event.target.value })}
+                    pattern="[a-z0-9][a-z0-9._-]{0,63}"
+                    required
+                  />
+                </label>
+                <datalist id="workspace-names-settings">
+                  {workspaces.map((workspace) => <option key={workspace.name} value={workspace.name}>{workspace.path}</option>)}
+                </datalist>
+                <label>
                   System instructions
                   <textarea
                     value={form.instructions}
@@ -554,7 +682,7 @@ export default function App() {
                   />
                 </label>
                 <div className="panel-footer">
-                  <code>{selected.workspacePath}</code>
+                  <code title={selected.workspacePath}>{selected.workspaceName ?? selected.workspacePath}</code>
                   <button className="button button-primary" disabled={busy}>
                     {busy ? <Spinner /> : "Save changes"}
                   </button>
@@ -692,6 +820,10 @@ export default function App() {
             runId={selectedRunId}
             run={runs.find((run) => run.runId === selectedRunId)}
             view={trace}
+            templateBacked={Boolean(agents.find((agent) => agent.id === runs.find((run) => run.runId === selectedRunId)?.agentId)?.workspaceTemplate)}
+            focusEventId={focusEventId}
+            onFocusHandled={() => setFocusEventId(null)}
+            onCaseSaved={refreshRegressionCases}
             onClose={() => setSelectedRunId(null)}
           />
         )}
@@ -743,6 +875,26 @@ export default function App() {
                 }
                 maxLength={500}
               />
+            </label>
+            <label>
+              Workspace
+              <input
+                list="workspace-names-create"
+                placeholder="Leave blank for a managed workspace"
+                value={form.workspace}
+                onChange={(event) => setForm({ ...form, workspace: event.target.value })}
+                pattern="[a-z0-9][a-z0-9._-]{0,63}"
+              />
+            </label>
+            <datalist id="workspace-names-create">
+              {workspaces.map((workspace) => <option key={workspace.name} value={workspace.name}>{workspace.path}</option>)}
+            </datalist>
+            <label>
+              Start from
+              <select value={form.template} onChange={(event) => setForm({ ...form, template: event.target.value })}>
+                <option value="">Empty workspace</option>
+                {templates.filter((template) => template.name !== "empty" && !("error" in template)).map((template) => <option key={template.name} value={template.name}>{template.name}</option>)}
+              </select>
             </label>
             <label>
               Instructions
