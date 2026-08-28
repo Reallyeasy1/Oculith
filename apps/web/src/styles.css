@@ -1284,7 +1284,7 @@ textarea:focus {
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
 }
 
 .tool-call-summary .badge {
