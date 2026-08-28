@@ -75,7 +75,7 @@ Legend — **Unit**: vitest in `apps/server` / `apps/web`; **E2E**: step of `scr
 9. `[7]` privacy sweep: seeded fakes absent from files, API, export, log, DOM.
 10. `[8]` performance: append p95 < 200 ms, query p95 < 500 ms.
 
-Last green run: 123 checks on feat/88 `b77941b` (28 Aug, the branch that became `e7928cb`); the lane's Runs-table selectors are scoped to the Runs section since the overview also renders regression-case and comparison tables as `.runs-table`. Known lane issue: driver processes can linger after exit (#148); stale processes on the controller machine caused the only "flaky" toolchain runs seen so far.
+Last green run: 123 checks on `main` `ce0c186` (28 Aug, third attempt: the first two failed on the auth-gate click and on the 3 s timeout fixture firing after ~16 s under load, both environmental); the lane's Runs-table selectors are scoped to the Runs section since the overview also renders regression-case and comparison tables as `.runs-table`. Known lane issue: driver processes can linger after exit (#148); stale processes on the controller machine caused the only "flaky" toolchain runs seen so far.
 
 ## 4. Not yet tested (proposed round 6 — edge and failure paths)
 
