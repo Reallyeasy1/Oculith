@@ -146,7 +146,23 @@ export function formatUsage(usage: RunListItem["usage"]): string {
 
 export function formatCount(value: number | undefined): string {
   if (value === undefined) return "—";
+  if (value >= 1_000_000) return (value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1).replace(/\.0$/, "") + "M";
   return value >= 1000 ? (value / 1000).toFixed(value >= 10_000 ? 0 : 1).replace(/\.0$/, "") + "k" : String(value);
+}
+
+// #257 — cumulative input tokens in one Codex session past which the badge turns advisory.
+// ponytail: module const, promote to config.ts + .env.example when someone actually needs to tune it.
+export const SESSION_INPUT_TOKENS_ADVISORY_THRESHOLD = 1_000_000;
+
+export const LONG_SESSION_HINT = "Long session — consider New session to reset context";
+
+export interface SessionHealth { turns: number; inputTokens: number; advisory: boolean }
+
+/** #257 — depth + cumulative input tokens of the Agent's current session, from Runs the view already polls. Advisory only: no auto-reset. */
+export function sessionHealth(runs: RunListItem[], threadId: string | null): SessionHealth {
+  const session = threadId === null ? [] : runs.filter((run) => run.sessionId === threadId);
+  const inputTokens = session.reduce((sum, run) => sum + (run.usage?.inputTokens ?? 0), 0);
+  return { turns: session.length, inputTokens, advisory: inputTokens >= SESSION_INPUT_TOKENS_ADVISORY_THRESHOLD };
 }
 
 export interface RunOutlier { durationMultiple?: number; inputTokensMultiple?: number }

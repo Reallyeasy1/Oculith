@@ -636,6 +636,16 @@ textarea:focus {
   gap: 6px;
 }
 
+/* #257 session-health line: muted like the rest of the chip, amber past the advisory threshold. */
+.session-health {
+  border-left: 1px solid #e0ded6;
+  padding-left: 6px;
+}
+
+.session-health-warn {
+  color: #8a6d1f;
+}
+
 .pulse {
   width: 6px;
   height: 6px;

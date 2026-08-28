@@ -95,6 +95,8 @@ export interface RunListItem {
   agentId: string;
   agentName: string;
   workspace?: string;
+  /** Codex thread the Run ran in — groups Runs into sessions (#257). */
+  sessionId?: string;
   status: TraceStatus;
   startedAt?: string;
   durationMs?: number;
