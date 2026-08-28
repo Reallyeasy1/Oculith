@@ -6,6 +6,7 @@ import {
   STATUS_ICON,
   formatClock,
   formatDuration,
+  formatRunDuration,
   formatUsage,
   liveRuns,
   matchesFilter,
@@ -128,7 +129,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 {showAgent && <td>{run.agentName || run.agentId}</td>}
                 <td>{run.workspace ?? "—"}</td>
                 <td>{formatClock(run.startedAt)}</td>
-                <td>{formatDuration(run.durationMs)}{run.endedReason === "server_restart" ? " · interrupted" : ""}</td>
+                <td>{formatRunDuration(run.durationMs, run.endedReason, run.interruptedAfterMs)}</td>
                 <td>{run.firstFailingStep ?? "—"}</td>
                 <td>{run.eventCount}</td>
                 <td title={run.configSnapshot ? JSON.stringify(run.configSnapshot) : undefined}>

@@ -3,7 +3,7 @@
 // (vitest is hoisted from the server workspace — no new dependency.)
 import { describe, expect, it } from "vitest";
 import type { Span, TraceView } from "./types";
-import { EMPTY_FILTER, barGeometry, capabilityCopy, defaultExpanded, matchesSpan, refreshIntervalMs, spanStatusLabel, timelineTicks, visibleRows } from "./trace-view-model";
+import { EMPTY_FILTER, barGeometry, capabilityCopy, defaultExpanded, interruptedSpanDurationMs, matchesSpan, refreshIntervalMs, spanStatusLabel, timelineTicks, visibleRows } from "./trace-view-model";
 
 const t0 = "2026-08-26T10:00:00.000Z";
 const at = (ms: number) => new Date(Date.parse(t0) + ms).toISOString();
@@ -93,6 +93,12 @@ describe("trace-view-model", () => {
     expect(spanStatusLabel({ status: "running", incomplete: true }, "server_restart")).toBe("interrupted");
     expect(spanStatusLabel({ status: "running", incomplete: true })).toBe("running");
     expect(spanStatusLabel({ status: "cancelled", incomplete: false }, "server_restart")).toBe("cancelled");
+  });
+
+  it("uses the restart marker as the honest lower bound for an incomplete span", () => {
+    const interrupted = span("open", { startedAt: at(8_000), incomplete: true });
+    expect(interruptedSpanDurationMs(interrupted, { ...view.summary, endedReason: "server_restart", endedAt: at(61_000), interruptedAfterMs: 61_000 })).toBe(53_000);
+    expect(interruptedSpanDurationMs({ ...interrupted, incomplete: false }, view.summary)).toBeUndefined();
   });
 
   it("computes readable ticks including the exact Run duration", () => {

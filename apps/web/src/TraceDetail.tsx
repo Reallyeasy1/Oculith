@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type { Assertion, AuditRow, ObservationEvent, RunListItem, Span, TraceView } from "./types";
-import { STATUS_ICON, formatClock, formatDuration, formatUsage } from "./runs-view-model";
+import { STATUS_ICON, formatClock, formatDuration, formatRunDuration, formatUsage } from "./runs-view-model";
 import {
   CATEGORIES,
   DRAWER_EVENT_CAP,
@@ -12,6 +12,7 @@ import {
   defaultExpanded,
   formatAttribute,
   indexSpans,
+  interruptedSpanDurationMs,
   isFilterActive,
   spanStatusLabel,
   timelineTicks,
@@ -228,7 +229,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
         <Field label="Runtime / model" className="trace-runtime"><span title={run ? run.runtime + " · " + run.model : undefined}>{run ? run.runtime + " · " + run.model : "—"}</span></Field>
         <Field label="Session">{summary.sessionId ?? <span className="trace-muted">not observed</span>}</Field>
         <Field label="Start">{formatClock(summary.startedAt)}</Field>
-        <Field label="Duration">{formatDuration(summary.durationMs)}{summary.endedReason === "server_restart" ? " observed · interrupted by restart" : ""}</Field>
+        <Field label="Duration">{formatRunDuration(summary.durationMs, summary.endedReason, summary.interruptedAfterMs)}</Field>
         <Field label="Events">{summary.eventCount} · {summary.spanCount} spans</Field>
         <Field label="Usage">{formatUsage(summary.usage)}</Field>
         <Field label="Metrics">
@@ -482,6 +483,7 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
   const attempt = events[0]?.attempt;
   const shown = events.slice(0, DRAWER_EVENT_CAP);
   const workspaceChange = view.events.find((event) => event.type === "workspace.changed" && event.parentSpanId === span.spanId);
+  const interruptedDuration = interruptedSpanDurationMs(span, view.summary);
   const identity = [span.attributes.program, span.attributes.argument0]
     .filter((value): value is string => typeof value === "string" && value.length > 0)
     .join(" ");
@@ -506,8 +508,8 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
         <Field label="Parent">{parentName ?? span.parentSpanId ?? "— (root)"}</Field>
         <Field label="Source">{span.source.component}{span.source.adapter ? " / " + span.source.adapter : ""} <span className="badge">{span.source.observed ? "observed" : "unavailable"}</span></Field>
         <Field label="Started">{span.startedAt}</Field>
-        <Field label="Ended">{span.endedAt ?? "—"}</Field>
-        <Field label="Duration">{span.durationMs === 0 && !span.incomplete ? "instant" : formatDuration(span.durationMs)}</Field>
+        <Field label="Ended">{interruptedDuration !== undefined ? `never closed — server restarted at ${formatClock(view.summary.endedAt)}` : span.endedAt ?? "—"}</Field>
+        <Field label="Duration">{interruptedDuration !== undefined ? `≥ ${formatDuration(interruptedDuration)}` : span.durationMs === 0 && !span.incomplete ? "instant" : formatDuration(span.durationMs)}</Field>
         <Field label="Attempt">{attempt ?? "—"}</Field>
         <Field label="Sequence">{span.sequence}</Field>
       </dl>

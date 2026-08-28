@@ -90,6 +90,11 @@ export function formatDuration(ms: number | undefined): string {
   return minutes + "m " + String(seconds).padStart(2, "0") + "s";
 }
 
+export function formatRunDuration(durationMs: number | undefined, endedReason?: "server_restart", interruptedAfterMs?: number): string {
+  if (endedReason !== "server_restart") return formatDuration(durationMs);
+  return `≥ ${formatDuration(interruptedAfterMs)} · interrupted (last evidence +${formatDuration(durationMs)})`;
+}
+
 export function formatUsage(usage: RunListItem["usage"]): string {
   if (!usage || (usage.inputTokens === undefined && usage.outputTokens === undefined)) return "—";
   const compact = (value: number) => value >= 1000 ? (value / 1000).toFixed(value >= 10_000 ? 0 : 1).replace(/\.0$/, "") + "k" : String(value);

@@ -181,19 +181,21 @@ describe("buildTrace", () => {
     const events = [root(), svcStart(),
       ev({ type: "runtime.container.started", category: "runtime", spanId: "ct", parentSpanId: "svc", phase: "start", status: "running", name: "docker run" }),
       ev({ type: "runtime.codex.started", category: "runtime", spanId: "rt", parentSpanId: "ct", phase: "start", status: "running", name: "codex exec", source: { component: "AgentRunner", observed: true } }),
-      ev({ type: "run.cancelled", category: "control", spanId: "rc", parentSpanId: "svc", status: "cancelled", timestamp: t(60_000), source: { component: "AgentService", observed: true }, attributes: { reason: "server_restart" } })];
+      ev({ type: "run.cancelled", category: "control", spanId: "rc", parentSpanId: "svc", status: "cancelled", timestamp: t(60_000), source: { component: "AgentService", observed: true }, attributes: { reason: "server_restart", lastSeenAt: t(45_000) } })];
     const view = buildTrace(events, { capturePolicy: "metadata_only" });
     expect(view.summary.status).toBe("cancelled");
     expect(view.summary.endedReason).toBe("server_restart");
     expect(view.summary.endedAt).toBe(t(60_000));
     expect(view.summary.durationMs).toBe(30); // codex exec start (t40) - root (t10), not the restart-cancel at t60000
+    expect(view.summary.interruptedAfterMs).toBe(44_990); // last heartbeat (t45000) - root (t10): the boot at t60000 is not evidence the Run was alive
+    expect(buildTrace(events.map((e) => (e.type === "run.cancelled" ? { ...e, attributes: { reason: "server_restart" } } : e)), { capturePolicy: "metadata_only" }).summary.interruptedAfterMs).toBe(30); // no heartbeat: falls back to last evidence
     expect(view.summary.failure?.kind).toBe("cancelled");
     expect(view.summary.failure?.spanId).toBe("rt");
     expect(view.summary.failure?.eventId).toBe("evt_4");
     expect(view.summary.failure?.path).toEqual(["root", "svc", "ct", "rt"]);
     expect(view.summary.failure?.component).toBe("AgentRunner");
     expect(view.summary.firstFailingStep).toBe("codex exec");
-    expect(view.summary.failure?.diagnosis).toBe("Run interrupted by a server restart after 0.0 s of observed activity; the runtime span codex exec never closed.");
+    expect(view.summary.failure?.diagnosis).toBe("Run interrupted by a server restart after 45.0 s; last trace evidence was 30 ms after the Run started; the runtime span codex exec never closed.");
   });
   it("user cancel (no reason): still focuses the cancelled codex exec span; no endedReason; full duration", () => {
     seq = 0;

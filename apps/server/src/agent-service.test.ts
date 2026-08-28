@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentService, configHash, configSnapshot } from "./agent-service.js";
+import { AgentService, configHash, configSnapshot, serverHeartbeatPath } from "./agent-service.js";
 import { EvalRunner } from "./eval/runner.js";
 import { RunCancelledError } from "./errors.js";
 import { loadConfig } from "./config.js";
@@ -490,6 +490,8 @@ describe("GlassBox control-plane adapter", () => {
     const { run } = await service.sendMessage(agent.id, "x");
     await runnerReached;
     await emitter.flush();
+    const lastSeenAt = "2026-08-28T10:00:00.000Z";
+    await writeFile(serverHeartbeatPath(config.dataDirectory), JSON.stringify({ lastSeenAt }));
     // a second service on the same store simulates a process restart
     const restarted = new AgentService(config, jsonStore, workspaces, new FakeRunner(), emitter);
     await restarted.initialize();
@@ -506,7 +508,7 @@ describe("GlassBox control-plane adapter", () => {
       status: "cancelled",
       actorId: "server",
       actorType: "service",
-      attributes: { reason: "server_restart" },
+      attributes: { reason: "server_restart", lastSeenAt },
       parentSpanId: serviceSpan?.spanId,
     });
   });

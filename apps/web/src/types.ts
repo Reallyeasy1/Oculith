@@ -80,6 +80,7 @@ export interface RunListItem {
   startedAt?: string;
   durationMs?: number;
   endedReason?: "server_restart";
+  interruptedAfterMs?: number;
   firstFailingStep?: string;
   eventCount: number;
   runtime: string;
@@ -151,6 +152,8 @@ export interface TraceSummary {
   durationMs?: number;
   /** Run closed by a server restart: durationMs stops at the last event observed before it. */
   endedReason?: "server_restart";
+  /** Lower bound from Run start to the server-restart marker. */
+  interruptedAfterMs?: number;
   eventCount: number;
   spanCount: number;
   incompleteSpans: number;
