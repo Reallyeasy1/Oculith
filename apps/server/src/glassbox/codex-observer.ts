@@ -36,13 +36,16 @@ export function describeFinalMessage(text: string): { finalMessageBytes: number;
 
 /** Bounded identity (#130): basename of the program plus its first argument, 64 chars max. Codex wraps every
  * command as `/bin/bash -lc '<script>'` (E3/E4) or `powershell.exe -Command "<script>"` (E5), so the first
- * argument of a shell wrapper is the script's own first token — `bash python3`, not `bash -lc`. */
+ * argument of a shell wrapper is the script's own first token — `bash python3`, not `bash -lc`. A leading
+ * `cd <path> &&`/`cd <path> ;` prefix (possibly chained) is skipped so argument0 names the command that
+ * actually ran (#295); a bare `cd <path>` with no continuation keeps argument0 `cd`. */
 export function commandIdentity(command: string): { program: string } | { program: string; argument0: string } {
   const tokenize = (text: string): string[] => text.trim().match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
   const unquote = (token: string): string => token.replace(/^(?:"|')|(?:"|')$/g, "");
+  const skipCd = (script: string): string => script.replace(/^(?:cd\s+(?:"[^"]*"|'[^']*'|[^\s;&]+)\s*(?:&&|;)\s*)+/, "");
   const tokens = tokenize(command);
   const program = path.win32.basename(unquote(tokens[0] ?? "")).slice(0, 40);
-  const script = /^-(?:l?c|Command)$/i.test(tokens[1] ?? "") && tokens[2] ? tokenize(unquote(tokens[2]))[0] : undefined;
+  const script = /^-(?:l?c|Command)$/i.test(tokens[1] ?? "") && tokens[2] ? tokenize(skipCd(unquote(tokens[2])))[0] : undefined;
   const argument0 = (script ?? (tokens[1] ? unquote(tokens[1]) : undefined))?.slice(0, 64);
   return { program, ...(argument0 ? { argument0 } : {}) };
 }
