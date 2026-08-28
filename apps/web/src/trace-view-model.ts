@@ -72,8 +72,9 @@ export function indexSpans(spans: Span[]): Map<string, Span> {
   return out;
 }
 
-/** Default expansion: every root plus the API's failure path (all ancestors of the failing span). */
+/** Default expansion: all spans for a small trace, otherwise roots plus the failure path. */
 export function defaultExpanded(view: TraceView): Set<string> {
+  if (view.summary.spanCount <= 40) return new Set(indexSpans(view.spans).keys());
   const set = new Set(view.spans.map((s) => s.spanId));
   for (const id of view.summary.failure?.path ?? []) set.add(id);
   return set;

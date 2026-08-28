@@ -20,6 +20,26 @@ describe("Workspace templates", () => {
     expect(await readFile(path.join(target, "src", "fixture.txt"), "utf8")).toBe("fixture");
     expect(await readFile(path.join(target, "AGENTS.md"), "utf8")).toContain("Demo");
   });
+  it("hashes template content deterministically: copy- and order-independent, sensitive to any file change", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "workspace-template-")); roots.push(root);
+    const templates = path.join(root, "templates");
+    const seed = async (name: string, order: [string, string][]) => {
+      for (const [file, content] of order) { await mkdir(path.dirname(path.join(templates, name, file)), { recursive: true }); await writeFile(path.join(templates, name, file), content); }
+    };
+    await seed("one", [["src/a.txt", "alpha"], ["b.txt", "beta"]]);
+    await seed("two", [["b.txt", "beta"], ["src/a.txt", "alpha"]]);
+    await seed("edited", [["src/a.txt", "alpha"], ["b.txt", "beta!"]]);
+    await seed("renamed", [["src/a.txt", "alpha"], ["c.txt", "beta"]]);
+    const manager = new WorkspaceManager(path.join(root, "workspaces"), templates); await manager.initialize();
+    const hash = await manager.templateHash("one");
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(await manager.templateHash("one")).toBe(hash);
+    expect(await manager.templateHash("two")).toBe(hash);
+    expect(await manager.templateHash("edited")).not.toBe(hash);
+    expect(await manager.templateHash("renamed")).not.toBe(hash);
+    await expect(manager.templateHash("../one")).rejects.toThrow("Invalid workspace template name");
+  });
+
   it("does not apply a template to an existing workspace", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "workspace-template-")); roots.push(root);
     const templates = path.join(root, "templates"); await mkdir(path.join(templates, "demo"), { recursive: true });
