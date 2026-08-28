@@ -301,7 +301,9 @@ export async function createApp(
         evaluatorVersion: z.number().int().min(1).optional(),
         filter: z.object({
           agentId: z.string().uuid().optional(),
-          configHash: z.string().max(64).optional(),
+          // Real configHashes are hex (agent-service.ts); rejecting anything else keeps free text
+          // (a pasted secret included) out of the persisted, served job record.
+          configHash: z.string().regex(/^[0-9a-f]{1,64}$/i).optional(),
           from: z.string().datetime().optional(),
           to: z.string().datetime().optional(),
           executionStatus: z.enum(["completed", "failed", "timeout", "cancelled"]).optional(),

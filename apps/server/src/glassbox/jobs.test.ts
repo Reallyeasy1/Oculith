@@ -14,6 +14,7 @@ import {
   JsonEvaluationJobStore,
   terminalStatusEvaluator,
   type EvaluationJob,
+  type EvaluationJobStore,
   type RunEvaluator,
 } from "./jobs.js";
 import { buildTrace } from "./query.js";
@@ -188,6 +189,44 @@ describe("EvaluationJobWorker", () => {
     // The Run evaluated before the restart kept its stored result and was not evaluated again.
     expect(calls.sort()).toEqual(["run-1", "run-2"]);
     await expect(resumed.resume(job.id)).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("drops evidence ids that are not bounded event-id shaped", async () => {
+    const evaluator: RunEvaluator = {
+      async evaluate() {
+        return { passed: true, explanation: "ok", evidenceEventIds: ["evt_real-1", "leaked text with " + SECRET, "x".repeat(200)] };
+      },
+    };
+    const { file, summaries, evaluations, jobStore, worker } = await setup(new Map([["task_completion", evaluator]]));
+    await addSummary(summaries, "run-1", "agent-a", "2026-08-28T01:00:00.000Z");
+    const job = await worker.enqueue({ evaluatorId: "task_completion" });
+    await untilStatus(jobStore, job.id, "completed");
+    expect((await evaluations.resultsForRun("run-1"))[0]?.evidenceEventIds).toEqual(["evt_real-1"]);
+    expect(await readFile(file, "utf8")).not.toContain(SECRET);
+  });
+
+  it("backs off instead of hot-spinning when the job store cannot be written", async () => {
+    const base = await setup();
+    const inner = base.jobStore;
+    let failWrites = false;
+    const flaky: EvaluationJobStore = {
+      create: async (job) => { const created = await inner.create(job); failWrites = true; return created; },
+      get: (id) => inner.get(id),
+      list: () => inner.list(),
+      update: (id, mutation) => (failWrites ? Promise.reject(new Error("ENOSPC: disk full")) : inner.update(id, mutation)),
+      markInterrupted: (reason) => inner.markInterrupted(reason),
+    };
+    const sleeps: number[] = [];
+    const worker = new EvaluationJobWorker({
+      jobs: flaky, summaries: base.summaries, evaluations: base.evaluations,
+      evaluators: builtinRunEvaluators() as Map<string, RunEvaluator>,
+      sleep: async (ms) => { sleeps.push(ms); if (sleeps.length >= 3) failWrites = false; },
+    });
+    const job = await worker.enqueue({ evaluatorId: "terminal_status" });
+    const finished = await untilStatus(inner, job.id, "completed");
+    expect(finished.status).toBe("completed");
+    // Three failed drain iterations, each separated by growing backoff — never a tight loop.
+    expect(sleeps).toEqual([2_000, 4_000, 8_000]);
   });
 
   it("refuses jobs for unknown evaluators and for evaluators without a runtime implementation", async () => {

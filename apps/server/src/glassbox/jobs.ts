@@ -153,6 +153,9 @@ const DEFAULT_RETRY = { attempts: 3, baseDelayMs: 200 };
 const MAX_STORED_FAILURES = 25;
 const MAX_ERROR_CHARS = 300;
 const MAX_EVIDENCE_IDS = 50;
+// Evidence must reference stored events (schema `id`: ≤128 chars, `evt_…` shape). An evaluator —
+// #171's judge included — cannot smuggle free text through this field: non-conforming ids are dropped.
+const EVIDENCE_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 
 const now = (): string => new Date().toISOString();
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -247,6 +250,7 @@ export class EvaluationJobWorker {
   }
 
   private async drain(): Promise<void> {
+    let storeFailures = 0;
     while (!this.stopped) {
       const next = (await this.deps.jobs.list())
         .filter((job) => job.status === "queued")
@@ -254,11 +258,16 @@ export class EvaluationJobWorker {
       if (!next) return;
       try {
         await this.process(next.id);
+        storeFailures = 0;
       } catch (error) {
         const message = safeError(error);
-        await this.deps.jobs
+        const marked = await this.deps.jobs
           .update(next.id, (job) => { job.status = "failed"; job.completedAt = now(); job.lastError = message; })
-          .catch(() => undefined);
+          .then(() => true, () => false);
+        // When even marking the job failed cannot be written (disk full, EACCES) the job stays
+        // `queued` and would be re-selected immediately — back off so a broken store cannot
+        // hot-spin this loop against the same serialised write queue the Run path uses.
+        if (!marked) await (this.deps.sleep ?? defaultSleep)(Math.min(30_000, 1_000 * 2 ** ++storeFailures));
         this.deps.log?.("evaluation_job.failed", { jobId: next.id, error: message });
       }
     }
@@ -336,7 +345,7 @@ export class EvaluationJobWorker {
         score: evaluation.score,
         passed: evaluation.passed,
         explanation: evaluation.explanation,
-        evidenceEventIds: evaluation.evidenceEventIds.slice(0, MAX_EVIDENCE_IDS),
+        evidenceEventIds: evaluation.evidenceEventIds.filter((id) => EVIDENCE_ID.test(id)).slice(0, MAX_EVIDENCE_IDS),
         evaluatorModel: evaluation.evaluatorModel,
         metadata: evaluation.metadata ?? {},
         evaluatedAt: now(),
