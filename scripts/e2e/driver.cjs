@@ -113,6 +113,18 @@ async function waitForEval(caseId) {
   return evaluation;
 }
 
+async function waitForEvaluationJob(jobId) {
+  const deadline = Date.now() + RUN_TIMEOUT_MS;
+  let job;
+  while (Date.now() < deadline) {
+    job = (await api("/api/evaluation-jobs/" + jobId)).json().job;
+    if (["completed", "failed", "interrupted"].includes(job.status)) break;
+    await sleep(250);
+  }
+  assert.ok(job && ["completed", "failed", "interrupted"].includes(job.status), "evaluation job " + jobId + " did not reach a terminal state");
+  return job;
+}
+
 // ---- browser helpers --------------------------------------------------------------------------------------------
 async function openApp(page) {
   await page.goto(BASE + "/", { waitUntil: "networkidle" });
@@ -233,6 +245,17 @@ async function closeResources() {
   eq(listedRun.outcome.text, okRun.view.summary.outcome.text, "/api/runs and Trace expose the same outcome text");
   ok(listedRun.toolIdentities.length > 0 && listedRun.toolIdentities.length <= 3, "Runs API lists at most three tool identities (#130)");
   console.log("      capabilities " + JSON.stringify(okRun.view.summary.capabilities) + ", redactedEvents " + okRun.view.summary.redactedEvents + ", events " + okRun.view.summary.eventCount);
+
+  console.log("\n[2a] deterministic task_completion@1 over the stored real-Run evidence");
+  const enqueuedJudge = await api("/api/evaluation-jobs", { method: "POST", body: JSON.stringify({ evaluatorId: "task_completion", filter: { agentId: agent.id } }) });
+  eq(enqueuedJudge.status, 202, "task_completion job accepted (runtime registered)");
+  const judgeJob = await waitForEvaluationJob(enqueuedJudge.json().job.id);
+  eq(judgeJob.status, "completed", "task_completion job reached completed");
+  eq(judgeJob.failedRuns, 0, "task_completion job has no failed Runs");
+  const semantic = (await api("/api/runs/" + okRun.run.id + "/evaluations")).json().evaluations.find((item) => item.evaluatorId === "task_completion");
+  ok(semantic && semantic.evaluatorVersion === 1 && semantic.evaluatorModel === "fake-task-completion", "task_completion@1 stored deterministic judge provenance");
+  const evidenceIds = new Set(okRun.view.events.map((event) => event.eventId));
+  ok(semantic.evidenceEventIds.length > 0 && semantic.evidenceEventIds.every((id) => evidenceIds.has(id)), "every task-completion citation resolves to stored trace evidence");
 
   console.log("\n[2b] shared workspace: second Agent on the first's workspace, busy lock, switch (#64)");
   const shared = await api("/api/agents", { method: "POST", body: JSON.stringify({ name: "E2E Sharer", workspace: agent.workspaceName }) });
@@ -524,6 +547,8 @@ async function closeResources() {
   ok(logFiles.length >= 1 && logFiles.length <= 3, logFiles.length + " bounded server NDJSON log file(s) under " + logDir);
   for (const f of logFiles) sweep("log file " + f, fs.readFileSync(path.join(logDir, f), "utf8"));
   sweep("/api/runs", (await api("/api/runs")).text);
+  sweep("/api/evaluation-jobs", (await api("/api/evaluation-jobs")).text);
+  sweep("/api/runs/" + okRun.run.id + "/evaluations", (await api("/api/runs/" + okRun.run.id + "/evaluations")).text);
   for (const r of [okRun, badRun]) {
     for (const url of ["/api/runs/" + r.run.id + "/trace", "/api/runs/" + r.run.id + "/audit", "/api/runs/" + r.run.id + "/logs", "/api/traces/" + r.run.traceId + "/audit", "/api/traces/" + r.run.traceId + "/events", "/api/traces/" + r.run.traceId + "/export"]) {
       const res = await api(url);

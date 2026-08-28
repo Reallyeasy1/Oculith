@@ -100,6 +100,8 @@ export class JsonEvaluationStore implements EvaluationStore {
     private readonly store: JsonStore,
     private readonly summaries: RunSummaryStore,
     private readonly redact: (text: string) => string = (text) => redactText(text).text.slice(0, 4_096),
+    /** Runtime provenance for the seeded task_completion@1 definition. */
+    private readonly taskCompletionModel?: string | undefined,
   ) {}
 
   private safeText(text: string): string {
@@ -121,8 +123,20 @@ export class JsonEvaluationStore implements EvaluationStore {
     await this.store.mutate((database) => {
       const timestamp = new Date().toISOString();
       for (const seed of SEEDED_EVALUATORS) {
-        if (database.evaluatorDefinitions.some((item) => item.id === seed.id && item.version === 1)) continue;
-        database.evaluatorDefinitions.push({ ...seed, version: 1, createdAt: timestamp });
+        const configured = seed.id === "task_completion" && this.taskCompletionModel
+          ? { ...seed, model: this.taskCompletionModel }
+          : seed;
+        const existing = database.evaluatorDefinitions.find((item) => item.id === seed.id && item.version === 1);
+        if (existing) {
+          // Before #171 the catalogue intentionally seeded a runtime-less placeholder. Completing that
+          // provisional record at boot is a data migration, not a user-authored definition edit; each
+          // EvaluationResult still records the actual evaluatorModel used for immutable provenance.
+          if (seed.id === "task_completion" && this.taskCompletionModel && existing.model !== this.taskCompletionModel) {
+            existing.model = this.taskCompletionModel;
+          }
+          continue;
+        }
+        database.evaluatorDefinitions.push({ ...configured, version: 1, createdAt: timestamp });
       }
     });
   }

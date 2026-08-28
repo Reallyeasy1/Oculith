@@ -25,12 +25,15 @@ describe("Model provider config", () => {
       OPENAI_API_KEY: "sk-ignored",
     });
     expect(isModelConfigured(ark)).toBe(true);
+    expect(ark.taskCompletionJudge).toBe("ark");
     expect(codexConfigToml(ark)).toContain(
       'base_url = "https://ark.ap-southeast.bytepluses.com/api/v3"',
     );
 
     const unset = loadConfig({ NODE_ENV: "test", MODEL_PROVIDER: "openai" });
     expect(isModelConfigured(unset)).toBe(false);
+    expect(loadConfig({ NODE_ENV: "test", TASK_COMPLETION_JUDGE: "fake" }).taskCompletionJudge).toBe("fake");
+    expect(() => loadConfig({ NODE_ENV: "test", TASK_COMPLETION_JUDGE: "other" })).toThrow();
   });
 });
 

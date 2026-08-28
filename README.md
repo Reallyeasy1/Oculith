@@ -201,6 +201,7 @@ cp deploy/volcengine/terraform.tfvars.example \
 | --- | --- | --- |
 | `ARK_API_KEY` | Required | Ark model API key. |
 | `ARK_MODEL` | Required | Responses-capable endpoint or model ID. |
+| `TASK_COMPLETION_JUDGE` | `ark` | Task Completion evaluator backend. `fake` is deterministic and reserved for the repository E2E lane. |
 | `ARK_BASE_URL` | BytePlus ap-southeast v3 | Ark OpenAI-compatible API URL (TechJam uses BytePlus ModelArk). |
 | `OPENAI_API_KEY` | Required for `openai` | OpenAI API key, passed to Codex CLI as an env var. |
 | `OPENAI_MODEL` | Codex default | Optional model override for the `openai` provider. |

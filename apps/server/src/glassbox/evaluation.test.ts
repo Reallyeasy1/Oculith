@@ -10,14 +10,14 @@ import { JsonRunSummaryStore, summaryFromView } from "./summary.js";
 const dirs: string[] = [];
 afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
 
-async function setup(redact?: (text: string) => string) {
+async function setup(redact?: (text: string) => string, taskCompletionModel?: string) {
   const dir = await mkdtemp(path.join(tmpdir(), "evaluation-store-"));
   dirs.push(dir);
   const file = path.join(dir, "launchpad.json");
   const json = new JsonStore(file);
   await json.initialize();
   const summaries = new JsonRunSummaryStore(json);
-  const store = new JsonEvaluationStore(json, summaries, redact);
+  const store = new JsonEvaluationStore(json, summaries, redact, taskCompletionModel);
   await store.initialize();
   return { file, json, summaries, store };
 }
@@ -42,13 +42,13 @@ async function addSummary(summaries: JsonRunSummaryStore, runId: string, agentId
 
 describe("JsonEvaluationStore", () => {
   it("seeds the shared evaluator catalogue once and survives a reload", async () => {
-    const { file, store } = await setup();
+    const { file, store } = await setup(undefined, "deepseek-v4-pro-260425");
     expect(await store.listDefinitions()).toHaveLength(SEEDED_EVALUATORS.length);
-    expect(await store.getDefinition("task_completion", 1)).toMatchObject({ type: "llm_judge", passThreshold: 4, setsTaskOutcome: true });
+    expect(await store.getDefinition("task_completion", 1)).toMatchObject({ type: "llm_judge", model: "deepseek-v4-pro-260425", passThreshold: 4, setsTaskOutcome: true });
 
     const reopenedJson = new JsonStore(file);
     await reopenedJson.initialize();
-    const reopened = new JsonEvaluationStore(reopenedJson, new JsonRunSummaryStore(reopenedJson));
+    const reopened = new JsonEvaluationStore(reopenedJson, new JsonRunSummaryStore(reopenedJson), undefined, "deepseek-v4-pro-260425");
     await reopened.initialize();
     expect(await reopened.listDefinitions()).toHaveLength(SEEDED_EVALUATORS.length);
   });
