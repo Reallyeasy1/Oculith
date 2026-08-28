@@ -19,10 +19,12 @@ import type {
   Agent,
   AgentConfigSnapshot,
   AgentRun,
+  Database,
   EvalRun,
   AgentRunner,
   CreateAgentInput,
   Message,
+  QueuedMessageReceipt,
   RegressionCase,
   RunActivity,
   UpdateAgentInput,
@@ -33,6 +35,8 @@ import { boundedChangedPaths, diffWorkspace, snapshotWorkspace } from "./workspa
 
 const now = () => new Date().toISOString();
 const HEARTBEAT_INTERVAL_MS = 15_000;
+/** Max messages a busy Agent will queue (#254); beyond it the POST is refused with 429. */
+export const PENDING_MESSAGES_CAP = 10;
 // ponytail: fixed 30s — the eval post_check default; make it per-Agent when someone needs more.
 const VERIFY_TIMEOUT_MS = 30_000;
 /** Set on a RunSummary whose taskOutcome came from the Agent's verifyCommand (#253). */
@@ -177,6 +181,14 @@ export class AgentService {
       });
       this.onRunEnded?.(run.id);
     }
+    // #254: messages queued before the restart are kept. The interrupted Run was cancelled above and
+    // nothing else would ever trigger a dequeue, so resume each Agent's queue now, noting the
+    // interruption on the first dequeued Run's log.
+    for (const agent of this.store.snapshot().agents) {
+      if (agent.status === "ready" && agent.pendingMessages?.length) {
+        await this.dequeueAndStart(agent.id, "Server restarted while messages were queued for this Agent; resuming the queue");
+      }
+    }
   }
 
   private async readHeartbeat(): Promise<string | undefined> {
@@ -317,7 +329,10 @@ export class AgentService {
   }
 
   async startAgent(id: string): Promise<Agent> {
-    return this.setStatus(id, "ready");
+    await this.setStatus(id, "ready");
+    // #254: a stop keeps the queue without starting it; starting the Agent resumes it.
+    await this.dequeueAndStart(id);
+    return this.getAgent(id);
   }
 
   async stopAgent(id: string): Promise<Agent> {
@@ -415,7 +430,7 @@ export class AgentService {
     prompt: string,
     context?: TraceContext,
     options: ExecutionOptions = {},
-  ): Promise<{ run: AgentRun; message: Message }> {
+  ): Promise<{ run: AgentRun; message: Message } | QueuedMessageReceipt> {
     if (!isModelConfigured(this.config)) {
       throw new HttpError(
         503,
@@ -447,7 +462,7 @@ export class AgentService {
       content: prompt,
       createdAt: timestamp,
     };
-    const agentAtStart = await this.store.mutate((database) => {
+    const outcome = await this.store.mutate((database): { agent: Agent } | { receipt: QueuedMessageReceipt } => {
       const storedAgent = database.agents.find((item) => item.id === agentId);
       if (!storedAgent) {
         throw new HttpError(404, "Agent not found");
@@ -456,7 +471,19 @@ export class AgentService {
         throw new HttpError(409, "Start the Agent before sending a message");
       }
       if (storedAgent.status === "busy") {
-        throw new HttpError(409, "This Agent is already running");
+        // #254: a busy Agent queues plain messages instead of failing. Isolated/eval Runs
+        // (the only callers passing runId/workspacePath) carry options a dequeue could not
+        // reproduce, so they keep the 409.
+        if (options.runId !== undefined || options.workspacePath !== undefined) {
+          throw new HttpError(409, "This Agent is already running");
+        }
+        const pending = (storedAgent.pendingMessages ??= []);
+        if (pending.length >= PENDING_MESSAGES_CAP) {
+          throw new HttpError(429, "This Agent's message queue is full (" + PENDING_MESSAGES_CAP + " pending)");
+        }
+        pending.push({ id: message.id, content: prompt, queuedAt: timestamp });
+        storedAgent.updatedAt = timestamp;
+        return { receipt: { queued: true, position: pending.length, messageId: message.id } };
       }
       const workspaceBusy = database.agents.some((candidate) =>
         candidate.id !== storedAgent.id && candidate.status === "busy" && path.resolve(candidate.workspacePath) === path.resolve(storedAgent.workspacePath));
@@ -469,10 +496,16 @@ export class AgentService {
       storedAgent.status = "busy";
       storedAgent.lastError = null;
       storedAgent.updatedAt = timestamp;
-      return options.workspacePath
-        ? { ...snapshot, workspacePath: options.workspacePath, ...(options.workspaceName ? { workspaceName: options.workspaceName } : {}), codexThreadId: options.persistThread === false ? null : snapshot.codexThreadId }
-        : snapshot;
+      return {
+        agent: options.workspacePath
+          ? { ...snapshot, workspacePath: options.workspacePath, ...(options.workspaceName ? { workspaceName: options.workspaceName } : {}), codexThreadId: options.persistThread === false ? null : snapshot.codexThreadId }
+          : snapshot,
+      };
     });
+    // A queued message has no Run yet: like the rejected path below, ctx stays unset so the ingress
+    // hook emits nothing — the dequeued Run opens its own trace later (invariant 3).
+    if ("receipt" in outcome) return outcome.receipt;
+    const agentAtStart = outcome.agent;
     // Published only once the Run really exists (invariant 3: never fabricate evidence). A rejected
     // request (404/409) must leave `ctx.runId`/`ctx.agentId` unset, or the ingress `onResponse` hook
     // emits an orphan http.request.completed for a Run that never was.
@@ -567,7 +600,7 @@ export class AgentService {
       const templateHash = await this.workspaces.templateHash(input.workspaceTemplate);
       const workspacePath = await this.workspaces.materializeEvalWorkspace(runId, input.workspaceTemplate, agent);
       materialized = true;
-      const sent = await this.sendMessage(input.agentId, input.prompt, undefined, {
+      const result = await this.sendMessage(input.agentId, input.prompt, undefined, {
         runId,
         workspacePath,
         workspaceName: input.workspaceTemplate,
@@ -575,11 +608,13 @@ export class AgentService {
         persistMessages: false,
         persistThread: false,
       });
+      // Isolated Runs pass runId/workspacePath, which sendMessage never queues (#254).
+      if ("queued" in result) throw new HttpError(409, "This Agent is already running");
       // #282 ordering: the workspace must outlive the Run — post_check assertions execute in it after
       // the Run finishes, so removal is the caller's job (EvalRunner cleans up after evaluateAll), not
       // executeRun's. KEEP_EVAL_WORKSPACES=1 keeps the workspace forever by making cleanup a no-op.
       return {
-        ...sent,
+        ...result,
         workspacePath,
         cleanup: this.config.keepEvalWorkspaces ? async () => undefined : () => this.workspaces.removeEvalWorkspace(runId),
       };
@@ -608,6 +643,121 @@ export class AgentService {
           ? "Codex CLI in " + this.config.containerEngine + " Runtime"
           : "Codex CLI in application container",
     };
+  }
+
+  /** Removes one still-pending message from the Agent's queue (#254); a message already dequeued into a Run is a 404. */
+  async cancelPendingMessage(agentId: string, messageId: string): Promise<void> {
+    await this.store.mutate((database) => {
+      const agent = database.agents.find((item) => item.id === agentId);
+      if (!agent) throw new HttpError(404, "Agent not found");
+      const index = (agent.pendingMessages ?? []).findIndex((item) => item.id === messageId);
+      if (index < 0) throw new HttpError(404, "Pending message not found");
+      agent.pendingMessages!.splice(index, 1);
+      agent.updatedAt = now();
+    });
+  }
+
+  /**
+   * #254: shifts the Agent's next pending message into a queued Run + user Message and re-claims the
+   * Agent. MUST run inside the store mutation that frees the Agent — that is where the one-active-Run
+   * invariant lives, so freeing and re-claiming are one atomic transaction.
+   */
+  private dequeueNext(
+    database: Database,
+    agent: Agent,
+    ctx: TraceContext,
+  ): { run: AgentRun; agentAtStart: Agent; ctx: TraceContext; queuedMs: number } | undefined {
+    const next = agent.pendingMessages?.shift();
+    if (!next) return undefined;
+    const timestamp = now();
+    const run: AgentRun = {
+      id: randomUUID(),
+      traceId: ctx.traceId,
+      traceParentSpanId: ctx.rootSpanId,
+      agentId: agent.id,
+      status: "queued",
+      prompt: next.content,
+      output: null,
+      error: null,
+      usage: null,
+      startedAt: null,
+      completedAt: null,
+      createdAt: timestamp,
+    };
+    run.configSnapshot = configSnapshot(agent, this.config);
+    run.configHash = configHash(run.configSnapshot);
+    database.runs.push(run);
+    // The chat Message keeps the pending id and queuedAt: it is the same user utterance, sent then.
+    database.messages.push({ id: next.id, agentId: agent.id, runId: run.id, role: "user", content: next.content, createdAt: next.queuedAt });
+    agent.status = "busy";
+    agent.lastError = null;
+    agent.updatedAt = timestamp;
+    return {
+      run: structuredClone(run),
+      agentAtStart: structuredClone(agent),
+      ctx,
+      queuedMs: Math.max(0, Date.parse(timestamp) - Date.parse(next.queuedAt)),
+    };
+  }
+
+  /** Emits the dequeued Run's own `run.created` (with `queuedMs`) on its fresh trace and starts execution. */
+  private startDequeuedRun(
+    dequeued: { run: AgentRun; agentAtStart: Agent; ctx: TraceContext; queuedMs: number },
+    restartNote?: string,
+  ): void {
+    const { run, agentAtStart, ctx, queuedMs } = dequeued;
+    if (restartNote) {
+      // #232 log seam: one line on the new Run's log telling the operator the wait crossed a restart.
+      void this.runLogs
+        ?.child({ runId: run.id, traceId: ctx.traceId, agentId: agentAtStart.id, component: "AgentService" })
+        .info(restartNote)
+        .catch(() => undefined);
+    }
+    this.emitter.emit({
+      traceId: ctx.traceId,
+      spanId: newId("spn"),
+      runId: run.id,
+      agentId: agentAtStart.id,
+      actorId: ctx.actorId,
+      actorType: ctx.actorType,
+      type: "run.created",
+      category: "control",
+      name: "run.created",
+      status: "ok",
+      source: { component: "AgentService", observed: true },
+      attributes: {
+        promptBytes: Buffer.byteLength(run.prompt, "utf8"),
+        configHash: run.configHash!,
+        workspace: agentAtStart.workspaceName ?? path.basename(agentAtStart.workspacePath),
+        queuedMs,
+      },
+      ...(capturesSummaries(this.emitter.capturePolicy)
+        ? { summary: { text: redactText(run.prompt).text.slice(0, 240), policy: "safe_summary" as const } }
+        : {}),
+    });
+    this.spans.set(run.id, { traceId: ctx.traceId, rootSpanId: ctx.rootSpanId, agentId: agentAtStart.id });
+    const execution = this.executeRun(agentAtStart, run, {});
+    this.activeExecutions.set(agentAtStart.id, execution);
+    void execution
+      .finally(() => {
+        if (this.activeExecutions.get(agentAtStart.id) === execution) {
+          this.activeExecutions.delete(agentAtStart.id);
+        }
+      })
+      .catch(() => undefined);
+  }
+
+  /** Atomically claims a `ready` Agent and starts its next pending message, if any (restart/start resume). */
+  private async dequeueAndStart(agentId: string, restartNote?: string): Promise<void> {
+    // Without a configured model every dequeued Run would fail instantly and burn the queue; keep it queued.
+    if (!isModelConfigured(this.config)) return;
+    const ctx = createTraceContext({}, this.emitter.capturePolicy);
+    const dequeued = await this.store.mutate((database) => {
+      const agent = database.agents.find((item) => item.id === agentId);
+      if (!agent || agent.status !== "ready") return undefined;
+      return this.dequeueNext(database, agent, ctx);
+    });
+    if (dequeued) this.startDequeuedRun(dequeued, restartNote);
   }
 
   private async executeRun(agentAtStart: Agent, run: AgentRun, options: ExecutionOptions = {}): Promise<void> {
@@ -792,10 +942,11 @@ export class AgentService {
       ].join(" ");
       pino?.info(summaryLine);
       await logger?.info(summaryLine).catch(() => undefined);
-      await this.store.mutate((database) => {
+      const queueCtx = createTraceContext({}, this.emitter.capturePolicy);
+      const dequeued = await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
-        if (!storedRun || !agent) return;
+        if (!storedRun || !agent) return undefined;
         storedRun.status = "completed";
         storedRun.output = result.output;
         storedRun.usage = result.usage;
@@ -815,7 +966,13 @@ export class AgentService {
         if (options.persistThread !== false) agent.codexThreadId = result.threadId;
         agent.lastError = null;
         agent.updatedAt = completedAt;
+        // #254: dequeue in the same mutation that freed the Agent — the one-active-Run invariant lives here.
+        return this.dequeueNext(database, agent, queueCtx);
       });
+      // #254 vs #253 ordering: the Agent is ready the moment the mutate commits, so the next queued Run
+      // starts now and does NOT wait for the verify below — the same accepted window as a user message
+      // arriving during a slow verify (see the ponytail note under the verify block).
+      if (dequeued) this.startDequeuedRun(dequeued);
       // #253: operator-set verification of a completed ordinary Run. Eval-isolated Runs (the only callers
       // that pass options.workspacePath) keep their own post_check assertion machinery. The verdict is a
       // separate judgement stamped on the RunSummary — it must never change the Run's terminal status, and
@@ -889,7 +1046,8 @@ export class AgentService {
         pino?.info(logMessage);
         await logger?.error(logMessage).catch(() => undefined);
       }
-      await this.store.mutate((database) => {
+      const queueCtx = createTraceContext({}, this.emitter.capturePolicy);
+      const dequeued = await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
         if (storedRun) {
@@ -904,8 +1062,17 @@ export class AgentService {
           }
           agent.lastError = cancelled ? null : message;
           agent.updatedAt = completedAt;
+          // #254: a failed Run still frees the Agent for the rest of the batch (the failed Run keeps
+          // its error evidence). A cancel is a user "stop"/delete gesture — auto-starting queued work
+          // would fight it (stopAgent sets `stopped` right after this settles), so the queue is kept
+          // but not started; startAgent resumes it.
+          if (!cancelled && agent.status !== "stopped") {
+            return this.dequeueNext(database, agent, queueCtx);
+          }
         }
+        return undefined;
       });
+      if (dequeued) this.startDequeuedRun(dequeued);
       if (ids && service) {
         const status: TraceStatus = cancelled
           ? "cancelled"

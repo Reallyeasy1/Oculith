@@ -2,6 +2,13 @@ export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type MessageRole = "user" | "assistant";
 
+/** One message accepted while the Agent was busy (#254); becomes a Run + user Message when dequeued. */
+export interface PendingMessage {
+  id: string;
+  content: string;
+  queuedAt: string;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -14,10 +21,22 @@ export interface Agent {
   workspaceTemplate?: string | undefined;
   /** Operator-set shell command run in the workspace after every completed ordinary Run (#253); its exit code sets the Run's taskOutcome. */
   verifyCommand?: string | undefined;
+  /** FIFO of messages accepted while busy (#254), capped at 10; absent means empty. No Database
+   * version bump: old files simply lack the key, and old readers ignore it — the shape stays compatible. */
+  pendingMessages?: PendingMessage[] | undefined;
   codexThreadId: string | null;
   lastError: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** 202 body when a busy Agent queued the message instead of starting a Run (#254).
+ * `position` is the 1-based place in the queue; with exactly one Run always active while
+ * queueing, it also equals the number of work items ahead. */
+export interface QueuedMessageReceipt {
+  queued: true;
+  position: number;
+  messageId: string;
 }
 
 export interface Message {

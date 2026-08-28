@@ -2135,3 +2135,27 @@ textarea:focus {
   color: var(--purple);
   text-decoration: underline;
 }
+
+/* #254 — per-Agent message queue: sidebar depth chip, queued rows in the chat, cancel affordance */
+.queue-chip {
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 9px;
+  font-weight: 700;
+  background: rgba(122, 122, 115, 0.14);
+  color: #7a7a73;
+  white-space: nowrap;
+}
+
+.message-queued {
+  opacity: 0.7;
+  border: 1px dashed rgba(122, 122, 115, 0.5);
+}
+
+.queued-cancel {
+  font-size: 10px;
+  text-decoration: underline;
+}
+.queued-cancel:hover {
+  color: var(--purple);
+}

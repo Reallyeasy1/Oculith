@@ -118,6 +118,8 @@ export default function App() {
     [agents, selectedId],
   );
   const selectedWorkspaceName = selected?.workspaceName ?? selected?.workspacePath.split(/[\\/]/).at(-1) ?? "";
+  // #254: messages waiting behind the active Run, refreshed with the agents list.
+  const pendingMessages = selected?.pendingMessages ?? [];
   const selectedWorkspace = workspaces.find((workspace) => workspace.name === selectedWorkspaceName);
   const sharingAgents = selectedWorkspace?.agents
     .filter((id) => id !== selected?.id)
@@ -449,8 +451,14 @@ export default function App() {
   }, [selectedId, trace?.summary.status, view]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Shared by the composer and Re-run (#256): POST the prompt, reflect the new Run locally, poll it.
+  // #254: a busy Agent answers with a queued receipt instead of a Run — refresh so the queue rows
+  // and chip render the queued state, and skip the immediate-run path entirely.
   const dispatchPrompt = async (agentId: string, content: string, rerunOf?: string) => {
     const result = await api.sendMessage(agentId, content, rerunOf);
+    if ("queued" in result) {
+      await refreshAgents();
+      return;
+    }
     if (selectedIdRef.current === agentId) {
       setMessages((current) => [...current, result.message]);
       setActiveRun(result.run);
@@ -480,7 +488,7 @@ export default function App() {
 
   // #256: re-send a Run's originating prompt as an ordinary new Run in the same session thread,
   // exactly as if retyped — run.prompt IS the stored user Message content for that Run. A busy
-  // Agent's 409 lands in the error banner (the #254 queue lands separately).
+  // Agent queues it like any composer send (#254); dispatchPrompt renders the queued state.
   const rerunPrompt = async (runId: string) => {
     setError(null);
     try {
@@ -488,6 +496,19 @@ export default function App() {
       await dispatchPrompt(run.agentId, run.prompt, runId);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
+  // #254: remove a message still waiting in the queue; the server 404s if it already started.
+  const cancelPendingMessage = async (messageId: string) => {
+    if (!selected) return;
+    setError(null);
+    try {
+      await api.cancelPendingMessage(selected.id, messageId);
+      await refreshAgents();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      await refreshAgents().catch(() => undefined);
     }
   };
 
@@ -608,6 +629,11 @@ export default function App() {
                 <strong>{agent.name}</strong>
                 <span>{agent.description || "Coding Agent"}</span>
               </div>
+              {(agent.pendingMessages?.length ?? 0) > 0 && (
+                <span className="queue-chip" title="Messages queued behind the active run">
+                  {agent.pendingMessages!.length} queued
+                </span>
+              )}
               <span className={"mini-dot mini-" + agent.status} />
             </button>
           ))}
@@ -876,6 +902,23 @@ export default function App() {
                     </div>
                   </article>
                 )}
+                {/* #254: work waiting behind the active Run, cancelable until it starts. */}
+                {pendingMessages.map((pendingMessage, index) => (
+                  <article className="message message-user message-queued" key={pendingMessage.id}>
+                    <div className="message-meta">
+                      <strong>You</strong>
+                      <span>queued, {index + 1} ahead</span>
+                      <button
+                        type="button"
+                        className="evidence-link queued-cancel"
+                        onClick={() => void cancelPendingMessage(pendingMessage.id)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                    <div className="message-body">{pendingMessage.content}</div>
+                  </article>
+                ))}
                 {activeRun?.status === "failed" && (
                   <article className="run-error">
                     <strong>Run failed</strong>
@@ -904,27 +947,23 @@ export default function App() {
                   placeholder={
                     selected.status === "stopped"
                       ? "Start this Agent to continue…"
-                      : "Describe what you want the Agent to do…"
+                      : selected.status === "busy" || (activeRun != null && ["queued", "running"].includes(activeRun.status))
+                        ? "Agent is busy — Enter queues your message…"
+                        : "Describe what you want the Agent to do…"
                   }
-                  disabled={
-                    selected.status === "stopped" ||
-                    selected.status === "busy" ||
-                    activeRun != null && ["queued", "running"].includes(activeRun.status)
-                  }
+                  disabled={selected.status === "stopped"}
                   rows={3}
                 />
                 <div className="composer-footer">
                   <span>
                     Enter to send · Shift + Enter for newline · {system?.codexSandboxMode ?? "checking sandbox"}
+                    {pendingMessages.length > 0 && (
+                      <> · queued, {pendingMessages.length} ahead</>
+                    )}
                   </span>
                   <button
                     className="send-button"
-                    disabled={
-                      !prompt.trim() ||
-                      selected.status === "stopped" ||
-                      selected.status === "busy" ||
-                      (activeRun != null && ["queued", "running"].includes(activeRun.status))
-                    }
+                    disabled={!prompt.trim() || selected.status === "stopped"}
                     aria-label="Send message"
                   >
                     ↑
