@@ -20,14 +20,20 @@ export class EvalRunner {
         await this.glassbox.emitter.flush();
         const view = buildTrace(await this.glassbox.store.readRun(run.id), { capturePolicy: this.glassbox.emitter.capturePolicy });
         const results = await evaluateAll(view, regressionCase.assertions);
-        if (this.glassbox.evaluations && this.glassbox.summaries) {
-          await rollupRun({ traces: this.glassbox.store, emitter: this.glassbox.emitter, summaries: this.glassbox.summaries }, run.id);
+        // FR-21 adapter: one EvaluationResult per (run, evaluator, version), so several assertions of one type fold
+        // into one verdict (all must pass) instead of the last write shadowing the others. The summary row must
+        // exist before putResult (setTaskOutcome 404s otherwise) — rollupRun is idempotent, so roll up here.
+        if (this.glassbox.evaluations && this.glassbox.summaries && await rollupRun({ traces: this.glassbox.store, emitter: this.glassbox.emitter, summaries: this.glassbox.summaries }, run.id)) {
           const evaluatedAt = new Date().toISOString();
-          for (const result of results) {
+          const byType = new Map<string, typeof results>();
+          for (const result of results) byType.set(result.type, [...(byType.get(result.type) ?? []), result]);
+          for (const [type, group] of byType) {
+            const [single] = group;
             await this.glassbox.evaluations.putResult({
-              runId: run.id, evaluatorId: result.type, evaluatorVersion: 1, passed: result.pass,
-              explanation: result.message, evidenceEventIds: result.evidenceEventIds,
-              metadata: { expected: result.expected, observed: result.observed }, evaluatedAt, jobId: evalRun.id,
+              runId: run.id, evaluatorId: type, evaluatorVersion: 1, passed: group.every((result) => result.pass),
+              explanation: group.map((result) => result.message).join(" "), evidenceEventIds: [...new Set(group.flatMap((result) => result.evidenceEventIds))],
+              metadata: group.length === 1 && single ? { expected: single.expected, observed: single.observed } : { assertions: group.length },
+              evaluatedAt, jobId: evalRun.id,
             });
           }
         }

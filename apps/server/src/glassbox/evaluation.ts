@@ -1,7 +1,7 @@
 import { HttpError } from "../errors.js";
 import type { JsonStore } from "../store.js";
 import { redactText } from "./redact.js";
-import type { RunSummaryStore, TaskOutcome } from "./summary.js";
+import type { RunSummaryStore } from "./summary.js";
 
 export type EvaluatorType = "deterministic" | "llm_judge";
 export type EvaluationFields = Record<string, string | number | boolean | null>;
@@ -164,23 +164,12 @@ export class JsonEvaluationStore implements EvaluationStore {
     if (!summary) throw new HttpError(404, "Run summary not found");
     const result: EvaluationResult = {
       ...input, explanation: this.safeText(input.explanation), metadata: this.safeFields(input.metadata),
-      ...(input.evaluatorModel === undefined ? {} : { evaluatorModel: this.safeText(input.evaluatorModel) }),
+      // FR-21: `evaluatorModel` is provenance of a judge only; a deterministic result never carries one.
+      ...(definition.type === "llm_judge" && input.evaluatorModel !== undefined ? { evaluatorModel: this.safeText(input.evaluatorModel) } : { evaluatorModel: undefined }),
     };
-    let updatedJsonSummary = false;
-    await this.store.mutate((database) => {
-      database.evaluationResults.push(structuredClone(result));
-      if (!definition.setsTaskOutcome) return;
-      const stored = database.runSummaries.find((item) => item.runId === input.runId);
-      if (!stored) return;
-      stored.taskOutcome = input.passed ? "passed" : "failed";
-      stored.taskOutcomeSource = `evaluator:${input.evaluatorId}@${input.evaluatorVersion}`;
-      stored.updatedAt = new Date().toISOString();
-      updatedJsonSummary = true;
-    });
-    if (definition.setsTaskOutcome && !updatedJsonSummary) {
-      const outcome: TaskOutcome = input.passed ? "passed" : "failed";
-      await this.summaries.setTaskOutcome(input.runId, outcome, `evaluator:${input.evaluatorId}@${input.evaluatorVersion}`);
-    }
+    await this.store.mutate((database) => { database.evaluationResults.push(structuredClone(result)); });
+    // The summary store owns taskOutcome for every backend (JSON or Postgres); FR-22 source vocabulary.
+    if (definition.setsTaskOutcome) await this.summaries.setTaskOutcome(input.runId, input.passed ? "passed" : "failed", `evaluator:${input.evaluatorId}@${input.evaluatorVersion}`);
     return structuredClone(result);
   }
 
