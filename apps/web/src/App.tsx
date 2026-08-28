@@ -448,6 +448,21 @@ export default function App() {
     return () => window.clearInterval(id);
   }, [selectedId, trace?.summary.status, view]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Shared by the composer and Re-run (#256): POST the prompt, reflect the new Run locally, poll it.
+  const dispatchPrompt = async (agentId: string, content: string, rerunOf?: string) => {
+    const result = await api.sendMessage(agentId, content, rerunOf);
+    if (selectedIdRef.current === agentId) {
+      setMessages((current) => [...current, result.message]);
+      setActiveRun(result.run);
+    }
+    setAgents((current) =>
+      current.map((agent) =>
+        agent.id === agentId ? { ...agent, status: "busy" } : agent,
+      ),
+    );
+    await pollRun(result.run.id, agentId);
+  };
+
   const sendMessage = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!selected || !prompt.trim()) return;
@@ -455,21 +470,24 @@ export default function App() {
     setPrompt("");
     setError(null);
     try {
-      const result = await api.sendMessage(selected.id, content);
-      if (selectedIdRef.current === selected.id) {
-        setMessages((current) => [...current, result.message]);
-        setActiveRun(result.run);
-      }
-      setAgents((current) =>
-        current.map((agent) =>
-          agent.id === selected.id ? { ...agent, status: "busy" } : agent,
-        ),
-      );
-      await pollRun(result.run.id, selected.id);
+      await dispatchPrompt(selected.id, content);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
       setActiveRun(null);
       await refreshAgents();
+    }
+  };
+
+  // #256: re-send a Run's originating prompt as an ordinary new Run in the same session thread,
+  // exactly as if retyped — run.prompt IS the stored user Message content for that Run. A busy
+  // Agent's 409 lands in the error banner (the #254 queue lands separately).
+  const rerunPrompt = async (runId: string) => {
+    setError(null);
+    try {
+      const { run } = await api.run(runId);
+      await dispatchPrompt(run.agentId, run.prompt, runId);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
     }
   };
 
@@ -853,6 +871,9 @@ export default function App() {
                     <button type="button" className="evidence-link run-error-trace" onClick={() => openTrace(activeRun.id)}>
                       View trace
                     </button>
+                    <button type="button" className="evidence-link run-error-rerun" onClick={() => void rerunPrompt(activeRun.id)}>
+                      Re-run prompt
+                    </button>
                   </article>
                 )}
                 <div ref={messageEnd} />
@@ -929,6 +950,7 @@ export default function App() {
             focusEventId={focusEventId}
             onFocusHandled={() => setFocusEventId(null)}
             onCaseSaved={refreshRegressionCases}
+            onRerun={(runId) => void rerunPrompt(runId)}
             onClose={closeTrace}
           />
         )}

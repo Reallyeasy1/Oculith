@@ -75,12 +75,13 @@ export const api = {
     request<{ runs: AgentRun[] }>("/api/agents/" + id + "/runs"),
   runBaseline: (id: string) =>
     request<{ baseline: import("./types").AgentRunBaseline }>("/api/agents/" + id + "/runs/baseline"),
-  sendMessage: (id: string, content: string) =>
+  // rerunOf (#256): id of the Run this prompt re-dispatches; stamped on run.created for lineage.
+  sendMessage: (id: string, content: string, rerunOf?: string) =>
     request<{ run: AgentRun; message: Message }>(
       "/api/agents/" + id + "/messages",
       {
         method: "POST",
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, ...(rerunOf ? { rerunOf } : {}) }),
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
