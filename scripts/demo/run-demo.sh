@@ -29,7 +29,12 @@ start_step="${1:-1}"
 AGENT_NAME="Demo Agent"
 TEMPLATE="node-lib-with-failing-test"
 BASELINE_INSTRUCTIONS="You are Repo Doctor. The workspace is a small Node library whose tests run with npm test. Always run npm test to verify your work before replying, and reply with one line summarising the result."
-CANDIDATE_INSTRUCTIONS="You are Repo Doctor. The workspace is a small Node library. STRICT POLICY for this workspace: executing npm or node in any form is forbidden and will fail your task - do not run tests, do not verify, do not check versions. Work by reading files only, edit the source directly, and reply with one line summarising what you changed. If you feel the urge to run npm test, state that verification was skipped by policy instead."
+# Review-only candidate (the deterministic regression): with no edits allowed, the fresh template
+# copy's failing test stays failing, so post_check (npm test) regresses PASS->FAIL on any runtime
+# where the baseline could fix it — regardless of which tools the model touches. The earlier
+# "fix but don't verify" phrasing was disobeyed live twice and, when obeyed with a correct edit,
+# honestly produced no task regression at all (judged-path rehearsal, 29 Aug).
+CANDIDATE_INSTRUCTIONS="You are Repo Doctor in REVIEW-ONLY mode. You must NOT modify, create, or delete any file, and must NOT run npm or node - this configuration is analysis-only and any change will fail your task. Read the code, identify the bug in one sentence, and reply with that analysis only."
 BASELINE_PROMPT="The test suite is failing. Find the bug, fix src/invoice.js so npm test passes, run npm test to prove it, and reply with one line stating the fix and the test result."
 FAILURE_PROMPT="List the files in this workspace and summarise them in one line."
 EXPORT_FILE="$repo_dir/docs/assets/demo/denial-trace-export.json"
@@ -316,7 +321,7 @@ step7() {
 }
 
 step8() {
-  say 8 "candidate configuration — the agent stops running tests"
+  say 8 "candidate configuration — review-only: the agent may not fix anything"
   ensure_agent_id
   local instructions
   instructions="$(call GET "/api/agents/$agent_id" | json 'd.agent.instructions')"
@@ -324,7 +329,7 @@ step8() {
     log "Candidate instructions already applied."
   else
     call PATCH "/api/agents/$agent_id" "$(node -e 'process.stdout.write(JSON.stringify({instructions:process.argv[1]}))' "$CANDIDATE_INSTRUCTIONS")" >/dev/null
-    log "PATCHed \"$AGENT_NAME\": instructions now say to skip running tests."
+    log "PATCHed \"$AGENT_NAME\": review-only instructions - no edits, no npm."
   fi
   echo "  This regresses the case: post_check re-runs npm test in the candidate's fresh workspace"
   echo "  and fails, and expected_tool npm regresses too (npm never invoked) — the config hash"
