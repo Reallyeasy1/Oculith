@@ -88,7 +88,7 @@ xdg-open http://localhost:3000   # Linux desktop
 In the Web UI:
 
 1. Select **Create Agent**.
-2. Enter a name, description, and workspace instructions.
+2. Enter a name, description, instructions, and optionally choose or name a workspace.
 3. Select **Create Agent** again.
 4. Enter a task in the Playground, for example:
 
@@ -213,6 +213,8 @@ cp deploy/volcengine/terraform.tfvars.example \
 | `GLASSBOX_DEMO_FAILURE` | `off` | `timeout` forces a 3 s runtime timeout for the demo's controlled failure. |
 | `GLASSBOX_TRACE_DIR` | `$APP_DATA_DIR/traces` | Directory for per-Run NDJSON trace files. |
 | `GLASSBOX_RETENTION_DAYS` | `7` | At startup, compact finished Runs whose last event is older than this to terminal events + a `trace.truncated` tombstone. `0` disables. |
+| `GLASSBOX_STORE` | `json` | `json` keeps Run summaries in `launchpad.json`; `postgres` stores them in PostgreSQL (`docker compose --profile postgres up`). Traces stay NDJSON either way. |
+| `DATABASE_URL` | — | Required when `GLASSBOX_STORE=postgres`. |
 | `GLASSBOX_MAX_DISK_MB` | `200` | At startup, while trace files exceed this, compact the oldest finished Runs first (running Runs are never touched). `0` disables. |
 
 See [.env.example](.env.example) for all Runtime and resource-limit options.
@@ -232,6 +234,7 @@ flowchart LR
 
 The first turn uses `codex exec`; later turns resume the stored Codex thread.
 Deleting an Agent archives its workspace under `workspaces/.deleted/`.
+Named workspaces may be shared by multiple Agents and are never archived by Agent deletion. To seed one before creating an Agent, create a directly nested directory such as `workspaces/repo-doctor`; the Create Agent workspace field will list it after startup. Switching an Agent's workspace clears its Codex thread so later turns cannot retain references to the previous project.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for component and extension
 boundaries.
@@ -308,6 +311,10 @@ assertion in `container-codex-runner.test.ts` (see the Windows caveat in `CLAUDE
 
 ## Documentation
 
+- [TechJam Track 1 problem statement](docs/PROBLEM_STATEMENT.md) — the requirements this project answers, with a mapping to the PRD
+- [Project brief](docs/PROJECT_BRIEF.md) — concept, what is built, sprint plan, working agreements
+- [Sprint plan](docs/SPRINTS.md)
+- [UAT coverage](docs/UAT_COVERAGE.md) — what has been tested, how, and what remains
 - [Architecture](docs/ARCHITECTURE.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)

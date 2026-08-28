@@ -166,8 +166,13 @@ describe("FR-11 gated failure fixture", () => {
 describe("AC-06 restart", () => {
   it("rebuilds the index and the interrupted Run reads as cancelled with incomplete spans", async () => {
     // Opens a runtime span like the real runners do, then never returns — the restart must cut it off.
+    // Resolve when the runner is reached: executeRun awaits workspace writes first, so a fixed sleep would
+    // restart too early under load and later control events would follow the cancel marker.
+    let reached!: () => void;
+    const runnerReached = new Promise<void>((resolve) => { reached = resolve; });
     const hang: AgentRunner = {
       run: (request) => {
+        reached();
         h.emitter.startSpan({ ...request.trace!, spanId: newId("spn"), type: "runtime.codex.started", category: "runtime", name: "codex exec", source: { component: "AgentRunner", observed: true } });
         return new Promise<RunnerResult>(() => undefined);
       },
@@ -177,7 +182,7 @@ describe("AC-06 restart", () => {
     const h = await harness(hang);
     const res = await h.app.inject({ method: "POST", url: "/api/agents/" + h.agent.id + "/messages", payload: { content: "x" } });
     const runId = res.json().run.id as string;
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await runnerReached;
     await h.emitter.flush();
     await h.app.close();
 

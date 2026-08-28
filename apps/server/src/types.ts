@@ -9,6 +9,9 @@ export interface Agent {
   instructions: string;
   status: AgentStatus;
   workspacePath: string;
+  workspaceName?: string | undefined;
+  workspaceManaged?: boolean | undefined;
+  workspaceTemplate?: string | undefined;
   codexThreadId: string | null;
   lastError: string | null;
   createdAt: string;
@@ -58,23 +61,57 @@ export interface AgentRun {
   configSnapshot?: AgentConfigSnapshot | undefined;
 }
 
+export interface RegressionCase {
+  id: string;
+  name: string;
+  prompt: string;
+  workspaceTemplate: string;
+  sourceRunId?: string | undefined;
+  baselineConfigHash: string;
+  /** sha256 of the template tree when the case was recorded; absent on cases saved before #176 (treated as unknown). */
+  templateHash?: string | undefined;
+  assertions: import("./eval/evaluators.js").Assertion[];
+  createdAt: string;
+}
+
+export interface EvalRun {
+  id: string;
+  caseIds: string[];
+  target: { agentId: string; configHash: string; snapshot: AgentConfigSnapshot };
+  runIds: string[];
+  results: { caseId: string; runId?: string | undefined; results: import("./eval/evaluators.js").EvalResult[]; error?: string | undefined }[];
+  status: "running" | "completed" | "failed";
+  /** Template name -> content hash at EvalRun start; compare flags baseline/candidate pairs whose hashes differ. */
+  templateHashes?: Record<string, string> | undefined;
+  /** Set when a case's recorded templateHash no longer matched at start and the caller forced the EvalRun anyway. */
+  templateHashMismatch?: boolean | undefined;
+  createdAt: string;
+  completedAt?: string | undefined;
+}
+
 export interface Database {
   version: 1;
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
+  regressionCases: RegressionCase[];
+  evalRuns: EvalRun[];
+  runSummaries: import("./glassbox/summary.js").RunSummary[];
 }
 
 export interface CreateAgentInput {
   name: string;
   description?: string | undefined;
   instructions?: string | undefined;
+  workspace?: string | undefined;
+  template?: string | undefined;
 }
 
 export interface UpdateAgentInput {
   name?: string | undefined;
   description?: string | undefined;
   instructions?: string | undefined;
+  workspace?: string | undefined;
 }
 
 export interface RunnerResult {

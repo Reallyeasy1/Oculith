@@ -8,6 +8,9 @@ export interface Agent {
   instructions: string;
   status: AgentStatus;
   workspacePath: string;
+  workspaceName?: string;
+  workspaceManaged?: boolean;
+  workspaceTemplate?: string;
   codexThreadId: string | null;
   lastError: string | null;
   createdAt: string;
@@ -72,6 +75,7 @@ export interface RunListItem {
   traceId: string;
   agentId: string;
   agentName: string;
+  workspace?: string;
   status: TraceStatus;
   startedAt?: string;
   durationMs?: number;
@@ -90,6 +94,11 @@ export interface RunListItem {
   toolFailures: number;
   tokens?: { output?: number };
   denials: number;
+  actions: number;
+  /** Process status (`status` mapped: ok→completed, error→failed). */
+  executionStatus: "running" | "completed" | "failed" | "timeout" | "cancelled";
+  /** Whether the task succeeded; `unknown` until an evaluator or Eval Run sets it (#168). */
+  taskOutcome: "passed" | "failed" | "unknown";
   configHash?: string;
   configSnapshot?: AgentConfigSnapshot;
   workspaceChanges?: { added: number; modified: number; removed: number; bytesDelta: number; truncated: boolean };
@@ -114,6 +123,19 @@ export interface FailureFocus {
   diagnosis: string;
 }
 
+export type AuditOutcome = "allowed" | "denied" | "ok" | "error" | "timeout" | "cancelled";
+export interface AuditRow {
+  at: string;
+  actor: { type: ObservationEvent["actorType"]; id: string };
+  action: string;
+  resource: string;
+  outcome: AuditOutcome;
+  eventId: string;
+  spanId: string;
+  traceId: string;
+  attributes: ObservationEvent["attributes"];
+}
+
 export interface TraceSummary {
   schemaVersion: "1.0";
   capturePolicy: CapturePolicy;
@@ -121,6 +143,7 @@ export interface TraceSummary {
   traceId: string;
   agentId: string;
   sessionId?: string;
+  workspace?: string;
   status: TraceStatus;
   startedAt?: string;
   endedAt?: string;
@@ -132,6 +155,7 @@ export interface TraceSummary {
   incompleteSpans: number;
   redactedEvents: number;
   denials: number;
+  audit: { actions: number; denials: number; actors: string[] };
   degraded: boolean;
   truncated: boolean;
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
@@ -230,3 +254,33 @@ export interface SystemInfo {
   containerEngine: string | null;
   runtime: string;
 }
+
+export type Assertion =
+  | { type: "terminal_status"; expected: "ok" | "error" | "timeout" | "cancelled" }
+  | { type: "expected_tool"; program: string }
+  | { type: "max_tool_calls"; max: number }
+  | { type: "max_duration_ms"; max: number }
+  | { type: "post_check"; command: string; timeoutMs: number };
+
+export interface RegressionCase {
+  id: string; name: string; prompt: string; workspaceTemplate: string; sourceRunId?: string;
+  baselineConfigHash: string; templateHash?: string; assertions: Assertion[]; createdAt: string;
+}
+
+export interface EvalResult {
+  type: Assertion["type"]; pass: boolean; expected: string | number; observed: string | number | null;
+  evidenceEventIds: string[]; message: string;
+}
+export interface EvalRun {
+  id: string; caseIds: string[];
+  target: { agentId: string; configHash: string; snapshot: AgentConfigSnapshot };
+  runIds: string[]; results: { caseId: string; runId?: string; results: EvalResult[]; error?: string }[];
+  status: "running" | "completed" | "failed"; templateHashes?: Record<string, string>; templateHashMismatch?: boolean; createdAt: string; completedAt?: string;
+}
+export interface EvalComparison {
+  cases: { caseId: string; assertions: { type: string; baseline?: EvalResult; candidate?: EvalResult; delta?: number; regression: boolean }[]; regression: boolean; traceLinks: { baseline?: string; candidate?: string } }[];
+  regressions: number; templateMismatch?: boolean;
+}
+
+// Mirrors WorkspaceManager.listTemplates(): a bad template (symlink, over limits) is reported, not a 500.
+export type WorkspaceTemplate = { name: string; fileCount: number; bytes: number } | { name: string; error: string };

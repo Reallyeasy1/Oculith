@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import path from "node:path";
 import type { AppConfig } from "./config.js";
 import { isModelConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
@@ -14,15 +15,34 @@ import type {
   Agent,
   AgentConfigSnapshot,
   AgentRun,
+  EvalRun,
   AgentRunner,
   CreateAgentInput,
   Message,
+  RegressionCase,
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 import { boundedChangedPaths, diffWorkspace, snapshotWorkspace } from "./workspace-snapshot.js";
 
 const now = () => new Date().toISOString();
+
+type ExecutionOptions = {
+  runId?: string;
+  workspacePath?: string;
+  workspaceName?: string;
+  tags?: Record<string, string | number | boolean>;
+  persistMessages?: boolean;
+  persistThread?: boolean;
+  cleanup?: () => Promise<void>;
+};
+
+export interface IsolatedRunInput {
+  agentId: string;
+  workspaceTemplate: string;
+  prompt: string;
+  tags?: Record<string, string | number | boolean>;
+}
 
 export function configSnapshot(agent: Agent, config: AppConfig): AgentConfigSnapshot {
   return {
@@ -72,6 +92,8 @@ export class AgentService {
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
     private readonly emitter: ObservationEmitter = createDefaultEmitter(),
+    /** Fires after a Run's terminal event is emitted (Run end and restart-cancel); wired to the summary rollup (#168). */
+    private readonly onRunEnded?: ((runId: string) => void) | undefined,
   ) {}
 
   async initialize(): Promise<void> {
@@ -92,6 +114,13 @@ export class AgentService {
           agent.status = "ready";
           agent.updatedAt = now();
         }
+      }
+      // EvalRunner progress lives only in the in-process promise, so a running EvalRun cannot resume.
+      for (const evalRun of database.evalRuns) {
+        if (evalRun.status !== "running") continue;
+        evalRun.status = "failed";
+        evalRun.completedAt = now();
+        evalRun.results.push({ caseId: "", results: [], error: "Server restarted while this Eval Run was active" });
       }
     });
     // AGENTS.md is platform-owned. Refresh every existing workspace at boot so newly introduced
@@ -117,6 +146,7 @@ export class AgentService {
         source: { component: "AgentService", observed: true },
         attributes: { reason: "server_restart" },
       });
+      this.onRunEnded?.(run.id);
     }
   }
 
@@ -137,19 +167,28 @@ export class AgentService {
   async createAgent(input: CreateAgentInput): Promise<Agent> {
     const timestamp = now();
     const id = randomUUID();
+    if (input.workspace !== undefined && input.workspace.trim() === "") throw new HttpError(400, "Invalid workspace name");
+    const workspaceName = input.workspace?.trim() ?? id;
+    let workspacePath: string;
+    try { workspacePath = this.workspaces.pathForName(workspaceName); }
+    catch { throw new HttpError(400, "Invalid workspace name"); }
     const agent: Agent = {
       id,
       name: input.name.trim(),
       description: input.description?.trim() ?? "",
       instructions: input.instructions?.trim() ?? "",
       status: "ready",
-      workspacePath: this.workspaces.workspacePath(id),
+      workspacePath,
+      workspaceName,
+      workspaceManaged: input.workspace === undefined,
+      ...(input.template ? { workspaceTemplate: input.template } : {}),
       codexThreadId: null,
       lastError: null,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    await this.workspaces.create(agent);
+    try { await this.workspaces.create(agent, input.workspace !== undefined, input.template); }
+    catch (error) { throw new HttpError(400, error instanceof Error ? error.message : "Unable to create workspace"); }
     await this.store.mutate((database) => database.agents.push(agent));
     return agent;
   }
@@ -158,6 +197,12 @@ export class AgentService {
     const current = this.getAgent(id);
     if (current.status === "busy") {
       throw new HttpError(409, "Stop the active run before editing this Agent");
+    }
+    let nextWorkspacePath: string | undefined;
+    if (input.workspace !== undefined) {
+      try { nextWorkspacePath = this.workspaces.pathForName(input.workspace.trim()); }
+      catch { throw new HttpError(400, "Invalid workspace name"); }
+      if (nextWorkspacePath !== current.workspacePath) await this.workspaces.create({ ...current, workspacePath: nextWorkspacePath }, true);
     }
     const updated = await this.store.mutate((database) => {
       const agent = database.agents.find((item) => item.id === id);
@@ -170,6 +215,12 @@ export class AgentService {
       if (input.name !== undefined) agent.name = input.name.trim();
       if (input.description !== undefined) agent.description = input.description.trim();
       if (input.instructions !== undefined) agent.instructions = input.instructions.trim();
+      if (input.workspace !== undefined && nextWorkspacePath !== undefined && nextWorkspacePath !== agent.workspacePath) {
+        agent.workspacePath = nextWorkspacePath;
+        agent.workspaceName = input.workspace.trim();
+        agent.workspaceManaged = false;
+        agent.codexThreadId = null;
+      }
       agent.lastError = null;
       agent.updatedAt = now();
       return structuredClone(agent);
@@ -181,13 +232,23 @@ export class AgentService {
   async deleteAgent(id: string): Promise<{ archivedWorkspace: string }> {
     const agent = this.getAgent(id);
     await this.cancelExecution(id);
-    const archivedWorkspace = await this.workspaces.archive(agent);
+    const others = this.store.snapshot().agents.filter((item) => item.id !== id && path.resolve(item.workspacePath) === path.resolve(agent.workspacePath));
+    const managed = agent.workspaceManaged ?? path.basename(agent.workspacePath) === agent.id;
+    const archivedWorkspace = managed && others.length === 0 ? await this.workspaces.archive(agent) : "";
     await this.store.mutate((database) => {
       database.agents = database.agents.filter((item) => item.id !== id);
       database.messages = database.messages.filter((item) => item.agentId !== id);
       database.runs = database.runs.filter((item) => item.agentId !== id);
     });
     return { archivedWorkspace };
+  }
+
+  async listWorkspaces() {
+    return this.workspaces.list(this.store.snapshot().agents);
+  }
+
+  async listWorkspaceTemplates() {
+    return this.workspaces.listTemplates();
   }
 
   async startAgent(id: string): Promise<Agent> {
@@ -228,10 +289,63 @@ export class AgentService {
     return this.store.snapshot().runs;
   }
 
+  listRegressionCases(): RegressionCase[] {
+    return this.store.snapshot().regressionCases.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  getRegressionCase(id: string): RegressionCase {
+    const item = this.store.snapshot().regressionCases.find((candidate) => candidate.id === id);
+    if (!item) throw new HttpError(404, "Regression case not found");
+    return item;
+  }
+
+  /** A missing or oversized template is a client error (400), not a server fault, wherever a case names one. */
+  private async templateHash(name: string): Promise<string> {
+    try { return await this.workspaces.templateHash(name); }
+    catch (error) { throw new HttpError(400, error instanceof Error ? error.message : "Unable to hash workspace template"); }
+  }
+
+  async createRegressionCase(input: Omit<RegressionCase, "id" | "createdAt" | "templateHash">): Promise<RegressionCase> {
+    const item: RegressionCase = { ...input, templateHash: await this.templateHash(input.workspaceTemplate), id: randomUUID(), createdAt: now() };
+    await this.store.mutate((database) => database.regressionCases.push(item));
+    return item;
+  }
+
+  async deleteRegressionCase(id: string): Promise<void> {
+    await this.store.mutate((database) => {
+      if (!database.regressionCases.some((item) => item.id === id)) throw new HttpError(404, "Regression case not found");
+      database.regressionCases = database.regressionCases.filter((item) => item.id !== id);
+    });
+  }
+
+  listEvalRuns(): EvalRun[] { return this.store.snapshot().evalRuns.sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }
+  getEvalRun(id: string): EvalRun {
+    const item = this.store.snapshot().evalRuns.find((candidate) => candidate.id === id);
+    if (!item) throw new HttpError(404, "Eval Run not found");
+    return item;
+  }
+  /** Recomputes each case's template hash; a template edited since the case was recorded is refused unless `force`. */
+  async createEvalRun(input: Omit<EvalRun, "id" | "createdAt" | "runIds" | "results" | "status" | "templateHashes" | "templateHashMismatch">, options: { force?: boolean | undefined } = {}): Promise<EvalRun> {
+    const templateHashes: Record<string, string> = {};
+    let mismatch = false;
+    for (const regressionCase of input.caseIds.map((id) => this.getRegressionCase(id))) {
+      const current = (templateHashes[regressionCase.workspaceTemplate] ??= await this.templateHash(regressionCase.workspaceTemplate));
+      if (regressionCase.templateHash !== undefined && regressionCase.templateHash !== current) mismatch = true;
+    }
+    if (mismatch && !options.force) throw new HttpError(409, "template changed since the case was recorded");
+    const item: EvalRun = { ...input, templateHashes, ...(mismatch ? { templateHashMismatch: true } : {}), id: randomUUID(), runIds: [], results: [], status: "running", createdAt: now() };
+    await this.store.mutate((database) => database.evalRuns.push(item));
+    return item;
+  }
+  async updateEvalRun(id: string, update: (item: EvalRun) => void): Promise<void> {
+    await this.store.mutate((database) => { const item = database.evalRuns.find((candidate) => candidate.id === id); if (!item) throw new HttpError(404, "Eval Run not found"); update(item); });
+  }
+
   async sendMessage(
     agentId: string,
     prompt: string,
     context?: TraceContext,
+    options: ExecutionOptions = {},
   ): Promise<{ run: AgentRun; message: Message }> {
     if (!isModelConfigured(this.config)) {
       throw new HttpError(
@@ -240,7 +354,7 @@ export class AgentService {
       );
     }
     const timestamp = now();
-    const runId = randomUUID();
+    const runId = options.runId ?? randomUUID();
     const ctx = context ?? createTraceContext({}, this.emitter.capturePolicy);
     const run: AgentRun = {
       id: runId,
@@ -275,15 +389,20 @@ export class AgentService {
       if (storedAgent.status === "busy") {
         throw new HttpError(409, "This Agent is already running");
       }
+      const workspaceBusy = database.agents.some((candidate) =>
+        candidate.id !== storedAgent.id && candidate.status === "busy" && path.resolve(candidate.workspacePath) === path.resolve(storedAgent.workspacePath));
+      if (workspaceBusy) throw new HttpError(409, "Workspace is busy");
       run.configSnapshot = configSnapshot(storedAgent, this.config);
       run.configHash = configHash(run.configSnapshot);
       database.runs.push(run);
-      database.messages.push(message);
+      if (options.persistMessages !== false) database.messages.push(message);
       const snapshot = structuredClone(storedAgent);
       storedAgent.status = "busy";
       storedAgent.lastError = null;
       storedAgent.updatedAt = timestamp;
-      return snapshot;
+      return options.workspacePath
+        ? { ...snapshot, workspacePath: options.workspacePath, ...(options.workspaceName ? { workspaceName: options.workspaceName } : {}), codexThreadId: options.persistThread === false ? null : snapshot.codexThreadId }
+        : snapshot;
     });
     // Published only once the Run really exists (invariant 3: never fabricate evidence). A rejected
     // request (404/409) must leave `ctx.runId`/`ctx.agentId` unset, or the ingress `onResponse` hook
@@ -320,7 +439,7 @@ export class AgentService {
       name: "run.created",
       status: "ok",
       source: { component: "AgentService", observed: true },
-      attributes: { promptBytes: Buffer.byteLength(prompt, "utf8"), configHash: run.configHash! },
+      attributes: { promptBytes: Buffer.byteLength(prompt, "utf8"), configHash: run.configHash!, workspace: agentAtStart.workspaceName ?? path.basename(agentAtStart.workspacePath), ...options.tags },
     });
     this.spans.set(runId, {
       traceId: ctx.traceId,
@@ -328,7 +447,7 @@ export class AgentService {
       agentId,
       requestId: ctx.requestId,
     });
-    const execution = this.executeRun(agentAtStart, run);
+    const execution = this.executeRun(agentAtStart, run, options);
     this.activeExecutions.set(agentId, execution);
     void execution
       .finally(() => {
@@ -340,6 +459,49 @@ export class AgentService {
     return { run, message };
   }
 
+  /**
+   * Resolve once the Run reaches a terminal status. Awaits the tracked execution when this process owns
+   * it; otherwise (a Run started before a restart) polls the store, bounded by the runner timeout plus grace.
+   */
+  async waitForRun(runId: string): Promise<AgentRun> {
+    const deadline = Date.now() + this.config.codexTimeoutMs + 30_000;
+    while (Date.now() < deadline) {
+      const run = this.getRun(runId);
+      if (run.status !== "queued" && run.status !== "running") return run;
+      const execution = this.activeExecutions.get(run.agentId);
+      if (execution) await execution.catch(() => undefined);
+      else await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error("Run " + runId + " did not finish within " + (this.config.codexTimeoutMs + 30_000) + " ms");
+  }
+
+  /**
+   * Run a prompt from a new template copy and a fresh runner thread. It deliberately does not add
+   * conversation messages or a thread id to the target Agent, while retaining the ordinary Run/trace.
+   */
+  async runIsolated(input: IsolatedRunInput): Promise<{ run: AgentRun; message: Message }> {
+    const runId = randomUUID();
+    const agent = this.getAgent(input.agentId);
+    let materialized = false;
+    try {
+      const templateHash = await this.workspaces.templateHash(input.workspaceTemplate);
+      const workspacePath = await this.workspaces.materializeEvalWorkspace(runId, input.workspaceTemplate, agent);
+      materialized = true;
+      return await this.sendMessage(input.agentId, input.prompt, undefined, {
+        runId,
+        workspacePath,
+        workspaceName: input.workspaceTemplate,
+        tags: { ...input.tags, templateHash },
+        persistMessages: false,
+        persistThread: false,
+        ...(this.config.keepEvalWorkspaces ? {} : { cleanup: () => this.workspaces.removeEvalWorkspace(runId) }),
+      });
+    } catch (error) {
+      if (materialized) await this.workspaces.removeEvalWorkspace(runId);
+      throw error;
+    }
+  }
+
   async systemInfo(): Promise<Record<string, unknown>> {
     return {
       modelConfigured: isModelConfigured(this.config),
@@ -349,6 +511,7 @@ export class AgentService {
       codexAvailable: await this.runner.isAvailable(),
       codexSandboxMode: this.config.codexSandboxMode,
       runtimeProvider: this.config.runtimeProvider,
+      glassboxStore: this.config.glassboxStore,
       containerEngine:
         this.config.runtimeProvider === "container"
           ? this.config.containerEngine
@@ -360,7 +523,7 @@ export class AgentService {
     };
   }
 
-  private async executeRun(agentAtStart: Agent, run: AgentRun): Promise<void> {
+  private async executeRun(agentAtStart: Agent, run: AgentRun, options: ExecutionOptions = {}): Promise<void> {
     const link = this.spans.get(run.id);
     const ids = link
       ? {
@@ -417,6 +580,7 @@ export class AgentService {
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
+      await this.workspaces.writeInstructions(agentAtStart);
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         workspacePath: agentAtStart.workspacePath,
@@ -467,16 +631,18 @@ export class AgentService {
         storedRun.output = result.output;
         storedRun.usage = result.usage;
         storedRun.completedAt = completedAt;
-        database.messages.push({
-          id: randomUUID(),
-          agentId: agent.id,
-          runId: run.id,
-          role: "assistant",
-          content: result.output,
-          createdAt: completedAt,
-        });
+        if (options.persistMessages !== false) {
+          database.messages.push({
+            id: randomUUID(),
+            agentId: agent.id,
+            runId: run.id,
+            role: "assistant",
+            content: result.output,
+            createdAt: completedAt,
+          });
+        }
         agent.status = "ready";
-        agent.codexThreadId = result.threadId;
+        if (options.persistThread !== false) agent.codexThreadId = result.threadId;
         agent.lastError = null;
         agent.updatedAt = completedAt;
       });
@@ -553,6 +719,8 @@ export class AgentService {
       }
     } finally {
       this.spans.delete(run.id);
+      this.onRunEnded?.(run.id);
+      await options.cleanup?.();
     }
   }
 
