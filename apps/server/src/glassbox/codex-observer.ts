@@ -164,6 +164,11 @@ export class CodexStreamObserver implements CodexStreamSink {
       if (this.unpairedReasoning > 0) this.unpairedReasoning--;
       else this.observedCalls++;
     }
+    if (kind && ["command_execution", "file_change", "mcp_tool_call", "web_search"].includes(kind)) {
+      // A message emitted after a tool result must come from a later model call — the model had to
+      // see the tool output to produce it — so a pre-tool reasoning item can no longer absorb it.
+      this.unpairedReasoning = 0;
+    }
     if (kind === "command_execution") {
       this.commandExecution(item);
     } else if (kind === "file_change") {

@@ -77,8 +77,9 @@ describe("CodexStreamObserver", () => {
     expect(events[2]!.attributes).toEqual({ tool: "file_change" });
     expect(events[3]!.attributes).toMatchObject({ fileCount: 2, added: 1, updated: 1 });
     expect(events[4]).toMatchObject({ name: "model.turn", phase: "start", status: "running", attributes: { turnIndex: 1 } });
-    // One reasoning + one agent_message pair = one observed model call (#207).
-    expect(events[5]).toMatchObject({ name: "model.turn", phase: "end", status: "ok", attributes: { turnIndex: 1, modelCallsObserved: 1, inputTokens: 100, cachedInputTokens: 40, outputTokens: 7 } });
+    // The tool calls sit between the reasoning and the final message, so the message is evidence of a
+    // second model call — the pre-tool reasoning item cannot absorb it (#230).
+    expect(events[5]).toMatchObject({ name: "model.turn", phase: "end", status: "ok", attributes: { turnIndex: 1, modelCallsObserved: 2, inputTokens: 100, cachedInputTokens: 40, outputTokens: 7 } });
     expect(events[5]!.spanId).toBe(events[4]!.spanId);
     expect(JSON.stringify(events)).not.toContain("SECRET THOUGHTS");
     expect(events.some((e) => e.type === "capability.unavailable")).toBe(false);
@@ -448,8 +449,8 @@ describe.skipIf(!existsSync(fixtureDir))("CodexStreamObserver against real captu
       expect(types.filter((t) => t.startsWith("tool.call.")).length).toBeGreaterThanOrEqual(1);
       expect(types).toContain("model.completed");
       expect(types).not.toContain("capability.unavailable");
-      // Each capture holds one reasoning + one agent_message: one observed model call (#207).
-      expect(events.find((e) => e.type === "model.completed")!.attributes.modelCallsObserved).toBe(1);
+      // Each capture is reasoning → command → message: the post-tool message is a second call (#230).
+      expect(events.find((e) => e.type === "model.completed")!.attributes.modelCallsObserved).toBe(2);
       // E7/E8: reasoning text and the non-fatal notice never reach the store.
       expect(JSON.stringify(events)).not.toContain("The task is simple");
       expect(JSON.stringify(events)).not.toContain("Model metadata");
