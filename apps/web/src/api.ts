@@ -102,7 +102,7 @@ export const api = {
   listEvalRuns: () => request<{ evalRuns: EvalRun[] }>("/api/eval-runs"),
   evalRun: (id: string) => request<{ evalRun: EvalRun }>("/api/eval-runs/" + id),
   compareEvalRuns: (baselineId: string, candidateId: string) => request<import("./types").EvalComparison>("/api/eval-runs/" + baselineId + "/compare/" + candidateId),
-  startEvalRun: (body: { agentId: string; caseIds: string[] }) =>
+  startEvalRun: (body: { agentId: string; caseIds: string[]; force?: boolean }) =>
     request<{ evalRun: EvalRun }>("/api/eval-runs", {
       method: "POST",
       body: JSON.stringify(body),
