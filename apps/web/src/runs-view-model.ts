@@ -177,6 +177,36 @@ export function outlierLabel(outlier: RunOutlier): string {
   return `outlier ×${formatMultiple(outlier.durationMultiple!)} duration`;
 }
 
+/**
+ * #263: some providers echo the same "request id: X" twice inside one error string. Keep the first
+ * occurrence per id and drop later repeats (with their leading separator). Presentation only — the
+ * stored event/log text is never touched. Idempotent: one occurrence per id always survives.
+ */
+export function collapseRequestId(text: string): string {
+  const seen = new Set<string>();
+  return text.replace(/[\s,;·]*\(?request id:\s*([\w-]+)\)?/gi, (match, id: string) => {
+    if (seen.has(id)) return "";
+    seen.add(id);
+    return match;
+  });
+}
+
+export const ERROR_HEAD_CHARS = 80;
+
+/**
+ * #263: the full error text renders exactly once (the focus-card diagnosis); span-row subtitles and
+ * the runs-table first-failing-step show this head, with the untouched full text in their `title`.
+ */
+export function errorHead(text: string): string {
+  const collapsed = collapseRequestId(text);
+  return collapsed.length <= ERROR_HEAD_CHARS ? collapsed : collapsed.slice(0, ERROR_HEAD_CHARS).trimEnd() + "…";
+}
+
+/** #263: "1 model calls" → "1 model call". */
+export function pluralize(count: number, singular: string, plural = singular + "s"): string {
+  return count + " " + (count === 1 ? singular : plural);
+}
+
 const clock = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
 export function formatClock(value: string | undefined): string {

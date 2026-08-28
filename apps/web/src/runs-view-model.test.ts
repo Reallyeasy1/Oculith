@@ -2,7 +2,7 @@
 //   npx vitest run apps/web/src/runs-view-model.test.ts
 import { describe, expect, it } from "vitest";
 import type { RunListItem, TraceStatus } from "./types";
-import { evidenceBadges, formatCost, formatRunDuration, formatUsage, liveRuns, matchesFilter, needsAttention, outlierLabel, recoveredFailures, runOutlier, summarizeRuns, workspaceLabel, workspaceOptionLabel } from "./runs-view-model";
+import { ERROR_HEAD_CHARS, collapseRequestId, errorHead, evidenceBadges, formatCost, formatRunDuration, formatUsage, liveRuns, matchesFilter, needsAttention, outlierLabel, pluralize, recoveredFailures, runOutlier, summarizeRuns, workspaceLabel, workspaceOptionLabel } from "./runs-view-model";
 
 function run(status: TraceStatus, degraded = false, agentId = "a", agentName = "A", extra: Partial<RunListItem> = {}): RunListItem {
   return {
@@ -151,6 +151,45 @@ describe("workspace presentation", () => {
   it("describes selectable workspaces with sharing and file-count context", () => {
     expect(workspaceOptionLabel({ name: "shared-repo", path: "/work/shared-repo", agents: ["a", "b"], fileCount: 7, lastModified: "2026-08-27T00:00:00Z", managed: false }))
       .toBe("shared-repo · 2 agents · unmanaged · 7 files");
+  });
+});
+
+describe("error de-duplication presentation (#263)", () => {
+  // Shaped like the trace-34910180 repro: the provider echoes the same request id twice.
+  const provider = "Provider rejected the request: 401 Unauthorized, invalid API key (request id: req-2026082716-abc123). Upstream said: unauthorized · request id: req-2026082716-abc123";
+
+  it("collapses a repeated request id, keeping the first occurrence", () => {
+    const collapsed = collapseRequestId(provider);
+    expect(collapsed.match(/request id/gi)).toHaveLength(1);
+    expect(collapsed).toContain("(request id: req-2026082716-abc123)");
+    expect(collapsed).toContain("Upstream said: unauthorized");
+  });
+
+  it("is idempotent and case-insensitive on the label", () => {
+    const once = collapseRequestId("boom Request id: r-1 and again request id: r-1");
+    expect(once).toBe("boom Request id: r-1 and again");
+    expect(collapseRequestId(once)).toBe(once);
+  });
+
+  it("keeps distinct request ids and untouched text alone", () => {
+    expect(collapseRequestId("a request id: r-1, b request id: r-2")).toBe("a request id: r-1, b request id: r-2");
+    expect(collapseRequestId("no ids here")).toBe("no ids here");
+  });
+
+  it("bounds errorHead at ERROR_HEAD_CHARS plus one ellipsis, leaving short text alone", () => {
+    const head = errorHead(provider);
+    expect(head.length).toBeLessThanOrEqual(ERROR_HEAD_CHARS + 1);
+    expect(head.endsWith("…")).toBe(true);
+    expect(errorHead("short error")).toBe("short error");
+    expect(errorHead("x".repeat(ERROR_HEAD_CHARS))).toBe("x".repeat(ERROR_HEAD_CHARS));
+  });
+
+  it("pluralizes counts, including the irregular retry/retries", () => {
+    expect(pluralize(1, "model call")).toBe("1 model call");
+    expect(pluralize(2, "model call")).toBe("2 model calls");
+    expect(pluralize(0, "tool call")).toBe("0 tool calls");
+    expect(pluralize(1, "retry", "retries")).toBe("1 retry");
+    expect(pluralize(3, "retry", "retries")).toBe("3 retries");
   });
 });
 
