@@ -579,6 +579,13 @@ textarea:focus {
   margin-top: 13px;
 }
 
+.form-help {
+  margin: 6px 0 0;
+  color: #66645d;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .panel-footer {
   margin-top: 13px;
   display: flex;
@@ -1162,12 +1169,49 @@ textarea:focus {
 
 .runs-table-wrap {
   overflow-x: auto;
+  position: relative;
+  scrollbar-color: var(--purple) #ecebe5;
+}
+
+.runs-baseline {
+  margin: 0 0 0.75rem;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.badge-outlier {
+  margin-left: 0.35rem;
+}
+
+.runs-table-wrap-scroll-hint::after {
+  content: "Scroll →" / "";
+  position: sticky;
+  left: calc(100% - 74px);
+  bottom: 4px;
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--muted);
+  font-size: 10px;
+  box-shadow: -6px 0 8px var(--paper);
 }
 
 .runs-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
+}
+
+.runs-runtime,
+.runs-outcome {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.runs-outcome {
+  max-width: 280px;
 }
 
 .runs-table th,
@@ -1206,6 +1250,18 @@ textarea:focus {
   color: var(--muted);
   font-size: 13px;
 }
+
+.trace-logs {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.trace-logs summary { cursor: pointer; font-weight: 700; }
+.trace-logs label { display: inline-grid; gap: 4px; margin: 12px 0; }
+.run-logs { margin: 0; padding-left: 24px; font: 12px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.run-logs small { display: block; color: var(--muted); }
 
 .runs-empty-action {
   margin-left: 8px;
@@ -1247,6 +1303,63 @@ textarea:focus {
   background: #f6ecd2;
 }
 
+.badge-recovered {
+  margin-left: 6px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.tool-call-summary {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.tool-call-summary .badge {
+  margin-right: 0;
+}
+
+/* "Live now" strip (#131): running Runs above the table, whatever the quick filter says. */
+.live-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.live-run {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--purple);
+  border-radius: 12px;
+  background: var(--purple-soft);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.live-run:hover,
+.live-run.selected {
+  background: #e8e4fb;
+}
+
+.live-run:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: 2px;
+}
+
+.badge-error {
+  color: #ac4343;
+  border-color: #e8b4ae;
+  background: #f6dfdc;
+}
+
 
 /* --- GlassBox Trace detail (UX-02) --- */
 .trace-detail {
@@ -1254,6 +1367,14 @@ textarea:focus {
   padding-bottom: 8px;
   /* scrollIntoView on open leaves the compact Playground bar visible above the trace header. */
   scroll-margin-top: 72px;
+  /* Trace compaction queries key on this container, not the viewport (#138). */
+  container: trace-detail / inline-size;
+}
+
+.trace-export-error {
+  margin: 0 0 12px;
+  color: var(--red);
+  font-size: 12px;
 }
 
 /* Compact Playground while a trace is open (issue #35): agent name, status, Expand. */
@@ -1417,6 +1538,35 @@ textarea:focus {
   margin: 0;
   padding: 0;
   accent-color: var(--purple);
+}
+
+.trace-filters .button[aria-pressed="true"] {
+  background: var(--purple-soft);
+  border-color: var(--purple);
+  color: var(--purple-dark);
+}
+
+.audit-table-wrap {
+  border-top: 1px solid #ecebe5;
+}
+
+.audit-table tbody tr {
+  cursor: pointer;
+}
+
+.audit-table tbody tr:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: -2px;
+}
+
+.audit-evidence {
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid currentColor;
+  background: transparent;
+  color: var(--purple-dark);
+  font: inherit;
+  cursor: pointer;
 }
 
 .trace-tree {
@@ -1638,7 +1788,7 @@ textarea:focus {
   right: 0;
   bottom: 0;
   z-index: 15;
-  width: min(460px, 100%);
+  width: min(460px, calc(100vw - 76px));
   overflow-y: auto;
   padding: 20px 22px 28px;
   background: var(--paper);
@@ -1726,7 +1876,10 @@ textarea:focus {
   overflow-wrap: anywhere;
 }
 
-@media (max-width: 720px) {
+/* One breakpoint set, on the trace container's content width. #124's viewport values (800 / 1099)
+   translated with the sidebar, page padding and border removed (800 → 654, 1099 → 753), so the tree
+   compacts the same way without a drawer and also when the docked drawer eats the width. */
+@container trace-detail (max-width: 690px) {
   .trace-detail > .trace-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1746,9 +1899,30 @@ textarea:focus {
   }
 }
 
-@media (min-width: 721px) and (max-width: 1050px) {
+@container trace-detail (min-width: 691px) and (max-width: 760px) {
   .trace-detail > .trace-summary {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* Span drawer docking (#138). The drawer is fixed to the viewport, so where it lives is a viewport
+   decision: >= 1500 px the trace reserves 460 px beside it and may grow past the usual 1180 px so the
+   tree keeps its width; 801–1499 px it docks below the tree; <= 800 px it stays the #100 overlay
+   (min(460px, 100vw - 76px)). */
+@media (min-width: 1500px) {
+  .trace-detail-with-drawer {
+    max-width: 1640px;
+    padding-right: 460px;
+  }
+}
+
+@media (min-width: 801px) and (max-width: 1499px) {
+  .trace-detail-with-drawer .span-drawer {
+    position: static;
+    width: 100%;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+    box-shadow: none;
   }
 }
 

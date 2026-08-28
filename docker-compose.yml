@@ -17,8 +17,12 @@ services:
       PORT: 3000
       APP_DATA_DIR: /app/data
       AGENT_WORKSPACE_ROOT: /app/workspaces
+      WORKSPACE_TEMPLATES_DIR: /app/workspace-templates
       CODEX_HOME: /app/codex-home
       CODEX_SANDBOX_MODE: ${CODEX_SANDBOX_MODE:-workspace-write}
+      # Opt-in PostgreSQL backend (#191): `docker compose --profile postgres up`. Default keeps db.json + NDJSON.
+      GLASSBOX_STORE: ${GLASSBOX_STORE:-json}
+      DATABASE_URL: ${DATABASE_URL:-postgres://postgres:${POSTGRES_PASSWORD:-launchpad}@postgres:5432/launchpad}
     ports:
       - "${PUBLIC_PORT:-3000}:3000"
     volumes:
@@ -33,3 +37,14 @@ services:
     pids_limit: 512
     mem_limit: 4g
     cpus: 2
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-launchpad}
+      POSTGRES_DB: launchpad
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"

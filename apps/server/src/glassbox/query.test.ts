@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTrace, flattenSpans, formatExitCode } from "./query.js";
+import { buildTrace, flattenSpans, formatExitCode, projectAudit } from "./query.js";
 import { SCHEMA_VERSION, type ObservationEvent } from "./schema.js";
 
 let seq = 0;
@@ -14,10 +14,70 @@ const svcStart = () => ev({ type: "agent_service.run.started", category: "contro
 const rtStart = () => ev({ type: "runtime.codex.started", category: "runtime", spanId: "rt", parentSpanId: "svc", phase: "start", status: "running", source: { component: "AgentRunner", observed: true } });
 
 describe("buildTrace", () => {
+  it("projects safe text and metadata-only failure hints from the terminal Run event", () => {
+    const completed = ev({
+      type: "run.completed", category: "control", spanId: "done", status: "ok",
+      attributes: { finalMessageBytes: 42, reportedFailure: true },
+      summary: { text: "Unable to continue", policy: "safe_summary" },
+    });
+    expect(buildTrace([completed], { capturePolicy: "safe_summary" }).summary.outcome).toEqual({
+      text: "Unable to continue", finalMessageBytes: 42, reportedFailure: true,
+    });
+    expect(buildTrace([{ ...completed, summary: undefined }], { capturePolicy: "metadata_only" }).summary.outcome).toEqual({
+      finalMessageBytes: 42, reportedFailure: true,
+    });
+  });
+
   it("formats Windows crash and SIGKILL exit codes with deterministic operator hints", () => {
     expect(formatExitCode(3221225794)).toBe("3221225794 (0xC0000142) — process failed to initialise — the runtime CLI could not start; restart the server");
     expect(formatExitCode(137)).toBe("137 — SIGKILL (timeout, cancellation, or out-of-memory termination)");
+    // the 128+N signal family a container runtime reports (observed 128 in UAT round 6)
+    expect(formatExitCode(128)).toBe("128 — invalid exit argument, or the shell could not run the command");
+    expect(formatExitCode(143)).toBe("143 — SIGTERM — asked to stop");
     expect(formatExitCode(1)).toBe("1");
+    expect(formatExitCode(1)).toBe("1");
+  });
+  it("explains exit code 127 as a missing program", () => {
+    expect(formatExitCode(127)).toBe("127 — command not found — the program is missing from the runtime image");
+  });
+  it("explains exit code 126 as found but not executable", () => {
+    expect(formatExitCode(126)).toBe("126 — found but not executable — permissions or wrong interpreter");
+  });
+  it("explains exit code 124 as a timeout-wrapper kill", () => {
+    expect(formatExitCode(124)).toBe("124 — timed out — killed by the timeout wrapper");
+  });
+  it("explains exit code 130 as SIGINT", () => {
+    expect(formatExitCode(130)).toBe("130 — interrupted — SIGINT");
+  });
+  it("explains exit code 2 as a usage error or interpreter file-not-found", () => {
+    expect(formatExitCode(2)).toBe("2 — usage error, or the interpreter could not find the file");
+  });
+  it("names the missing-program cause in the diagnosis for an exit code 127 tool failure", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "tool.call.failed", category: "tool", spanId: "tool", parentSpanId: "rt", status: "error", name: "shell:curl", error: { type: "exit_code", message: "exit code 127" } }),
+      ev({ type: "run.failed", category: "control", spanId: "failed", parentSpanId: "svc", status: "error" })];
+    const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(summary.failure?.diagnosis).toContain("command not found");
+  });
+  it("formats exit-code hints on recovered spans without changing stored events", () => {
+    seq = 0;
+    const failedTool = ev({
+      type: "tool.call.failed", category: "tool", spanId: "tool", parentSpanId: "rt", status: "error",
+      name: "shell:missing-command", error: { type: "exit_code", message: "exit code 127" },
+    });
+    const events = [root(), svcStart(), rtStart(), failedTool,
+      ev({ type: "runtime.codex.completed", category: "runtime", spanId: "rt", phase: "end", status: "ok" }),
+      ev({ type: "run.completed", category: "control", spanId: "done", parentSpanId: "svc", status: "ok" })];
+
+    const view = buildTrace(events, { capturePolicy: "metadata_only" });
+    const tool = flattenSpans(view.spans).find((span) => span.spanId === "tool");
+
+    expect(view.summary.status).toBe("ok");
+    expect(view.summary.failure).toBeUndefined();
+    expect(tool?.error?.message).toBe("exit code 127 — command not found — the program is missing from the runtime image");
+    expect(failedTool.error?.message).toBe("exit code 127");
+    expect(view.events.find((event) => event.eventId === failedTool.eventId)?.error?.message).toBe("exit code 127");
   });
   it("uses the formatted exit code in failure focus and diagnosis", () => {
     seq = 0;
@@ -36,10 +96,26 @@ describe("buildTrace", () => {
     const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
     expect(summary.failure?.message).toBe("Codex exited with code 137 — SIGKILL (timeout, cancellation, or out-of-memory termination): stderr tail");
   });
+  it("prefers the platform workspace snapshot over the runtime stream's file_change report (#153)", () => {
+    seq = 0;
+    const report = ev({ type: "workspace.changed", category: "workspace", spanId: "wsr", parentSpanId: "rt", status: "ok",
+      source: { component: "AgentRunner", adapter: "ContainerCodexRunner", observed: true }, attributes: { fileCount: 1, added: 0, updated: 1, deleted: 0 } });
+    const snapshot = ev({ type: "workspace.changed", category: "workspace", spanId: "wss", parentSpanId: "svc", status: "ok",
+      source: { component: "AgentService", adapter: "WorkspaceSnapshot", observed: true }, attributes: { added: 0, modified: 1, removed: 0, bytesDelta: 3, truncated: false, paths: "src/invoice.js" } });
+    const done = [ev({ type: "runtime.codex.completed", category: "runtime", spanId: "rt", phase: "end", status: "ok" }),
+      ev({ type: "run.completed", category: "control", spanId: "rdone", parentSpanId: "svc", status: "ok" })];
+    // Stream report first (it arrives mid-Run), snapshot after the runtime closed — the snapshot must win.
+    const both = buildTrace([root(), svcStart(), rtStart(), report, ...done.slice(0, 1), snapshot, done[1]!], { capturePolicy: "metadata_only" });
+    expect(both.summary.workspaceChanges).toEqual({ added: 0, modified: 1, removed: 0, bytesDelta: 3, truncated: false });
+    // Report alone (no snapshot ran): its vocabulary is normalised rather than read as zero.
+    seq = 0;
+    const only = buildTrace([root(), svcStart(), rtStart(), report, ...done], { capturePolicy: "metadata_only" });
+    expect(only.summary.workspaceChanges).toMatchObject({ added: 0, modified: 1, removed: 0 });
+  });
   it("reconstructs a nested tree with durations and rolls up ok", () => {
     seq = 0;
     const events = [
-      root(), ev({ type: "run.created", category: "control", spanId: "rc", parentSpanId: "root", attributes: { configHash: "0123456789abcdef" } }), svcStart(), rtStart(),
+      root(), ev({ type: "run.created", category: "control", spanId: "rc", parentSpanId: "root", attributes: { workspace: "repo-doctor", configHash: "0123456789abcdef" } }), svcStart(), rtStart(),
       ev({ type: "tool.call.completed", category: "tool", spanId: "tool1", parentSpanId: "rt", status: "ok", durationMs: 5 }),
       ev({ type: "model.completed", category: "model", spanId: "m1", parentSpanId: "rt", status: "ok", attributes: { inputTokens: 10, outputTokens: 2 } }),
       ev({ type: "runtime.codex.completed", category: "runtime", spanId: "rt", phase: "end", status: "ok" }),
@@ -58,6 +134,8 @@ describe("buildTrace", () => {
       toolCalls: 1,
       toolFailures: 0,
       modelCalls: 1,
+      timeToFirstToolMs: 30,
+      timeSplit: { modelMs: 0, toolMs: 5, containerStartMs: 0 },
       tokens: { input: 10, output: 2 },
       retries: 0,
       denials: 0,
@@ -87,6 +165,7 @@ describe("buildTrace", () => {
       toolCalls: 0,
       toolFailures: 0,
       modelCalls: 0,
+      timeSplit: { modelMs: 0, toolMs: 0, containerStartMs: 0 },
       retries: 0,
       denials: 0,
     });
@@ -102,6 +181,64 @@ describe("buildTrace", () => {
       terminalStatus: "ok", toolCalls: 1, toolFailures: 1, modelCalls: 1,
       tokens: { input: 3, cachedInput: 2, output: 1 }, retries: 1, denials: 1,
     });
+  });
+  it("derives model/tool/container timing and time to first tool from observed spans", () => {
+    seq = 0;
+    const events = [
+      root(),
+      ev({ type: "run.created", category: "control", spanId: "created" }),
+      ev({ type: "runtime.container.started", category: "infrastructure", spanId: "container", phase: "start", status: "running" }),
+      ev({ type: "runtime.codex.started", category: "runtime", spanId: "codex", parentSpanId: "container", phase: "start", status: "running" }),
+      ev({ type: "model.request", category: "model", spanId: "turn-1", parentSpanId: "codex", phase: "start", status: "running", name: "model.turn" }),
+      ev({ type: "model.completed", category: "model", spanId: "turn-1", parentSpanId: "codex", phase: "end", status: "ok", name: "model.turn" }),
+      ev({ type: "tool.call.started", category: "tool", spanId: "tool-1", parentSpanId: "codex", phase: "start", status: "running" }),
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tool-1", parentSpanId: "codex", phase: "end", status: "ok" }),
+      ev({ type: "run.completed", category: "control", spanId: "done", status: "ok" }),
+    ];
+    expect(buildTrace(events, { capturePolicy: "metadata_only" }).summary.metrics).toMatchObject({
+      modelCalls: 1,
+      toolCalls: 1,
+      timeToFirstToolMs: 50,
+      timeSplit: { modelMs: 10, toolMs: 10, containerStartMs: 10 },
+    });
+  });
+  it("prefers the observed per-call count over the single-turn span count for modelCalls (#207)", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "model.request", category: "model", spanId: "turn-1", parentSpanId: "rt", phase: "start", status: "running", name: "model.turn" }),
+      ev({ type: "model.completed", category: "model", spanId: "turn-1", parentSpanId: "rt", phase: "end", status: "ok", name: "model.turn", attributes: { turnIndex: 1, modelCallsObserved: 4, inputTokens: 10 } }),
+      // A second turn cut short before any item evidence still counts as at least one call.
+      ev({ type: "model.request", category: "model", spanId: "turn-2", parentSpanId: "rt", phase: "start", status: "running", name: "model.turn" }),
+      ev({ type: "run.cancelled", category: "control", spanId: "cancel", parentSpanId: "svc", status: "cancelled" }),
+    ];
+    expect(buildTrace(events, { capturePolicy: "metadata_only" }).summary.metrics.modelCalls).toBe(5);
+  });
+  it("subtracts tool time nested inside a model.turn so the time split does not double-count", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "model.request", category: "model", spanId: "turn-1", parentSpanId: "rt", phase: "start", status: "running", name: "model.turn" }),
+      ev({ type: "tool.call.started", category: "tool", spanId: "tool-1", parentSpanId: "rt", phase: "start", status: "running" }),
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tool-1", parentSpanId: "rt", phase: "end", status: "ok" }),
+      ev({ type: "model.completed", category: "model", spanId: "turn-1", parentSpanId: "rt", phase: "end", status: "ok", name: "model.turn" }),
+      ev({ type: "run.completed", category: "control", spanId: "done", parentSpanId: "svc", status: "ok" }),
+    ];
+    // turn spans 30ms of wall clock; the tool inside it takes 10ms, so the model itself gets 20ms.
+    expect(buildTrace(events, { capturePolicy: "metadata_only" }).summary.metrics.timeSplit).toEqual({ modelMs: 20, toolMs: 10, containerStartMs: 0 });
+  });
+  it("reconstructs paired tool durations and keeps only the first three bounded identities", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "tool.call.started", category: "tool", spanId: "tool-1", parentSpanId: "rt", phase: "start", status: "running", name: "shell:python3", attributes: { program: "python3", argument0: "missing_script.py" } }),
+      ev({ type: "tool.call.failed", category: "tool", spanId: "tool-1", parentSpanId: "rt", phase: "end", status: "error", name: "shell:python3", attributes: { program: "python3", argument0: "missing_script.py", exitCode: 2 } }),
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tool-2", parentSpanId: "rt", status: "ok", attributes: { program: "npm", argument0: "test" } }),
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tool-3", parentSpanId: "rt", status: "ok", attributes: { program: "git", argument0: "status" } }),
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tool-4", parentSpanId: "rt", status: "ok", attributes: { program: "node", argument0: "check.js" } }),
+      ev({ type: "run.completed", category: "control", spanId: "done", parentSpanId: "svc", status: "ok" }),
+    ];
+    const view = buildTrace(events, { capturePolicy: "metadata_only" });
+    const first = flattenSpans(view.spans).find((span) => span.spanId === "tool-1");
+    expect(first).toMatchObject({ incomplete: false, durationMs: 10, attributes: { program: "python3", argument0: "missing_script.py" } });
+    expect(view.summary.metrics.toolIdentities).toEqual(["python3 missing_script.py", "npm test", "git status"]);
   });
   it("handled tool failure keeps parent ok; cancelled never rolls up ok; open spans are incomplete", () => {
     seq = 0;
@@ -127,19 +264,21 @@ describe("buildTrace", () => {
     const events = [root(), svcStart(),
       ev({ type: "runtime.container.started", category: "runtime", spanId: "ct", parentSpanId: "svc", phase: "start", status: "running", name: "docker run" }),
       ev({ type: "runtime.codex.started", category: "runtime", spanId: "rt", parentSpanId: "ct", phase: "start", status: "running", name: "codex exec", source: { component: "AgentRunner", observed: true } }),
-      ev({ type: "run.cancelled", category: "control", spanId: "rc", parentSpanId: "svc", status: "cancelled", timestamp: t(60_000), source: { component: "AgentService", observed: true }, attributes: { reason: "server_restart" } })];
+      ev({ type: "run.cancelled", category: "control", spanId: "rc", parentSpanId: "svc", status: "cancelled", timestamp: t(60_000), source: { component: "AgentService", observed: true }, attributes: { reason: "server_restart", lastSeenAt: t(45_000) } })];
     const view = buildTrace(events, { capturePolicy: "metadata_only" });
     expect(view.summary.status).toBe("cancelled");
     expect(view.summary.endedReason).toBe("server_restart");
     expect(view.summary.endedAt).toBe(t(60_000));
     expect(view.summary.durationMs).toBe(30); // codex exec start (t40) - root (t10), not the restart-cancel at t60000
+    expect(view.summary.interruptedAfterMs).toBe(44_990); // last heartbeat (t45000) - root (t10): the boot at t60000 is not evidence the Run was alive
+    expect(buildTrace(events.map((e) => (e.type === "run.cancelled" ? { ...e, attributes: { reason: "server_restart" } } : e)), { capturePolicy: "metadata_only" }).summary.interruptedAfterMs).toBe(30); // no heartbeat: falls back to last evidence
     expect(view.summary.failure?.kind).toBe("cancelled");
     expect(view.summary.failure?.spanId).toBe("rt");
     expect(view.summary.failure?.eventId).toBe("evt_4");
     expect(view.summary.failure?.path).toEqual(["root", "svc", "ct", "rt"]);
     expect(view.summary.failure?.component).toBe("AgentRunner");
     expect(view.summary.firstFailingStep).toBe("codex exec");
-    expect(view.summary.failure?.diagnosis).toBe("Run interrupted by a server restart after 0.0 s of observed activity; the runtime span codex exec never closed.");
+    expect(view.summary.failure?.diagnosis).toBe("Run interrupted by a server restart after 45.0 s; last trace evidence was 30 ms after the Run started; the runtime span codex exec never closed.");
   });
   it("user cancel (no reason): still focuses the cancelled codex exec span; no endedReason; full duration", () => {
     seq = 0;
@@ -187,6 +326,29 @@ describe("buildTrace", () => {
     const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
     expect(summary).toMatchObject({ status: "ok", denials: 1, firstFailingStep: "pwsh" });
     expect(summary.failure).toMatchObject({ kind: "denied", name: "pwsh", component: "Sandbox", diagnosis: "sandbox declined `pwsh`" });
+  });
+  it("projects audit rows from stored facts and summarizes their counts", () => {
+    seq = 0;
+    const events = [root(),
+      ev({ type: "run.created", category: "control", spanId: "created", name: "run.created" }),
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tool", name: "shell:git", actorType: "agent", actorId: "agt-1", status: "ok", attributes: { program: "git" } }),
+      ev({ type: "policy.denied", category: "policy", spanId: "deny", name: "shell:pwsh", actorType: "service", actorId: "sandbox", status: "error", attributes: { program: "pwsh" } }),
+      ev({ type: "runtime.codex.completed", category: "runtime", spanId: "rt", phase: "end", status: "ok", name: "codex exec", actorType: "service", actorId: "runner" }),
+      ev({ type: "run.completed", category: "control", spanId: "done", name: "run.completed", status: "ok" }),
+    ];
+    const rows = projectAudit(events);
+    expect(rows.map((row) => row.eventId)).toEqual(expect.arrayContaining(events.map((event) => event.eventId)));
+    expect(rows.find((row) => row.action === "run.created")).toMatchObject({ actor: { type: "human", id: "local-user" }, outcome: "allowed", resource: "run.created" });
+    expect(rows.find((row) => row.action === "policy.denied")).toMatchObject({ actor: { type: "service", id: "sandbox" }, outcome: "denied", resource: "pwsh" });
+    expect(rows.find((row) => row.action === "tool.call.completed")).toMatchObject({ actor: { type: "agent", id: "agt-1" }, outcome: "ok", resource: "git" });
+    expect(rows.find((row) => row.action === "runtime.codex.completed")).toMatchObject({ actor: { type: "service", id: "runner" }, outcome: "ok" });
+    const view = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(view.summary.audit).toEqual({ actions: rows.length, denials: 1, actors: ["agent/agt-1", "human/local-user", "service/runner", "service/sandbox"] });
+  });
+  it("projects restart cancellation as a service audit fact", () => {
+    seq = 0;
+    const cancellation = ev({ type: "run.cancelled", category: "control", spanId: "cancel", status: "cancelled", actorType: "service", actorId: "server", attributes: { reason: "server_restart" } });
+    expect(projectAudit([cancellation])).toEqual([expect.objectContaining({ action: "run.cancelled", outcome: "cancelled", actor: { type: "service", id: "server" } })]);
   });
   it("focuses a denial ahead of its associated tool failure when the Run fails", () => {
     seq = 0;

@@ -17,6 +17,15 @@ export interface Agent {
   updatedAt: string;
 }
 
+export interface Workspace {
+  name: string;
+  path: string;
+  agents: string[];
+  fileCount: number;
+  lastModified: string;
+  managed: boolean;
+}
+
 export interface Message {
   id: string;
   agentId: string;
@@ -24,6 +33,11 @@ export interface Message {
   role: "user" | "assistant";
   content: string;
   createdAt: string;
+}
+
+export interface RunActivity {
+  kind: "thinking" | "command" | "file_change" | "web_search" | "mcp_tool_call";
+  label: string;
 }
 
 export interface AgentRun {
@@ -43,6 +57,7 @@ export interface AgentRun {
   traceParentSpanId?: string;
   configHash?: string;
   configSnapshot?: AgentConfigSnapshot;
+  currentActivity?: RunActivity;
 }
 
 export interface AgentConfigSnapshot {
@@ -80,6 +95,7 @@ export interface RunListItem {
   startedAt?: string;
   durationMs?: number;
   endedReason?: "server_restart";
+  interruptedAfterMs?: number;
   firstFailingStep?: string;
   eventCount: number;
   runtime: string;
@@ -92,17 +108,36 @@ export interface RunListItem {
   capabilities: { model: "observed" | "unavailable" | "unknown"; tool: "observed" | "unavailable" | "unknown" };
   toolCalls: number;
   toolFailures: number;
+  toolIdentities?: string[];
   tokens?: { output?: number };
   denials: number;
+  actions: number;
+  /** Process status (`status` mapped: ok→completed, error→failed). */
+  executionStatus: "running" | "completed" | "failed" | "timeout" | "cancelled";
+  /** Whether the task succeeded; `unknown` until an evaluator or Eval Run sets it (#168). */
+  taskOutcome: "passed" | "failed" | "unknown";
   configHash?: string;
   configSnapshot?: AgentConfigSnapshot;
   workspaceChanges?: { added: number; modified: number; removed: number; bytesDelta: number; truncated: boolean };
+  outcome?: { text?: string; finalMessageBytes: number; reportedFailure: boolean };
   degraded: boolean;
   truncated: boolean;
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
   evicted: boolean;
   redacted: boolean;
   lastEventAt?: string;
+  estimatedCostUsd?: number;
+}
+
+export interface BaselineDistribution { median?: number; p90?: number }
+export interface AgentRunBaseline {
+  sampleCount: number;
+  windowSize: 20;
+  durationMs: BaselineDistribution;
+  inputTokens: BaselineDistribution;
+  toolCalls: BaselineDistribution;
+  toolFailures: BaselineDistribution;
+  estimatedCostUsd?: BaselineDistribution;
 }
 
 export interface FailureFocus {
@@ -116,6 +151,19 @@ export interface FailureFocus {
   message?: string;
   path: string[];
   diagnosis: string;
+}
+
+export type AuditOutcome = "allowed" | "denied" | "ok" | "error" | "timeout" | "cancelled";
+export interface AuditRow {
+  at: string;
+  actor: { type: ObservationEvent["actorType"]; id: string };
+  action: string;
+  resource: string;
+  outcome: AuditOutcome;
+  eventId: string;
+  spanId: string;
+  traceId: string;
+  attributes: ObservationEvent["attributes"];
 }
 
 export interface TraceSummary {
@@ -132,11 +180,14 @@ export interface TraceSummary {
   durationMs?: number;
   /** Run closed by a server restart: durationMs stops at the last event observed before it. */
   endedReason?: "server_restart";
+  /** Lower bound from Run start to the server-restart marker. */
+  interruptedAfterMs?: number;
   eventCount: number;
   spanCount: number;
   incompleteSpans: number;
   redactedEvents: number;
   denials: number;
+  audit: { actions: number; denials: number; actors: string[] };
   degraded: boolean;
   truncated: boolean;
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
@@ -151,7 +202,10 @@ export interface TraceSummary {
     terminalStatus: TraceStatus;
     toolCalls: number;
     toolFailures: number;
+    toolIdentities?: string[];
     modelCalls: number;
+    timeToFirstToolMs?: number;
+    timeSplit: { modelMs: number; toolMs: number; containerStartMs: number };
     tokens?: { input?: number; cachedInput?: number; output?: number };
     retries: number;
     denials: number;
@@ -159,6 +213,7 @@ export interface TraceSummary {
   configHash?: string;
   capabilities: { model: "observed" | "unavailable" | "unknown"; tool: "observed" | "unavailable" | "unknown" };
   workspaceChanges?: { added: number; modified: number; removed: number; bytesDelta: number; truncated: boolean };
+  outcome?: { text?: string; finalMessageBytes: number; reportedFailure: boolean };
   firstFailingStep?: string;
   failure?: FailureFocus;
 }
@@ -224,6 +279,15 @@ export interface TraceView {
   events: ObservationEvent[];
 }
 
+export interface RunLogLine {
+  time: string;
+  level: string;
+  msg: string;
+  component?: string;
+  spanId?: string;
+  err?: string;
+}
+
 export interface SystemInfo {
   modelConfigured: boolean;
   modelProvider: "ark" | "openai";
@@ -245,7 +309,7 @@ export type Assertion =
 
 export interface RegressionCase {
   id: string; name: string; prompt: string; workspaceTemplate: string; sourceRunId?: string;
-  baselineConfigHash: string; assertions: Assertion[]; createdAt: string;
+  baselineConfigHash: string; templateHash?: string; assertions: Assertion[]; createdAt: string;
 }
 
 export interface EvalResult {
@@ -256,9 +320,59 @@ export interface EvalRun {
   id: string; caseIds: string[];
   target: { agentId: string; configHash: string; snapshot: AgentConfigSnapshot };
   runIds: string[]; results: { caseId: string; runId?: string; results: EvalResult[]; error?: string }[];
-  status: "running" | "completed" | "failed"; createdAt: string; completedAt?: string;
+  status: "running" | "completed" | "failed"; templateHashes?: Record<string, string>; templateHashMismatch?: boolean; createdAt: string; completedAt?: string;
 }
 export interface EvalComparison {
   cases: { caseId: string; assertions: { type: string; baseline?: EvalResult; candidate?: EvalResult; delta?: number; regression: boolean }[]; regression: boolean; traceLinks: { baseline?: string; candidate?: string } }[];
-  regressions: number;
+  regressions: number; templateMismatch?: boolean;
 }
+
+export interface EvaluatorDefinition {
+  id: string; name: string; version: number; type: "deterministic" | "llm_judge"; rubric: string; model?: string;
+  minScore: number; maxScore: number; passThreshold: number; config: Record<string, string | number | boolean | null>;
+  setsTaskOutcome: boolean; createdAt: string;
+}
+export interface EvaluationResult {
+  runId: string; evaluatorId: string; evaluatorVersion: number; score?: number; passed: boolean; explanation: string;
+  evidenceEventIds: string[]; evaluatorModel?: string; metadata: Record<string, string | number | boolean | null>;
+  evaluatedAt: string; jobId?: string;
+}
+
+// #172 — mirrors glassbox/reliability.ts: GET /api/agents/:id/reliability and GET /api/reliability/compare.
+export interface TaskCompletionRate { evaluatorId: string; version: number; evaluated: number; passed: number; rate: number | null }
+export interface ReliabilityNumbers {
+  runs: number;
+  executionCompletionRate: number | null;
+  taskCompletionRate: TaskCompletionRate;
+  toolFailureRate: number | null;
+  avgToolCalls: number | null;
+  tokens: { avgInput: number | null; avgOutput: number | null; sum: number | null; sampled: number };
+  latency: { p50: number | null; p95: number | null; sampled: number };
+  denialRate: number | null;
+}
+export interface ReliabilitySeriesPoint extends ReliabilityNumbers { bucket: string }
+export interface ReliabilityProvenance {
+  count: number; runIds?: string[];
+  filter: { agentId?: string; configHash?: string; from?: string; to?: string };
+}
+export interface ReliabilityBlock extends ReliabilityNumbers { series: ReliabilitySeriesPoint[]; provenance: ReliabilityProvenance }
+export interface ReliabilityReport extends ReliabilityBlock { schemaVersion: string; capturePolicy: CapturePolicy; agentId: string }
+export interface ReliabilityDeltas {
+  runs: number;
+  executionCompletionRate: number | null;
+  taskCompletionRate: number | null;
+  toolFailureRate: number | null;
+  avgToolCalls: number | null;
+  tokens: { avgInput: number | null; avgOutput: number | null; sum: number | null };
+  latency: { p50: number | null; p95: number | null };
+  denialRate: number | null;
+}
+export interface ReliabilityCompareReport {
+  schemaVersion: string; capturePolicy: CapturePolicy; agentId: string;
+  a: ReliabilityBlock & { configHash: string };
+  b: ReliabilityBlock & { configHash: string };
+  deltas: ReliabilityDeltas;
+}
+
+// Mirrors WorkspaceManager.listTemplates(): a bad template (symlink, over limits) is reported, not a 500.
+export type WorkspaceTemplate = { name: string; fileCount: number; bytes: number } | { name: string; error: string };

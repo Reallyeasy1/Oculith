@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentRun, EvalRun, Message, RegressionCase, RunListItem, SystemInfo, TraceView } from "./types";
+import { agentPayload } from "./agent-form";
+import type { Agent, AgentRun, AgentRunBaseline, EvalRun, Message, RegressionCase, RunListItem, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
 import RunsView from "./RunsView";
 import TraceDetail from "./TraceDetail";
 import Overview from "./Overview";
 import CompareView from "./CompareView";
 import { refreshIntervalMs } from "./trace-view-model";
+import { workspaceOptionLabel } from "./runs-view-model";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -53,8 +55,9 @@ export default function App() {
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
   const [runs, setRuns] = useState<RunListItem[]>([]);
-  const [workspaces, setWorkspaces] = useState<{ name: string; path: string }[]>([]);
-  const [templates, setTemplates] = useState<{ name: string; fileCount: number; bytes: number }[]>([]);
+  const [runBaseline, setRunBaseline] = useState<AgentRunBaseline | null>(null);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [templates, setTemplates] = useState<WorkspaceTemplate[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [trace, setTrace] = useState<TraceView | null>(null);
   const [focusEventId, setFocusEventId] = useState<string | null>(null);
@@ -77,6 +80,9 @@ export default function App() {
   const lastMessageIdRef = useRef<string | null | undefined>(undefined);
   const selectedIdRef = useRef<string | null>(null);
   const selectedRunIdRef = useRef<string | null>(null);
+  // Preserve the requested run through the first render, when the URL-sync effect clears
+  // an as-yet unopened trace.
+  const pendingDeepLinkRef = useRef(new URLSearchParams(window.location.search).get("run"));
   const viewRef = useRef(view);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
@@ -85,10 +91,22 @@ export default function App() {
   selectedRunIdRef.current = selectedRunId;
   viewRef.current = view;
 
+  // Escape/Close hands focus back to the Run's row; if a quick filter hides that row, the Runs heading keeps the keyboard user anchored (#103).
+  const closeTrace = useCallback(() => {
+    const runId = selectedRunIdRef.current;
+    setSelectedRunId(null);
+    requestAnimationFrame(() => (document.querySelector<HTMLElement>(`[data-run-id="${runId}"]`) ?? document.getElementById("runs-heading"))?.focus());
+  }, []);
+
   const selected = useMemo(
     () => agents.find((agent) => agent.id === selectedId) ?? null,
     [agents, selectedId],
   );
+  const selectedWorkspaceName = selected?.workspaceName ?? selected?.workspacePath.split(/[\\/]/).at(-1) ?? "";
+  const selectedWorkspace = workspaces.find((workspace) => workspace.name === selectedWorkspaceName);
+  const sharingAgents = selectedWorkspace?.agents
+    .filter((id) => id !== selected?.id)
+    .map((id) => agents.find((agent) => agent.id === id)?.name ?? id) ?? [];
 
   const refreshAgents = useCallback(async () => {
     const { agents: next } = await api.listAgents();
@@ -114,11 +132,14 @@ export default function App() {
     const overview = viewRef.current === "overview";
     const agentId = selectedIdRef.current;
     const scope = overview ? "overview" : agentId;
-    if (!scope) { setRuns([]); return; }
+    if (!scope) { setRuns([]); setRunBaseline(null); return; }
     try {
-      const result = await api.listRuns(overview ? { limit: 200 } : { agentId: agentId!, limit: 100 });
+      const [result, baselineResult] = await Promise.all([
+        api.listRuns(overview ? { limit: 200 } : { agentId: agentId!, limit: 100 }),
+        overview ? Promise.resolve(null) : api.runBaseline(agentId!).catch(() => null),
+      ]);
       const stillCurrent = (viewRef.current === "overview" ? "overview" : selectedIdRef.current) === scope;
-      if (mountedRef.current && stillCurrent) setRuns(result.runs);
+      if (mountedRef.current && stillCurrent) { setRuns(result.runs); setRunBaseline(baselineResult?.baseline ?? null); }
     } catch {
       // ponytail: runs table goes stale, baseline keeps working (invariant 12)
     }
@@ -154,7 +175,24 @@ export default function App() {
 
   const bootstrap = useCallback(async () => {
     await Promise.all([refreshAgents(), refreshRuns(), refreshRegressionCases(), refreshEvalRuns(), api.system().then(setSystem), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces)), api.listWorkspaceTemplates().then((result) => setTemplates(result.templates))]);
+    const runId = pendingDeepLinkRef.current;
+    if (!runId) return;
+    try {
+      const { run } = await api.run(runId);
+      setSelectedId(run.agentId);
+      setView("agent");
+      requestAnimationFrame(() => { if (mountedRef.current) { setSelectedRunId(runId); setPlaygroundExpanded(false); } });
+    } catch {
+      // A shared or stale link should fall back to the ordinary landing state without an error banner.
+    }
   }, [refreshAgents, refreshEvalRuns, refreshRegressionCases, refreshRuns]);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (selectedRunId) url.searchParams.set("run", selectedRunId);
+    else url.searchParams.delete("run");
+    window.history.replaceState(null, "", url);
+  }, [selectedRunId]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -221,8 +259,7 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      const { workspace, ...agentForm } = form;
-      const { agent } = await api.createAgent({ ...agentForm, ...(workspace ? { workspace } : {}) });
+      const { agent } = await api.createAgent(agentPayload(form, { template: true }));
       await Promise.all([refreshAgents(), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces))]);
       setSelectedId(agent.id);
       setView("agent");
@@ -243,8 +280,7 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      const { workspace, template: _template, ...agentForm } = form;
-      await api.updateAgent(selected.id, { ...agentForm, ...(workspace ? { workspace } : {}) });
+      await api.updateAgent(selected.id, agentPayload(form, { template: false }));
       await Promise.all([refreshAgents(), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces))]);
       setShowSettings(false);
     } catch (reason) {
@@ -333,7 +369,19 @@ export default function App() {
     if (!selected) return;
     setError(null);
     try {
-      const { evalRun } = await api.startEvalRun({ agentId: selected.id, caseIds: [regressionCase.id] });
+      const request = { agentId: selected.id, caseIds: [regressionCase.id] };
+      let result;
+      try {
+        result = await api.startEvalRun(request);
+      } catch (reason) {
+        if (!(reason instanceof ApiError) || reason.status !== 409 || !reason.message.includes("template changed")) throw reason;
+        const force = window.confirm(
+          "This workspace template changed after the regression case was recorded. Run against the current template anyway? The evaluation will be marked as a template-hash mismatch.",
+        );
+        if (!force) return;
+        result = await api.startEvalRun({ ...request, force: true });
+      }
+      const { evalRun } = result;
       setEvalRuns((current) => [evalRun, ...current.filter((item) => item.id !== evalRun.id)]);
       await refreshRuns();
       void pollEvalRun(evalRun.id).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
@@ -361,6 +409,8 @@ export default function App() {
       await refreshRuns();
       const openRunId = selectedRunIdRef.current;
       if (openRunId) await refreshTrace(openRunId).catch(() => undefined);
+      // the overview's case rows show the latest evaluation; keep them live after a reload mid-evaluation
+      if (viewRef.current === "overview") await refreshEvalRuns().catch(() => undefined);
       const agentId = selectedIdRef.current;
       if (viewRef.current !== "agent" || !agentId) return;
       try {
@@ -602,6 +652,11 @@ export default function App() {
                 </p>
               </div>
               <div className="header-actions">
+                {selectedRunId && playgroundExpanded && (
+                  <button className="button button-ghost" onClick={() => setPlaygroundExpanded(false)}>
+                    Collapse Playground
+                  </button>
+                )}
                 <button
                   className="button button-ghost"
                   onClick={() => setShowSettings((value) => !value)}
@@ -660,6 +715,7 @@ export default function App() {
                   Workspace
                   <input
                     list="workspace-names-settings"
+                    aria-describedby="workspace-help-settings"
                     value={form.workspace}
                     onChange={(event) => setForm({ ...form, workspace: event.target.value })}
                     pattern="[a-z0-9][a-z0-9._-]{0,63}"
@@ -667,8 +723,16 @@ export default function App() {
                   />
                 </label>
                 <datalist id="workspace-names-settings">
-                  {workspaces.map((workspace) => <option key={workspace.name} value={workspace.name}>{workspace.path}</option>)}
+                  {workspaces.map((workspace) => <option key={workspace.name} value={workspace.name} label={workspaceOptionLabel(workspace)} />)}
                 </datalist>
+                <p className="form-help" id="workspace-help-settings">
+                  {/* `managed` on the workspace goes false as soon as a second Agent attaches; the Agent's own
+                      workspaceManaged is what makes this label stable (#155). */}
+                  Current workspace: <strong>{selected?.workspaceManaged ?? selectedWorkspace?.managed ? "managed" : selectedWorkspaceName}</strong>
+                  {(selected?.workspaceManaged ?? selectedWorkspace?.managed) && <> (<code>{selectedWorkspaceName}</code>)</>}
+                  {sharingAgents.length > 0 ? ` · Shared with ${sharingAgents.join(", ")}.` : " · No other Agents share it."}
+                  {" "}Switching resets this Agent&apos;s Codex conversation thread.
+                </p>
                 <label>
                   System instructions
                   <textarea
@@ -740,7 +804,8 @@ export default function App() {
                     </div>
                     <div className="thinking-row">
                       <Spinner />
-                      Codex is reading, editing, or running commands…
+                      {(activeRun.status === "running" && activeRun.currentActivity?.label) ||
+                        "Codex is reading, editing, or running commands…"}
                     </div>
                   </article>
                 )}
@@ -823,7 +888,7 @@ export default function App() {
             focusEventId={focusEventId}
             onFocusHandled={() => setFocusEventId(null)}
             onCaseSaved={refreshRegressionCases}
-            onClose={() => setSelectedRunId(null)}
+            onClose={closeTrace}
           />
         )}
         {/* runs are server-scoped already; the filter only keeps another Agent's rows out of the DOM across a switch */}
@@ -835,6 +900,7 @@ export default function App() {
           showAgent={view === "overview"}
           title={view === "agent" && selected ? "Runs · " + selected.name : "Runs"}
           emptyText={view === "agent" && selected ? "No Runs for this Agent yet." : "No Runs observed yet."}
+          baseline={view === "agent" ? runBaseline : null}
         />
       </main>
 
@@ -879,6 +945,7 @@ export default function App() {
               Workspace
               <input
                 list="workspace-names-create"
+                aria-describedby="workspace-help-create"
                 placeholder="Leave blank for a managed workspace"
                 value={form.workspace}
                 onChange={(event) => setForm({ ...form, workspace: event.target.value })}
@@ -886,13 +953,14 @@ export default function App() {
               />
             </label>
             <datalist id="workspace-names-create">
-              {workspaces.map((workspace) => <option key={workspace.name} value={workspace.name}>{workspace.path}</option>)}
+              {workspaces.map((workspace) => <option key={workspace.name} value={workspace.name} label={workspaceOptionLabel(workspace)} />)}
             </datalist>
+            <p className="form-help" id="workspace-help-create">Choose an existing workspace to share it, enter a new name, or leave blank for a managed workspace.</p>
             <label>
               Start from
               <select value={form.template} onChange={(event) => setForm({ ...form, template: event.target.value })}>
                 <option value="">Empty workspace</option>
-                {templates.filter((template) => template.name !== "empty").map((template) => <option key={template.name} value={template.name}>{template.name}</option>)}
+                {templates.filter((template) => template.name !== "empty" && !("error" in template)).map((template) => <option key={template.name} value={template.name}>{template.name}</option>)}
               </select>
             </label>
             <label>

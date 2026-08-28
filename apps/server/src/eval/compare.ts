@@ -7,10 +7,13 @@ export interface ComparisonAssertion {
   candidate: EvalRun["results"][number]["results"][number] | undefined;
   delta?: number | undefined;
   regression: boolean;
+  message?: string | undefined;
 }
 export interface EvalComparison {
   cases: { caseId: string; assertions: ComparisonAssertion[]; regression: boolean; traceLinks: { baseline?: string; candidate?: string } }[];
   regressions: number;
+  /** true when a template both EvalRuns used hashed differently at their starts; unknown (pre-#176) hashes never flag. */
+  templateMismatch: boolean;
 }
 
 export function compareEvalRuns(baseline: EvalRun, candidate: EvalRun): EvalComparison {
@@ -25,11 +28,13 @@ export function compareEvalRuns(baseline: EvalRun, candidate: EvalRun): EvalComp
       const before = base?.results[index], after = next?.results[index];
       const regression = before?.pass === true && after?.pass !== true;
       const delta = typeof before?.observed === "number" && typeof after?.observed === "number" ? after.observed - before.observed : undefined;
-      return { type: after?.type ?? before?.type ?? "missing", baseline: before, candidate: after, ...(delta !== undefined ? { delta } : {}), regression };
+      const message = after === undefined ? next?.error ?? "candidate result missing" : undefined;
+      return { type: after?.type ?? before?.type ?? "missing", baseline: before, candidate: after, ...(delta !== undefined ? { delta } : {}), regression, ...(message !== undefined ? { message } : {}) };
     });
     const regression = assertions.some((item) => item.regression);
-    if (regression) regressions++;
+    regressions += assertions.filter((item) => item.regression).length;
     return { caseId, assertions, regression, traceLinks: { ...(base?.runId ? { baseline: base.runId } : {}), ...(next?.runId ? { candidate: next.runId } : {}) } };
   });
-  return { cases, regressions };
+  const templateMismatch = Object.entries(baseline.templateHashes ?? {}).some(([name, hash]) => candidate.templateHashes?.[name] !== undefined && candidate.templateHashes[name] !== hash);
+  return { cases, regressions, templateMismatch };
 }

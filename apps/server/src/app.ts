@@ -9,9 +9,16 @@ import { HttpError } from "./errors.js";
 import { configHash, configSnapshot, type AgentService } from "./agent-service.js";
 import { createTraceContext, type TraceContext } from "./glassbox/context.js";
 import type { ObservationEmitter } from "./glassbox/emitter.js";
-import { buildTrace, type TraceView } from "./glassbox/query.js";
+import type { EvaluationStore } from "./glassbox/evaluation.js";
+import type { EvaluationJobWorker } from "./glassbox/jobs.js";
+import { MetricStore, metricQueryBody } from "./glassbox/metrics.js";
+import { ReliabilityService, reliabilityCompareQuerySchema, reliabilityQuerySchema } from "./glassbox/reliability.js";
+import { buildTrace, projectAudit, type TraceView } from "./glassbox/query.js";
 import { CATEGORIES, SCHEMA_VERSION, STATUSES } from "./glassbox/schema.js";
 import type { RunIndexEntry, TraceStore } from "./glassbox/store.js";
+import { executionStatusOf, isFresh, rollupRun, summaryFromView, traceStatusOf, type RunSummary, type RunSummaryStore } from "./glassbox/summary.js";
+import type { RunLogStore } from "./run-log-store.js";
+import { buildAgentRunBaseline, estimatedCost } from "./glassbox/baseline.js";
 import { caseFromRun, regressionCaseInput } from "./eval/cases.js";
 import { EvalRunner } from "./eval/runner.js";
 import { compareEvalRuns } from "./eval/compare.js";
@@ -38,7 +45,7 @@ const updateAgentBody = createAgentBody.partial().refine(
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
 });
-const evalRunBody = z.object({ agentId: z.string().uuid(), caseIds: z.array(z.string().uuid()).min(1).max(20).refine((ids) => new Set(ids).size === ids.length, "caseIds must be unique") });
+const evalRunBody = z.object({ agentId: z.string().uuid(), caseIds: z.array(z.string().uuid()).min(1).max(20).refine((ids) => new Set(ids).size === ids.length, "caseIds must be unique"), force: z.boolean().optional() });
 // A case is always derived from the trace evidence. The UI may only name it or remove an
 // automatically proposed assertion; it cannot supply a different prompt or template.
 const regressionCaseFromRunBody = z.object({
@@ -49,7 +56,7 @@ const regressionCaseFromRunBody = z.object({
 export async function createApp(
   config: AppConfig,
   service: AgentService,
-  glassbox?: { emitter: ObservationEmitter; store: TraceStore },
+  glassbox?: { emitter: ObservationEmitter; store: TraceStore; summaries?: RunSummaryStore | undefined; evaluations?: EvaluationStore | undefined; jobs?: EvaluationJobWorker | undefined; logs?: RunLogStore | undefined },
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -58,6 +65,9 @@ export async function createApp(
     },
     bodyLimit: 1_048_576,
   });
+  // Some boundary tests use a deliberately minimal service double; production AgentService exposes
+  // this hook so its per-Run pino child shares Fastify's configured redaction and stdout sink.
+  (service as AgentService & { setLogger?: (logger: typeof app.log) => void }).setLogger?.(app.log);
 
   await app.register(cors, {
     origin:
@@ -213,6 +223,7 @@ export async function createApp(
     const { id } = agentIdParams.parse(request.params);
     const body = messageBody.parse(request.body);
     const result = await service.sendMessage(id, body.content, request.glassbox);
+    request.log = request.log.child({ traceId: result.run.traceId, runId: result.run.id, agentId: id });
     return reply.code(202).send(result);
   });
 
@@ -241,7 +252,7 @@ export async function createApp(
 
   if (glassbox) {
     const runsQuery = z.object({ status: z.enum(STATUSES).optional(), agentId: z.string().uuid().optional(), from: z.string().datetime().optional(), to: z.string().datetime().optional(), limit: z.coerce.number().int().min(1).max(200).default(50) });
-    const eventsQuery = z.object({ category: z.enum(CATEGORIES).optional(), status: z.enum(STATUSES).optional(), q: z.string().max(200).optional() });
+    const eventsQuery = z.object({ category: z.string().max(200).optional(), status: z.enum(STATUSES).optional(), q: z.string().max(200).optional() });
     // `entry` lets a caller listing many runs hoist the index lookup out of its loop instead of
     // re-scanning listRuns() per run; omitted, it falls back to the single-run scan.
     const viewFor = async (runId: string, entry?: RunIndexEntry | undefined): Promise<TraceView> => {
@@ -254,25 +265,98 @@ export async function createApp(
       const agent = service.getAgent(body.agentId);
       body.caseIds.forEach((id) => service.getRegressionCase(id));
       const snapshot = configSnapshot(agent, config);
-      const evalRun = await service.createEvalRun({ caseIds: body.caseIds, target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } });
+      const evalRun = await service.createEvalRun({ caseIds: body.caseIds, target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } }, { force: body.force });
       void new EvalRunner(service, glassbox).execute(evalRun.id).catch(async (error) => {
         await service.updateEvalRun(evalRun.id, (item) => { item.status = "failed"; item.completedAt = new Date().toISOString(); item.results.push({ caseId: "", results: [], error: error instanceof Error ? error.message : String(error) }); });
       });
       return reply.code(202).send({ evalRun });
     });
-    app.post("/api/runs/:id/regression-case", async (request, reply) => {
-      const run = service.getRun(runIdParams.parse(request.params).id);
-      const requested = regressionCaseFromRunBody.parse(request.body ?? {});
+    if (glassbox.summaries && glassbox.evaluations) {
+      // FR-23: one bounded query over the two read models; the schema's superRefine turns every contract
+      // violation (unknown metric, invalid metric×aggregation pair) into a ZodError → 400 with details.
+      const metrics = new MetricStore(glassbox.summaries, glassbox.evaluations);
+      app.post("/api/metrics/query", async (request) =>
+        ({ capturePolicy: glassbox.emitter.capturePolicy, ...(await metrics.query(metricQueryBody.parse(request.body))) }));
+      // #172: historical reliability aggregates — the same window/percentile/rate semantics as the metric
+      // catalogue above, shaped for the dashboard: one block per Agent (+ optional configHash and time
+      // range), a compare of two configHashes with deltas. Every number carries provenance.
+      const reliability = new ReliabilityService(glassbox.summaries, glassbox.evaluations);
+      app.get("/api/agents/:id/reliability", async (request) => {
+        const { id } = agentIdParams.parse(request.params);
+        service.getAgent(id);
+        return { capturePolicy: glassbox.emitter.capturePolicy, ...(await reliability.forAgent(id, reliabilityQuerySchema.parse(request.query))) };
+      });
+      app.get("/api/reliability/compare", async (request) => {
+        const query = reliabilityCompareQuerySchema.parse(request.query);
+        service.getAgent(query.agentId);
+        return { capturePolicy: glassbox.emitter.capturePolicy, ...(await reliability.compare(query)) };
+      });
+    }
+    if (glassbox.jobs) {
+      const jobs = glassbox.jobs;
+      // #170: historical evaluation runs as a background job — the POST only enqueues (202), progress is
+      // polled. Only terminal statuses are selectable; the worker never evaluates a running Run.
+      const evaluationJobBody = z.object({
+        evaluatorId: z.string().trim().min(1).max(80),
+        evaluatorVersion: z.number().int().min(1).optional(),
+        filter: z.object({
+          agentId: z.string().uuid().optional(),
+          // Real configHashes are hex (agent-service.ts); rejecting anything else keeps free text
+          // (a pasted secret included) out of the persisted, served job record.
+          configHash: z.string().regex(/^[0-9a-f]{1,64}$/i).optional(),
+          from: z.string().datetime().optional(),
+          to: z.string().datetime().optional(),
+          executionStatus: z.enum(["completed", "failed", "timeout", "cancelled"]).optional(),
+        }).optional(),
+        force: z.boolean().optional(),
+        concurrency: z.number().int().min(1).max(2).optional(),
+      });
+      app.post("/api/evaluation-jobs", async (request, reply) =>
+        reply.code(202).send({ job: await jobs.enqueue(evaluationJobBody.parse(request.body)) }));
+      app.get("/api/evaluation-jobs", async () => ({ jobs: await jobs.list() }));
+      app.get("/api/evaluation-jobs/:id", async (request) =>
+        ({ job: await jobs.getOrThrow(runIdParams.parse(request.params).id) }));
+      app.post("/api/evaluation-jobs/:id/resume", async (request, reply) =>
+        reply.code(202).send({ job: await jobs.resume(runIdParams.parse(request.params).id) }));
+    }
+    if (glassbox.evaluations) {
+      app.get("/api/evaluators", async () => ({ evaluators: await glassbox.evaluations!.listDefinitions() }));
+      app.get("/api/runs/:id/evaluations", async (request) => {
+        const { id } = runIdParams.parse(request.params);
+        service.getRun(id);
+        return { evaluations: await glassbox.evaluations!.resultsForRun(id) };
+      });
+    }
+    if (glassbox.summaries) {
+      app.get("/api/agents/:id/runs/baseline", async (request) => {
+        const { id } = agentIdParams.parse(request.params);
+        service.getAgent(id);
+        // The builder selects the newest 20 terminal Runs. Recent in-progress
+        // Runs must not displace older completed evidence from that window.
+        const summaries = await glassbox.summaries!.query({ agentId: id });
+        return { baseline: buildAgentRunBaseline(summaries, {
+          inputPerMillion: config.glassboxPricePerMtokInput,
+          outputPerMillion: config.glassboxPricePerMtokOutput,
+        }) };
+      });
+    }
+    // Derives the case from the Run's trace evidence; 409 without a template, 400 when the Run cannot be a baseline.
+    const draftFor = async (params: unknown) => {
+      const run = service.getRun(runIdParams.parse(params).id);
       const template = service.getAgent(run.agentId).workspaceTemplate;
       if (!template) throw new HttpError(409, "This Run did not start from a template-backed workspace");
-      let input;
-      try { input = caseFromRun(run, await viewFor(run.id), template); }
+      try { return caseFromRun(run, await viewFor(run.id), template); }
       catch (error) { throw new HttpError(400, error instanceof Error ? error.message : "Unable to create regression case"); }
+    };
+    // Prefill is read-only (#158): the dialog edits the draft, then POST below is the single create.
+    app.get("/api/runs/:id/regression-case", async (request) => ({ draft: await draftFor(request.params) }));
+    app.post("/api/runs/:id/regression-case", async (request, reply) => {
+      const requested = regressionCaseFromRunBody.parse(request.body ?? {});
+      const input = await draftFor(request.params);
       const regressionCase = await service.createRegressionCase({
         ...input,
         ...(requested.name ? { name: requested.name } : {}),
         ...(requested.assertions ? { assertions: requested.assertions } : {}),
-        sourceRunId: run.id,
       });
       return reply.code(201).send({ regressionCase });
     });
@@ -285,31 +369,54 @@ export async function createApp(
       // the page can still come back under `limit` even though older matching runs exist.
       const runs = service.allRuns().filter((r) => (!q.agentId || r.agentId === q.agentId) && (!q.from || r.createdAt >= q.from) && (!q.to || r.createdAt <= q.to))
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, q.limit * 2);
+      // Stored summaries are the read model (#168): one snapshot per request, no NDJSON read for a fresh row.
+      const known = new Map(((await glassbox.summaries?.query()) ?? []).map((s) => [s.runId, s]));
+      const rollup = glassbox.summaries ? { traces: glassbox.store, emitter: glassbox.emitter, summaries: glassbox.summaries } : undefined;
+      const empty = (runId: string): RunSummary => summaryFromView(buildTrace([], { capturePolicy: glassbox.emitter.capturePolicy, degraded: glassbox.emitter.isDegraded(runId) }));
       const items = [];
       for (const run of runs) {
         const entry = index.get(run.id);
-        // No index entry means no stored events, so skip the NDJSON read entirely: the empty view
-        // falls through to the record-derived status branch below.
-        const view = entry
-          ? await viewFor(run.id, entry)
-          : buildTrace([], { capturePolicy: glassbox.emitter.capturePolicy, degraded: glassbox.emitter.isDegraded(run.id) });
-        const status = view.summary.eventCount ? view.summary.status : run.status === "completed" ? "ok" : run.status === "failed" ? "error" : run.status === "cancelled" ? "cancelled" : "running";
+        const cached = known.get(run.id);
+        // No index entry means no stored events (the empty summary falls through to the record-derived status
+        // below). A missing or stale summary of a finished Run is rolled up and stored once; a running Run is
+        // rebuilt from its trace on every poll and not stored — its terminal event writes the record.
+        const s: RunSummary = !entry ? empty(run.id)
+          : isFresh(cached, entry) ? cached
+          : rollup && entry.status !== "running" ? (await rollupRun(rollup, run.id, entry)) ?? empty(run.id)
+          : summaryFromView(await viewFor(run.id, entry));
+        const status = s.eventCount ? traceStatusOf(s.executionStatus) : run.status === "completed" ? "ok" : run.status === "failed" ? "error" : run.status === "cancelled" ? "cancelled" : "running";
         if (q.status && status !== q.status) continue;
-        const s = view.summary;
-        items.push({ runId: run.id, traceId: run.traceId ?? s.traceId, agentId: run.agentId, agentName: agents.get(run.agentId) ?? "", workspace: s.workspace, status, startedAt: s.startedAt ?? run.createdAt, durationMs: s.durationMs, endedReason: s.endedReason,
+        const cost = estimatedCost(s, { inputPerMillion: config.glassboxPricePerMtokInput, outputPerMillion: config.glassboxPricePerMtokOutput });
+        items.push({ runId: run.id, traceId: run.traceId ?? s.traceId, agentId: run.agentId, agentName: agents.get(run.agentId) ?? "", workspace: s.workspace, status, startedAt: s.startedAt ?? run.createdAt, durationMs: s.durationMs, endedReason: s.endedReason, interruptedAfterMs: s.interruptedAfterMs,
           firstFailingStep: s.firstFailingStep, eventCount: s.eventCount, runtime: config.runtimeProvider, model: config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default",
-          usage: s.usage, workspaceChanges: s.workspaceChanges, capabilities: s.capabilities, toolCalls: s.metrics.toolCalls, toolFailures: s.metrics.toolFailures,
+          usage: s.usage, workspaceChanges: s.workspaceChanges, outcome: s.outcome, capabilities: s.capabilities, toolCalls: s.metrics.toolCalls, toolFailures: s.metrics.toolFailures, toolIdentities: s.metrics.toolIdentities,
           tokens: s.metrics.tokens?.output !== undefined ? { output: s.metrics.tokens.output } : undefined,
-          denials: s.denials, configHash: s.configHash ?? run.configHash, configSnapshot: run.configSnapshot,
-          degraded: s.degraded, truncated: s.truncated, evicted: s.evicted, redacted: s.redactedEvents > 0, lastEventAt: view.events.at(-1)?.timestamp });
+          denials: s.denials, actions: s.actions, executionStatus: executionStatusOf(status), taskOutcome: s.taskOutcome, configHash: s.configHash ?? run.configHash, configSnapshot: run.configSnapshot,
+          degraded: s.degraded, truncated: s.truncated, evicted: s.evicted, redacted: s.redactedEvents > 0, lastEventAt: s.lastEventAt,
+          ...(cost === undefined ? {} : { estimatedCostUsd: cost }) });
         if (items.length >= q.limit) break;
       }
       return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, runs: items };
     });
     app.get("/api/runs/:runId/trace", async (request) => { const { runId } = z.object({ runId: z.string().min(1) }).parse(request.params); service.getRun(runId); return viewFor(runId); });
+    app.get("/api/runs/:runId/logs", async (request) => {
+      const { runId } = z.object({ runId: z.string().min(1) }).parse(request.params);
+      service.getRun(runId);
+      const query = z.object({ level: z.string().max(20).optional(), limit: z.coerce.number().int().min(1).max(500).default(100) }).parse(request.query);
+      return glassbox.logs ? glassbox.logs.readRun(runId, query) : { lines: [], truncated: false };
+    });
+    app.get("/api/runs/:runId/audit", async (request) => {
+      const { runId } = z.object({ runId: z.string().min(1) }).parse(request.params); service.getRun(runId);
+      const view = await viewFor(runId);
+      return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, audit: projectAudit(view.events) };
+    });
     const traceParams = z.object({ traceId: z.string().min(1) });
     const runIdFor = (traceId: string): string => { const runId = glassbox.store.runIdForTrace(traceId); if (!runId) throw new HttpError(404, "Trace not found"); return runId; };
     app.get("/api/traces/:traceId", async (request) => viewFor(runIdFor(traceParams.parse(request.params).traceId)));
+    app.get("/api/traces/:traceId/audit", async (request) => {
+      const { traceId } = traceParams.parse(request.params); const view = await viewFor(runIdFor(traceId));
+      return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, audit: projectAudit(view.events) };
+    });
     app.get("/api/traces/:traceId/export", async (request, reply) => {
       // FR-12: same builder as the trace route, so the export can never carry anything the API would not.
       const { traceId } = traceParams.parse(request.params); const view = await viewFor(runIdFor(traceId));
@@ -319,7 +426,8 @@ export async function createApp(
     app.get("/api/traces/:traceId/events", async (request) => {
       const { traceId } = traceParams.parse(request.params); const q = eventsQuery.parse(request.query);
       const runId = runIdFor(traceId);
-      const events = (await glassbox.store.readRun(runId)).filter((e) => (!q.category || e.category === q.category) && (!q.status || e.status === q.status) && (!q.q || (e.name + " " + (e.error?.message ?? "")).toLowerCase().includes(q.q.toLowerCase())));
+      const categories = q.category === undefined ? undefined : z.array(z.enum(CATEGORIES)).min(1).parse(q.category.split(",").map((value) => value.trim()).filter(Boolean));
+      const events = (await glassbox.store.readRun(runId)).filter((e) => (!categories || categories.includes(e.category)) && (!q.status || e.status === q.status) && (!q.q || (e.name + " " + (e.error?.message ?? "")).toLowerCase().includes(q.q.toLowerCase())));
       return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, events };
     });
   }

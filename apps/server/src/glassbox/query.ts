@@ -11,13 +11,21 @@ export interface FailureFocus {
   kind: "error" | "timeout" | "cancelled" | "denied" | "degraded"; spanId: string; eventId: string; sequence: number;
   name: string; category: Category; component: string; message?: string | undefined; path: string[]; diagnosis: string;
 }
+export type AuditOutcome = "allowed" | "denied" | "ok" | "error" | "timeout" | "cancelled";
+export interface AuditRow {
+  at: string; actor: { type: ObservationEvent["actorType"]; id: string }; action: string; resource: string;
+  outcome: AuditOutcome; eventId: string; spanId: string; traceId: string; attributes: ObservationEvent["attributes"];
+}
 export interface TraceSummary {
   schemaVersion: typeof SCHEMA_VERSION; capturePolicy: CapturePolicy; runId: string; traceId: string; agentId: string;
   sessionId?: string | undefined; status: TraceStatus; startedAt?: string | undefined; endedAt?: string | undefined;
   workspace?: string | undefined;
   durationMs?: number | undefined; eventCount: number; spanCount: number; incompleteSpans: number; redactedEvents: number; denials: number;
+  audit: { actions: number; denials: number; actors: string[] };
   /** Set when the Run was closed by AgentService.initialize() after a restart: durationMs then stops at the last event observed before the restart. */
   endedReason?: "server_restart" | undefined;
+  /** Lower bound from Run start to the restart marker; unlike durationMs, this includes the unobserved gap. */
+  interruptedAfterMs?: number | undefined;
   degraded: boolean; truncated: boolean;
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
   evicted: boolean;
@@ -27,6 +35,8 @@ export interface TraceSummary {
   /** `unknown` = no evidence either way (run cut short before the stream said anything) — never claim `unavailable` from absence. */
   capabilities: { model: Capability; tool: Capability };
   workspaceChanges?: { added: number; modified: number; removed: number; bytesDelta: number; truncated: boolean } | undefined;
+  /** #132 — `text`: observed fact (redacted first 240 chars of the final message, safe_summary only); `reportedFailure`: derived deterministic phrase match, not a judgement. */
+  outcome?: { text?: string | undefined; finalMessageBytes: number; reportedFailure: boolean } | undefined;
   firstFailingStep?: string | undefined; failure?: FailureFocus | undefined;
 }
 
@@ -35,7 +45,10 @@ export interface TraceMetrics {
   terminalStatus: TraceStatus;
   toolCalls: number;
   toolFailures: number;
+  toolIdentities?: string[] | undefined;
   modelCalls: number;
+  timeToFirstToolMs?: number | undefined;
+  timeSplit: { modelMs: number; toolMs: number; containerStartMs: number };
   tokens?: { input?: number | undefined; cachedInput?: number | undefined; output?: number | undefined } | undefined;
   retries: number;
   denials: number;
@@ -44,6 +57,39 @@ export type Capability = "observed" | "unavailable" | "unknown";
 export interface TraceView { summary: TraceSummary; spans: Span[]; events: ObservationEvent[] }
 
 const CATEGORY_RANK: Record<Category, number> = { tool: 0, model: 1, runtime: 2, workspace: 3, sandbox: 4, policy: 5, infrastructure: 6, control: 7, experience: 8 };
+// `tool` rows are the agent's own actions (actor agent/<id>, resource = program); without them the audit
+// could never attribute anything to the agent (#135).
+const AUDIT_CATEGORIES = new Set<Category>(["control", "policy", "sandbox", "tool"]);
+
+function auditOutcome(event: ObservationEvent): AuditOutcome {
+  if (event.type === "policy.denied") return "denied";
+  if (event.status === "ok") return "ok";
+  if (event.status === "error") return "error";
+  if (event.status === "timeout") return "timeout";
+  if (event.status === "cancelled") return "cancelled";
+  return "allowed";
+}
+
+function isRuntimeTerminal(event: ObservationEvent): boolean {
+  return event.category === "runtime" && event.phase === "end";
+}
+
+/** A derived, linkable audit view. It deliberately introduces no events or storage of its own. */
+export function projectAudit(events: ObservationEvent[]): AuditRow[] {
+  return events
+    .filter((event) => AUDIT_CATEGORIES.has(event.category) || isRuntimeTerminal(event))
+    .map((event) => ({
+      at: event.timestamp,
+      actor: { type: event.actorType, id: event.actorId },
+      action: event.type,
+      resource: typeof event.attributes.program === "string" && event.attributes.program.length > 0 ? event.attributes.program : event.name || event.runId,
+      outcome: auditOutcome(event),
+      eventId: event.eventId,
+      spanId: event.spanId,
+      traceId: event.traceId,
+      attributes: event.attributes,
+    }));
+}
 
 export function flattenSpans(spans: Span[]): Span[] {
   const out: Span[] = []; const walk = (s: Span) => { out.push(s); s.children.forEach(walk); }; spans.forEach(walk); return out;
@@ -122,7 +168,16 @@ function pathTo(spans: Map<string, Span>, spanId: string): string[] {
 const DEGRADED_FOCUS: FailureFocus = { kind: "degraded", spanId: "", eventId: "", sequence: -1, name: "telemetry.degraded", category: "control", component: "GlassBox", path: [], diagnosis: "Trace evidence is incomplete: the trace store was unavailable during this Run. The Run's real result is unaffected; some spans may be missing." };
 
 const EXIT_HINTS: Record<number, string> = {
+  2: "usage error, or the interpreter could not find the file",
+  124: "timed out — killed by the timeout wrapper",
+  126: "found but not executable — permissions or wrong interpreter",
+  127: "command not found — the program is missing from the runtime image",
+  130: "interrupted — SIGINT",
+  128: "invalid exit argument, or the shell could not run the command",
+  134: "SIGABRT — the process aborted itself",
   137: "SIGKILL (timeout, cancellation, or out-of-memory termination)",
+  139: "SIGSEGV — segmentation fault",
+  143: "SIGTERM — asked to stop",
   3221225794: "process failed to initialise — the runtime CLI could not start; restart the server",
 };
 
@@ -140,7 +195,16 @@ const formatFailureMessage = (message: string | undefined): string | undefined =
   return message?.replace(/\b((?:exited with|exit) code )(\d+)/i, (_, prefix: string, code: string) => prefix + formatExitCode(Number(code)));
 };
 
-function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, status: TraceStatus, degraded: boolean, durationMs: number | undefined): FailureFocus | undefined {
+function formatElapsed(ms: number | undefined): string {
+  if (ms === undefined) return "an unknown duration";
+  if (ms < 1000) return Math.round(ms) + " ms";
+  if (ms < 60_000) return (ms / 1000).toFixed(1) + " s";
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.round((ms % 60_000) / 1000);
+  return minutes + "m " + String(seconds).padStart(2, "0") + "s";
+}
+
+function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, status: TraceStatus, degraded: boolean, durationMs: number | undefined, interruptedAfterMs?: number): FailureFocus | undefined {
   const denial = events.find((e) => e.type === "policy.denied");
   // A handled ordinary tool error is not actionable after an ok terminal, but a policy decision is:
   // the Run may recover while operators still need to know what the sandbox declined.
@@ -163,6 +227,7 @@ function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, stat
     ? { spanId: open.spanId, eventId: events.find((e) => e.spanId === open.spanId)?.eventId ?? first.eventId, sequence: open.sequence, name: open.name, category: open.category, component: open.source.component, message: undefined }
     : { spanId: first.spanId, eventId: first.eventId, sequence: first.sequence, name: first.name, category: first.category, component: first.source.component, message: formatFailureMessage(first.error?.message) };
   const path = pathTo(spans, target.spanId);
+  const elapsed = formatElapsed(durationMs);
   const secs = durationMs === undefined ? "an unknown duration" : (durationMs / 1000).toFixed(1) + " s";
   const cleanup = events.find((e) => e.type === "runtime.container.stopped" || (e.type === "runtime.codex.failed" && e.attributes.terminationSignal));
   const capability = events.find((e) => e.type === "capability.unavailable");
@@ -170,7 +235,7 @@ function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, stat
     kind === "denied"
       ? `sandbox declined \`${String(first.attributes.program || first.name)}\``
       : isRestartCancel(first)
-      ? `Run interrupted by a server restart after ${secs} of observed activity; ${open ? `the ${open.category} span ${open.name} never closed` : "no open span was recorded"}.`
+      ? `Run interrupted by a server restart after ${formatElapsed(interruptedAfterMs)}; last trace evidence was ${elapsed} after the Run started; ${open ? `the ${open.category} span ${open.name} never closed` : "no open span was recorded"}.`
       : `Run ${status} in ${first.source.component} after ${secs}. First actionable ${kind}: ${first.name}${target.message ? " — " + target.message : ""}.`,
     cleanup ? `Cleanup evidence: ${cleanup.name}${typeof cleanup.attributes.exitCode === "number" ? " (exit " + formatExitCode(cleanup.attributes.exitCode) + ")" : ""}${cleanup.attributes.terminationSignal ? " via " + String(cleanup.attributes.terminationSignal) : ""}.` : "",
     capability ? "No model/tool-level details were available from the runtime." : "",
@@ -184,6 +249,14 @@ const isRestartCancel = (e: ObservationEvent): boolean => e.type === "run.cancel
 export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: CapturePolicy; degraded?: boolean | undefined; truncated?: boolean | undefined }): TraceView {
   const events = [...input].sort((a, b) => a.sequence - b.sequence || a.timestamp.localeCompare(b.timestamp));
   const spans = reconstructSpans(events);
+  // Spans are a derived presentation view, so enrich their error copy without changing the persisted events that
+  // back exports and evidence. This also covers handled tool failures on an otherwise-ok Run, where there is no
+  // FailureFocus diagnosis to carry the operator hint.
+  for (const span of spans.values()) {
+    if (!span.error) continue;
+    const message = formatFailureMessage(span.error.message);
+    if (message !== undefined && message !== span.error.message) span.error = { ...span.error, message };
+  }
   const tree = buildTree(spans);
   const flat = flattenSpans(tree);
   const first = events[0];
@@ -196,6 +269,10 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
   const restart = terminal !== undefined && isRestartCancel(terminal);
   const clockEnd = restart ? events[events.indexOf(terminal) - 1]?.timestamp : endedAt;
   const durationMs = startedAt && clockEnd ? Math.max(0, Date.parse(clockEnd) - Date.parse(startedAt)) : undefined;
+  // The restart-cancel is stamped at the NEXT boot, which may be hours after the process died: the honest lower bound on
+  // how long the Run lived is the previous process's last heartbeat (run.cancelled.attributes.lastSeenAt), else the last evidence.
+  const lastSeenAt = restart && typeof terminal.attributes.lastSeenAt === "string" ? Date.parse(terminal.attributes.lastSeenAt) : NaN;
+  const interruptedAfterMs = restart && startedAt ? Math.max(durationMs ?? 0, Number.isNaN(lastSeenAt) ? 0 : lastSeenAt - Date.parse(startedAt)) : undefined;
   const usageEvents = events.filter((e) => e.type === "model.completed");
   const sum = (k: string) => usageEvents.reduce((n, e) => n + (typeof e.attributes[k] === "number" ? (e.attributes[k] as number) : 0), 0);
   // Presence-based, not truthiness-based: include a usage field whenever ANY model.completed event carries it
@@ -213,6 +290,31 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
     span.category === "model" && events.some((event) => event.spanId === span.spanId && event.type.startsWith("model.")),
   );
   const retrySpans = new Set(events.filter((event) => event.attempt > 1).map((event) => event.spanId));
+  const firstRunEvent = events.find((event) => event.type === "run.started" || event.type === "run.created");
+  const firstToolEvent = events.find((event) => event.category === "tool");
+  const containerStarted = events.find((event) => event.type === "runtime.container.started");
+  const codexStarted = events.find((event) => event.type === "runtime.codex.started");
+  const spanDuration = (span: Span): number => span.durationMs ?? 0;
+  // A model.turn span is wall-clock turn time and wraps the tool calls made inside it: subtract the
+  // overlap so modelMs and toolMs do not double-count (#129/#130).
+  const spanEnd = (span: Span): number => span.endedAt ? Date.parse(span.endedAt) : Date.parse(span.startedAt) + spanDuration(span);
+  const overlapMs = (a: Span, b: Span): number =>
+    Math.max(0, Math.min(spanEnd(a), spanEnd(b)) - Math.max(Date.parse(a.startedAt), Date.parse(b.startedAt)));
+  const modelOnlyMs = (span: Span): number =>
+    Math.max(0, spanDuration(span) - toolSpans.reduce((total, tool) => total + overlapMs(span, tool), 0));
+  // codex exec emits ONE model.turn per prompt, so the span count alone cannot see individual model
+  // calls (#207). The observer counts observed reasoning/agent_message items and stamps
+  // `modelCallsObserved` on the turn-end model.completed; prefer that, flooring each turn that ran
+  // (or was cut short mid-call) at one call. Traces without the attribute keep the old span count.
+  const modelCalls = modelSpans.reduce((total, span) => {
+    const observed = events.find((event) => event.spanId === span.spanId && event.type === "model.completed")?.attributes.modelCallsObserved;
+    return total + Math.max(1, typeof observed === "number" ? observed : 0);
+  }, 0);
+  const toolIdentities = [...new Set(toolSpans.map((span) => {
+    const program = typeof span.attributes.program === "string" ? span.attributes.program : "";
+    const argument0 = typeof span.attributes.argument0 === "string" ? span.attributes.argument0 : "";
+    return [program, argument0].filter(Boolean).join(" ");
+  }).filter(Boolean))].slice(0, 3);
   const metrics: TraceMetrics = {
     ...(durationMs !== undefined ? { durationMs } : {}),
     terminalStatus: status,
@@ -221,7 +323,18 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
       span.status === "error" || span.status === "timeout" || span.status === "cancelled" ||
       events.some((event) => event.spanId === span.spanId && event.type === "tool.call.failed"),
     ).length,
-    modelCalls: modelSpans.length,
+    ...(toolIdentities.length > 0 ? { toolIdentities } : {}),
+    modelCalls,
+    ...(firstRunEvent && firstToolEvent
+      ? { timeToFirstToolMs: Math.max(0, Date.parse(firstToolEvent.timestamp) - Date.parse(firstRunEvent.timestamp)) }
+      : {}),
+    timeSplit: {
+      modelMs: modelSpans.reduce((total, span) => total + modelOnlyMs(span), 0),
+      toolMs: toolSpans.reduce((total, span) => total + spanDuration(span), 0),
+      containerStartMs: containerStarted && codexStarted
+        ? Math.max(0, Date.parse(codexStarted.timestamp) - Date.parse(containerStarted.timestamp))
+        : 0,
+    },
     ...(usage && (usage.inputTokens !== undefined || usage.cachedInputTokens !== undefined || usage.outputTokens !== undefined)
       ? { tokens: {
           ...(usage.inputTokens !== undefined ? { input: usage.inputTokens } : {}),
@@ -237,26 +350,43 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
   const degraded = opts.degraded === true || events.some((e) => e.type === "telemetry.degraded");
   const truncated = opts.truncated === true || events.some((e) => e.type === "trace.truncated");
   const evicted = events.some(isEvictionMarker);
-  const failure = focusFailure(events, spans, status, degraded, durationMs);
+  const failure = focusFailure(events, spans, status, degraded, durationMs, interruptedAfterMs);
+  const auditRows = projectAudit(events);
   const declaredUnavailable = events.some((e) => e.type === "capability.unavailable");
-  const workspaceEvent = events.find((event) => event.type === "workspace.changed");
+  const workspace = events.find((event) => event.type === "run.created" && typeof event.attributes.workspace === "string")?.attributes.workspace;
+  // Two emitters share this type: the runtime stream's file_change report ({ fileCount, added, updated, deleted })
+  // and the platform's before/after disk snapshot ({ added, modified, removed, bytesDelta, paths }). The snapshot
+  // is the honest source (it saw the disk); the stream report is only a fallback, with its vocabulary normalised.
+  const workspaceEvents = events.filter((event) => event.type === "workspace.changed");
+  const workspaceEvent = workspaceEvents.find((event) => event.source.adapter === "WorkspaceSnapshot") ?? workspaceEvents.at(-1);
   const workspaceChanges = workspaceEvent ? {
     added: Number(workspaceEvent.attributes.added ?? 0),
-    modified: Number(workspaceEvent.attributes.modified ?? 0),
-    removed: Number(workspaceEvent.attributes.removed ?? 0),
+    modified: Number(workspaceEvent.attributes.modified ?? workspaceEvent.attributes.updated ?? 0),
+    removed: Number(workspaceEvent.attributes.removed ?? workspaceEvent.attributes.deleted ?? 0),
     bytesDelta: Number(workspaceEvent.attributes.bytesDelta ?? 0),
     truncated: workspaceEvent.attributes.truncated === true,
   } : undefined;
-  const workspace = events.find((event) => event.type === "run.created" && typeof event.attributes.workspace === "string")?.attributes.workspace;
+  const completion = events.find((event) => event.type === "run.completed");
+  const finalMessageBytes = completion?.attributes.finalMessageBytes;
+  const outcome = completion && typeof finalMessageBytes === "number" ? {
+    ...(completion.summary?.text !== undefined ? { text: completion.summary.text } : {}),
+    finalMessageBytes,
+    reportedFailure: completion.attributes.reportedFailure === true,
+  } : undefined;
   const summary: TraceSummary = {
     schemaVersion: SCHEMA_VERSION, capturePolicy: opts.capturePolicy,
     runId: first?.runId ?? "", traceId: first?.traceId ?? "", agentId: first?.agentId ?? "",
     sessionId: events.find((e) => e.sessionId)?.sessionId,
     ...(typeof workspace === "string" ? { workspace } : {}),
-    status, startedAt, endedAt, durationMs, endedReason: restart ? "server_restart" : undefined, eventCount: events.length, spanCount: flat.length,
+    status, startedAt, endedAt, durationMs, endedReason: restart ? "server_restart" : undefined, interruptedAfterMs, eventCount: events.length, spanCount: flat.length,
     incompleteSpans: flat.filter((s) => s.incomplete).length, redactedEvents: events.filter((e) => e.privacy.redacted).length,
     denials: events.filter((e) => e.type === "policy.denied").length,
-    degraded, truncated, evicted, usage, metrics, configHash, workspaceChanges,
+    audit: {
+      actions: auditRows.length,
+      denials: auditRows.filter((row) => row.outcome === "denied").length,
+      actors: [...new Set(auditRows.map((row) => row.actor.type + "/" + row.actor.id))].sort(),
+    },
+    degraded, truncated, evicted, usage, metrics, configHash, workspaceChanges, outcome,
     capabilities: { model: events.some((e) => e.category === "model") ? "observed" : declaredUnavailable ? "unavailable" : "unknown", tool: events.some((e) => e.category === "tool") ? "observed" : declaredUnavailable ? "unavailable" : "unknown" },
     firstFailingStep: failure && failure.kind !== "degraded" ? failure.name : undefined, failure,
   };

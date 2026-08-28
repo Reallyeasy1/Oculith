@@ -1,17 +1,19 @@
-import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentService, configHash, configSnapshot } from "./agent-service.js";
+import { AgentService, configHash, configSnapshot, serverHeartbeatPath } from "./agent-service.js";
 import { EvalRunner } from "./eval/runner.js";
 import { RunCancelledError } from "./errors.js";
 import { loadConfig } from "./config.js";
 import { JsonStore } from "./store.js";
-import type { AgentConfigSnapshot, AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
+import type { AgentConfigSnapshot, AgentRunner, RunActivity, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 import { createTraceContext } from "./glassbox/context.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
 import { MemoryTraceStore, type TraceStore } from "./glassbox/store.js";
+import { JsonEvaluationStore } from "./glassbox/evaluation.js";
+import { JsonRunSummaryStore } from "./glassbox/summary.js";
 
 class FakeRunner implements AgentRunner {
   async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -66,6 +68,38 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
 }
 
 describe("Agent lifecycle", () => {
+  it("validates, lists, shares, and switches named workspaces safely", async () => {
+    let finish!: (result: RunnerResult) => void;
+    const runner: AgentRunner = {
+      run: () => new Promise((resolve) => { finish = resolve; }),
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const first = await service.createAgent({ name: "One", workspace: "shared-repo" });
+    const second = await service.createAgent({ name: "Two", workspace: "shared-repo" });
+    expect(first.workspacePath).toBe(second.workspacePath);
+    expect((await service.listWorkspaces()).find((workspace) => workspace.name === "shared-repo")).toMatchObject({
+      agents: expect.arrayContaining([first.id, second.id]), managed: false,
+    });
+
+    const { run } = await service.sendMessage(first.id, "hold");
+    await expect.poll(() => readFile(path.join(first.workspacePath, "AGENTS.md"), "utf8")).toMatch(/named One/);
+    await expect(service.sendMessage(second.id, "collide")).rejects.toMatchObject({ statusCode: 409 });
+    await expect(service.updateAgent(second.id, { workspace: "next-repo" })).resolves.toMatchObject({ workspaceName: "next-repo", codexThreadId: null });
+    expect(await readFile(path.join(service.getAgent(second.id).workspacePath, "AGENTS.md"), "utf8")).toContain("Two");
+    finish({ output: "done", threadId: "thread", usage: null });
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    await service.deleteAgent(first.id);
+    await expect(stat(first.workspacePath)).resolves.toBeDefined();
+  });
+
+  it.each(["../escape", "UPPER", "/absolute", "a/b", "a\\b", ""])("rejects unsafe workspace name %j", async (workspace) => {
+    const service = await makeService();
+    await expect(service.createAgent({ name: "Unsafe", workspace })).rejects.toMatchObject({ statusCode: 400 });
+  });
+
   it("briefs new and existing Agents about disposable containers and host-side commands", async () => {
     const service = await makeService();
     const agent = await service.createAgent({ name: "Frontend Builder" });
@@ -103,6 +137,100 @@ describe("Agent lifecycle", () => {
     expect(changed.configSnapshot?.instructions).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(changed.configSnapshot?.instructions).not.toContain("Skip tests");
     expect(JSON.stringify(changed.configSnapshot)).not.toMatch(/apiKey|token|secret|password/i);
+  });
+
+  it("surfaces live runner activity on the polled Run and clears it on terminal states", async () => {
+    let report!: (activity: RunActivity | null) => void;
+    let finish!: (result: RunnerResult) => void;
+    let fail!: (error: Error) => void;
+    const runner: AgentRunner = {
+      run: (request: RunnerRequest) =>
+        new Promise((resolve, reject) => {
+          report = (activity) => request.onActivity?.(activity);
+          finish = resolve;
+          fail = reject;
+        }),
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Live" });
+
+    const first = (await service.sendMessage(agent.id, "multi-step task")).run;
+    expect(service.getRun(first.id).currentActivity).toBeUndefined();
+    await expect.poll(() => service.getRun(first.id).status).toBe("running");
+    report({ kind: "command", label: "Running npm…" });
+    await expect.poll(() => service.getRun(first.id).currentActivity?.label).toBe("Running npm…");
+    report({ kind: "thinking", label: "Thinking…" });
+    await expect.poll(() => service.getRun(first.id).currentActivity?.kind).toBe("thinking");
+    report(null);
+    await expect.poll(() => service.getRun(first.id).currentActivity).toBeUndefined();
+    report({ kind: "thinking", label: "Thinking…" });
+    finish({ output: "done", threadId: "thread", usage: null });
+    await expect.poll(() => service.getRun(first.id).status).toBe("completed");
+    expect(service.getRun(first.id).currentActivity).toBeUndefined();
+
+    const second = (await service.sendMessage(agent.id, "and fail")).run;
+    await expect.poll(() => service.getRun(second.id).status).toBe("running");
+    report({ kind: "command", label: "Running npm…" });
+    await expect.poll(() => service.getRun(second.id).currentActivity?.label).toBe("Running npm…");
+    fail(new Error("runner exploded"));
+    await expect.poll(() => service.getRun(second.id).status).toBe("failed");
+    expect(service.getRun(second.id).currentActivity).toBeUndefined();
+  });
+
+  it("coalesces a synchronous burst of activity updates into at most two store writes", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
+    temporaryDirectories.push(root);
+    const config = loadConfig({
+      NODE_ENV: "test",
+      APP_DATA_DIR: path.join(root, "data"),
+      AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+      WORKSPACE_TEMPLATES_DIR: path.join(root, "templates"),
+      CODEX_HOME: path.join(root, "codex"),
+      ARK_API_KEY: "test-key",
+      ARK_MODEL: "ep-test",
+    });
+    const store = new JsonStore(path.join(root, "data", "db.json"));
+    const rawMutate = store.mutate.bind(store);
+    let counting = false;
+    let writes = 0;
+    store.mutate = ((mutation: never) => {
+      if (counting) writes += 1;
+      return rawMutate(mutation);
+    }) as typeof store.mutate;
+    let report!: (activity: RunActivity | null) => void;
+    let finish!: (result: RunnerResult) => void;
+    const runner: AgentRunner = {
+      run: (request: RunnerRequest) =>
+        new Promise((resolve) => {
+          report = (activity) => request.onActivity?.(activity);
+          finish = resolve;
+        }),
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = new AgentService(
+      config,
+      store,
+      new WorkspaceManager(path.join(root, "workspaces"), config.workspaceTemplatesDirectory),
+      runner,
+    );
+    await service.initialize();
+    const agent = await service.createAgent({ name: "Burst" });
+    const { run } = await service.sendMessage(agent.id, "spam activities");
+    await expect.poll(() => service.getRun(run.id).status).toBe("running");
+    // Let the run-start bookkeeping writes drain so only activity writes are counted below.
+    await rawMutate(() => undefined);
+    counting = true;
+    for (let index = 1; index <= 5; index += 1) {
+      report({ kind: "command", label: "Running step" + index + "…" });
+    }
+    await expect.poll(() => service.getRun(run.id).currentActivity?.label).toBe("Running step5…");
+    counting = false;
+    expect(writes).toBeLessThanOrEqual(2);
+    finish({ output: "done", threadId: "thread", usage: null });
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
   });
 
   it("hashes canonical configuration independently of object key insertion order", () => {
@@ -203,8 +331,8 @@ class TimeoutRunner extends FakeRunner {
   }
 }
 
-async function makeTraced(runner: AgentRunner = new FakeRunner(), store: TraceStore = new MemoryTraceStore()) {
-  const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+async function makeTraced(runner: AgentRunner = new FakeRunner(), store: TraceStore = new MemoryTraceStore(), capturePolicy: "metadata_only" | "safe_summary" = "metadata_only") {
+  const emitter = new ObservationEmitter({ store, capturePolicy });
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
   temporaryDirectories.push(root);
   const config = loadConfig({
@@ -234,18 +362,88 @@ const settle = async (service: AgentService, runId: string) => {
 
 describe("GlassBox control-plane adapter", () => {
   it("runs persisted regression cases serially through isolated ordinary Runs", async () => {
-    const { service, store, emitter, config } = await makeTraced();
+    const { service, store, emitter, config, jsonStore } = await makeTraced();
+    const summaries = new JsonRunSummaryStore(jsonStore);
+    const evaluations = new JsonEvaluationStore(jsonStore, summaries);
+    await evaluations.initialize();
     await mkdir(path.join(config.workspaceTemplatesDirectory, "fixture"), { recursive: true });
     const agent = await service.createAgent({ name: "Eval target", instructions: "complete the task" });
     const snapshot = configSnapshot(agent, config);
-    const regressionCase = await service.createRegressionCase({ name: "case", prompt: "do it", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions: [{ type: "terminal_status", expected: "ok" }] });
+    const regressionCase = await service.createRegressionCase({ name: "case", prompt: "do it", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions: [{ type: "terminal_status", expected: "ok" }, { type: "expected_tool", program: "git" }, { type: "expected_tool", program: "npm" }] });
+    expect(regressionCase.templateHash).toMatch(/^[0-9a-f]{64}$/);
     const evalRun = await service.createEvalRun({ caseIds: [regressionCase.id], target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } });
-    await new EvalRunner(service, { emitter, store }).execute(evalRun.id);
+    expect(evalRun).toMatchObject({ templateHashes: { fixture: regressionCase.templateHash } });
+    expect(evalRun.templateHashMismatch).toBeUndefined();
+    await new EvalRunner(service, { emitter, store, summaries, evaluations }).execute(evalRun.id);
     const finished = service.getEvalRun(evalRun.id);
     expect(finished).toMatchObject({ status: "completed", runIds: [expect.any(String)] });
-    expect(finished.results[0]).toMatchObject({ caseId: regressionCase.id, runId: finished.runIds[0], results: [expect.objectContaining({ type: "terminal_status", pass: true })] });
+    expect(finished.results[0]).toMatchObject({ caseId: regressionCase.id, runId: finished.runIds[0], results: expect.arrayContaining([expect.objectContaining({ type: "terminal_status", pass: true })]) });
+    // One result per (run, evaluator, version): the two expected_tool assertions fold into one failed verdict (FakeRunner calls no tool).
+    expect((await evaluations.resultsForRun(finished.runIds[0]!)).map(({ evaluatorId, evaluatorVersion, passed, jobId, metadata }) => ({ evaluatorId, evaluatorVersion, passed, jobId, metadata })).sort((a, b) => a.evaluatorId.localeCompare(b.evaluatorId))).toEqual([
+      { evaluatorId: "expected_tool", evaluatorVersion: 1, passed: false, jobId: evalRun.id, metadata: { assertions: 2 } },
+      { evaluatorId: "terminal_status", evaluatorVersion: 1, passed: true, jobId: evalRun.id, metadata: { expected: "ok", observed: "ok" } },
+    ]);
+    expect(await summaries.get(finished.runIds[0]!)).toMatchObject({ taskOutcome: "unknown" });
     await emitter.flush();
-    expect((await store.readRun(finished.runIds[0]!)).find((event) => event.type === "run.created")?.attributes).toMatchObject({ evalRunId: evalRun.id, caseId: regressionCase.id });
+    expect((await store.readRun(finished.runIds[0]!)).find((event) => event.type === "run.created")?.attributes).toMatchObject({ evalRunId: evalRun.id, caseId: regressionCase.id, templateHash: regressionCase.templateHash });
+  });
+
+  it("refuses an EvalRun whose template changed since the case was recorded unless forced", async () => {
+    const { service, config, jsonStore } = await makeTraced();
+    const template = path.join(config.workspaceTemplatesDirectory, "fixture");
+    await mkdir(template, { recursive: true });
+    await writeFile(path.join(template, "starting.txt"), "v1", "utf8");
+    const agent = await service.createAgent({ name: "Eval target", instructions: "complete the task" });
+    const snapshot = configSnapshot(agent, config);
+    const target = { agentId: agent.id, snapshot, configHash: configHash(snapshot) };
+    const regressionCase = await service.createRegressionCase({ name: "case", prompt: "do it", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions: [{ type: "terminal_status", expected: "ok" }] });
+    await writeFile(path.join(template, "starting.txt"), "v2", "utf8");
+    await expect(service.createEvalRun({ caseIds: [regressionCase.id], target })).rejects.toMatchObject({ statusCode: 409, message: "template changed since the case was recorded" });
+    const forced = await service.createEvalRun({ caseIds: [regressionCase.id], target }, { force: true });
+    expect(forced.templateHashMismatch).toBe(true);
+    expect(forced.templateHashes!.fixture).not.toBe(regressionCase.templateHash);
+    // a case saved before hashes existed is unknown, never refused
+    await service.createRegressionCase({ name: "legacy", prompt: "do it", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions: [{ type: "terminal_status", expected: "ok" }] });
+    const legacy = service.listRegressionCases().find((item) => item.name === "legacy")!;
+    await jsonStore.mutate((database) => { delete database.regressionCases.find((item) => item.id === legacy.id)!.templateHash; });
+    await writeFile(path.join(template, "starting.txt"), "v3", "utf8");
+    expect((await service.createEvalRun({ caseIds: [legacy.id], target })).templateHashMismatch).toBeUndefined();
+    await expect(service.createRegressionCase({ name: "missing", prompt: "x", workspaceTemplate: "nope", baselineConfigHash: "b", assertions: [{ type: "terminal_status", expected: "ok" }] })).rejects.toMatchObject({ statusCode: 400 });
+    // a template deleted after the case was recorded is a 400 at EvalRun creation, not a 500
+    await rm(template, { recursive: true, force: true });
+    await expect(service.createEvalRun({ caseIds: [regressionCase.id], target })).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it("records a throwing case and still runs the remaining cases", async () => {
+    let calls = 0;
+    const { service, store, emitter, config } = await makeTraced(
+      new (class extends FakeRunner {
+        override run(request: RunnerRequest): Promise<RunnerResult> {
+          if (calls++ === 0) return Promise.reject(new Error("runner exploded"));
+          return super.run(request);
+        }
+      })(),
+    );
+    await mkdir(path.join(config.workspaceTemplatesDirectory, "fixture"), { recursive: true });
+    const agent = await service.createAgent({ name: "Eval target", instructions: "complete the task" });
+    const snapshot = configSnapshot(agent, config);
+    const assertions = [{ type: "terminal_status" as const, expected: "ok" }];
+    const first = await service.createRegressionCase({ name: "first", prompt: "one", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions });
+    const second = await service.createRegressionCase({ name: "second", prompt: "two", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions });
+    const evalRun = await service.createEvalRun({ caseIds: [first.id, second.id], target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } });
+    await new EvalRunner(service, { emitter, store }).execute(evalRun.id);
+    const finished = service.getEvalRun(evalRun.id);
+    expect(finished.status).toBe("failed");
+    expect(finished.completedAt).toEqual(expect.any(String));
+    expect(finished.results).toHaveLength(2);
+    expect(finished.results[0]).toMatchObject({ caseId: first.id, runId: expect.any(String), error: "runner exploded", results: [expect.objectContaining({ type: "terminal_status", pass: false })] });
+    expect(service.getRun(finished.results[0]!.runId!)).toMatchObject({ status: "failed", error: "runner exploded" });
+    expect(finished.results[1]).toMatchObject({ caseId: second.id, runId: expect.any(String), results: [expect.objectContaining({ type: "terminal_status", pass: true })] });
+    expect(finished.results[1]!.results[0]!.pass).toBe(true);
+    expect(service.getAgent(agent.id).status).not.toBe("busy");
+    // the Agent went error -> ready, so the next ordinary message is still admitted; wait so cleanup does not race the store
+    const { run: next } = await service.sendMessage(agent.id, "still admitted");
+    expect(await service.waitForRun(next.id)).toMatchObject({ status: "completed" });
   });
 
   it("runs an evaluation in a fresh template workspace and leaves the Agent thread untouched", async () => {
@@ -259,7 +457,7 @@ describe("GlassBox control-plane adapter", () => {
       }
     }
     const runner = new CapturingRunner();
-    const { service, store, emitter, config } = await makeTraced(runner);
+    const { service, store, emitter, config, workspaces } = await makeTraced(runner);
     await mkdir(path.join(config.workspaceTemplatesDirectory, "fixture"), { recursive: true });
     await writeFile(path.join(config.workspaceTemplatesDirectory, "fixture", "starting.txt"), "template starting state", "utf8");
     const agent = await service.createAgent({ name: "Evaluator", instructions: "Run the supplied regression case." });
@@ -287,7 +485,7 @@ describe("GlassBox control-plane adapter", () => {
     await expect.poll(async () => stat(isolatedRequest.workspacePath).then(() => true, () => false)).toBe(false);
 
     const created = (await store.readRun(run.id)).find((event) => event.type === "run.created");
-    expect(created?.attributes).toMatchObject({ evalRunId: "eval-1", caseId: "case-1", configHash: run.configHash });
+    expect(created?.attributes).toMatchObject({ evalRunId: "eval-1", caseId: "case-1", configHash: run.configHash, templateHash: await workspaces.templateHash("fixture") });
   });
 
   it("links the Run to a trace and emits root, control and terminal events in order", async () => {
@@ -319,8 +517,50 @@ describe("GlassBox control-plane adapter", () => {
     expect(events.find((e) => e.type === "run.completed")!.attributes).toMatchObject({
       inputTokens: 12,
       outputTokens: 5,
+      finalMessageBytes: 16,
+      reportedFailure: false,
     });
     expect(JSON.stringify(events)).not.toContain("hello"); // prompt text is never stored
+  });
+
+  it("persists only outcome metadata under metadata_only and a redacted bounded summary under safe_summary", async () => {
+    const secret = "ark-12345678-1234-1234-1234-123456789abc";
+    const runner = new (class extends FakeRunner {
+      override async run(): Promise<RunnerResult> {
+        return { output: `Unable to continue with ${secret}`, threadId: "thread", usage: null };
+      }
+    })();
+    const metadata = await makeTraced(runner);
+    const metadataAgent = await metadata.service.createAgent({ name: "metadata outcome" });
+    const metadataRun = (await metadata.service.sendMessage(metadataAgent.id, "go")).run;
+    await settle(metadata.service, metadataRun.id); await metadata.emitter.flush();
+    const metadataEvent = (await metadata.store.readRun(metadataRun.id)).find((event) => event.type === "run.completed")!;
+    expect(metadataEvent.attributes).toMatchObject({ reportedFailure: true, finalMessageBytes: expect.any(Number) });
+    expect(metadataEvent.summary).toBeUndefined();
+    expect(JSON.stringify(metadataEvent)).not.toContain(secret);
+
+    const safe = await makeTraced(runner, new MemoryTraceStore(), "safe_summary");
+    const safeAgent = await safe.service.createAgent({ name: "safe outcome" });
+    const safeRun = (await safe.service.sendMessage(safeAgent.id, "go")).run;
+    await settle(safe.service, safeRun.id); await safe.emitter.flush();
+    const safeEvent = (await safe.store.readRun(safeRun.id)).find((event) => event.type === "run.completed")!;
+    expect(safeEvent.summary?.text).toContain("[REDACTED:ark_key]");
+    expect(JSON.stringify(safeEvent)).not.toContain(secret);
+  });
+
+  it("redacts a runner failure before it reaches the process logger (#75)", async () => {
+    const secret = "ark-12345678-1234-1234-1234-123456789abc";
+    const { service } = await makeTraced(new (class extends FakeRunner {
+      override async run(): Promise<RunnerResult> { throw new Error("boom " + secret); }
+    })());
+    const lines: string[] = [];
+    service.setLogger({ child: () => ({ info: (message) => { lines.push(message); }, error: (detail, message) => { lines.push(JSON.stringify(detail) + " " + message); } }) });
+    const agent = await service.createAgent({ name: "leaky" });
+    const run = (await service.sendMessage(agent.id, "go")).run;
+    expect((await settle(service, run.id)).status).toBe("failed");
+    expect(lines.join("\n")).toContain("Runner failed");
+    expect(lines.join("\n")).toContain("[REDACTED:ark_key]");
+    expect(lines.join("\n")).not.toContain(secret);
   });
 
   it("observes workspace path changes without storing file contents", async () => {
@@ -379,21 +619,35 @@ describe("GlassBox control-plane adapter", () => {
   });
 
   it("restart marks interrupted Runs cancelled in the trace", async () => {
+    // Wait for the runner to be reached instead of sleeping: executeRun awaits workspace writes first, so a
+    // fixed delay restarts too early under load and later control events would follow the cancel marker.
+    let reached!: () => void;
+    const runnerReached = new Promise<void>((resolve) => { reached = resolve; });
     const { service, store, emitter, config, jsonStore, workspaces } = await makeTraced(
       new (class extends FakeRunner {
         override run(): Promise<RunnerResult> {
+          reached();
           return new Promise(() => undefined);
         }
       })(),
     );
     const agent = await service.createAgent({ name: "r" });
+    const snapshot = configSnapshot(agent, config);
+    const evalRun = await service.createEvalRun({ caseIds: [], target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } });
     const { run } = await service.sendMessage(agent.id, "x");
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await runnerReached;
     await emitter.flush();
+    const lastSeenAt = "2026-08-28T10:00:00.000Z";
+    await writeFile(serverHeartbeatPath(config.dataDirectory), JSON.stringify({ lastSeenAt }));
     // a second service on the same store simulates a process restart
     const restarted = new AgentService(config, jsonStore, workspaces, new FakeRunner(), emitter);
     await restarted.initialize();
     await emitter.flush();
+    expect(restarted.getEvalRun(evalRun.id)).toMatchObject({
+      status: "failed",
+      completedAt: expect.any(String),
+      results: [{ caseId: "", results: [], error: "Server restarted while this Eval Run was active" }],
+    });
     const events = await store.readRun(run.id);
     const serviceSpan = events.find((event) => event.type === "agent_service.run.started");
     expect(events.at(-1)).toMatchObject({
@@ -401,7 +655,7 @@ describe("GlassBox control-plane adapter", () => {
       status: "cancelled",
       actorId: "server",
       actorType: "service",
-      attributes: { reason: "server_restart" },
+      attributes: { reason: "server_restart", lastSeenAt },
       parentSpanId: serviceSpan?.spanId,
     });
   });

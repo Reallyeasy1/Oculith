@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Agent, EvalRun, RegressionCase, RunListItem } from "./types";
+import { templateHashDetails } from "./eval-view-model";
 import { summarizeRuns } from "./runs-view-model";
 
 interface Props {
@@ -14,7 +15,7 @@ interface Props {
 // All-runs overview across Agents (#70): the summary strip. The Runs table and trace detail stay in App below it.
 export default function Overview({ runs, cases, evalRuns, selectedAgent, onRunCase, onDeleteCase }: Props) {
   const s = summarizeRuns(runs);
-  const stats: [string, number][] = [["Total", s.total], ["Ok", s.ok], ["Needs attention", s.attention], ["Running", s.running]];
+  const stats: [string, number][] = [["Total", s.total], ["Ok", s.ok], ["Needs attention", s.attention], ["Recovered", s.recovered], ["Running", s.running]];
   const [pendingCaseId, setPendingCaseId] = useState<string | null>(null);
   const act = async (regressionCase: RegressionCase, action: "run" | "delete") => {
     setPendingCaseId(regressionCase.id);
@@ -63,13 +64,18 @@ export default function Overview({ runs, cases, evalRuns, selectedAgent, onRunCa
                 const evaluation = latestEvaluation(evalRuns, regressionCase.id);
                 const completed = evaluation?.results.find((result) => result.caseId === regressionCase.id);
                 const passCount = completed?.results.filter((result) => result.pass).length;
+                const templateHashes = evaluation ? templateHashDetails(evaluation) : [];
                 return <tr key={regressionCase.id}>
                   <td>{regressionCase.name}</td>
                   <td><code>{regressionCase.workspaceTemplate}</code></td>
                   <td><code title={regressionCase.baselineConfigHash}>{regressionCase.baselineConfigHash.slice(0, 8)}</code></td>
                   <td>{regressionCase.assertions.length}</td>
                   <td>{new Date(regressionCase.createdAt).toLocaleString()}</td>
-                  <td>{evaluation ? <span><code title={evaluation.id}>{evaluation.id.slice(0, 8)}</code> · {evaluation.status === "running" ? "running" : completed?.error ? "failed" : `${passCount ?? 0}/${completed?.results.length ?? 0} passed`}</span> : "—"}</td>
+                  <td>{evaluation ? <span>
+                    <code title={evaluation.id}>{evaluation.id.slice(0, 8)}</code> · {evaluation.status === "running" ? "running" : !completed || completed.error ? "failed" : `${passCount ?? 0}/${completed.results.length} passed`}
+                    {evaluation.templateHashMismatch && <> · <span className="badge badge-warn" title="The template changed after this case was recorded; this evaluation was forced against the current content.">template hash mismatch · forced</span></>}
+                    {templateHashes.length > 0 && <> · <span className="trace-muted" title={templateHashes.map((item) => `${item.name}: ${item.hash}`).join("\n")}>templates: {templateHashes.map((item) => `${item.name} ${item.shortHash}`).join(", ")}</span></>}
+                  </span> : "—"}</td>
                   <td className="case-actions">
                     <button type="button" className="button button-primary" onClick={() => void act(regressionCase, "run")} disabled={!selectedAgent || pendingCaseId === regressionCase.id} title={selectedAgent ? undefined : "Select an Agent from the sidebar first."}>{pendingCaseId === regressionCase.id ? "Working…" : "Run against " + (selectedAgent?.name ?? "this Agent")}</button>
                     <button type="button" className="button button-ghost" onClick={() => void act(regressionCase, "delete")} disabled={pendingCaseId === regressionCase.id}>Delete</button>

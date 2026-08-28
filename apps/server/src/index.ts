@@ -3,16 +3,24 @@ import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
 import { loadConfig, writeCodexConfig } from "./config.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
+import { JsonEvaluationStore } from "./glassbox/evaluation.js";
+import { builtinRunEvaluators, EvaluationJobWorker, JsonEvaluationJobStore } from "./glassbox/jobs.js";
 import { NdjsonTraceStore } from "./glassbox/store.js";
+import { openSummaryStore } from "./glassbox/postgres-summary.js";
+import { scheduleRollup } from "./glassbox/summary.js";
 import { createRunner } from "./runner-factory.js";
 import { JsonStore } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
+import { RunLogStore } from "./run-log-store.js";
 
 const config = loadConfig();
 await writeCodexConfig(config);
 
 const store = new JsonStore(path.join(config.dataDirectory, "launchpad.json"));
+await store.initialize(); // before anything seeds or rolls up into it; AgentService.initialize() re-reads the same file
 const workspaces = new WorkspaceManager(config.workspaceRoot, config.workspaceTemplatesDirectory);
+const runLogs = new RunLogStore(path.join(config.dataDirectory, "logs"), config.glassboxLogMaxMb * 1024 * 1024);
+await runLogs.initialize();
 
 const glassboxLog = (message: string, meta: Record<string, unknown>) =>
   console.warn("[glassbox]", message, JSON.stringify(meta));
@@ -37,14 +45,28 @@ const emitter = new ObservationEmitter({
 for (const entry of traceStore.listRuns()) emitter.seedSequence(entry.traceId, entry.lastSequence);
 
 const runner = createRunner(config, emitter);
-const service = new AgentService(config, store, workspaces, runner, emitter);
+// Per-Run summaries (#168): rolled up after each terminal event, off the Run's path; the list route reads them.
+const summaries = await openSummaryStore(config, store);
+const evaluations = new JsonEvaluationStore(store, summaries);
+await evaluations.initialize();
+// Evaluation jobs (#170): background worker over stored summaries; restart honesty first, then the
+// loop picks up whatever was queued. #171 registers the LLM judge in this registry.
+const evaluationJobs = new EvaluationJobWorker({ jobs: new JsonEvaluationJobStore(store), summaries, evaluations, evaluators: builtinRunEvaluators(), log: glassboxLog });
+await evaluationJobs.initialize();
+evaluationJobs.start();
+const rollup = { traces: traceStore, emitter, summaries, log: glassboxLog };
+const service = new AgentService(config, store, workspaces, runner, emitter, (runId) => void scheduleRollup(rollup, runId), runLogs);
 await service.initialize();
+await service.startHeartbeat();
 
-const app = await createApp(config, service, { emitter, store: traceStore });
+const app = await createApp(config, service, { emitter, store: traceStore, summaries, evaluations, jobs: evaluationJobs, logs: runLogs });
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");
+  service.stopHeartbeat();
+  evaluationJobs.stop();
   await app.close();
+  await summaries.close?.();
   process.exit(0);
 };
 

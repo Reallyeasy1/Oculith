@@ -1,14 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AppConfig } from "./config.js";
 import { isModelConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
 import { createTraceContext, type TraceContext } from "./glassbox/context.js";
+import { describeFinalMessage } from "./glassbox/codex-observer.js";
 import {
   createDefaultEmitter,
   type ObservationEmitter,
   type SpanHandle,
 } from "./glassbox/emitter.js";
+import { redactText } from "./glassbox/redact.js";
 import { newId, type TraceStatus } from "./glassbox/schema.js";
 import { JsonStore } from "./store.js";
 import type {
@@ -20,12 +23,20 @@ import type {
   CreateAgentInput,
   Message,
   RegressionCase,
+  RunActivity,
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import type { RunLogStore } from "./run-log-store.js";
 import { boundedChangedPaths, diffWorkspace, snapshotWorkspace } from "./workspace-snapshot.js";
 
 const now = () => new Date().toISOString();
+const HEARTBEAT_INTERVAL_MS = 15_000;
+export const serverHeartbeatPath = (dataDirectory: string) => path.join(dataDirectory, "server-heartbeat.json");
+
+interface AppLogger {
+  child(bindings: Record<string, unknown>): { info(message: string): void; error(error: unknown, message?: string): void };
+}
 
 type ExecutionOptions = {
   runId?: string;
@@ -72,6 +83,7 @@ export function configHash(snapshot: AgentConfigSnapshot): string {
 }
 
 export class AgentService {
+  private heartbeatTimer: NodeJS.Timeout | undefined;
   private readonly activeExecutions = new Map<string, Promise<void>>();
   private readonly cancellationRequests = new Set<string>();
   private readonly spans = new Map<
@@ -85,6 +97,7 @@ export class AgentService {
       cancelRequestedAt?: string | undefined;
     }
   >();
+  private appLogger?: AppLogger | undefined;
 
   constructor(
     private readonly config: AppConfig,
@@ -92,9 +105,15 @@ export class AgentService {
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
     private readonly emitter: ObservationEmitter = createDefaultEmitter(),
+    /** Fires after a Run's terminal event is emitted (Run end and restart-cancel); wired to the summary rollup (#168). */
+    private readonly onRunEnded?: ((runId: string) => void) | undefined,
+    private readonly runLogs?: RunLogStore | undefined,
   ) {}
 
+  setLogger(logger: AppLogger): void { this.appLogger = logger; }
+
   async initialize(): Promise<void> {
+    const lastSeenAt = await this.readHeartbeat();
     await this.store.initialize();
     await this.workspaces.initialize();
     const interrupted: AgentRun[] = [];
@@ -105,6 +124,7 @@ export class AgentService {
           run.status = "cancelled";
           run.error = "Server restarted while this run was active";
           run.completedAt = now();
+          run.currentActivity = undefined;
         }
       }
       for (const agent of database.agents) {
@@ -112,6 +132,13 @@ export class AgentService {
           agent.status = "ready";
           agent.updatedAt = now();
         }
+      }
+      // EvalRunner progress lives only in the in-process promise, so a running EvalRun cannot resume.
+      for (const evalRun of database.evalRuns) {
+        if (evalRun.status !== "running") continue;
+        evalRun.status = "failed";
+        evalRun.completedAt = now();
+        evalRun.results.push({ caseId: "", results: [], error: "Server restarted while this Eval Run was active" });
       }
     });
     // AGENTS.md is platform-owned. Refresh every existing workspace at boot so newly introduced
@@ -135,9 +162,40 @@ export class AgentService {
         name: "run.cancelled",
         status: "cancelled",
         source: { component: "AgentService", observed: true },
-        attributes: { reason: "server_restart" },
+        attributes: { reason: "server_restart", ...(lastSeenAt ? { lastSeenAt } : {}) },
       });
+      this.onRunEnded?.(run.id);
     }
+  }
+
+  private async readHeartbeat(): Promise<string | undefined> {
+    try {
+      const value = JSON.parse(await readFile(serverHeartbeatPath(this.config.dataDirectory), "utf8")) as { lastSeenAt?: unknown };
+      if (typeof value.lastSeenAt !== "string" || Number.isNaN(Date.parse(value.lastSeenAt))) return undefined;
+      return new Date(value.lastSeenAt).toISOString();
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async writeHeartbeat(): Promise<void> {
+    const target = serverHeartbeatPath(this.config.dataDirectory);
+    const temporary = target + ".tmp";
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(temporary, JSON.stringify({ lastSeenAt: now() }) + "\n", "utf8");
+    await rename(temporary, target);
+  }
+
+  async startHeartbeat(): Promise<void> {
+    this.stopHeartbeat();
+    await this.writeHeartbeat();
+    this.heartbeatTimer = setInterval(() => void this.writeHeartbeat().catch(() => undefined), HEARTBEAT_INTERVAL_MS);
+    this.heartbeatTimer.unref();
+  }
+
+  stopHeartbeat(): void {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = undefined;
   }
 
   listAgents(): Agent[] {
@@ -289,8 +347,18 @@ export class AgentService {
     return item;
   }
 
-  async createRegressionCase(input: Omit<RegressionCase, "id" | "createdAt">): Promise<RegressionCase> {
-    const item: RegressionCase = { ...input, id: randomUUID(), createdAt: now() };
+  /** A missing or oversized template is a client error (400), not a server fault, wherever a case names one. */
+  private async templateHash(name: string): Promise<string> {
+    try { return await this.workspaces.templateHash(name); }
+    catch (error) {
+      // a missing directory is the caller's mistake; never echo the server's filesystem path back
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new HttpError(400, `Workspace template not found: ${name}`);
+      throw new HttpError(400, error instanceof Error ? error.message : "Unable to hash workspace template");
+    }
+  }
+
+  async createRegressionCase(input: Omit<RegressionCase, "id" | "createdAt" | "templateHash">): Promise<RegressionCase> {
+    const item: RegressionCase = { ...input, templateHash: await this.templateHash(input.workspaceTemplate), id: randomUUID(), createdAt: now() };
     await this.store.mutate((database) => database.regressionCases.push(item));
     return item;
   }
@@ -308,8 +376,16 @@ export class AgentService {
     if (!item) throw new HttpError(404, "Eval Run not found");
     return item;
   }
-  async createEvalRun(input: Omit<EvalRun, "id" | "createdAt" | "runIds" | "results" | "status">): Promise<EvalRun> {
-    const item: EvalRun = { ...input, id: randomUUID(), runIds: [], results: [], status: "running", createdAt: now() };
+  /** Recomputes each case's template hash; a template edited since the case was recorded is refused unless `force`. */
+  async createEvalRun(input: Omit<EvalRun, "id" | "createdAt" | "runIds" | "results" | "status" | "templateHashes" | "templateHashMismatch">, options: { force?: boolean | undefined } = {}): Promise<EvalRun> {
+    const templateHashes: Record<string, string> = {};
+    let mismatch = false;
+    for (const regressionCase of input.caseIds.map((id) => this.getRegressionCase(id))) {
+      const current = (templateHashes[regressionCase.workspaceTemplate] ??= await this.templateHash(regressionCase.workspaceTemplate));
+      if (regressionCase.templateHash !== undefined && regressionCase.templateHash !== current) mismatch = true;
+    }
+    if (mismatch && !options.force) throw new HttpError(409, "template changed since the case was recorded");
+    const item: EvalRun = { ...input, templateHashes, ...(mismatch ? { templateHashMismatch: true } : {}), id: randomUUID(), runIds: [], results: [], status: "running", createdAt: now() };
     await this.store.mutate((database) => database.evalRuns.push(item));
     return item;
   }
@@ -436,6 +512,22 @@ export class AgentService {
   }
 
   /**
+   * Resolve once the Run reaches a terminal status. Awaits the tracked execution when this process owns
+   * it; otherwise (a Run started before a restart) polls the store, bounded by the runner timeout plus grace.
+   */
+  async waitForRun(runId: string): Promise<AgentRun> {
+    const deadline = Date.now() + this.config.codexTimeoutMs + 30_000;
+    while (Date.now() < deadline) {
+      const run = this.getRun(runId);
+      if (run.status !== "queued" && run.status !== "running") return run;
+      const execution = this.activeExecutions.get(run.agentId);
+      if (execution) await execution.catch(() => undefined);
+      else await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error("Run " + runId + " did not finish within " + (this.config.codexTimeoutMs + 30_000) + " ms");
+  }
+
+  /**
    * Run a prompt from a new template copy and a fresh runner thread. It deliberately does not add
    * conversation messages or a thread id to the target Agent, while retaining the ordinary Run/trace.
    */
@@ -444,13 +536,14 @@ export class AgentService {
     const agent = this.getAgent(input.agentId);
     let materialized = false;
     try {
+      const templateHash = await this.workspaces.templateHash(input.workspaceTemplate);
       const workspacePath = await this.workspaces.materializeEvalWorkspace(runId, input.workspaceTemplate, agent);
       materialized = true;
       return await this.sendMessage(input.agentId, input.prompt, undefined, {
         runId,
         workspacePath,
         workspaceName: input.workspaceTemplate,
-        ...(input.tags ? { tags: input.tags } : {}),
+        tags: { ...input.tags, templateHash },
         persistMessages: false,
         persistThread: false,
         ...(this.config.keepEvalWorkspaces ? {} : { cleanup: () => this.workspaces.removeEvalWorkspace(runId) }),
@@ -470,6 +563,7 @@ export class AgentService {
       codexAvailable: await this.runner.isAvailable(),
       codexSandboxMode: this.config.codexSandboxMode,
       runtimeProvider: this.config.runtimeProvider,
+      glassboxStore: this.config.glassboxStore,
       containerEngine:
         this.config.runtimeProvider === "container"
           ? this.config.containerEngine
@@ -492,7 +586,13 @@ export class AgentService {
         }
       : undefined;
     let service: SpanHandle | undefined;
+    const bindings = run.traceId ? { traceId: run.traceId, runId: run.id, agentId: run.agentId } : undefined;
+    const logger = bindings ? this.runLogs?.child({ ...bindings, component: "AgentService" }) : undefined;
+    const runnerLogger = bindings ? this.runLogs?.child({ ...bindings, component: "AgentRunner" }) : undefined;
+    const pino = bindings ? this.appLogger?.child(bindings) : undefined;
     try {
+      pino?.info("Run started");
+      await logger?.info("Run started").catch(() => undefined);
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         if (storedRun) {
@@ -555,6 +655,53 @@ export class AgentService {
             }
           : {}),
         ...(this.config.glassboxDemoFailure === "timeout" ? { timeoutMs: 3_000 } : {}),
+        // Best-effort live status for the polled Run (#223). Fire-and-forget: a failed write can
+        // never reach the runner or change the Run's outcome (invariant 4). Writes are coalesced —
+        // at most one store mutation in flight; a burst of events collapses to the latest state —
+        // so a chatty stream can't queue a disk write per event behind the terminal write.
+        onActivity: (() => {
+          let latest: RunActivity | null = null;
+          let written: RunActivity | null = null;
+          let writing = false;
+          const flush = (): void => {
+            if (writing) return;
+            writing = true;
+            const next = latest;
+            void this.store
+              .mutate((database) => {
+                const storedRun = database.runs.find((item) => item.id === run.id);
+                if (storedRun && storedRun.status === "running") {
+                  storedRun.currentActivity = next ?? undefined;
+                }
+              })
+              .catch(() => undefined)
+              .then(() => {
+                writing = false;
+                written = next;
+                if (latest !== written) flush();
+              });
+          };
+          return (activity: RunActivity | null) => {
+            latest = activity;
+            flush();
+          };
+        })(),
+        ...(bindings
+          ? {
+              logger: {
+                info: (message: string) => {
+                  pino?.info(message);
+                  void runnerLogger?.info(message).catch(() => undefined);
+                },
+                error: (message: string, error?: unknown) => {
+                  // Never hand pino the Error itself: its err serializer writes message/stack verbatim to stdout.
+                  const detail = error === undefined ? undefined : redactText(String(error)).text.slice(0, 2_048);
+                  pino?.error(detail ? { detail } : {}, message);
+                  void runnerLogger?.error(message, detail).catch(() => undefined);
+                },
+              },
+            }
+          : {}),
       });
       if (workspaceBefore && ids && service) {
         const workspaceAfter = await snapshotWorkspace(agentAtStart.workspacePath).catch(() => undefined);
@@ -581,6 +728,8 @@ export class AgentService {
         }
       }
       const completedAt = now();
+      pino?.info("Run completed");
+      await logger?.info("Run completed").catch(() => undefined);
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
@@ -589,6 +738,7 @@ export class AgentService {
         storedRun.output = result.output;
         storedRun.usage = result.usage;
         storedRun.completedAt = completedAt;
+        storedRun.currentActivity = undefined;
         if (options.persistMessages !== false) {
           database.messages.push({
             id: randomUUID(),
@@ -605,6 +755,7 @@ export class AgentService {
         agent.updatedAt = completedAt;
       });
       if (ids && service) {
+        const outcome = describeFinalMessage(result.output);
         this.emitter.emit({
           ...ids,
           spanId: newId("spn"),
@@ -615,9 +766,14 @@ export class AgentService {
           status: "ok",
           source: { component: "AgentService", observed: true },
           attributes: {
-            outputBytes: Buffer.byteLength(result.output, "utf8"),
+            outputBytes: outcome.finalMessageBytes,
+            finalMessageBytes: outcome.finalMessageBytes,
+            reportedFailure: outcome.reportedFailure,
             ...(result.usage ?? {}),
           },
+          ...(this.emitter.capturePolicy === "safe_summary"
+            ? { summary: { text: outcome.summaryText, policy: "safe_summary" as const } }
+            : {}),
           ...(result.threadId ? { sessionId: result.threadId } : {}),
         });
         service.end("ok", { type: "agent_service.run.completed" });
@@ -626,6 +782,12 @@ export class AgentService {
       const completedAt = now();
       const cancelled = error instanceof RunCancelledError;
       const message = error instanceof Error ? error.message : String(error);
+      if (!cancelled) {
+        const logMessage = /timed out/i.test(message) ? "Runner timed out" : "Runner failed";
+        const detail = redactText(message).text.slice(0, 2_048);
+        pino?.error({ detail }, logMessage);
+        await runnerLogger?.error(logMessage, detail).catch(() => undefined);
+      }
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
@@ -633,6 +795,7 @@ export class AgentService {
           storedRun.status = cancelled ? "cancelled" : "failed";
           storedRun.error = message;
           storedRun.completedAt = completedAt;
+          storedRun.currentActivity = undefined;
         }
         if (agent) {
           if (agent.status !== "stopped") {
@@ -677,6 +840,7 @@ export class AgentService {
       }
     } finally {
       this.spans.delete(run.id);
+      this.onRunEnded?.(run.id);
       await options.cleanup?.();
     }
   }

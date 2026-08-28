@@ -33,6 +33,12 @@ export interface RunUsage {
   outputTokens?: number;
 }
 
+/** Live "what is Codex doing right now" summary derived from the observed runtime stream. */
+export interface RunActivity {
+  kind: "thinking" | "command" | "file_change" | "web_search" | "mcp_tool_call";
+  label: string;
+}
+
 export interface AgentConfigSnapshot {
   instructions: string;
   modelProvider: "ark" | "openai";
@@ -59,6 +65,8 @@ export interface AgentRun {
   traceParentSpanId?: string | undefined;
   configHash?: string | undefined;
   configSnapshot?: AgentConfigSnapshot | undefined;
+  /** Live activity observed from the runtime stream (#223); set best-effort while `running`, cleared on terminal states. */
+  currentActivity?: RunActivity | undefined;
 }
 
 export interface RegressionCase {
@@ -68,6 +76,8 @@ export interface RegressionCase {
   workspaceTemplate: string;
   sourceRunId?: string | undefined;
   baselineConfigHash: string;
+  /** sha256 of the template tree when the case was recorded; absent on cases saved before #176 (treated as unknown). */
+  templateHash?: string | undefined;
   assertions: import("./eval/evaluators.js").Assertion[];
   createdAt: string;
 }
@@ -79,6 +89,10 @@ export interface EvalRun {
   runIds: string[];
   results: { caseId: string; runId?: string | undefined; results: import("./eval/evaluators.js").EvalResult[]; error?: string | undefined }[];
   status: "running" | "completed" | "failed";
+  /** Template name -> content hash at EvalRun start; compare flags baseline/candidate pairs whose hashes differ. */
+  templateHashes?: Record<string, string> | undefined;
+  /** Set when a case's recorded templateHash no longer matched at start and the caller forced the EvalRun anyway. */
+  templateHashMismatch?: boolean | undefined;
   createdAt: string;
   completedAt?: string | undefined;
 }
@@ -90,6 +104,10 @@ export interface Database {
   runs: AgentRun[];
   regressionCases: RegressionCase[];
   evalRuns: EvalRun[];
+  runSummaries: import("./glassbox/summary.js").RunSummary[];
+  evaluatorDefinitions: import("./glassbox/evaluation.js").EvaluatorDefinition[];
+  evaluationResults: import("./glassbox/evaluation.js").EvaluationResult[];
+  evaluationJobs: import("./glassbox/jobs.js").EvaluationJob[];
 }
 
 export interface CreateAgentInput {
@@ -127,6 +145,15 @@ export interface RunnerRequest {
   threadId: string | null;
   trace?: RunnerTraceContext | undefined;
   timeoutMs?: number | undefined;
+  logger?: RunnerLogger | undefined;
+  /** Best-effort live activity updates from the runtime stream; `null` means "nothing in flight".
+   * Implementations must treat this as fire-and-forget — it must never throw into the run path. */
+  onActivity?: ((activity: RunActivity | null) => void) | undefined;
+}
+
+export interface RunnerLogger {
+  info(message: string): void;
+  error(message: string, error?: unknown): void;
 }
 
 export interface AgentRunner {

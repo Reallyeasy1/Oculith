@@ -1,6 +1,11 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
+
+// Templates ship with the repo (not runtime state), so the default is repo-relative rather than cwd-relative:
+// `npm run dev` runs the server with cwd apps/server. src/ and dist/ sit at the same depth.
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 const envSchema = z.object({
   HOST: z.string().default("0.0.0.0"),
@@ -8,7 +13,7 @@ const envSchema = z.object({
   LOG_LEVEL: z.string().default("info"),
   APP_DATA_DIR: z.string().default(path.resolve(".data")),
   AGENT_WORKSPACE_ROOT: z.string().default(path.resolve("workspaces")),
-  WORKSPACE_TEMPLATES_DIR: z.string().default(path.resolve("workspace-templates")),
+  WORKSPACE_TEMPLATES_DIR: z.string().default(path.join(REPO_ROOT, "workspace-templates")),
   CODEX_HOME: z.string().default(path.resolve("codex-home")),
   CODEX_BIN: z.string().default("codex"),
   CODEX_SANDBOX_MODE: z
@@ -56,6 +61,11 @@ const envSchema = z.object({
   // `KNOB=` (empty) means unset → default, not 0 (which would silently disable the knob).
   GLASSBOX_RETENTION_DAYS: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.coerce.number().finite().min(0).default(7)),
   GLASSBOX_MAX_DISK_MB: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.coerce.number().finite().min(0).default(200)),
+  GLASSBOX_STORE: z.enum(["json", "postgres"]).default("json"),
+  DATABASE_URL: z.string().min(1).optional(),
+  GLASSBOX_LOG_MAX_MB: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.coerce.number().finite().positive().default(50)),
+  GLASSBOX_PRICE_PER_MTOK_INPUT: z.preprocess((value) => value === "" ? undefined : value, z.coerce.number().finite().nonnegative().optional()),
+  GLASSBOX_PRICE_PER_MTOK_OUTPUT: z.preprocess((value) => value === "" ? undefined : value, z.coerce.number().finite().nonnegative().optional()),
   /** Keep completed isolated evaluation workspaces for post-check/debugging; the default cleans them up. */
   KEEP_EVAL_WORKSPACES: z.enum(["0", "1"]).default("0"),
 });
@@ -112,6 +122,11 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     ),
     glassboxRetentionDays: env.GLASSBOX_RETENTION_DAYS,
     glassboxMaxDiskMb: env.GLASSBOX_MAX_DISK_MB,
+    glassboxStore: env.GLASSBOX_STORE,
+    databaseUrl: env.DATABASE_URL,
+    glassboxLogMaxMb: env.GLASSBOX_LOG_MAX_MB,
+    glassboxPricePerMtokInput: env.GLASSBOX_PRICE_PER_MTOK_INPUT,
+    glassboxPricePerMtokOutput: env.GLASSBOX_PRICE_PER_MTOK_OUTPUT,
     keepEvalWorkspaces: env.KEEP_EVAL_WORKSPACES === "1",
   };
 }

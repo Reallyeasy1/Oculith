@@ -1,10 +1,20 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import path from "node:path";
+import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
+import type { EvaluationStore } from "./glassbox/evaluation.js";
+import { JsonEvaluationStore } from "./glassbox/evaluation.js";
+import { builtinRunEvaluators, EvaluationJobWorker, JsonEvaluationJobStore } from "./glassbox/jobs.js";
 import { MemoryTraceStore } from "./glassbox/store.js";
+import { JsonRunSummaryStore } from "./glassbox/summary.js";
+import { JsonStore } from "./store.js";
+import { RunLogStore } from "./run-log-store.js";
+import type { RunSummary, RunSummaryStore } from "./glassbox/summary.js";
 
 const service = {
   listAgents: () => [],
@@ -131,6 +141,28 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     await app.close();
   });
 
+  it("serves one Run's log lines under auth, bounded, with truncation reported (#75)", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "run-logs-"));
+    const logs = new RunLogStore(dir, 1_000_000);
+    await logs.initialize();
+    const line = (runId: string, n: number) => ({ time: new Date(n).toISOString(), level: n % 2 ? "error" : "info", msg: "line " + n, runId, traceId: "trc_" + runId, agentId: "agt-9" });
+    for (let n = 0; n < 4; n++) await logs.append(line("run-9", n));
+    await logs.append(line("run-8", 9));
+    const svc = { ...service, getRun: (id: string) => { if (id !== "run-9") throw new HttpError(404, "Run not found"); return { id }; } } as unknown as AgentService;
+    const store = new MemoryTraceStore();
+    const app = await createApp(config(), svc, { emitter: new ObservationEmitter({ store, capturePolicy: "metadata_only" }), store, logs });
+    expect((await app.inject({ method: "GET", url: "/api/runs/run-9/logs" })).statusCode).toBe(401);
+    const get = (url: string) => app.inject({ method: "GET", url, headers: auth });
+    const all = (await get("/api/runs/run-9/logs")).json();
+    expect(all).toEqual({ lines: [0, 1, 2, 3].map((n) => ({ time: new Date(n).toISOString(), level: n % 2 ? "error" : "info", msg: "line " + n })), truncated: false });
+    const bounded = (await get("/api/runs/run-9/logs?level=error&limit=1")).json();
+    expect(bounded).toEqual({ lines: [{ time: new Date(3).toISOString(), level: "error", msg: "line 3" }], truncated: true });
+    expect((await get("/api/runs/run-9/logs?limit=9999")).statusCode).toBe(400);
+    expect((await get("/api/runs/nope/logs")).statusCode).toBe(404);
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
   it("lists runs and serves a trace with schemaVersion and capturePolicy", async () => {
     const store = new MemoryTraceStore(); const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
     const ids = { traceId: "trc_9", runId: "run-9", agentId: "agt-9" };
@@ -152,7 +184,7 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     expect(list.statusCode).toBe(200);
     const body = list.json();
     expect(body.schemaVersion).toBe("1.0"); expect(body.capturePolicy).toBe("metadata_only");
-    expect(body.runs[0]).toMatchObject({ runId: "run-9", agentName: "Nine", status: "timeout", firstFailingStep: "codex", eventCount: 7, toolCalls: 1, toolFailures: 1, tokens: { output: 7 }, denials: 0, configHash: "0123456789abcdef", configSnapshot, capabilities: { model: "observed", tool: "observed" } });
+    expect(body.runs[0]).toMatchObject({ runId: "run-9", agentName: "Nine", status: "timeout", firstFailingStep: "codex", eventCount: 7, toolCalls: 1, toolFailures: 1, tokens: { output: 7 }, denials: 0, configHash: "0123456789abcdef", configSnapshot, capabilities: { model: "observed", tool: "observed" }, actions: 5 });
     const trace = await get("/api/runs/run-9/trace");
     expect(body.runs[0].toolCalls).toBe(trace.json().summary.metrics.toolCalls);
     expect(body.runs[0].toolFailures).toBe(trace.json().summary.metrics.toolFailures);
@@ -163,6 +195,12 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     expect((await get("/api/traces/trc_9")).json().summary.runId).toBe("run-9");
     const filtered = (await get("/api/traces/trc_9/events?status=timeout")).json();
     expect(filtered.events.map((e: { type: string }) => e.type)).toEqual(["runtime.codex.failed", "run.timed_out"]);
+    const byCategories = (await get("/api/traces/trc_9/events?category=control,runtime")).json();
+    expect(byCategories.events).toHaveLength(5);
+    const audit = (await get("/api/runs/run-9/audit")).json();
+    expect(audit.audit).toEqual(expect.arrayContaining([expect.objectContaining({ action: "runtime.codex.failed", outcome: "timeout" })]));
+    expect(audit.audit.every((row: { eventId: string }) => trace.json().events.some((event: { eventId: string }) => event.eventId === row.eventId))).toBe(true);
+    expect((await get("/api/traces/trc_9/audit")).json().audit).toEqual(audit.audit);
     expect((await get("/api/runs/nope/trace")).statusCode).toBe(404);
     expect((await get("/api/runs?limit=9999")).statusCode).toBe(400);
     // FR-12: export = the trace route's body wrapped in { schemaVersion, exportedAt } — same builder, same policy.
@@ -177,6 +215,77 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     await app.close();
   });
 
+  it("serves an Agent's rolling baseline from the newest terminal summaries", async () => {
+    const store = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const agentId = "87654321-4321-4321-8321-cba987654321";
+    const makeSummary = (index: number): RunSummary => ({
+      runId: `run-${index}`, traceId: `trace-${index}`, agentId, capturePolicy: "metadata_only",
+      executionStatus: "completed", taskOutcome: "unknown", startedAt: `2026-08-${String(index).padStart(2, "0")}T00:00:00.000Z`,
+      durationMs: index * 1_000, metrics: { terminalStatus: "ok", toolCalls: index, toolFailures: 0, modelCalls: 1,
+        tokens: { input: index * 100, output: index * 10 }, retries: 0, denials: 0 },
+      usage: { inputTokens: index * 100, outputTokens: index * 10 }, denials: 0, actions: 0,
+      capabilities: { model: "observed", tool: "observed" }, degraded: false, truncated: false, evicted: false,
+      redactedEvents: 0, eventCount: 1, rollupVersion: 1, updatedAt: "2026-08-28T00:00:00.000Z",
+    });
+    const summaries = { query: async () => [makeSummary(3), makeSummary(2), makeSummary(1)] } as unknown as RunSummaryStore;
+    const svc = { ...service, getAgent: (id: string) => { if (id !== agentId) throw new HttpError(404, "Agent not found"); return { id }; } } as unknown as AgentService;
+    const app = await createApp(config({ GLASSBOX_PRICE_PER_MTOK_INPUT: "2", GLASSBOX_PRICE_PER_MTOK_OUTPUT: "4" }), svc, { emitter, store, summaries });
+    const result = await app.inject({ method: "GET", url: `/api/agents/${agentId}/runs/baseline`, headers: auth });
+    expect(result.statusCode).toBe(200);
+    expect(result.json().baseline).toMatchObject({ sampleCount: 3, windowSize: 20, durationMs: { median: 2_000, p90: 3_000 }, inputTokens: { median: 200, p90: 300 }, toolCalls: { median: 2, p90: 3 }, estimatedCostUsd: { median: 0.00048, p90: 0.00072 } });
+    expect((await app.inject({ method: "GET", url: "/api/agents/12345678-1234-4234-8234-123456789abc/runs/baseline", headers: auth })).statusCode).toBe(404);
+    await app.close();
+  });
+
+  it("prefills a regression draft idempotently and persists only through the create route", async () => {
+    const store = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const runId = "12345678-1234-4234-8234-123456789abc";
+    const agentId = "87654321-4321-4321-8321-cba987654321";
+    emitter.emit({
+      traceId: "trc-prefill", runId, agentId, spanId: "done", type: "run.completed", category: "control",
+      name: "run.completed", status: "ok", source: { component: "AgentService", observed: true },
+    });
+    await emitter.flush();
+    const persisted: unknown[] = [];
+    const svc = {
+      ...service,
+      getRun: (id: string) => {
+        expect(id).toBe(runId);
+        return { id: runId, agentId, prompt: "check the fixture", configHash: "baseline-hash" };
+      },
+      getAgent: (id: string) => {
+        expect(id).toBe(agentId);
+        return { id: agentId, workspaceTemplate: "fixture" };
+      },
+      listRegressionCases: () => persisted,
+      createRegressionCase: async (input: Record<string, unknown>) => {
+        const created = { ...input, id: "case-1", createdAt: "2026-08-28T00:00:00.000Z" };
+        persisted.push(created);
+        return created;
+      },
+    } as unknown as AgentService;
+    const app = await createApp(config(), svc, { emitter, store });
+    const prefill = () => app.inject({ method: "GET", url: `/api/runs/${runId}/regression-case`, headers: auth });
+    const first = await prefill();
+    const second = await prefill();
+    expect(first.statusCode).toBe(200);
+    expect(second.json()).toEqual(first.json());
+    expect(first.json()).toEqual({ draft: expect.objectContaining({
+      name: "Case from Run 12345678 · fixture", sourceRunId: runId, workspaceTemplate: "fixture",
+    }) });
+    expect(persisted).toHaveLength(0);
+
+    // The dialog posts only what it may change back to the Run route; the draft is re-derived server-side.
+    const { name, assertions } = first.json().draft;
+    const created = await app.inject({ method: "POST", url: `/api/runs/${runId}/regression-case`, headers: auth, payload: { name, assertions } });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().regressionCase).toMatchObject({ id: "case-1", name, sourceRunId: runId, baselineConfigHash: "baseline-hash" });
+    expect(persisted).toHaveLength(1);
+    await app.close();
+  });
+
   it("maps validation errors to 400 (static web build served in production)", async () => {
     // Regression (#60): `await app.register(fastifyStatic)` sat between the routes and setErrorHandler,
     // so the judged POC path answered every zod failure with Fastify's default 500.
@@ -187,6 +296,141 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     expect((await app.inject({ method: "GET", url: "/api/runs/not-a-uuid", headers: auth })).statusCode).toBe(400);
     expect((await app.inject({ method: "GET", url: "/api/nope", headers: auth })).statusCode).toBe(404);
     await app.close();
+  });
+
+  it("lists evaluator definitions and current evaluations for an existing Run", async () => {
+    const store = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const runId = "019f3fa8-44d2-7b60-b413-1a0b2c3d4e5f";
+    const definition = { id: "task_completion", name: "Task Completion", version: 1, type: "llm_judge" as const, rubric: "rubric", minScore: 1, maxScore: 5, passThreshold: 4, config: {}, setsTaskOutcome: true, createdAt: "2026-08-28T00:00:00.000Z" };
+    const result = { runId, evaluatorId: definition.id, evaluatorVersion: 1, score: 5, passed: true, explanation: "completed", evidenceEventIds: ["evt-1"], metadata: {}, evaluatedAt: "2026-08-28T01:00:00.000Z" };
+    const evaluations = {
+      listDefinitions: async () => [definition],
+      resultsForRun: async (id: string) => id === runId ? [result] : [],
+    } as unknown as EvaluationStore;
+    const svc = { ...service, getRun: (id: string) => { if (id !== runId) throw new HttpError(404, "Run not found"); return { id }; } } as unknown as AgentService;
+    const app = await createApp(config(), svc, { emitter, store, evaluations });
+    expect((await app.inject({ method: "GET", url: "/api/evaluators", headers: auth })).json()).toEqual({ evaluators: [definition] });
+    expect((await app.inject({ method: "GET", url: `/api/runs/${runId}/evaluations`, headers: auth })).json()).toEqual({ evaluations: [result] });
+    expect((await app.inject({ method: "GET", url: "/api/runs/019f3fa8-44d2-7b60-b413-1a0b2c3d4e60/evaluations", headers: auth })).statusCode).toBe(404);
+    await app.close();
+  });
+
+  it("answers metric queries with provenance and rejects contract violations with 400", async () => {
+    const store = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const summary = { runId: "run-1", agentId: "agt-1", configHash: "cfg-a", executionStatus: "completed", taskOutcome: "unknown", startedAt: "2026-08-01T00:00:00.000Z", durationMs: 1000, denials: 0, updatedAt: "2026-08-01T00:00:00.000Z", metrics: { terminalStatus: "ok", toolCalls: 2, toolFailures: 0, modelCalls: 1, retries: 0, denials: 0, timeSplit: { modelMs: 0, toolMs: 0, containerStartMs: 0 } } };
+    const summaries = { query: async () => [summary] } as unknown as RunSummaryStore;
+    const evaluations = { getDefinition: async () => undefined, query: async () => [] } as unknown as EvaluationStore;
+    const app = await createApp(config(), service, { emitter, store, summaries, evaluations });
+    const post = (payload: Record<string, unknown>) => app.inject({ method: "POST", url: "/api/metrics/query", headers: { ...auth, "content-type": "application/json" }, payload });
+
+    const ok = await post({ metric: "latency", aggregation: { type: "p95" }, filter: { configHash: "cfg-a" } });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toMatchObject({ schemaVersion: "1.0", capturePolicy: "metadata_only", kind: "telemetry", value: 1000, provenance: { count: 1, sampled: 1, runIds: ["run-1"], filter: { configHash: "cfg-a" } } });
+
+    const unknown = await post({ metric: "vibes", aggregation: { type: "avg" } });
+    expect(unknown.statusCode).toBe(400);
+    expect(JSON.stringify(unknown.json())).toContain("task_completion"); // the 400 lists the catalogue
+    expect((await post({ metric: "denials", aggregation: { type: "p95" } })).statusCode).toBe(400);
+    expect((await post({ metric: "task_completion", aggregation: { type: "rate" }, evaluator: { id: "nope" } })).statusCode).toBe(400);
+    await app.close();
+
+    // without both read models wired, the endpoint does not exist
+    const bare = await createApp(config(), service, { emitter, store });
+    expect((await bare.inject({ method: "POST", url: "/api/metrics/query", headers: { ...auth, "content-type": "application/json" }, payload: { metric: "latency", aggregation: { type: "p95" } } })).statusCode).toBe(404);
+    await bare.close();
+  });
+
+  it("serves reliability aggregates and the configHash compare with provenance (#172)", async () => {
+    const store = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const agentId = "019f3fa8-44d2-7b60-b413-1a0b2c3d4e70";
+    const metrics = { terminalStatus: "ok", toolCalls: 4, toolFailures: 1, modelCalls: 1, retries: 0, denials: 0, timeSplit: { modelMs: 0, toolMs: 0, containerStartMs: 0 } };
+    const summary = (runId: string, configHash: string, startedAt: string, durationMs: number) =>
+      ({ runId, agentId, configHash, executionStatus: "completed", taskOutcome: "unknown", startedAt, durationMs, denials: 0, updatedAt: startedAt, metrics }) as unknown as RunSummary;
+    const rows = [summary("run-a", "cfg-a", "2026-08-01T00:00:00.000Z", 1000), summary("run-b", "cfg-b", "2026-08-02T00:00:00.000Z", 3000)];
+    const summaries = { query: async (q: { configHash?: string }) => rows.filter((r) => !q.configHash || r.configHash === q.configHash) } as unknown as RunSummaryStore;
+    const definition = { id: "task_completion", version: 2 };
+    const evaluations = {
+      getDefinition: async (id: string) => (id === "task_completion" ? definition : undefined),
+      query: async () => [{ runId: "run-a", evaluatorId: "task_completion", evaluatorVersion: 2, passed: true, evaluatedAt: "2026-08-03T00:00:00.000Z" }],
+    } as unknown as EvaluationStore;
+    const svc = { ...service, getAgent: (id: string) => { if (id !== agentId) throw new HttpError(404, "Agent not found"); return { id }; } } as unknown as AgentService;
+    const app = await createApp(config(), svc, { emitter, store, summaries, evaluations });
+
+    const ok = await app.inject({ method: "GET", url: `/api/agents/${agentId}/reliability`, headers: auth });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toMatchObject({
+      schemaVersion: "1.0", capturePolicy: "metadata_only", agentId, runs: 2, executionCompletionRate: 1,
+      taskCompletionRate: { evaluatorId: "task_completion", version: 2, evaluated: 1, passed: 1, rate: 1 },
+      toolFailureRate: 2 / 8, latency: { p50: 1000, p95: 3000, sampled: 2 },
+      provenance: { count: 2, runIds: ["run-a", "run-b"], filter: { agentId } },
+    });
+    expect(ok.json().series).toHaveLength(2); // one day bucket per Run by default
+
+    const compare = await app.inject({ method: "GET", url: `/api/reliability/compare?agentId=${agentId}&a=cfg-a&b=cfg-b`, headers: auth });
+    expect(compare.statusCode).toBe(200);
+    expect(compare.json()).toMatchObject({
+      a: { configHash: "cfg-a", runs: 1, taskCompletionRate: { evaluated: 1, passed: 1 } },
+      b: { configHash: "cfg-b", runs: 1, taskCompletionRate: { evaluated: 0, passed: 0, rate: null } },
+      deltas: { runs: 0, latency: { p50: 2000 }, taskCompletionRate: null },
+    });
+
+    expect((await app.inject({ method: "GET", url: "/api/agents/019f3fa8-44d2-7b60-b413-1a0b2c3d4e71/reliability", headers: auth })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: `/api/agents/${agentId}/reliability?bucket=week`, headers: auth })).statusCode).toBe(400);
+    expect((await app.inject({ method: "GET", url: `/api/agents/${agentId}/reliability?evaluatorId=nope`, headers: auth })).statusCode).toBe(400);
+    expect((await app.inject({ method: "GET", url: `/api/reliability/compare?agentId=${agentId}&a=cfg-a`, headers: auth })).statusCode).toBe(400);
+    await app.close();
+
+    // without both read models wired, the endpoints do not exist
+    const bare = await createApp(config(), svc, { emitter, store });
+    expect((await bare.inject({ method: "GET", url: `/api/agents/${agentId}/reliability`, headers: auth })).statusCode).toBe(404);
+    await bare.close();
+  });
+
+  it("exposes evaluation jobs as an async boundary: enqueue 202, progress by poll, resume gated (#170)", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "evaluation-jobs-api-"));
+    const store = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const json = new JsonStore(path.join(dir, "launchpad.json"));
+    await json.initialize();
+    const summaries = new JsonRunSummaryStore(json);
+    const evaluations = new JsonEvaluationStore(json, summaries);
+    await evaluations.initialize();
+    const jobs = new EvaluationJobWorker({ jobs: new JsonEvaluationJobStore(json), summaries, evaluations, evaluators: builtinRunEvaluators() });
+    const app = await createApp(config(), service, { emitter, store, summaries, evaluations, jobs });
+    const post = (url: string, payload: unknown) => app.inject({ method: "POST", url, headers: { ...auth, "content-type": "application/json" }, payload: payload as Record<string, unknown> });
+
+    expect((await post("/api/evaluation-jobs", { evaluatorId: "terminal_status", concurrency: 3 })).statusCode).toBe(400);
+    expect((await post("/api/evaluation-jobs", { evaluatorId: "no-such" })).statusCode).toBe(404);
+    expect((await post("/api/evaluation-jobs", { evaluatorId: "task_completion" })).statusCode).toBe(501); // no judge runtime until #171
+
+    const accepted = await post("/api/evaluation-jobs", { evaluatorId: "terminal_status", filter: { executionStatus: "completed" } });
+    expect(accepted.statusCode).toBe(202);
+    const job = accepted.json().job;
+    expect(job).toMatchObject({ evaluatorId: "terminal_status", evaluatorVersion: 1, status: "queued", force: false });
+
+    const listed = await app.inject({ method: "GET", url: "/api/evaluation-jobs", headers: auth });
+    expect(listed.json().jobs.map((item: { id: string }) => item.id)).toContain(job.id);
+    const single = await app.inject({ method: "GET", url: `/api/evaluation-jobs/${job.id}`, headers: auth });
+    expect(single.statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/api/evaluation-jobs/019f3fa8-44d2-7b60-b413-1a0b2c3d4e99", headers: auth })).statusCode).toBe(404);
+    // The empty selection settles quickly; wait so the store is quiescent before the rm below.
+    for (let i = 0; i < 100; i++) {
+      const polled = (await app.inject({ method: "GET", url: `/api/evaluation-jobs/${job.id}`, headers: auth })).json().job;
+      if (polled.status === "completed") break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    // Completed (not interrupted or failed), so not resumable.
+    expect((await post(`/api/evaluation-jobs/${job.id}/resume`, {})).statusCode).toBe(409);
+    await app.close();
+
+    // without the worker wired, the endpoints do not exist
+    const bare = await createApp(config(), service, { emitter, store });
+    expect((await bare.inject({ method: "GET", url: "/api/evaluation-jobs", headers: auth })).statusCode).toBe(404);
+    await bare.close();
+    await rm(dir, { recursive: true, force: true });
   });
 
   it("keeps the dialog's case name and retained assertions when deriving a regression case", async () => {

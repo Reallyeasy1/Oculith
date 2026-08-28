@@ -4,11 +4,14 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "../agent-service.js";
 import { createApp } from "../app.js";
+import { parseCodexEventLine, type ParsedEvents } from "../codex-runner.js";
 import { loadConfig } from "../config.js";
 import { JsonStore } from "../store.js";
+import { RunLogStore } from "../run-log-store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "../types.js";
 import { WorkspaceManager } from "../workspace.js";
 import { ObservationEmitter } from "./emitter.js";
+import { CodexStreamObserver } from "./codex-observer.js";
 import { newId } from "./schema.js";
 import { NdjsonTraceStore, type TraceStore } from "./store.js";
 
@@ -33,7 +36,7 @@ class LeakyRunner implements AgentRunner {
   async isAvailable(): Promise<boolean> { return true; }
 }
 
-async function harness(runner: AgentRunner, env: Record<string, string> = {}, store?: TraceStore) {
+async function harness(runner: AgentRunner | ((emitter: ObservationEmitter) => AgentRunner), env: Record<string, string> = {}, store?: TraceStore) {
   const root = await mkdtemp(path.join(tmpdir(), "glassbox-int-"));
   dirs.push(root);
   const config = loadConfig({
@@ -48,6 +51,13 @@ async function harness(runner: AgentRunner, env: Record<string, string> = {}, st
   });
   const traceStore = store ?? new NdjsonTraceStore(config.traceDirectory);
   await traceStore.initialize();
+  const runLogStore = new RunLogStore(
+    path.join(config.dataDirectory, "logs"),
+    config.glassboxLogMaxMb * 1024 * 1024,
+    3,
+    [/CANARY-SECRET-\d+/g],
+  );
+  await runLogStore.initialize();
   const logs: string[] = [];
   const emitter = new ObservationEmitter({
     store: traceStore,
@@ -55,15 +65,18 @@ async function harness(runner: AgentRunner, env: Record<string, string> = {}, st
     extraPatterns: [/CANARY-SECRET-\d+/g],
     log: (message, meta) => logs.push(message + " " + JSON.stringify(meta)),
   });
+  const resolvedRunner = typeof runner === "function" ? runner(emitter) : runner;
   const service = new AgentService(
     config,
     new JsonStore(path.join(root, "data", "db.json")),
     new WorkspaceManager(path.join(root, "ws")),
-    runner,
+    resolvedRunner,
     emitter,
+    undefined,
+    runLogStore,
   );
   await service.initialize();
-  const app = await createApp(config, service, { emitter, store: traceStore });
+  const app = await createApp(config, service, { emitter, store: traceStore, logs: runLogStore });
   const agent = await service.createAgent({ name: "int", instructions: "keep " + OAI });
   const send = async (content: string) => {
     const res = await app.inject({ method: "POST", url: "/api/agents/" + agent.id + "/messages", payload: { content } });
@@ -73,9 +86,10 @@ async function harness(runner: AgentRunner, env: Record<string, string> = {}, st
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     await emitter.flush();
+    await runLogStore.flush();
     return run.id as string;
   };
-  return { config, service, app, emitter, logs, agent, send, traceStore };
+  return { config, service, app, emitter, logs, agent, send, traceStore, runLogStore };
 }
 
 const surfaces = async (h: Awaited<ReturnType<typeof harness>>, runId: string) => {
@@ -84,7 +98,11 @@ const surfaces = async (h: Awaited<ReturnType<typeof harness>>, runId: string) =
   return [
     await readFile(path.join(h.config.traceDirectory, runId + ".ndjson"), "utf8"),
     await ok("/api/runs/" + runId + "/trace"),
+    await ok("/api/runs/" + runId + "/audit"),
     await ok("/api/runs"),
+    await ok("/api/traces/" + h.service.getRun(runId).traceId + "/audit"),
+    await readFile(path.join(h.config.dataDirectory, "logs", "server.ndjson"), "utf8"),
+    await ok("/api/runs/" + runId + "/logs"),
     await ok("/api/traces/" + h.service.getRun(runId).traceId + "/export"),
     h.logs.join("\n"),
   ];
@@ -101,6 +119,9 @@ describe("AC-03 privacy across surfaces", () => {
       const trace = (await h.app.inject({ method: "GET", url: "/api/runs/" + runId + "/trace" })).json();
       expect(trace.summary.redactedEvents).toBeGreaterThan(0);
       expect((await readFile(path.join(h.config.traceDirectory, runId + ".ndjson"), "utf8"))).toContain("[REDACTED:");
+      const runLogs = (await h.app.inject({ method: "GET", url: "/api/runs/" + runId + "/logs" })).json().lines;
+      expect(runLogs.every((line: Record<string, unknown>) => !("runId" in line) && !("traceId" in line) && !("agentId" in line))).toBe(true);
+      if (mode === "throw") expect(JSON.stringify(runLogs)).toContain("[REDACTED:");
       for (const surface of await surfaces(h, runId)) {
         expect(surface).not.toContain("0f0f0f0f");
         expect(surface).not.toContain("abcdefghijklmnop");
@@ -109,6 +130,60 @@ describe("AC-03 privacy across surfaces", () => {
       await h.app.close();
     },
   );
+});
+
+describe("P0 verification invariants", () => {
+  it("projects a captured sandbox denial into audit and hand-computed per-Run metrics", async () => {
+    const h = await harness((emitter) => ({
+      async run(request) {
+        const observer = new CodexStreamObserver(emitter, request.trace!, request.trace!.parentSpanId, "CodexRunner");
+        const parsed: ParsedEvents = { messages: [], threadId: null, usage: null, errors: [] };
+        const fixture = await readFile(path.join(process.cwd(), "..", "..", "fixtures", "codex-stream", "codex-0.142-sandbox-denied.jsonl"), "utf8");
+        for (const line of fixture.split(/\r?\n/)) if (line.trim()) parseCodexEventLine(line, parsed, observer);
+        observer.finish("ok");
+        return { output: parsed.messages.at(-1) ?? "done", threadId: parsed.threadId, usage: parsed.usage };
+      },
+      async cancel() { return false; },
+      async isAvailable() { return true; },
+    }));
+    const runId = await h.send("exercise the captured denial");
+    const view = (await h.app.inject({ method: "GET", url: "/api/runs/" + runId + "/trace" })).json();
+    const audit = (await h.app.inject({ method: "GET", url: "/api/runs/" + runId + "/audit" })).json().audit;
+    const eventIds = new Set(view.events.map((event: { eventId: string }) => event.eventId));
+    expect(view.events.some((event: { type: string }) => event.type === "policy.denied")).toBe(true);
+    expect(audit.some((row: { outcome: string }) => row.outcome === "denied")).toBe(true);
+    expect(audit.every((row: { eventId: string; spanId: string }) => eventIds.has(row.eventId) && view.events.some((event: { spanId: string }) => event.spanId === row.spanId))).toBe(true);
+
+    const toolSpanIds = new Set(view.events.filter((event: { type: string }) => event.type.startsWith("tool.call.")).map((event: { spanId: string }) => event.spanId));
+    // #207: per-call granularity — each completed turn carries the observed reasoning/agent_message
+    // count, and a turn that ran counts as at least one call. The capture holds two pairs in one turn.
+    const observedModelCalls = view.events
+      .filter((event: { type: string }) => event.type === "model.completed")
+      .reduce((total: number, event: { attributes: Record<string, unknown> }) => {
+        const observed = event.attributes.modelCallsObserved;
+        return total + Math.max(1, typeof observed === "number" ? observed : 0);
+      }, 0);
+    expect(observedModelCalls).toBe(2);
+    expect(view.summary.metrics).toMatchObject({
+      toolCalls: toolSpanIds.size,
+      toolFailures: new Set(view.events.filter((event: { type: string }) => event.type === "tool.call.failed").map((event: { spanId: string }) => event.spanId)).size,
+      modelCalls: observedModelCalls,
+      denials: view.events.filter((event: { type: string }) => event.type === "policy.denied").length,
+    });
+    // #130/#129 metrics, hand-computed from the same evidence: bounded tool identities and the tool time of the split.
+    type SpanLike = { category: string; durationMs?: number; attributes: Record<string, unknown>; children?: SpanLike[] };
+    const flatten = (spans: SpanLike[]): SpanLike[] => spans.flatMap((span) => [span, ...flatten(span.children ?? [])]);
+    const toolSpans = flatten(view.spans).filter((span) => span.category === "tool");
+    expect(toolSpans).toHaveLength(toolSpanIds.size);
+    const identities = [...new Set(toolSpans.map((span) => [span.attributes.program, span.attributes.argument0].filter((part) => typeof part === "string" && part).join(" ")).filter(Boolean))].slice(0, 3);
+    expect(view.summary.metrics.toolIdentities).toEqual(identities);
+    expect(view.summary.metrics.timeSplit.toolMs).toBe(toolSpans.reduce((total, span) => total + (span.durationMs ?? 0), 0));
+    expect(view.summary.configHash).toMatch(/^[0-9a-f]{16}$/);
+    const listed = (await h.app.inject({ method: "GET", url: "/api/runs" })).json().runs.find((run: { runId: string }) => run.runId === runId);
+    expect(listed).toMatchObject({ denials: view.summary.denials, configHash: view.summary.configHash, toolCalls: view.summary.metrics.toolCalls, toolFailures: view.summary.metrics.toolFailures });
+    expect(listed.toolIdentities).toEqual(view.summary.metrics.toolIdentities);
+    await h.app.close();
+  });
 });
 
 describe("AC-05 degraded store", () => {
@@ -166,8 +241,13 @@ describe("FR-11 gated failure fixture", () => {
 describe("AC-06 restart", () => {
   it("rebuilds the index and the interrupted Run reads as cancelled with incomplete spans", async () => {
     // Opens a runtime span like the real runners do, then never returns — the restart must cut it off.
+    // Resolve when the runner is reached: executeRun awaits workspace writes first, so a fixed sleep would
+    // restart too early under load and later control events would follow the cancel marker.
+    let reached!: () => void;
+    const runnerReached = new Promise<void>((resolve) => { reached = resolve; });
     const hang: AgentRunner = {
       run: (request) => {
+        reached();
         h.emitter.startSpan({ ...request.trace!, spanId: newId("spn"), type: "runtime.codex.started", category: "runtime", name: "codex exec", source: { component: "AgentRunner", observed: true } });
         return new Promise<RunnerResult>(() => undefined);
       },
@@ -177,8 +257,9 @@ describe("AC-06 restart", () => {
     const h = await harness(hang);
     const res = await h.app.inject({ method: "POST", url: "/api/agents/" + h.agent.id + "/messages", payload: { content: "x" } });
     const runId = res.json().run.id as string;
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await runnerReached;
     await h.emitter.flush();
+    const originalConfigHash = h.service.getRun(runId).configHash;
     await h.app.close();
 
     const store2 = new NdjsonTraceStore(h.config.traceDirectory);
@@ -197,6 +278,8 @@ describe("AC-06 restart", () => {
     const app2 = await createApp(h.config, service2, { emitter: emitter2, store: store2 });
     const view = (await app2.inject({ method: "GET", url: "/api/runs/" + runId + "/trace" })).json();
     expect(view.summary.status).toBe("cancelled");
+    expect(service2.getRun(runId).configHash).toBe(originalConfigHash);
+    expect(view.summary.configHash).toBe(originalConfigHash);
     expect(view.summary.incompleteSpans).toBeGreaterThan(0);
     expect(view.events.at(-1).attributes.reason).toBe("server_restart");
     expect(view.events.map((e: { sequence: number }) => e.sequence)).toEqual([...view.events.keys()]);

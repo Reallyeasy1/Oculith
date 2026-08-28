@@ -3,9 +3,11 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
-import { CodexStreamObserver, type CodexStreamSink } from "./glassbox/codex-observer.js";
+import { CodexActivityTracker } from "./glassbox/activity.js";
+import { CodexStreamObserver, RUNNER_ACTOR, type CodexStreamSink } from "./glassbox/codex-observer.js";
 import { createDefaultEmitter, type ObservationEmitter } from "./glassbox/emitter.js";
 import { newId } from "./glassbox/schema.js";
+import { redactText } from "./glassbox/redact.js";
 import type {
   AgentRunner,
   RunUsage,
@@ -65,12 +67,20 @@ export function parseCodexEventLine(
     sink?.onThreadStarted(event.thread_id);
   }
 
+  if (event.type === "turn.started") {
+    sink?.onTurnStarted();
+  }
+
   if (event.type === "item.completed" && event.item && typeof event.item === "object") {
     const item = event.item as Record<string, unknown>;
     sink?.onItemCompleted(item);
     if (item.type === "agent_message" && typeof item.text === "string") {
       parsed.messages.push(item.text);
     }
+  }
+
+  if (event.type === "item.started" && event.item && typeof event.item === "object") {
+    sink?.onItemStarted(event.item as Record<string, unknown>);
   }
 
   if (event.type === "turn.completed" && event.usage && typeof event.usage === "object") {
@@ -157,6 +167,7 @@ export class CodexRunner implements AgentRunner {
     }
 
     const timeoutMs = request.timeoutMs ?? this.config.codexTimeoutMs;
+    const runtimeStartedAt = Date.now();
     const span = request.trace
       ? this.emitter.startSpan({
           traceId: request.trace.traceId,
@@ -164,6 +175,7 @@ export class CodexRunner implements AgentRunner {
           agentId: request.trace.agentId,
           spanId: newId("spn"),
           parentSpanId: request.trace.parentSpanId,
+          ...RUNNER_ACTOR,
           type: "runtime.codex.started",
           category: "runtime",
           name: "codex exec",
@@ -181,6 +193,9 @@ export class CodexRunner implements AgentRunner {
       request.trace && span
         ? new CodexStreamObserver(this.emitter, request.trace, span.spanId, "CodexRunner")
         : undefined;
+    const sink: CodexStreamSink | undefined = request.onActivity
+      ? new CodexActivityTracker(request.onActivity, observer)
+      : observer;
 
     const args = buildCodexArgs(request, this.config.codexSandboxMode);
     const child = spawn(this.config.codexBin, args, {
@@ -210,7 +225,9 @@ export class CodexRunner implements AgentRunner {
     };
     let stdout = "";
     let stderr = "";
+    let stderrBytes = 0;
     let totalBytes = 0;
+    let firstOutputObserved = false;
 
     const consume = (chunk: Buffer, target: "stdout" | "stderr") => {
       totalBytes += chunk.byteLength;
@@ -220,13 +237,23 @@ export class CodexRunner implements AgentRunner {
         return;
       }
       if (target === "stdout") {
+        if (!firstOutputObserved && chunk.byteLength > 0 && request.trace && span) {
+          firstOutputObserved = true;
+          this.emitter.emit({
+            ...request.trace, spanId: newId("spn"), parentSpanId: span.spanId, ...RUNNER_ACTOR,
+            type: "runtime.codex.first_output", category: "runtime", name: "codex first output", status: "ok",
+            source: { component: "AgentRunner", adapter: "CodexRunner", observed: true },
+            attributes: { latencyMs: Math.max(0, Date.now() - runtimeStartedAt) },
+          });
+        }
         stdout += chunk.toString("utf8");
         const lines = stdout.split(/\r?\n/);
         stdout = lines.pop() ?? "";
         for (const line of lines) {
-          parseCodexEventLine(line, parsed, observer);
+          parseCodexEventLine(line, parsed, sink);
         }
       } else {
+        stderrBytes += chunk.byteLength;
         stderr += chunk.toString("utf8");
         if (stderr.length > 16_384) {
           stderr = stderr.slice(-16_384);
@@ -250,7 +277,7 @@ export class CodexRunner implements AgentRunner {
         child.once("close", (code) => resolve(code ?? 1));
       });
       if (stdout.trim()) {
-        parseCodexEventLine(stdout.trim(), parsed, observer);
+        parseCodexEventLine(stdout.trim(), parsed, sink);
       }
       const output = parsed.messages.at(-1)?.trim();
       const outcome = active.cancelled
@@ -267,12 +294,17 @@ export class CodexRunner implements AgentRunner {
         ...(child.exitCode !== null ? { exitCode: child.exitCode } : {}),
         ...(child.signalCode ? { terminationSignal: child.signalCode } : {}),
         ...(observer?.sessionId ? { sessionId: observer.sessionId } : {}),
+        stderrBytes,
       };
+      const stderrSummary = this.emitter.capturePolicy === "safe_summary" && stderr.trim()
+        ? { summary: { text: redactText(stderr).text.slice(-2_048), policy: "safe_summary" as const } }
+        : {};
       if (active.cancelled) {
         span?.end("cancelled", {
           type: "runtime.codex.failed",
           attributes: endAttrs,
           error: { type: "cancelled", message: "Run cancelled" },
+          ...stderrSummary,
         });
         throw new RunCancelledError();
       }
@@ -282,6 +314,7 @@ export class CodexRunner implements AgentRunner {
           type: "runtime.codex.failed",
           attributes: endAttrs,
           error: { type: "timeout", message },
+          ...stderrSummary,
         });
         throw new Error(message);
       }
@@ -294,6 +327,7 @@ export class CodexRunner implements AgentRunner {
             agentId: request.trace.agentId,
             spanId: newId("spn"),
             parentSpanId: span.spanId,
+            ...RUNNER_ACTOR,
             type: "limit.exceeded",
             category: "runtime",
             name: "output_cap",
@@ -306,18 +340,21 @@ export class CodexRunner implements AgentRunner {
           type: "runtime.codex.failed",
           attributes: endAttrs,
           error: { type: "output_cap", message },
+          ...stderrSummary,
         });
         throw new Error(message);
       }
       if (exitCode !== 0) {
-        // Bounded: raw stderr is up to 16 KB and error.message is capped at 2048 by the schema — an
-        // oversized message would get the whole span end quarantined and the terminal evidence lost.
-        const detail = ((parsed.errors.at(-1) ?? stderr.trim()) || "No error detail").slice(0, 1024);
-        const message = "Codex exited with code " + exitCode + ": " + detail;
+        // Bounded: error.message is capped at 2048 by the schema — an oversized message would get the
+        // whole span end quarantined. The structured codex error event is already redacted by redactEvent;
+        // raw stderr is not a fallback here, it reaches the trace only as the safe_summary tail (#75).
+        const detail = parsed.errors.at(-1);
+        const message = "Codex exited with code " + exitCode + (detail ? ": " + detail.slice(0, 1024) : "");
         span?.end("error", {
           type: "runtime.codex.failed",
           attributes: endAttrs,
           error: { type: "exit_code", message },
+          ...stderrSummary,
         });
         throw new Error(message);
       }
@@ -327,6 +364,7 @@ export class CodexRunner implements AgentRunner {
           type: "runtime.codex.failed",
           attributes: endAttrs,
           error: { type: "no_output", message },
+          ...stderrSummary,
         });
         throw new Error(message);
       }
@@ -347,6 +385,9 @@ export class CodexRunner implements AgentRunner {
           type: "runtime.codex.failed",
           error: { type: "spawn_failed", message: String(error).slice(0, 2048) },
         });
+      }
+      if (!(error instanceof RunCancelledError)) {
+        request.logger?.error(active.timedOut ? "Codex runner timed out" : "Codex runner failed", error);
       }
       throw error;
     } finally {

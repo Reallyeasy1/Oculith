@@ -121,7 +121,7 @@ describe("CodexRunner against a real child process", () => {
   };
 
   it("bounds a 5000-char stderr so the failed span end is still accepted with terminal evidence", async () => {
-    const ws = await workspace('process.stderr.write("x".repeat(5000)); process.exitCode = 2;');
+    const ws = await workspace('process.stdout.write("x"); process.stderr.write("x".repeat(5000)); process.exitCode = 2;');
     const { store, emitter, runner } = setup(ws);
     await expect(
       runner.run({ agentId: "agt-1", workspacePath: ws, prompt: "p", threadId: null, trace }),
@@ -132,6 +132,39 @@ describe("CodexRunner against a real child process", () => {
     expect(end).toMatchObject({ status: "error", phase: "end", error: { type: "exit_code" } });
     expect(end!.error!.message.length).toBeLessThanOrEqual("Codex exited with code 2: ".length + 1024);
     expect(events.some((e) => e.type === "error.recorded")).toBe(false);
+    const firstOutput = events.filter((e) => e.type === "runtime.codex.first_output");
+    expect(firstOutput).toHaveLength(1);
+    expect(firstOutput[0]).toMatchObject({ phase: "instant", parentSpanId: expect.any(String), attributes: { latencyMs: expect.any(Number) } });
+  }, 30_000);
+
+  it("reports live activity through onActivity while the stream progresses (#223)", async () => {
+    const lines = [
+      { type: "thread.started", thread_id: "thr_1" },
+      { type: "turn.started" },
+      { type: "item.started", item: { id: "item_1", type: "command_execution", command: "/bin/bash -lc 'npm test'", exit_code: null, status: "in_progress" } },
+      { type: "item.completed", item: { id: "item_1", type: "command_execution", command: "/bin/bash -lc 'npm test'", exit_code: 0, status: "completed" } },
+      { type: "item.completed", item: { id: "item_2", type: "agent_message", text: "done" } },
+      { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+    const ws = await workspace(
+      "for (const line of " + JSON.stringify(lines.map((l) => JSON.stringify(l))) + ") process.stdout.write(line + '\\n');",
+    );
+    const { runner } = setup(ws);
+    const seen: Array<{ kind: string; label: string } | null> = [];
+    const result = await runner.run({
+      agentId: "agt-1",
+      workspacePath: ws,
+      prompt: "p",
+      threadId: null,
+      onActivity: (activity) => seen.push(activity),
+    });
+    expect(result.output).toBe("done");
+    expect(seen).toEqual([
+      { kind: "thinking", label: "Thinking…" },
+      { kind: "command", label: "Running npm…" },
+      { kind: "thinking", label: "Thinking…" },
+      null,
+    ]);
   }, 30_000);
 });
 

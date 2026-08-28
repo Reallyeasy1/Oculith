@@ -37,13 +37,30 @@ export function capabilityCopy(
     return { label: "pending", title: "The Run is still in progress; capability evidence may arrive on a later refresh." };
   }
   return {
-    label: "no evidence — run cut short",
-    title: "The Run was cancelled, timed out, or its stream never started, so nothing was said about this layer; absence proves nothing.",
+    label: "no evidence",
+    // Reachable on an ok Run too: the observer only declares `unavailable` when *both* layers are unseen (#182 marks the model on every turn).
+    title: "The Run ended without any events for this layer and the runtime declared nothing about it; absence proves nothing.",
   };
+}
+
+export function capabilityBadgeLabel(
+  layer: "model" | "tool",
+  state: "observed" | "unavailable" | "unknown",
+  runStatus: TraceStatus,
+): string {
+  const copy = capabilityCopy(state, runStatus);
+  return layer + (state === "unknown" && runStatus !== "running" ? ": " : " ") + copy.label;
 }
 
 export function spanStatusLabel(span: Pick<Span, "status" | "incomplete">, endedReason?: "server_restart"): string {
   return endedReason === "server_restart" && span.incomplete ? "interrupted" : span.status;
+}
+
+export function interruptedSpanDurationMs(span: Pick<Span, "startedAt" | "incomplete">, summary: TraceView["summary"]): number | undefined {
+  if (!span.incomplete || summary.endedReason !== "server_restart" || !summary.startedAt || summary.interruptedAfterMs === undefined) return undefined;
+  const start = Date.parse(span.startedAt);
+  const bound = Date.parse(summary.startedAt) + summary.interruptedAfterMs; // summary.endedAt is the next boot, not the cut
+  return Number.isNaN(start) || Number.isNaN(bound) ? undefined : Math.max(0, bound - start);
 }
 
 export function isFilterActive(f: TraceFilter): boolean {
@@ -72,8 +89,9 @@ export function indexSpans(spans: Span[]): Map<string, Span> {
   return out;
 }
 
-/** Default expansion: every root plus the API's failure path (all ancestors of the failing span). */
+/** Default expansion: all spans for a small trace, otherwise roots plus the failure path. */
 export function defaultExpanded(view: TraceView): Set<string> {
+  if (view.summary.spanCount <= 40) return new Set(indexSpans(view.spans).keys());
   const set = new Set(view.spans.map((s) => s.spanId));
   for (const id of view.summary.failure?.path ?? []) set.add(id);
   return set;

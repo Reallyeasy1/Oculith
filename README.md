@@ -209,11 +209,14 @@ cp deploy/volcengine/terraform.tfvars.example \
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
 | `LOCAL_POC_DATA_ROOT` | Platform-specific | Local metadata, workspace, and session directory. |
-| `GLASSBOX_CAPTURE_POLICY` | `metadata_only` | `metadata_only` or `safe_summary`; raw capture is not implemented. |
+| `GLASSBOX_CAPTURE_POLICY` | `metadata_only` | `metadata_only` or `safe_summary`; raw capture is not implemented. The Runs table's **Outcome** column and the trace's Outcome field carry the Agent's final line only under `safe_summary` — the demo sets it; the default keeps the column empty by design. |
 | `GLASSBOX_DEMO_FAILURE` | `off` | `timeout` forces a 3 s runtime timeout for the demo's controlled failure. |
 | `GLASSBOX_TRACE_DIR` | `$APP_DATA_DIR/traces` | Directory for per-Run NDJSON trace files. |
 | `GLASSBOX_RETENTION_DAYS` | `7` | At startup, compact finished Runs whose last event is older than this to terminal events + a `trace.truncated` tombstone. `0` disables. |
+| `GLASSBOX_STORE` | `json` | `json` keeps Run summaries in `launchpad.json`; `postgres` stores them in PostgreSQL (`docker compose --profile postgres up`). Traces stay NDJSON either way. |
+| `DATABASE_URL` | — | Required when `GLASSBOX_STORE=postgres`. |
 | `GLASSBOX_MAX_DISK_MB` | `200` | At startup, while trace files exceed this, compact the oldest finished Runs first (running Runs are never touched). `0` disables. |
+| `GLASSBOX_PRICE_PER_MTOK_INPUT` / `GLASSBOX_PRICE_PER_MTOK_OUTPUT` | — | Optional display-only token prices per million; when configured, Runs show an estimated cost. |
 
 See [.env.example](.env.example) for all Runtime and resource-limit options.
 
@@ -236,6 +239,57 @@ Named workspaces may be shared by multiple Agents and are never archived by Agen
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for component and extension
 boundaries.
+
+### Metrics query API (GlassBox)
+
+`POST /api/metrics/query` answers one aggregate question over a fixed metric catalogue — no expressions or
+free-form query language (PRD FR-23):
+
+```json
+{ "metric": "task_completion", "filter": { "agentId": "…", "configHash": "abc123" },
+  "range": { "lastRuns": 100 }, "aggregation": { "type": "rate" },
+  "evaluator": { "id": "task_completion", "version": 1 } }
+```
+
+Telemetry metrics come from stored Run summaries; the evaluation metric comes from evaluator results, and
+the two are labelled (`kind`) and never folded into one number:
+
+| metric | kind | aggregations |
+| --- | --- | --- |
+| `execution_completion` | telemetry | `rate` (completed / terminal Runs), `count` |
+| `tool_failure_rate` | telemetry | `rate` (Σ failures / Σ calls) |
+| `tool_calls`, `tokens` | telemetry | `avg`, `p50`, `p95`, `count` (sum) |
+| `latency` | telemetry | `avg`, `p50`, `p95` |
+| `denials` | telemetry | `count` (sum), `avg` |
+| `task_completion` | evaluation | `rate` (passed / evaluated; requires `evaluator { id, version? }`) |
+
+`aggregation: { "type": "series", "bucket": "hour"|"day", "statistic": … }` buckets any valid cell by UTC
+start time. An unknown metric or an aggregation outside the matrix is a 400 listing the valid choices.
+Percentiles are **nearest-rank** (`sorted[⌈q·n⌉−1]`): the answer is always a value some Run actually
+exhibited, never an interpolation. Runs missing the sampled field are excluded, visible as
+`provenance.sampled < provenance.count`; `task_completion` excludes unevaluated Runs and reports
+`provenance.evaluated`. Every response carries `provenance` (window size, contributing Runs, the effective
+filter to drill down with, and inline `runIds` for windows of ≤ 100 Runs).
+
+### Reliability aggregates API (GlassBox)
+
+Two specific endpoints shape the same semantics for the dashboard (#172); they share every definition —
+windows, rates, nearest-rank percentiles — with the metric catalogue above, so the two APIs can never
+disagree on the same window:
+
+- `GET /api/agents/:id/reliability?from&to&configHash&bucket=hour|day&evaluatorId&evaluatorVersion` — one
+  aggregate block for the Agent: `runs`, `executionCompletionRate` (completed / terminal),
+  `taskCompletionRate { evaluatorId, version, evaluated, passed, rate }` (passed / evaluated; unevaluated
+  Runs are on neither side), `toolFailureRate` (Σ failures / Σ calls), `avgToolCalls`,
+  `tokens { avgInput, avgOutput, sum, sampled }` (a half-observed pair is never reported as a total),
+  `latency { p50, p95, sampled }`, `denialRate` (Runs with ≥ 1 denial / Runs), plus a UTC `series[]` of the
+  same block per bucket and `provenance { count, runIds ≤ 100, filter }`. The evaluator defaults to the
+  latest `task_completion` version; the resolved version is always echoed as provenance.
+- `GET /api/reliability/compare?agentId&a=<configHash>&b=<configHash>&from&to` — the same block per side
+  plus per-number `deltas` (`b − a`; `null` when either side observed nothing).
+
+Aggregation is computed in memory from stored Run summaries (hundreds of Runs); a test holds the
+1,000-summary worst case under 500 ms before any materialised metric table is considered.
 
 ## Validation
 
@@ -304,11 +358,15 @@ assertion in `container-codex-runner.test.ts` (see the Windows caveat in `CLAUDE
 - Local NDJSON trace store only — no external backend, no query engine beyond the in-memory index. Retention is a startup-only pass (`GLASSBOX_RETENTION_DAYS` / `GLASSBOX_MAX_DISK_MB`); evicted Runs keep their metadata skeleton and a `trace.truncated` tombstone.
 - No `workspace.changed` events on this Codex/Ark stack: Ark shells out instead of calling `apply_patch`, so no `file_change` item has ever been observed (see [docs/CODEX_EVENTS.md](docs/CODEX_EVENTS.md)). The mapping exists but stays dormant rather than inventing a diff.
 - Redaction is a key denylist plus a bounded pattern scan. It is exact on structured attributes and best-effort on free text; a novel secret format in a command string can slip past, which is why the default capture policy is `metadata_only`.
-- Model/tool capabilities have exactly three states and are never guessed: `observed` (the runtime emitted events for that layer), `unavailable` (the Run completed and the runtime exposed no tool or model detail — not "the runtime has no tools"; this is the only case that emits `capability.unavailable`), and `unknown` (the Run was cancelled, timed out, or its stream never started — including error Runs that died before the first stream event — so nothing was said and its absence proves nothing; the trace header shows "no evidence — run cut short").
+- Model/tool capabilities have exactly three states and are never guessed: `observed` (the runtime emitted events for that layer), `unavailable` (the Run completed and the runtime exposed no tool or model detail — not "the runtime has no tools"; this is the only case that emits `capability.unavailable`), and `unknown` (the Run was cancelled, timed out, or its stream never started — including error Runs that died before the first stream event — so nothing was said and its absence proves nothing; the trace header shows `model: no evidence` / `tool: no evidence` with the long form in the tooltip, and the Runs list shows a neutral `no tool calls` on an ok Run with zero tool calls).
 - The unit suite never runs the built server; the production-mode routes and the real Docker teardown are only proven by the [E2E lane](#verification-e2e-lane), which needs Docker, Chrome and an Ark key.
 
 ## Documentation
 
+- [TechJam Track 1 problem statement](docs/PROBLEM_STATEMENT.md) — the requirements this project answers, with a mapping to the PRD
+- [Project brief](docs/PROJECT_BRIEF.md) — concept, what is built, sprint plan, working agreements
+- [Sprint plan](docs/SPRINTS.md)
+- [UAT coverage](docs/UAT_COVERAGE.md) — what has been tested, how, and what remains
 - [Architecture](docs/ARCHITECTURE.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)

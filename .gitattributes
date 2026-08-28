@@ -3,3 +3,4 @@
 Dockerfile* text eol=lf
 *.cjs text eol=lf
 *.tf text eol=lf
+workspace-templates/** text eol=lf

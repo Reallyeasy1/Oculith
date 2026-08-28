@@ -9,11 +9,16 @@ const emptyDatabase = (): Database => ({
   runs: [],
   regressionCases: [],
   evalRuns: [],
+  runSummaries: [],
+  evaluatorDefinitions: [],
+  evaluationResults: [],
+  evaluationJobs: [],
 });
 
 export class JsonStore {
   private data: Database = emptyDatabase();
   private queue: Promise<void> = Promise.resolve();
+  private loaded = false;
 
   constructor(private readonly filePath: string) {}
 
@@ -25,13 +30,14 @@ export class JsonStore {
       if (parsed.version !== 1 || !Array.isArray(parsed.agents)) {
         throw new Error("Unsupported database format");
       }
-      this.data = { ...parsed, regressionCases: Array.isArray(parsed.regressionCases) ? parsed.regressionCases : [], evalRuns: Array.isArray(parsed.evalRuns) ? parsed.evalRuns : [] };
+      this.data = { ...parsed, regressionCases: Array.isArray(parsed.regressionCases) ? parsed.regressionCases : [], evalRuns: Array.isArray(parsed.evalRuns) ? parsed.evalRuns : [], runSummaries: Array.isArray(parsed.runSummaries) ? parsed.runSummaries : [], evaluatorDefinitions: Array.isArray(parsed.evaluatorDefinitions) ? parsed.evaluatorDefinitions : [], evaluationResults: Array.isArray(parsed.evaluationResults) ? parsed.evaluationResults : [], evaluationJobs: Array.isArray(parsed.evaluationJobs) ? parsed.evaluationJobs : [] };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
       }
       await this.persist();
     }
+    this.loaded = true;
   }
 
   snapshot(): Database {
@@ -39,6 +45,9 @@ export class JsonStore {
   }
 
   async mutate<T>(mutation: (database: Database) => T | Promise<T>): Promise<T> {
+    // A write before initialize() would persist the empty default database over the real file (28 Aug incident:
+    // the evaluation store seeded its definitions at boot before the file was read and every Agent was wiped).
+    if (!this.loaded) throw new Error("JsonStore.mutate() called before initialize()");
     let result!: T;
     const operation = this.queue.then(async () => {
       const next = structuredClone(this.data);

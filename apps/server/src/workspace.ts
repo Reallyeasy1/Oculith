@@ -1,5 +1,7 @@
-import { cp, mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { snapshotWorkspace } from "./workspace-snapshot.js";
 import type { Agent } from "./types.js";
 
 const NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -46,16 +48,34 @@ export class WorkspaceManager {
     await walk(directory); return { files, bytes };
   }
 
-  async listTemplates(): Promise<{ name: string; fileCount: number; bytes: number }[]> {
+  async listTemplates(): Promise<({ name: string; fileCount: number; bytes: number } | { name: string; error: string })[]> {
     let entries;
     try { entries = await readdir(this.templatesRoot, { withFileTypes: true }); } catch { return []; }
-    const templates = [];
+    const templates: ({ name: string; fileCount: number; bytes: number } | { name: string; error: string })[] = [];
     for (const entry of entries) {
       if (!entry.isDirectory() || !NAME.test(entry.name)) continue;
-      const size = await this.templateSize(this.templatePath(entry.name));
-      templates.push({ name: entry.name, fileCount: size.files, bytes: size.bytes });
+      // A symlink or over-limit template is reported per entry, never a 500 for the whole list (same shape as list()).
+      try {
+        const size = await this.templateSize(this.templatePath(entry.name));
+        templates.push({ name: entry.name, fileCount: size.files, bytes: size.bytes });
+      } catch (error) {
+        templates.push({ name: entry.name, error: error instanceof Error ? error.message : String(error) });
+      }
     }
     return templates.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /** sha256 over the template tree (sorted relative paths + file contents): the same content hashes the same wherever it is copied. */
+  async templateHash(name: string): Promise<string> {
+    const source = this.templatePath(name);
+    await this.templateSize(source); // symlink and size limits apply before anything is read
+    const snapshot = await snapshotWorkspace(source);
+    const hash = createHash("sha256");
+    for (const relative of [...snapshot.files.keys()].sort()) {
+      const sha256 = snapshot.files.get(relative)!.sha256 ?? createHash("sha256").update(await readFile(path.join(source, relative))).digest("hex");
+      hash.update(relative + "\0" + sha256 + "\0");
+    }
+    return hash.digest("hex");
   }
 
   async create(agent: Agent, allowExisting = false, template?: string): Promise<void> {
@@ -70,12 +90,14 @@ export class WorkspaceManager {
     }
     await this.writeInstructions(agent);
     if (exists) return;
-    await writeFile(
+    // AGENTS.md is platform-owned (written above); README.md/.gitignore are defaults a template may ship itself.
+    const writeIfAbsent = (file: string, content: string) =>
+      writeFile(file, content, { encoding: "utf8", flag: "wx" }).catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });
+    await writeIfAbsent(
       path.join(agent.workspacePath, ".gitignore"),
       [".codex/", "node_modules/", "dist/", ".env", "*.log", ""].join("\n"),
-      "utf8",
     );
-    await writeFile(
+    await writeIfAbsent(
       path.join(agent.workspacePath, "README.md"),
       [
         "# " + agent.name + " workspace",
@@ -84,7 +106,6 @@ export class WorkspaceManager {
         "The platform-generated AGENTS.md contains the current Agent instructions.",
         "",
       ].join("\n"),
-      "utf8",
     );
   }
 
@@ -119,29 +140,34 @@ export class WorkspaceManager {
     const entries = await readdir(this.root, { withFileTypes: true });
     const output = [];
     for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-      const workspacePath = this.pathForName(entry.name);
-      let fileCount = 0;
-      let latest = (await stat(workspacePath)).mtimeMs;
-      const walk = async (directory: string): Promise<void> => {
-        for (const child of await readdir(directory, { withFileTypes: true })) {
-          const childPath = path.join(directory, child.name);
-          const info = await stat(childPath);
-          latest = Math.max(latest, info.mtimeMs);
-          if (child.isDirectory()) await walk(childPath);
-          else fileCount++;
-        }
-      };
-      await walk(workspacePath);
-      const attached = agents.filter((agent) => path.resolve(agent.workspacePath) === workspacePath);
-      output.push({
-        name: entry.name,
-        path: workspacePath,
-        agents: attached.map((agent) => agent.id),
-        fileCount,
-        lastModified: new Date(latest).toISOString(),
-        managed: attached.length === 1 && (attached[0]!.workspaceManaged ?? entry.name === attached[0]!.id),
-      });
+      if (!entry.isDirectory() || entry.name === ".deleted") continue;
+      // Hand-seeded dirs with unattachable names (`My-Repo`, `.git`) and per-entry stat failures (EPERM, removed
+      // mid-walk) are skipped, never a 500: the web calls this list on every bootstrap.
+      let workspacePath: string;
+      try { workspacePath = this.pathForName(entry.name); } catch { continue; }
+      try {
+        let fileCount = 0;
+        let latest = (await stat(workspacePath)).mtimeMs;
+        const walk = async (directory: string): Promise<void> => {
+          for (const child of await readdir(directory, { withFileTypes: true })) {
+            const childPath = path.join(directory, child.name);
+            const info = await stat(childPath);
+            latest = Math.max(latest, info.mtimeMs);
+            if (child.isDirectory()) await walk(childPath);
+            else fileCount++;
+          }
+        };
+        await walk(workspacePath);
+        const attached = agents.filter((agent) => path.resolve(agent.workspacePath) === workspacePath);
+        output.push({
+          name: entry.name,
+          path: workspacePath,
+          agents: attached.map((agent) => agent.id),
+          fileCount,
+          lastModified: new Date(latest).toISOString(),
+          managed: attached.length === 1 && (attached[0]!.workspaceManaged ?? entry.name === attached[0]!.id),
+        });
+      } catch { continue; }
     }
     return output.sort((left, right) => left.name.localeCompare(right.name));
   }
