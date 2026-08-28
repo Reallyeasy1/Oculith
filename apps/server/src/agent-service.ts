@@ -13,6 +13,7 @@ import {
 } from "./glassbox/emitter.js";
 import { redactText } from "./glassbox/redact.js";
 import { newId, type TraceStatus } from "./glassbox/schema.js";
+import { PostCheckRunner } from "./postcheck-runner.js";
 import { JsonStore } from "./store.js";
 import type {
   Agent,
@@ -32,6 +33,12 @@ import { boundedChangedPaths, diffWorkspace, snapshotWorkspace } from "./workspa
 
 const now = () => new Date().toISOString();
 const HEARTBEAT_INTERVAL_MS = 15_000;
+// ponytail: fixed 30s — the eval post_check default; make it per-Agent when someone needs more.
+const VERIFY_TIMEOUT_MS = 30_000;
+/** Set on a RunSummary whose taskOutcome came from the Agent's verifyCommand (#253). */
+export const VERIFY_OUTCOME_SOURCE = "post_check";
+/** taskOutcome verdict handed to the rollup after a completed ordinary Run (#253). */
+export interface VerifyOutcome { taskOutcome: "passed" | "failed"; source: string }
 export const serverHeartbeatPath = (dataDirectory: string) => path.join(dataDirectory, "server-heartbeat.json");
 
 interface AppLogger {
@@ -64,6 +71,10 @@ export function configSnapshot(agent: Agent, config: AppConfig): AgentConfigSnap
     runtimeProvider: config.runtimeProvider,
     containerRuntimeImage: config.containerRuntimeImage,
     capturePolicy: config.glassboxCapturePolicy,
+    // Hashed like instructions: the command text may carry operator secrets and the snapshot is shown in the UI.
+    ...(agent.verifyCommand
+      ? { verifyCommand: "sha256:" + createHash("sha256").update(agent.verifyCommand).digest("hex") }
+      : {}),
   };
 }
 
@@ -105,8 +116,9 @@ export class AgentService {
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
     private readonly emitter: ObservationEmitter = createDefaultEmitter(),
-    /** Fires after a Run's terminal event is emitted (Run end and restart-cancel); wired to the summary rollup (#168). */
-    private readonly onRunEnded?: ((runId: string) => void) | undefined,
+    /** Fires after a Run's terminal event is emitted (Run end and restart-cancel); wired to the summary rollup (#168).
+     * `verify` carries the verifyCommand verdict of a completed ordinary Run (#253) for the rollup to stamp. */
+    private readonly onRunEnded?: ((runId: string, verify?: VerifyOutcome) => void) | undefined,
     private readonly runLogs?: RunLogStore | undefined,
   ) {}
 
@@ -230,6 +242,7 @@ export class AgentService {
       workspaceName,
       workspaceManaged: input.workspace === undefined,
       ...(input.template ? { workspaceTemplate: input.template } : {}),
+      ...(input.verifyCommand?.trim() ? { verifyCommand: input.verifyCommand.trim() } : {}),
       codexThreadId: null,
       lastError: null,
       createdAt: timestamp,
@@ -263,6 +276,11 @@ export class AgentService {
       if (input.name !== undefined) agent.name = input.name.trim();
       if (input.description !== undefined) agent.description = input.description.trim();
       if (input.instructions !== undefined) agent.instructions = input.instructions.trim();
+      if (input.verifyCommand !== undefined) {
+        const command = input.verifyCommand.trim();
+        if (command) agent.verifyCommand = command;
+        else delete agent.verifyCommand;
+      }
       if (input.workspace !== undefined && nextWorkspacePath !== undefined && nextWorkspacePath !== agent.workspacePath) {
         agent.workspacePath = nextWorkspacePath;
         agent.workspaceName = input.workspace.trim();
@@ -597,6 +615,7 @@ export class AgentService {
     const pino = bindings ? this.appLogger?.child(bindings) : undefined;
     const startedAtMs = Date.now();
     const durationSeconds = () => Math.round((Date.now() - startedAtMs) / 1000);
+    let verify: VerifyOutcome | undefined;
     try {
       pino?.info("Run started");
       await logger?.info("Run started").catch(() => undefined);
@@ -785,6 +804,41 @@ export class AgentService {
         agent.lastError = null;
         agent.updatedAt = completedAt;
       });
+      // #253: operator-set verification of a completed ordinary Run. Eval-isolated Runs (the only callers
+      // that pass options.workspacePath) keep their own post_check assertion machinery. The verdict is a
+      // separate judgement stamped on the RunSummary — it must never change the Run's terminal status, and
+      // an infrastructure failure of the check itself leaves the outcome unknown.
+      // ponytail: the Agent is already `ready`, so a message sent during a slow verify starts run N+1 in
+      // the same workspace and this verdict measures post-N+1 state; serialize via a workspace claim if
+      // that window ever bites — for a ~seconds-long check it is the honest cheap trade.
+      if (agentAtStart.verifyCommand && options.workspacePath === undefined) {
+        try {
+          const check = await new PostCheckRunner(this.config, this.emitter).run({
+            workspacePath: agentAtStart.workspacePath,
+            command: agentAtStart.verifyCommand,
+            timeoutMs: VERIFY_TIMEOUT_MS,
+            ...(ids && service
+              ? { trace: { traceId: ids.traceId, runId: run.id, agentId: agentAtStart.id, parentSpanId: service.spanId } }
+              : {}),
+          });
+          if (check.signal !== null) {
+            // Killed (the runner's timeout path): not a real exit code, so no verdict.
+            const line = "Verify command did not finish within " + VERIFY_TIMEOUT_MS + " ms";
+            pino?.error({}, line);
+            await runnerLogger?.error(line).catch(() => undefined);
+          } else {
+            verify = { taskOutcome: check.exitCode === 0 ? "passed" : "failed", source: VERIFY_OUTCOME_SOURCE };
+            const line = "Verify command exited " + check.exitCode + " (taskOutcome=" + verify.taskOutcome + ")";
+            pino?.info(line);
+            await runnerLogger?.info(line).catch(() => undefined);
+          }
+        } catch (verifyError) {
+          const line = "Verify command failed to run";
+          const detail = redactText(String(verifyError)).text.slice(0, 2_048);
+          pino?.error({ detail }, line);
+          await runnerLogger?.error(line, detail).catch(() => undefined);
+        }
+      }
       if (ids && service) {
         const outcome = describeFinalMessage(result.output);
         this.emitter.emit({
@@ -875,7 +929,7 @@ export class AgentService {
       }
     } finally {
       this.spans.delete(run.id);
-      this.onRunEnded?.(run.id);
+      this.onRunEnded?.(run.id, verify);
       await options.cleanup?.();
     }
   }

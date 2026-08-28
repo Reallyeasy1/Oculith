@@ -55,7 +55,7 @@ const evaluationJobs = new EvaluationJobWorker({ jobs: new JsonEvaluationJobStor
 await evaluationJobs.initialize();
 evaluationJobs.start();
 const rollup = { traces: traceStore, emitter, summaries, log: glassboxLog };
-const service = new AgentService(config, store, workspaces, runner, emitter, (runId) => void scheduleRollup(rollup, runId), runLogs);
+const service = new AgentService(config, store, workspaces, runner, emitter, (runId, verify) => void scheduleRollup(rollup, runId, verify), runLogs);
 await service.initialize();
 await service.startHeartbeat();
 

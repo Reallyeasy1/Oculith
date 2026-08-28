@@ -13,7 +13,7 @@ import { createTraceContext } from "./glassbox/context.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
 import { MemoryTraceStore, type TraceStore } from "./glassbox/store.js";
 import { JsonEvaluationStore } from "./glassbox/evaluation.js";
-import { JsonRunSummaryStore } from "./glassbox/summary.js";
+import { JsonRunSummaryStore, scheduleRollup } from "./glassbox/summary.js";
 import { RunLogStore } from "./run-log-store.js";
 
 class FakeRunner implements AgentRunner {
@@ -759,7 +759,11 @@ describe("GlassBox control-plane adapter", () => {
 /** Blocks until `cancel()` rejects the in-flight run, the way the real runners kill their child. */
 class CancellableRunner extends FakeRunner {
   private rejectRun: ((error: unknown) => void) | undefined;
+  private markReached: (() => void) | undefined;
+  /** Resolves once `run()` was invoked — cancelling before that finds nothing to reject and hangs the test. */
+  readonly reached = new Promise<void>((resolve) => { this.markReached = resolve; });
   override run(): Promise<RunnerResult> {
+    this.markReached?.();
     return new Promise<RunnerResult>((_resolve, reject) => {
       this.rejectRun = reject;
     });
@@ -772,10 +776,11 @@ class CancellableRunner extends FakeRunner {
 
 describe("GlassBox control-plane adapter: cancellation and rejection", () => {
   it("records stop as cancelled with actor evidence", async () => {
-    const { service, store, emitter } = await makeTraced(new CancellableRunner());
+    const runner = new CancellableRunner();
+    const { service, store, emitter } = await makeTraced(runner);
     const agent = await service.createAgent({ name: "c" });
     const { run } = await service.sendMessage(agent.id, "x");
-    await new Promise((resolve) => setTimeout(resolve, 20)); // let executeRun reach the runner
+    await runner.reached; // a fixed sleep raced executeRun under full-suite load: cancel before run() hangs
     await service.stopAgent(agent.id);
     await settle(service, run.id);
     await emitter.flush();
@@ -815,5 +820,130 @@ describe("GlassBox control-plane adapter: cancellation and rejection", () => {
     expect(ctx.runId).toBeUndefined();
     expect(ctx.agentId).toBeUndefined();
     expect(store.listRuns().map((entry) => entry.traceId)).not.toContain(ctx.traceId);
+  });
+});
+
+/**
+ * #253 post-run verification. Cross-platform trick borrowed from postcheck-runner.test.ts: with
+ * RUNTIME_PROVIDER=container and CONTAINER_ENGINE=node, the PostCheckRunner spawns
+ * `node run --rm ...` in the workspace, i.e. it executes the workspace file named `run` — so a
+ * `run` file that exits 0/1 stands in for the verify command without needing bash or docker.
+ */
+describe("post-run verification (#253)", () => {
+  async function makeVerifying(engine: string = process.execPath) {
+    const store = new MemoryTraceStore();
+    await store.initialize();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
+    temporaryDirectories.push(root);
+    const config = loadConfig({
+      NODE_ENV: "test",
+      APP_DATA_DIR: path.join(root, "data"),
+      AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+      WORKSPACE_TEMPLATES_DIR: path.join(root, "templates"),
+      CODEX_HOME: path.join(root, "codex"),
+      ARK_API_KEY: "test-key",
+      ARK_MODEL: "ep-test",
+      RUNTIME_PROVIDER: "container",
+      CONTAINER_ENGINE: engine,
+    });
+    const jsonStore = new JsonStore(path.join(root, "data", "db.json"));
+    const summaries = new JsonRunSummaryStore(jsonStore);
+    const runLogs = new RunLogStore(path.join(root, "data", "logs"), 1_000_000);
+    await runLogs.initialize();
+    const rollup = { traces: store, emitter, summaries };
+    // Mirrors the index.ts wiring: the verify verdict rides the rollup, off the Run's path.
+    const service = new AgentService(
+      config,
+      jsonStore,
+      new WorkspaceManager(path.join(root, "workspaces"), config.workspaceTemplatesDirectory),
+      new FakeRunner(),
+      emitter,
+      (runId, verify) => void scheduleRollup(rollup, runId, verify),
+      runLogs,
+    );
+    await service.initialize();
+    return { service, store, emitter, summaries, config, runLogs };
+  }
+
+  it("stamps taskOutcome passed via post_check and traces the check when the command exits 0", async () => {
+    const { service, store, emitter, summaries } = await makeVerifying();
+    const agent = await service.createAgent({ name: "verified", verifyCommand: 'node -e "process.exit(0)"' });
+    await writeFile(path.join(agent.workspacePath, "run"), "process.exit(0)", "utf8");
+    const { run } = await service.sendMessage(agent.id, "do the task");
+    expect((await settle(service, run.id)).status).toBe("completed");
+    await expect.poll(async () => (await summaries.get(run.id))?.taskOutcome).toBe("passed");
+    expect(await summaries.get(run.id)).toMatchObject({ taskOutcome: "passed", taskOutcomeSource: "post_check", executionStatus: "completed" });
+    await emitter.flush();
+    const types = (await store.readRun(run.id)).map((event) => event.type);
+    expect(types).toContain("runtime.postcheck.started");
+    expect(types).toContain("runtime.postcheck.completed");
+    // the verify is evidence inside the Run's trace, before its terminal event
+    expect(types.indexOf("runtime.postcheck.completed")).toBeLessThan(types.indexOf("run.completed"));
+    // The command text itself is never evidence: not in any stored event (privacy review pin).
+    expect(JSON.stringify(await store.readRun(run.id))).not.toContain('process.exit(0)');
+  });
+
+  it("stamps taskOutcome failed when the command exits non-zero and never changes the Run status", async () => {
+    const { service, store, emitter, summaries } = await makeVerifying();
+    const agent = await service.createAgent({ name: "failing", verifyCommand: 'node -e "process.exit(1)"' });
+    await writeFile(path.join(agent.workspacePath, "run"), "process.exit(1)", "utf8");
+    const { run } = await service.sendMessage(agent.id, "do the task");
+    expect((await settle(service, run.id)).status).toBe("completed");
+    await expect.poll(async () => (await summaries.get(run.id))?.taskOutcome).toBe("failed");
+    expect(await summaries.get(run.id)).toMatchObject({ taskOutcome: "failed", taskOutcomeSource: "post_check", executionStatus: "completed" });
+    expect(service.getRun(run.id).status).toBe("completed");
+    await emitter.flush();
+    expect((await store.readRun(run.id)).map((event) => event.type)).toContain("runtime.postcheck.failed");
+  });
+
+  it("keeps the phrase-heuristic fallback when no verifyCommand is set", async () => {
+    const { service, store, emitter, summaries } = await makeVerifying();
+    const agent = await service.createAgent({ name: "plain" });
+    const { run } = await service.sendMessage(agent.id, "do the task");
+    expect((await settle(service, run.id)).status).toBe("completed");
+    await expect.poll(async () => (await summaries.get(run.id))?.executionStatus).toBe("completed");
+    expect(await summaries.get(run.id)).toMatchObject({ taskOutcome: "unknown" });
+    expect((await summaries.get(run.id))?.taskOutcomeSource).toBeUndefined();
+    await emitter.flush();
+    expect((await store.readRun(run.id)).map((event) => event.type)).not.toContain("runtime.postcheck.started");
+  });
+
+  it("leaves the Run completed and the outcome unknown when the verify machinery itself crashes", async () => {
+    const { service, summaries, runLogs } = await makeVerifying(path.join(tmpdir(), "definitely-missing-engine"));
+    const agent = await service.createAgent({ name: "crashy", verifyCommand: 'node -e "process.exit(0)"' });
+    const { run } = await service.sendMessage(agent.id, "do the task");
+    expect((await settle(service, run.id)).status).toBe("completed");
+    await expect.poll(async () => (await summaries.get(run.id))?.executionStatus).toBe("completed");
+    expect(await summaries.get(run.id)).toMatchObject({ taskOutcome: "unknown" });
+    await runLogs.flush();
+    const { lines } = await runLogs.readRun(run.id, { level: "error", limit: 100 });
+    expect(lines.map((line) => line.msg)).toContain("Verify command failed to run");
+  });
+
+  it("does not run the verify for eval-isolated Runs — their own post_check machinery owns the verdict", async () => {
+    const { service, store, emitter, config } = await makeVerifying();
+    await mkdir(path.join(config.workspaceTemplatesDirectory, "fixture"), { recursive: true });
+    const agent = await service.createAgent({ name: "eval target", verifyCommand: 'node -e "process.exit(0)"' });
+    const { run } = await service.runIsolated({ agentId: agent.id, workspaceTemplate: "fixture", prompt: "evaluate" });
+    expect((await settle(service, run.id)).status).toBe("completed");
+    await emitter.flush();
+    expect((await store.readRun(run.id)).map((event) => event.type)).not.toContain("runtime.postcheck.started");
+  });
+
+  it("changes the configHash when verifyCommand changes and never snapshots the raw command", async () => {
+    const { service, config } = await makeVerifying();
+    const agent = await service.createAgent({ name: "hashed", verifyCommand: '  node -e "process.exit(0)"  ' });
+    expect(agent.verifyCommand).toBe('node -e "process.exit(0)"');
+    const base = configHash(configSnapshot(agent, config));
+    const updated = await service.updateAgent(agent.id, { verifyCommand: "npm test" });
+    expect(updated.verifyCommand).toBe("npm test");
+    expect(configHash(configSnapshot(updated, config))).not.toBe(base);
+    expect(JSON.stringify(configSnapshot(updated, config))).not.toContain("npm test");
+    expect(configSnapshot(updated, config).verifyCommand).toMatch(/^sha256:[0-9a-f]{64}$/);
+    const cleared = await service.updateAgent(agent.id, { verifyCommand: "" });
+    expect(cleared.verifyCommand).toBeUndefined();
+    expect(configSnapshot(cleared, config).verifyCommand).toBeUndefined();
+    expect(configHash(configSnapshot(cleared, config))).not.toBe(configHash(configSnapshot(updated, config)));
   });
 });
