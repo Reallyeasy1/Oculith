@@ -376,17 +376,18 @@ async function closeResources() {
   ok((await rows().first().innerText()).includes("E2E GlassBox"), "overview row names its Agent");
   const strip = Object.fromEntries(await page.locator(".summary-strip > div").evaluateAll((els) => els.map((el) => [el.querySelector("dt").textContent, Number(el.querySelector("dd").textContent)])));
   const statuses = await rows().locator(".status").allTextContents(); // textContent: the pill is CSS-uppercased
-  // Attention rule (#131): non-ok terminal status, or any tool failure/denial/degraded flag — the row shows those as
-  // the `recovered after N failures` chip (ok Runs), the `denied N`/`degraded` badges, or `N failed` in Tool calls.
+  // Attention rule (#131, #202): non-ok terminal status, denial/degraded/agent-reported-failure badges, or tool
+  // failures on a Run that has not ended ok. Pure recovery (ok Run, `recovered after N failures` chip, no denials)
+  // is informational and stays out of the attention count — the chip is still asserted via strip.Recovered below.
   const rowFlags = await rows().evaluateAll((trs) => trs.map((tr) => {
     const status = tr.querySelector(".status").textContent;
     const badges = [...tr.querySelectorAll(".badge")].map((b) => b.textContent);
-    const flagged = /error|timeout|cancelled/.test(status) || badges.some((b) => /^(recovered|denied|degraded|agent reported failure)/.test(b)) || /\d+ failed/.test(tr.children[tr.children.length - 2].textContent);
+    const flagged = /error|timeout|cancelled/.test(status) || badges.some((b) => /^(denied|degraded|agent reported failure)/.test(b)) || (!status.includes("ok") && /\d+ failed/.test(tr.children[tr.children.length - 2].textContent));
     return { running: status.includes("running"), recovered: badges.some((b) => b.startsWith("recovered")), flagged };
   }));
   eq(strip.Total, statuses.length, "summary Total equals the rows under 'All'");
   eq(strip.Ok, statuses.filter((s) => s.includes("ok")).length, "summary Ok equals the ok rows");
-  eq(strip["Needs attention"], rowFlags.filter((r) => r.flagged).length, "summary Needs attention equals the rows that are non-ok or carry failures/denials/degraded");
+  eq(strip["Needs attention"], rowFlags.filter((r) => r.flagged).length, "summary Needs attention equals the rows that are non-ok or carry denials/degraded/reported failure — pure recovery excluded (#202)");
   eq(strip.Recovered, rowFlags.filter((r) => r.recovered).length, "summary Recovered equals the rows with a `recovered after N failures` chip");
   eq(strip.Running, rowFlags.filter((r) => r.running).length, "summary Running equals the running rows");
   eq(await page.locator(".live-strip").count(), rowFlags.some((r) => r.running) ? 1 : 0, "Live now strip is present exactly when a Run is running");

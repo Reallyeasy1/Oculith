@@ -26,11 +26,11 @@ describe("summarizeRuns", () => {
     });
   });
 
-  it("counts ok Runs with tool failures or denials as recovered — and as needing attention (#131)", () => {
+  it("counts ok Runs with tool failures or denials as recovered — pure recovery is not attention (#131, #202)", () => {
     const runs = [run("ok", false, "a", "A", { toolFailures: 2 }), run("ok", false, "a", "A", { denials: 1 }), run("ok"), run("error", false, "a", "A", { toolFailures: 1 })];
     const s = summarizeRuns(runs);
-    expect([s.ok, s.recovered, s.attention]).toEqual([3, 2, 3]);
-    expect(s.agents).toEqual([{ agentId: "a", name: "A", count: 4, attention: 3 }]);
+    expect([s.ok, s.recovered, s.attention]).toEqual([3, 2, 2]);
+    expect(s.agents).toEqual([{ agentId: "a", name: "A", count: 4, attention: 2 }]);
   });
 
   it("is all zeros with no Agents for an empty list, and falls back to the agentId as a name", () => {
@@ -54,12 +54,18 @@ describe("needsAttention", () => {
     expect(matchesFilter(run(status, degraded), "attention")).toBe(expected);
   });
 
-  it("flags tool failures and denials on any status (#131)", () => {
-    expect(needsAttention(run("ok", false, "a", "A", { toolFailures: 2 }))).toBe(true);
+  it("does not flag pure recovery: an ok Run whose tool failures preceded success is informational (#202)", () => {
+    expect(needsAttention(run("ok", false, "a", "A", { toolFailures: 2 }))).toBe(false);
+    expect(matchesFilter(run("ok", false, "a", "A", { toolFailures: 2 }), "attention")).toBe(false);
+    expect(matchesFilter(run("ok", false, "a", "A", { toolFailures: 2 }), "failed")).toBe(false);
+    // The chip evidence survives even though the Run left the attention filter.
+    expect(recoveredFailures(run("ok", false, "a", "A", { toolFailures: 2 }))).toBe(2);
+  });
+
+  it("still flags tool failures on a Run that has not ended ok, and denials on any status (#131, #202)", () => {
     expect(needsAttention(run("ok", false, "a", "A", { denials: 1 }))).toBe(true);
     expect(needsAttention(run("running", false, "a", "A", { toolFailures: 1 }))).toBe(true);
-    expect(matchesFilter(run("ok", false, "a", "A", { toolFailures: 2 }), "attention")).toBe(true);
-    expect(matchesFilter(run("ok", false, "a", "A", { toolFailures: 2 }), "failed")).toBe(false);
+    expect(needsAttention(run("error", false, "a", "A", { toolFailures: 1 }))).toBe(true);
   });
 
   it("flags an ok Run when the agent reports failure in its final message", () => {
