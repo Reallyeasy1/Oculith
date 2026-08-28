@@ -372,8 +372,9 @@ export async function createApp(
       // Stored summaries are the read model (#168): one snapshot per request, no NDJSON read for a fresh
       // row. Scoped to the agent filter (#213) — only agentId is safe to push down: the runs above match it
       // exactly, while from/to bound createdAt, not the summaries' startedAt, and a summary missing from
-      // this map triggers a stored re-rollup of its Run on every poll.
-      const known = new Map(((await glassbox.summaries?.query({ agentId: q.agentId })) ?? []).map((s) => [s.runId, s]));
+      // this map triggers a stored re-rollup of its Run on every poll. The key is omitted entirely when
+      // unfiltered so a backend that distinguishes "present but undefined" cannot misread it as a filter.
+      const known = new Map(((await glassbox.summaries?.query(q.agentId ? { agentId: q.agentId } : {})) ?? []).map((s) => [s.runId, s]));
       const rollup = glassbox.summaries ? { traces: glassbox.store, emitter: glassbox.emitter, summaries: glassbox.summaries } : undefined;
       const empty = (runId: string): RunSummary => summaryFromView(buildTrace([], { capturePolicy: glassbox.emitter.capturePolicy, degraded: glassbox.emitter.isDegraded(runId) }));
       const items = [];
