@@ -501,6 +501,19 @@ describe("GlassBox control-plane adapter", () => {
     expect(created?.attributes).toMatchObject({ evalRunId: "eval-1", caseId: "case-1", configHash: run.configHash, templateHash: await workspaces.templateHash("fixture") });
   });
 
+  it("stamps rerunOf on run.created for re-run lineage, absent on ordinary Runs (#256)", async () => {
+    const { service, store, emitter } = await makeTraced();
+    const agent = await service.createAgent({ name: "rerun" });
+    const first = (await service.sendMessage(agent.id, "do the thing")).run;
+    await settle(service, first.id);
+    const again = (await service.sendMessage(agent.id, "do the thing", undefined, { tags: { rerunOf: first.id } })).run;
+    await settle(service, again.id);
+    await emitter.flush();
+    const createdOf = async (runId: string) => (await store.readRun(runId)).find((event) => event.type === "run.created");
+    expect((await createdOf(again.id))?.attributes.rerunOf).toBe(first.id);
+    expect((await createdOf(first.id))?.attributes).not.toHaveProperty("rerunOf");
+  });
+
   it("links the Run to a trace and emits root, control and terminal events in order", async () => {
     const { service, store, emitter } = await makeTraced();
     const agent = await service.createAgent({ name: "traced" });

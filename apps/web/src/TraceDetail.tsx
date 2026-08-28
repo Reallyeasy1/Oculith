@@ -44,12 +44,14 @@ interface Props {
   focusEventId: string | null;
   onFocusHandled: () => void;
   onCaseSaved: () => Promise<void>;
+  /** #256: re-dispatch this Run's originating prompt as an ordinary new Run (busy Agent → error banner). */
+  onRerun: (runId: string) => void;
   onClose: () => void;
 }
 
 // Trace detail (UX-02): summary header, first-error banner with Jump, nested tree with duration bars,
 // client-side filters, focus-trapped span drawer. Everything shown comes straight from the API payload.
-export default function TraceDetail({ runId, run, view, templateBacked, focusEventId, onFocusHandled, onCaseSaved, onClose }: Props) {
+export default function TraceDetail({ runId, run, view, templateBacked, focusEventId, onFocusHandled, onCaseSaved, onRerun, onClose }: Props) {
   const [filter, setFilter] = useState<TraceFilter>(EMPTY_FILTER);
   // null = untouched → follow the API's default (roots + failure path) even as the trace grows while polling.
   const [expandedState, setExpanded] = useState<Set<string> | null>(null);
@@ -277,6 +279,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
           >
             Export JSON
           </a>
+          <button type="button" className="button button-ghost" onClick={() => onRerun(runId)}>Re-run prompt</button>
           <button type="button" className="button button-ghost" onClick={openSaveCase} disabled={Boolean(saveReason)} title={saveReason || undefined}>Save as regression case</button>
           <button type="button" className="button button-ghost" onClick={onClose}>Close trace</button>
         </div>

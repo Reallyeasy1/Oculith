@@ -142,6 +142,30 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     await app.close();
   });
 
+  it("threads rerunOf through to sendMessage as a run.created tag, absent when omitted (#256)", async () => {
+    const options: unknown[] = [];
+    const svc = {
+      ...service,
+      sendMessage: async (_id: string, _content: string, _ctx: unknown, opts: unknown) => {
+        options.push(opts);
+        return { run: { id: "run-1" }, message: {} };
+      },
+    } as unknown as AgentService;
+    const app = await createApp(config(), svc);
+    const post = (payload: Record<string, unknown>) => app.inject({
+      method: "POST",
+      url: "/api/agents/2c1b9f8e-3b7e-4b9d-9d3a-1c2d3e4f5a6b/messages",
+      headers: { ...auth, "content-type": "application/json" },
+      payload,
+    });
+    const rerunOf = "12345678-1234-4234-8234-123456789abc";
+    expect((await post({ content: "again", rerunOf })).statusCode).toBe(202);
+    expect((await post({ content: "fresh" })).statusCode).toBe(202);
+    expect((await post({ content: "bad", rerunOf: "not-a-uuid" })).statusCode).toBe(400);
+    expect(options).toEqual([{ tags: { rerunOf } }, {}]);
+    await app.close();
+  });
+
   it("serves one Run's log lines under auth, bounded, with truncation reported (#75)", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "run-logs-"));
     const logs = new RunLogStore(dir, 1_000_000);

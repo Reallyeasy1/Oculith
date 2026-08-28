@@ -46,6 +46,9 @@ const updateAgentBody = createAgentBody.partial().refine(
 );
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
+  // #256: lineage of a one-click re-run. The Run itself is ordinary (same session thread, current
+  // workspace state); the id is only stamped on run.created.attributes so lineage is queryable.
+  rerunOf: z.string().uuid().optional(),
 });
 const evalRunBody = z.object({ agentId: z.string().uuid(), caseIds: z.array(z.string().uuid()).min(1).max(20).refine((ids) => new Set(ids).size === ids.length, "caseIds must be unique"), force: z.boolean().optional() });
 // A case is always derived from the trace evidence. The UI may only name it or remove an
@@ -229,7 +232,8 @@ export async function createApp(
   app.post("/api/agents/:id/messages", async (request, reply) => {
     const { id } = agentIdParams.parse(request.params);
     const body = messageBody.parse(request.body);
-    const result = await service.sendMessage(id, body.content, request.glassbox);
+    const result = await service.sendMessage(id, body.content, request.glassbox,
+      body.rerunOf === undefined ? {} : { tags: { rerunOf: body.rerunOf } });
     request.log = request.log.child({ traceId: result.run.traceId, runId: result.run.id, agentId: id });
     return reply.code(202).send(result);
   });
