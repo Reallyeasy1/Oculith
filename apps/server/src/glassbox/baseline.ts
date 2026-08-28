@@ -1,13 +1,21 @@
+import { computeMetric, percentile, type MetricName, type MetricQuery } from "./metrics.js";
 import type { RunSummary } from "./summary.js";
 
 export interface BaselineDistribution {
-  median?: number | undefined;
-  p90?: number | undefined;
+  p50?: number | undefined;
+  p95?: number | undefined;
 }
+
+export const BASELINE_WINDOW = 20;
+/**
+ * Store-side bound for the route's summary query (#213): enough headroom over the window that a handful of
+ * in-flight rows cannot displace terminal evidence, without a full-table scan on the Postgres backend.
+ */
+export const BASELINE_QUERY_LIMIT = 40;
 
 export interface AgentRunBaseline {
   sampleCount: number;
-  windowSize: 20;
+  windowSize: typeof BASELINE_WINDOW;
   durationMs: BaselineDistribution;
   inputTokens: BaselineDistribution;
   toolCalls: BaselineDistribution;
@@ -22,12 +30,9 @@ export interface TokenPricing {
 
 function distribution(values: Array<number | undefined>): BaselineDistribution {
   const sorted = values.filter((value): value is number => value !== undefined && Number.isFinite(value) && value >= 0).sort((a, b) => a - b);
-  if (sorted.length === 0) return {};
-  const middle = Math.floor(sorted.length / 2);
-  const median = sorted.length % 2 === 0 ? (sorted[middle - 1]! + sorted[middle]!) / 2 : sorted[middle]!;
-  // Nearest-rank p90: the smallest observed value whose cumulative proportion is at least 90%.
-  const p90 = sorted[Math.max(0, Math.ceil(sorted.length * 0.9) - 1)]!;
-  return { median, p90 };
+  const p50 = percentile(sorted, 0.5);
+  const p95 = percentile(sorted, 0.95);
+  return { ...(p50 === null ? {} : { p50 }), ...(p95 === null ? {} : { p95 }) };
 }
 
 export function estimatedCost(summary: RunSummary, pricing: TokenPricing): number | undefined {
@@ -39,16 +44,37 @@ export function estimatedCost(summary: RunSummary, pricing: TokenPricing): numbe
   return ((hasInput ? input! * pricing.inputPerMillion! : 0) + (hasOutput ? output! * pricing.outputPerMillion! : 0)) / 1_000_000;
 }
 
+/**
+ * FR-23 sugar (#208/#213): the catalogue-representable columns are literal `computeMetric` calls over
+ * `range: { lastRuns: 20 }`, so the baseline can never disagree with `POST /api/metrics/query` on the same
+ * window. `executionStatus != running` is not expressible as a catalogue filter, so terminal Runs are
+ * pre-filtered here; `computeMetric`'s window predicates are idempotent over pre-filtered rows.
+ * `inputTokens` (the `usage` fallback the runs list and outlier chips compare against) and
+ * `estimatedCostUsd` (priced from config) are not catalogue metrics — they share the nearest-rank
+ * `percentile` and the same window instead.
+ */
 export function buildAgentRunBaseline(summaries: RunSummary[], pricing: TokenPricing = {}): AgentRunBaseline {
-  const terminal = summaries.filter((summary) => summary.executionStatus !== "running").slice(0, 20);
-  const baseline: AgentRunBaseline = {
-    sampleCount: terminal.length,
-    windowSize: 20,
-    durationMs: distribution(terminal.map((summary) => summary.durationMs)),
-    inputTokens: distribution(terminal.map((summary) => summary.usage?.inputTokens ?? summary.metrics.tokens?.input)),
-    toolCalls: distribution(terminal.map((summary) => summary.metrics.toolCalls)),
-    toolFailures: distribution(terminal.map((summary) => summary.metrics.toolFailures)),
+  const window = summaries.filter((summary) => summary.executionStatus !== "running")
+    .sort((a, b) => (b.startedAt ?? b.updatedAt).localeCompare(a.startedAt ?? a.updatedAt) || a.runId.localeCompare(b.runId))
+    .slice(0, BASELINE_WINDOW);
+  const catalogue = (metric: MetricName): BaselineDistribution => {
+    const stat = (statistic: "p50" | "p95"): number | null => {
+      const query: MetricQuery = { metric, aggregation: { type: statistic }, range: { lastRuns: BASELINE_WINDOW } };
+      const { value } = computeMetric(query, window);
+      return typeof value === "number" ? value : null;
+    };
+    const p50 = stat("p50");
+    const p95 = stat("p95");
+    return { ...(p50 === null ? {} : { p50 }), ...(p95 === null ? {} : { p95 }) };
   };
-  const costs = distribution(terminal.map((summary) => estimatedCost(summary, pricing)));
-  return costs.median === undefined ? baseline : { ...baseline, estimatedCostUsd: costs };
+  const baseline: AgentRunBaseline = {
+    sampleCount: window.length,
+    windowSize: BASELINE_WINDOW,
+    durationMs: catalogue("latency"),
+    inputTokens: distribution(window.map((summary) => summary.usage?.inputTokens ?? summary.metrics.tokens?.input)),
+    toolCalls: catalogue("tool_calls"),
+    toolFailures: catalogue("tool_failures"),
+  };
+  const costs = distribution(window.map((summary) => estimatedCost(summary, pricing)));
+  return costs.p50 === undefined ? baseline : { ...baseline, estimatedCostUsd: costs };
 }

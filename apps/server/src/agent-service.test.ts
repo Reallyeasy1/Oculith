@@ -383,9 +383,15 @@ describe("GlassBox control-plane adapter", () => {
       { evaluatorId: "expected_tool", evaluatorVersion: 1, passed: false, jobId: evalRun.id, metadata: { assertions: 2 } },
       { evaluatorId: "terminal_status", evaluatorVersion: 1, passed: true, jobId: evalRun.id, metadata: { expected: "ok", observed: "ok" } },
     ]);
-    expect(await summaries.get(finished.runIds[0]!)).toMatchObject({ taskOutcome: "unknown" });
+    // FR-22: the failed expected_tool assertions mark the task failed, attributed to this EvalRun.
+    expect(await summaries.get(finished.runIds[0]!)).toMatchObject({ taskOutcome: "failed", taskOutcomeSource: `deterministic:${evalRun.id}` });
     await emitter.flush();
     expect((await store.readRun(finished.runIds[0]!)).find((event) => event.type === "run.created")?.attributes).toMatchObject({ evalRunId: evalRun.id, caseId: regressionCase.id, templateHash: regressionCase.templateHash });
+    // A case whose deterministic assertions all pass marks the task passed.
+    const passingCase = await service.createRegressionCase({ name: "passing", prompt: "do it", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions: [{ type: "terminal_status", expected: "ok" }] });
+    const passingEvalRun = await service.createEvalRun({ caseIds: [passingCase.id], target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } });
+    await new EvalRunner(service, { emitter, store, summaries, evaluations }).execute(passingEvalRun.id);
+    expect(await summaries.get(service.getEvalRun(passingEvalRun.id).runIds[0]!)).toMatchObject({ taskOutcome: "passed", taskOutcomeSource: `deterministic:${passingEvalRun.id}` });
   });
 
   it("refuses an EvalRun whose template changed since the case was recorded unless forced", async () => {

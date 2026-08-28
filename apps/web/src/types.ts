@@ -129,7 +129,7 @@ export interface RunListItem {
   estimatedCostUsd?: number;
 }
 
-export interface BaselineDistribution { median?: number; p90?: number }
+export interface BaselineDistribution { p50?: number; p95?: number }
 export interface AgentRunBaseline {
   sampleCount: number;
   windowSize: 20;

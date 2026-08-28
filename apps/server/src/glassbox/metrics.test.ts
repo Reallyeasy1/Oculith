@@ -120,6 +120,11 @@ describe("computeMetric on the 30-summary fixture", () => {
     expect(scalar("tool_calls", "avg", { configHash: "cfg-a" }).value).toBe(70 / 18);
     expect(scalar("tool_calls", "p50", { configHash: "cfg-a" }).value).toBe(3);
     expect(scalar("tool_calls", "p95", { configHash: "cfg-a" }).value).toBe(10);
+    // failures per run sorted: [0×10, 1×4, 2×3, 3] — sum 13, every row carries the field (#213)
+    expect(scalar("tool_failures", "count", { configHash: "cfg-a" })).toMatchObject({ value: 13, provenance: { count: 18, sampled: 18 } });
+    expect(scalar("tool_failures", "avg", { configHash: "cfg-a" }).value).toBe(13 / 18);
+    expect(scalar("tool_failures", "p50", { configHash: "cfg-a" }).value).toBe(0);
+    expect(scalar("tool_failures", "p95", { configHash: "cfg-a" }).value).toBe(3);
     // 14 rows carry tokens (a05, a07, a11, a16 do not); totals sum 8325, sorted p50 = 525, p95 = 1275
     expect(scalar("tokens", "count", { configHash: "cfg-a" })).toMatchObject({ value: 8325, provenance: { count: 18, sampled: 14 } });
     expect(scalar("tokens", "avg", { configHash: "cfg-a" }).value).toBe(8325 / 14);

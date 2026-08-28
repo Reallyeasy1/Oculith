@@ -10,14 +10,14 @@ import { JsonRunSummaryStore, summaryFromView } from "./summary.js";
 const dirs: string[] = [];
 afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
 
-async function setup(redact?: (text: string) => string) {
+async function setup(redact?: (text: string) => string, maxResults?: number) {
   const dir = await mkdtemp(path.join(tmpdir(), "evaluation-store-"));
   dirs.push(dir);
   const file = path.join(dir, "launchpad.json");
   const json = new JsonStore(file);
   await json.initialize();
   const summaries = new JsonRunSummaryStore(json);
-  const store = new JsonEvaluationStore(json, summaries, redact);
+  const store = new JsonEvaluationStore(json, summaries, redact, maxResults);
   await store.initialize();
   return { file, json, summaries, store };
 }
@@ -84,6 +84,35 @@ describe("JsonEvaluationStore", () => {
     expect(await summaries.get("run-1")).toMatchObject({ taskOutcome: "passed", taskOutcomeSource: "evaluator:task_completion@1" });
     expect(await store.query({ agentId: "agent-a", evaluatorId: "task_completion", version: 1, from: "2026-08-28T03:30:00.000Z" })).toEqual(current);
     expect(await store.query({ agentId: "agent-b" })).toEqual([]);
+  });
+
+  it("boots read-only once the catalogue is seeded (#213)", async () => {
+    const { json, store } = await setup();
+    let mutations = 0;
+    const mutate = json.mutate.bind(json);
+    json.mutate = async (mutation) => { mutations++; return mutate(mutation); };
+    await store.initialize();
+    expect(mutations).toBe(0);
+  });
+
+  it("bounds stored result history: superseded rows evict before any current verdict (#213)", async () => {
+    const { json, summaries, store } = await setup(undefined, 3);
+    await addSummary(summaries, "run-1", "agent-a", "2026-08-28T01:00:00.000Z");
+    await addSummary(summaries, "run-2", "agent-a", "2026-08-28T01:30:00.000Z");
+    const put = (runId: string, evaluatorId: string, evaluatedAt: string) => store.putResult({
+      runId, evaluatorId, evaluatorVersion: 1, passed: true, explanation: "ok",
+      evidenceEventIds: [], metadata: {}, evaluatedAt,
+    });
+    const kept = () => json.snapshot().evaluationResults.map((result) => result.evaluatedAt.slice(11, 13)).sort();
+    await put("run-1", "terminal_status", "2026-08-28T04:00:00.000Z");
+    await put("run-1", "expected_tool", "2026-08-28T01:00:00.000Z"); // oldest row, but run-1's only expected_tool verdict
+    await put("run-1", "terminal_status", "2026-08-28T05:00:00.000Z"); // supersedes the 04:00 row
+    await put("run-2", "max_tool_calls", "2026-08-28T02:00:00.000Z");
+    // Over the cap, the superseded 04:00 row goes first — not the older current 01:00 verdict.
+    expect(kept()).toEqual(["01", "02", "05"]);
+    // With only current verdicts left, the oldest evaluatedAt falls out.
+    await put("run-2", "max_duration_ms", "2026-08-28T06:00:00.000Z");
+    expect(kept()).toEqual(["02", "05", "06"]);
   });
 
   it("fails closed when explanation redaction fails", async () => {
