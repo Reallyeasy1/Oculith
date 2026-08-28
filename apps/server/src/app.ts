@@ -39,7 +39,13 @@ const updateAgentBody = createAgentBody.partial().refine(
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
 });
-const evalRunBody = z.object({ agentId: z.string().uuid(), caseIds: z.array(z.string().uuid()).min(1).max(20).refine((ids) => new Set(ids).size === ids.length, "caseIds must be unique") });
+const evalRunBody = z.object({ agentId: z.string().uuid(), caseIds: z.array(z.string().uuid()).min(1).max(20).refine((ids) => new Set(ids).size === ids.length, "caseIds must be unique"), force: z.boolean().optional() });
+// A case is always derived from the trace evidence. The UI may only name it or remove an
+// automatically proposed assertion; it cannot supply a different prompt or template.
+const regressionCaseFromRunBody = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  assertions: regressionCaseInput.shape.assertions.optional(),
+});
 
 export async function createApp(
   config: AppConfig,
@@ -249,7 +255,7 @@ export async function createApp(
       const agent = service.getAgent(body.agentId);
       body.caseIds.forEach((id) => service.getRegressionCase(id));
       const snapshot = configSnapshot(agent, config);
-      const evalRun = await service.createEvalRun({ caseIds: body.caseIds, target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } });
+      const evalRun = await service.createEvalRun({ caseIds: body.caseIds, target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } }, { force: body.force });
       void new EvalRunner(service, glassbox).execute(evalRun.id).catch(async (error) => {
         await service.updateEvalRun(evalRun.id, (item) => { item.status = "failed"; item.completedAt = new Date().toISOString(); item.results.push({ caseId: "", results: [], error: error instanceof Error ? error.message : String(error) }); });
       });
@@ -257,12 +263,18 @@ export async function createApp(
     });
     app.post("/api/runs/:id/regression-case", async (request, reply) => {
       const run = service.getRun(runIdParams.parse(request.params).id);
+      const requested = regressionCaseFromRunBody.parse(request.body ?? {});
       const template = service.getAgent(run.agentId).workspaceTemplate;
       if (!template) throw new HttpError(409, "This Run did not start from a template-backed workspace");
       let input;
       try { input = caseFromRun(run, await viewFor(run.id), template); }
       catch (error) { throw new HttpError(400, error instanceof Error ? error.message : "Unable to create regression case"); }
-      const regressionCase = await service.createRegressionCase({ ...input, sourceRunId: run.id });
+      const regressionCase = await service.createRegressionCase({
+        ...input,
+        ...(requested.name ? { name: requested.name } : {}),
+        ...(requested.assertions ? { assertions: requested.assertions } : {}),
+        sourceRunId: run.id,
+      });
       return reply.code(201).send({ regressionCase });
     });
     app.get("/api/runs", async (request) => {
