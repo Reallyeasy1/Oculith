@@ -35,7 +35,10 @@ _State as of 27 August 2026 (main `755546b`). Sections 1–9 describe the system
 | **Instrument** | Every layer emits one versioned `ObservationEvent` contract: HTTP ingress → AgentService → runner → container → Codex stream → workspace | merged |
 | **Observe** | Per-Run trace tree with rollups, first-actionable failure and diagnosis, per-Run metrics, capability states, redaction before persistence | merged |
 | **Audit** | Actor / action / resource / outcome rows projected from stored events; sandbox denials as first-class evidence | merged |
+| **Evaluate** | Versioned evaluators judge historical Runs from a trace-grounded, redacted evidence view; every result carries provenance (evaluator id + version, model, evidence event ids); `taskOutcome` beside `executionStatus`; reliability dashboard and config comparison over history | planned (PRD v4 §17, sprints E1–E3) |
 | **Verify** | Save a Run as a Regression Case, rerun it from the same starting state under a new configuration, flag PASS→FAIL as `REGRESSION` | in review (PR stack #106 → #144) |
+
+**Evaluate plane (PRD v4, 27 Aug).** A fourth stage between Observe/Audit and Verify answers *was the Agent actually good, over history?* without touching the observation contract: evaluator definitions are immutable, versioned records; results are append-only and cite the event ids they rest on; `taskOutcome` (`passed | failed | unknown`) is a derived Run-summary field with a source, never an event, and stays `unknown` until an evaluator sets it. Three vocabularies stay distinct and labelled — **observed fact** (events) · **derived diagnosis** (`buildTrace`) · **evaluator judgement** (results). Deterministic Verify remains LLM-free and the only classifier of `REGRESSION`; the historical comparison shows "quality drift". NDJSON + `db.json` remain the judged one-command path; PostgreSQL is an optional backend behind the existing store interfaces (#175). Sprints E1–E3 run in parallel with S6–S8 (section 10).
 
 **History.** The repository started as _LaunchGuard_ (capability leases and a protected-action gateway; issues #1–#20, all closed). On 26 August it was re-scoped to GlassBox (epic #42): evidence, not control, is what the track rewards, and a future controller needs the same facts anyway (PRD goal G6 — the contract must drive future controls without re-instrumenting). Sprint 1 (Observe) shipped the same day; the Verify half was planned as sprints S1–S8 (section 10).
 
@@ -220,7 +223,7 @@ All `/api/*` routes except `/api/auth` and `/api/health` require `Authorization:
 | `GET /api/traces/:traceId/export` | redacted JSON download | `Content-Disposition: attachment; filename="trace-<traceId>.json"`, `exportedAt` |
 | `GET /api/runs/:runId/audit`, `GET /api/traces/:traceId/audit` | audit rows | section 6 |
 | `GET /api/workspaces`, `GET /api/workspace-templates` | in review (#106, #123) | |
-| `GET/POST /api/regression-cases`, `/:id`, `POST /api/runs/:id/regression-case` (read-only draft prefill; `POST /api/regression-cases` is the only create path), `GET/POST /api/eval-runs`, `GET /api/eval-runs/:id`, `GET /api/eval-runs/:a/compare/:b` | in review (#128, #142, #144) | exact paths may change before merge |
+| `GET/POST /api/regression-cases`, `/:id`, `GET /api/runs/:id/regression-case` (read-only draft prefill, never persists), `POST /api/runs/:id/regression-case` (the single create from a Run; body `{ name?, assertions? }` may only rename or drop proposed assertions; 409 without a template, 400 when the Run cannot be a baseline), `GET/POST /api/eval-runs`, `GET /api/eval-runs/:id`, `GET /api/eval-runs/:a/compare/:b` | in review (#128, #142, #144) | exact paths may change before merge |
 
 ## 9. Configuration, runbook and verification
 
@@ -255,7 +258,7 @@ All `/api/*` routes except `/api/auth` and `/api/health` require `Authorization:
 
 ## 10. Sprint plan and critical path
 
-Sprints are scope units, not days — several can close in one day. One milestone (**TechJam MVP**), labels `sprint:S1…S8`, workstreams `ws:A` starting state & docs · `ws:B` evidence · `ws:C` eval · `ws:D` UI · `ws:E` verification/PRD/demo/submission. Full table with entry/exit gates and status: `docs/SPRINTS.md`; pinned on epic #42.
+Sprints are scope units, not days — several can close in one day. One milestone (**TechJam MVP**), labels `sprint:S1…S8`, workstreams `ws:A` starting state & docs · `ws:B` evidence · `ws:C` eval · `ws:D` UI · `ws:E` verification/PRD/demo/submission · `ws:F` Evaluate plane (`sprint:E1…E3`, parallel with S6–S8). Full table with entry/exit gates and status: `docs/SPRINTS.md`; pinned on epic #42.
 
 ```text
 S0 ▶ S1 ─┬─ S2 (evidence + demo-visible UI) ─────────────────┬─ S6 (verify) ─┬─ S7 (demo) ─ S8 (submission)
@@ -270,6 +273,9 @@ S0 ▶ S1 ─┬─ S2 (evidence + demo-visible UI) ─────────�
 | S3 | Starting state (#64 → #68, #80) | named workspace, template with check command, sandboxed post-check | in review |
 | S4 | Regression case (#83, #84, #88) | case saved from a trace with prefilled assertions; UI | in review |
 | S5 | Execute & compare (#105 → #85, #86, #89) | ordinary isolated EvalRun; comparison flags PASS→FAIL as REGRESSION | in review |
+| E1 | Evaluate foundations (#167 PRD v4 → #168, #169; #176) | `/api/runs` from summaries with `taskOutcome: unknown`; versioned evaluators and redacted results persisted; template hash checked at rerun | in progress |
+| E2 | Jobs, judge, aggregates (#170 → #171; #172) | resumable job that never delays a live Run; `task_completion@1` cites evidence on the UAT fixtures; reliability/compare endpoints with provenance | not started |
+| E3 | Dashboard and comparison (#173 → #174; P1 #175; P2 #177) | AC-09 from the browser with stored results; "quality drift", never REGRESSION; `npm run poc` unchanged, Postgres optional | not started |
 | S6 | Verify (#91, finish #90) | regression story inside `npm run check`; lane covers new surfaces | not started |
 | S7 | Demo (#92; stretch #103) | `run-demo.sh` reaches step 9 from clean state; two rehearsals ≤ 3:00 | not started |
 | S8 | Submission (#93, #35, #94, #95) | README verified on a clean clone; video ≤ 3:00 | not started |
@@ -280,7 +286,7 @@ S0 ▶ S1 ─┬─ S2 (evidence + demo-visible UI) ─────────�
 
 **Next up (plan after UAT rounds 3–4, 27 Aug):** Track A finish the Verify chain (#142/#144 → #151/#152 → #91/#90 → #92) · Track B evidence quality (#130 → #129 → #132 → #156 → #136) · Track C surfacing fixes (#154, #157, #155, #138, #137; author-blocked #124 #125 #118) · Track D #148 → #90 · Track E submission (#35, #93, #94, #95). #134 deferred past the demo. Full table in `docs/SPRINTS.md` "Next up"; mirrored on #42.
 
-**Demo script (PRD §13, nine steps, ≤ 3 min).** Start a Run from the Repo Doctor template → open its trace → show the first failure / a sandbox denial in the audit tab → save the Run as a Regression Case (assertions prefilled) → change only the Agent's instructions → rerun as an EvalRun from a fresh template copy → comparison flags PASS→FAIL as `REGRESSION` with links to both traces.
+**Demo script (PRD §13 v4, nine steps, ≤ 3 min, at most one live Run).** Select the Agent → reliability dashboard (telemetry vs evaluation metrics) → drill into a Run with `executionStatus: completed` and `taskOutcome: failed` → trace with the Evaluation panel's cited evidence → privacy boundary → batch-evaluate history (resumable job) → one live Run → compare two configHashes ("quality drift", linked to the deterministic EvalRun comparison's `REGRESSION`) → drill back from a delta cell to the Runs behind it. The deterministic AC-08 loop stays covered by S6 and is shown as the linked comparison, not re-executed live.
 
 ## 11. Status board
 

@@ -95,6 +95,10 @@ export interface RunListItem {
   tokens?: { output?: number };
   denials: number;
   actions: number;
+  /** Process status (`status` mapped: ok→completed, error→failed). */
+  executionStatus: "running" | "completed" | "failed" | "timeout" | "cancelled";
+  /** Whether the task succeeded; `unknown` until an evaluator or Eval Run sets it (#168). */
+  taskOutcome: "passed" | "failed" | "unknown";
   configHash?: string;
   configSnapshot?: AgentConfigSnapshot;
   workspaceChanges?: { added: number; modified: number; removed: number; bytesDelta: number; truncated: boolean };
@@ -260,7 +264,7 @@ export type Assertion =
 
 export interface RegressionCase {
   id: string; name: string; prompt: string; workspaceTemplate: string; sourceRunId?: string;
-  baselineConfigHash: string; assertions: Assertion[]; createdAt: string;
+  baselineConfigHash: string; templateHash?: string; assertions: Assertion[]; createdAt: string;
 }
 
 export interface EvalResult {
@@ -271,11 +275,11 @@ export interface EvalRun {
   id: string; caseIds: string[];
   target: { agentId: string; configHash: string; snapshot: AgentConfigSnapshot };
   runIds: string[]; results: { caseId: string; runId?: string; results: EvalResult[]; error?: string }[];
-  status: "running" | "completed" | "failed"; createdAt: string; completedAt?: string;
+  status: "running" | "completed" | "failed"; templateHashes?: Record<string, string>; templateHashMismatch?: boolean; createdAt: string; completedAt?: string;
 }
 export interface EvalComparison {
   cases: { caseId: string; assertions: { type: string; baseline?: EvalResult; candidate?: EvalResult; delta?: number; regression: boolean }[]; regression: boolean; traceLinks: { baseline?: string; candidate?: string } }[];
-  regressions: number;
+  regressions: number; templateMismatch?: boolean;
 }
 
 // Mirrors WorkspaceManager.listTemplates(): a bad template (symlink, over limits) is reported, not a 500.
