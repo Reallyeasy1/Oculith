@@ -4,7 +4,8 @@ import path from "node:path";
 import { loadConfig } from "../config.js";
 import { ObservationEmitter } from "../glassbox/emitter.js";
 import { NdjsonTraceStore } from "../glassbox/store.js";
-import { backfillSummaries, JsonRunSummaryStore } from "../glassbox/summary.js";
+import { openSummaryStore } from "../glassbox/postgres-summary.js";
+import { backfillSummaries } from "../glassbox/summary.js";
 import { JsonStore } from "../store.js";
 
 const config = loadConfig();
@@ -14,5 +15,7 @@ await store.initialize();
 const traces = new NdjsonTraceStore(config.traceDirectory, log);
 await traces.initialize();
 const emitter = new ObservationEmitter({ store: traces, capturePolicy: config.glassboxCapturePolicy, log });
-const report = await backfillSummaries({ traces, emitter, summaries: new JsonRunSummaryStore(store), log });
+const summaries = await openSummaryStore(config, store);
+const report = await backfillSummaries({ traces, emitter, summaries, log });
 console.log("[glassbox] backfill", JSON.stringify(report));
+await summaries.close?.();
