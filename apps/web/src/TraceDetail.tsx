@@ -51,6 +51,8 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
   const [focusId, setFocusId] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [showSaveCase, setShowSaveCase] = useState(false);
+  const saveCaseRef = useRef<HTMLFormElement>(null);
+  const onSaveCaseKeyDown = useFocusTrap(saveCaseRef, () => { if (!savingCase) setShowSaveCase(false); }, String(showSaveCase));
   const [caseName, setCaseName] = useState("");
   const [caseAssertions, setCaseAssertions] = useState<Assertion[]>([]);
   const [savingCase, setSavingCase] = useState(false);
@@ -377,11 +379,11 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
       {!showAudit && openSpan && <SpanDrawer span={openSpan} view={view} parentName={openSpan.parentSpanId ? byId.get(openSpan.parentSpanId)?.name : undefined} onClose={closeDrawer} />}
       {showSaveCase && (
         <div className="modal-backdrop" onMouseDown={() => !savingCase && setShowSaveCase(false)}>
-          <form className="modal regression-case-modal" onSubmit={saveCase} onMouseDown={(event) => event.stopPropagation()}>
+          <form ref={saveCaseRef} className="modal regression-case-modal" role="dialog" aria-modal="true" aria-labelledby="save-case-title" onSubmit={saveCase} onMouseDown={(event) => event.stopPropagation()} onKeyDown={onSaveCaseKeyDown}>
             <div className="modal-heading">
               <div>
                 <span className="eyebrow">Regression case</span>
-                <h2>Save successful Run</h2>
+                <h2 id="save-case-title">Save successful Run</h2>
                 <p>These checks were inferred from the trace evidence. Remove any that should not become a stable expectation.</p>
               </div>
               <button type="button" onClick={() => setShowSaveCase(false)} disabled={savingCase} aria-label="Close save regression case">×</button>
@@ -464,16 +466,10 @@ function Field({ label, children, className }: { label: string; children: React.
 
 const FOCUSABLE = 'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
-function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: TraceView; parentName: string | undefined; onClose: () => void }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const events = useMemo(() => view.events.filter((e) => e.spanId === span.spanId), [view, span]);
-  const attempt = events[0]?.attempt;
-  const shown = events.slice(0, DRAWER_EVENT_CAP);
-  const workspaceChange = view.events.find((event) => event.type === "workspace.changed" && event.parentSpanId === span.spanId);
-
-  useEffect(() => { ref.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus(); }, [span.spanId]);
-
-  const onKeyDown = (event: React.KeyboardEvent) => {
+/** Dialog keyboard contract shared by the span drawer and the save-case modal: autofocus, Tab cycles inside, Escape closes. */
+function useFocusTrap(ref: React.RefObject<HTMLElement | null>, onClose: () => void, focusKey: string) {
+  useEffect(() => { ref.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus(); }, [ref, focusKey]);
+  return (event: React.KeyboardEvent) => {
     if (event.key === "Escape") { event.preventDefault(); onClose(); return; }
     if (event.key !== "Tab" || !ref.current) return;
     const items = Array.from(ref.current.querySelectorAll<HTMLElement>(FOCUSABLE));
@@ -482,6 +478,16 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   };
+}
+
+function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: TraceView; parentName: string | undefined; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const events = useMemo(() => view.events.filter((e) => e.spanId === span.spanId), [view, span]);
+  const attempt = events[0]?.attempt;
+  const shown = events.slice(0, DRAWER_EVENT_CAP);
+  const workspaceChange = view.events.find((event) => event.type === "workspace.changed" && event.parentSpanId === span.spanId);
+
+  const onKeyDown = useFocusTrap(ref, onClose, span.spanId);
 
   return (
     <div ref={ref} className="span-drawer" role="dialog" aria-modal="true" aria-labelledby="span-drawer-title" onKeyDown={onKeyDown}>
