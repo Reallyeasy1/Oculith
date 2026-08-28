@@ -7,7 +7,7 @@ Volc Agent Launchpad is a single-node control plane. GlassBox observes the exist
 ```mermaid
 flowchart LR
   subgraph browser["Experience boundary · browser"]
-    Web["React UI<br/>apps/web/src/App.tsx<br/>RunsView.tsx · TraceDetail.tsx"]
+    Web["React UI<br/>apps/web/src/App.tsx<br/>RunsView.tsx · TraceDetail.tsx<br/>Overview.tsx · CompareView.tsx"]
   end
 
   subgraph control["Control plane · host / ECS task"]
@@ -25,6 +25,7 @@ flowchart LR
       EventStore["NDJSON TraceStore + index<br/>glassbox/store.ts"]
       Query["buildTrace / projectAudit<br/>glassbox/query.ts"]
       Projections["Trace · Audit · Metrics<br/>API projections"]
+      Summaries["RunSummaryStore<br/>glassbox/summary.ts<br/>JSON · postgres-summary.ts"]
       Denial["FAILURE / DENIAL EVIDENCE<br/>runner outcome · policy.denied"]
     end
 
@@ -59,6 +60,8 @@ flowchart LR
   Runner --> Observer --> Adapter
   Adapter -->|ObservationEvent| Emitter --> Redact --> EventStore
   EventStore --> Query --> Projections --> API
+  Query -->|rollup at Run end| Summaries -->|/api/runs list| API
+  Summaries --> Json
   Runner -->|exit / timeout / cancel| Denial
   Observer -->|declined command| Denial --> Emitter
 
@@ -94,13 +97,13 @@ The behavioral rules are maintained in [GlassBox invariants](../.claude/rules/gl
 
 | Persisted | Derived at read time |
 | --- | --- |
-| Agent, message, Run, regression case and EvalRun records in `data/launchpad.json` (`JsonStore`) | Span trees, durations, first actionable failure and capability state (`buildTrace`) |
-| Redacted, bounded `ObservationEvent` lines in `data/traces/<runId>.ndjson` | Trace, Audit and Metrics projections |
-| Bounded trace index entries in `data/traces/index.json` | Workspace change totals, token/tool metrics and comparison presentation |
-| Agent workspaces below `workspaces/` and archived deletions below `workspaces/.deleted/` | Eval verdicts produced by deterministic evaluators from stored Run evidence |
-| Codex configuration and resumable sessions below `codex-home/` | UI filters, attention counts and dashboard summaries |
+| Agent, message, Run (with `configHash`), regression case (`baselineConfigHash`, `templateHash`) and EvalRun records (per-case evaluator results, `templateHashes`) in `data/launchpad.json` (`JsonStore`) | Span trees, durations, first actionable failure and capability state (`buildTrace`, a pure function of the events) |
+| Redacted, bounded `ObservationEvent` lines in `data/traces/<runId>.ndjson` (`NdjsonTraceStore`) | Trace, Audit and Metrics projections |
+| Per-Run summaries (`RunSummaryStore`): `runSummaries` inside `launchpad.json`, or the `runs_summary` PostgreSQL table when `GLASSBOX_STORE=postgres` (`apps/server/sql/001_runs_summary.sql`); rolled up from the trace at Run end | Trace index: rebuilt in memory from the NDJSON files at boot, never written to disk |
+| Agent workspaces below `workspaces/` and archived deletions below `workspaces/.deleted/` | Workspace change totals and token/tool metrics (from `workspace.changed` and model/tool events) |
+| Codex configuration and resumable sessions below `codex-home/` | EvalRun comparison (`compareEvalRuns`, including the template-hash mismatch flag), UI filters, attention counts and dashboard summaries |
 
-`JsonStore` serializes writes and atomically replaces one JSON file. `TraceStore` appends one redacted NDJSON stream per Run and maintains a bounded index. Both are single-process POC stores.
+`JsonStore` serializes writes and atomically replaces one JSON file. `TraceStore` appends one redacted NDJSON stream per Run and keeps a bounded in-memory index. `RunSummaryStore` is the read model for Run lists and aggregation so those never re-read NDJSON; its JSON backend is the judged default and the PostgreSQL backend (`docker compose --profile postgres`) is opt-in. Traces stay NDJSON either way. All are single-process POC stores.
 
 ## Execution profiles
 
@@ -116,6 +119,6 @@ Both runner adapters use argv-only process execution, bounded output/time, resum
 
 - No autonomous controller, approval engine, or policy-enforcement loop; the dashed controller boundary is an extension seam only.
 - No multi-user identity, authorization, hardened tenant isolation, or distributed control plane.
-- No external trace database or message bus; JSON and NDJSON are deliberate POC storage choices.
-- No LLM-based evaluator or success inference. Regression evaluators use explicit stored evidence.
+- No external trace database or message bus; NDJSON is the deliberate POC trace store. PostgreSQL is an opt-in backend for Run summaries only.
+- No LLM-based evaluator or success inference. Regression evaluators use explicit stored evidence. The `postCheck` assertion type is defined but `EvalRunner` runs evaluators without a workspace runner, so it reports "unavailable" rather than executing commands.
 - No deployment topology beyond the local POC and single ECS task described above.
