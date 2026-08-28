@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTrace, flattenSpans, formatExitCode, projectAudit } from "./query.js";
+import { buildTrace, flattenSpans, formatExitCode, projectAudit, providerHint } from "./query.js";
 import { SCHEMA_VERSION, type ObservationEvent } from "./schema.js";
 
 let seq = 0;
@@ -87,6 +87,44 @@ describe("buildTrace", () => {
     const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
     expect(summary.failure?.message).toContain("3221225794 (0xC0000142)");
     expect(summary.failure?.diagnosis).toContain("runtime CLI could not start; restart the server");
+  });
+  it("derives a credentials hint from 401/403/'Unauthorized'/'API key' provider errors (#265)", () => {
+    const credentials = "Runtime credentials rejected — check ARK_API_KEY / model access in .env";
+    expect(providerHint("unexpected status 401 Unauthorized: The API key format is incorrect")).toBe(credentials);
+    expect(providerHint("unexpected status 403 Forbidden")).toBe(credentials);
+    expect(providerHint("The api key provided does not have access to model doubao-seed")).toBe(credentials);
+  });
+  it("derives a rate-limit hint from 429/'rate limit' provider errors", () => {
+    expect(providerHint("unexpected status 429 Too Many Requests")).toBe("Rate limited by the provider — retry later");
+    expect(providerHint("Provider rate limit exceeded, please retry")).toBe("Rate limited by the provider — retry later");
+  });
+  it("derives an unreachable hint from ENOTFOUND/ECONNREFUSED/ETIMEDOUT toward the provider", () => {
+    const unreachable = "Provider unreachable — check network/ARK_BASE_URL";
+    expect(providerHint("getaddrinfo ENOTFOUND ark.cn-beijing.volces.com")).toBe(unreachable);
+    expect(providerHint("connect ECONNREFUSED 203.0.113.7:443")).toBe(unreachable);
+    expect(providerHint("connect ETIMEDOUT 203.0.113.7:443")).toBe(unreachable);
+  });
+  it("never fabricates a hint for non-matching or absent error text", () => {
+    expect(providerHint("exit code 137")).toBeUndefined();
+    expect(providerHint("unexpected null")).toBeUndefined();
+    expect(providerHint(undefined)).toBeUndefined();
+  });
+  it("stamps the provider hint on the failure focus from the stored codex error (#265)", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "error.recorded", category: "control", spanId: "err", parentSpanId: "rt", status: "error", error: { type: "runtime_error", message: "Codex exited with code 1: unexpected status 401 Unauthorized: The API key format is incorrect" } }),
+      ev({ type: "run.failed", category: "control", spanId: "failed", parentSpanId: "svc", status: "error" })];
+    const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(summary.failure?.hint).toBe("Runtime credentials rejected — check ARK_API_KEY / model access in .env");
+  });
+  it("leaves the failure focus without a hint when the stored error matches no rule", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "tool.call.failed", category: "tool", spanId: "tool", parentSpanId: "rt", status: "error", error: { type: "exit_code", message: "exit code 137" } }),
+      ev({ type: "run.failed", category: "control", spanId: "failed", parentSpanId: "svc", status: "error" })];
+    const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(summary.failure).toBeDefined();
+    expect(summary.failure?.hint).toBeUndefined();
   });
   it("formats runner-shaped 'exited with code N: detail' messages without losing the detail", () => {
     seq = 0;
