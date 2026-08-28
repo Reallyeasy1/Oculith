@@ -271,6 +271,26 @@ exhibited, never an interpolation. Runs missing the sampled field are excluded, 
 `provenance.evaluated`. Every response carries `provenance` (window size, contributing Runs, the effective
 filter to drill down with, and inline `runIds` for windows of ≤ 100 Runs).
 
+### Reliability aggregates API (GlassBox)
+
+Two specific endpoints shape the same semantics for the dashboard (#172); they share every definition —
+windows, rates, nearest-rank percentiles — with the metric catalogue above, so the two APIs can never
+disagree on the same window:
+
+- `GET /api/agents/:id/reliability?from&to&configHash&bucket=hour|day&evaluatorId&evaluatorVersion` — one
+  aggregate block for the Agent: `runs`, `executionCompletionRate` (completed / terminal),
+  `taskCompletionRate { evaluatorId, version, evaluated, passed, rate }` (passed / evaluated; unevaluated
+  Runs are on neither side), `toolFailureRate` (Σ failures / Σ calls), `avgToolCalls`,
+  `tokens { avgInput, avgOutput, sum, sampled }` (a half-observed pair is never reported as a total),
+  `latency { p50, p95, sampled }`, `denialRate` (Runs with ≥ 1 denial / Runs), plus a UTC `series[]` of the
+  same block per bucket and `provenance { count, runIds ≤ 100, filter }`. The evaluator defaults to the
+  latest `task_completion` version; the resolved version is always echoed as provenance.
+- `GET /api/reliability/compare?agentId&a=<configHash>&b=<configHash>&from&to` — the same block per side
+  plus per-number `deltas` (`b − a`; `null` when either side observed nothing).
+
+Aggregation is computed in memory from stored Run summaries (hundreds of Runs); a test holds the
+1,000-summary worst case under 500 ms before any materialised metric table is considered.
+
 ## Validation
 
 ```bash

@@ -338,6 +338,53 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     await bare.close();
   });
 
+  it("serves reliability aggregates and the configHash compare with provenance (#172)", async () => {
+    const store = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const agentId = "019f3fa8-44d2-7b60-b413-1a0b2c3d4e70";
+    const metrics = { terminalStatus: "ok", toolCalls: 4, toolFailures: 1, modelCalls: 1, retries: 0, denials: 0, timeSplit: { modelMs: 0, toolMs: 0, containerStartMs: 0 } };
+    const summary = (runId: string, configHash: string, startedAt: string, durationMs: number) =>
+      ({ runId, agentId, configHash, executionStatus: "completed", taskOutcome: "unknown", startedAt, durationMs, denials: 0, updatedAt: startedAt, metrics }) as unknown as RunSummary;
+    const rows = [summary("run-a", "cfg-a", "2026-08-01T00:00:00.000Z", 1000), summary("run-b", "cfg-b", "2026-08-02T00:00:00.000Z", 3000)];
+    const summaries = { query: async (q: { configHash?: string }) => rows.filter((r) => !q.configHash || r.configHash === q.configHash) } as unknown as RunSummaryStore;
+    const definition = { id: "task_completion", version: 2 };
+    const evaluations = {
+      getDefinition: async (id: string) => (id === "task_completion" ? definition : undefined),
+      query: async () => [{ runId: "run-a", evaluatorId: "task_completion", evaluatorVersion: 2, passed: true, evaluatedAt: "2026-08-03T00:00:00.000Z" }],
+    } as unknown as EvaluationStore;
+    const svc = { ...service, getAgent: (id: string) => { if (id !== agentId) throw new HttpError(404, "Agent not found"); return { id }; } } as unknown as AgentService;
+    const app = await createApp(config(), svc, { emitter, store, summaries, evaluations });
+
+    const ok = await app.inject({ method: "GET", url: `/api/agents/${agentId}/reliability`, headers: auth });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toMatchObject({
+      schemaVersion: "1.0", capturePolicy: "metadata_only", agentId, runs: 2, executionCompletionRate: 1,
+      taskCompletionRate: { evaluatorId: "task_completion", version: 2, evaluated: 1, passed: 1, rate: 1 },
+      toolFailureRate: 2 / 8, latency: { p50: 1000, p95: 3000, sampled: 2 },
+      provenance: { count: 2, runIds: ["run-a", "run-b"], filter: { agentId } },
+    });
+    expect(ok.json().series).toHaveLength(2); // one day bucket per Run by default
+
+    const compare = await app.inject({ method: "GET", url: `/api/reliability/compare?agentId=${agentId}&a=cfg-a&b=cfg-b`, headers: auth });
+    expect(compare.statusCode).toBe(200);
+    expect(compare.json()).toMatchObject({
+      a: { configHash: "cfg-a", runs: 1, taskCompletionRate: { evaluated: 1, passed: 1 } },
+      b: { configHash: "cfg-b", runs: 1, taskCompletionRate: { evaluated: 0, passed: 0, rate: null } },
+      deltas: { runs: 0, latency: { p50: 2000 }, taskCompletionRate: null },
+    });
+
+    expect((await app.inject({ method: "GET", url: "/api/agents/019f3fa8-44d2-7b60-b413-1a0b2c3d4e71/reliability", headers: auth })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: `/api/agents/${agentId}/reliability?bucket=week`, headers: auth })).statusCode).toBe(400);
+    expect((await app.inject({ method: "GET", url: `/api/agents/${agentId}/reliability?evaluatorId=nope`, headers: auth })).statusCode).toBe(400);
+    expect((await app.inject({ method: "GET", url: `/api/reliability/compare?agentId=${agentId}&a=cfg-a`, headers: auth })).statusCode).toBe(400);
+    await app.close();
+
+    // without both read models wired, the endpoints do not exist
+    const bare = await createApp(config(), svc, { emitter, store });
+    expect((await bare.inject({ method: "GET", url: `/api/agents/${agentId}/reliability`, headers: auth })).statusCode).toBe(404);
+    await bare.close();
+  });
+
   it("keeps the dialog's case name and retained assertions when deriving a regression case", async () => {
     const store = new MemoryTraceStore();
     const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
