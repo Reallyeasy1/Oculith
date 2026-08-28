@@ -343,7 +343,8 @@ let server = null;
   eq((await api("/api/runs")).json().runs.find((r) => r.runId === badRun.run.id).firstFailingStep, "codex exec", "/api/runs firstFailingStep = codex exec");
   const badAudit = (await api("/api/runs/" + badRun.run.id + "/audit")).json().audit;
   ok(badAudit.some((row) => row.outcome === "timeout"), "/audit includes the gated timeout evidence");
-  eq(badRun.view.summary.capabilities.model + "/" + badRun.view.summary.capabilities.tool, "unknown/unknown", "capabilities read unknown on a cut-short run (#60)");
+  // A turn.started can arrive before the 3 s cut (#129 marks the model observed on it), so only the absence claim is asserted.
+  ok(badRun.view.summary.capabilities.model !== "unavailable" && badRun.view.summary.capabilities.tool !== "unavailable", "capabilities never read unavailable on a cut-short run (#60): " + JSON.stringify(badRun.view.summary.capabilities));
   const stopped = badRun.view.events.find((e) => e.type === "runtime.container.stopped");
   eq(stopped && stopped.attributes.cleanup, "rm --force", "container teardown evidence: runtime.container.stopped cleanup=rm --force");
   ok(badRun.view.events.some((e) => e.type === "run.timed_out" && /3000/.test(e.error && e.error.message)), "run.timed_out names the 3000 ms fixture timeout");
