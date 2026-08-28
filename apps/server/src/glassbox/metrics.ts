@@ -41,7 +41,7 @@ const TASK_OUTCOMES = ["passed", "failed", "unknown"] as const satisfies readonl
 const scalarAggregation = z.enum(SCALAR_AGGREGATIONS);
 // Normalised to millisecond precision: stored `startedAt` is always `.SSSZ`, and the bounds compare
 // lexicographically, so an un-normalised second-precision `from` would exclude a Run it names exactly.
-const isoDatetime = z.string().datetime().transform((value) => new Date(value).toISOString());
+export const isoDatetime = z.string().datetime().transform((value) => new Date(value).toISOString());
 const metricFilter = z.strictObject({
   agentId: z.string().min(1).max(200).optional(),
   configHash: z.string().min(1).max(64).optional(),
@@ -138,7 +138,7 @@ export function effectiveWindow(query: MetricQuery): EffectiveWindow {
   };
 }
 
-const tokensOf = (summary: RunSummary, field: "input" | "output" | "total"): number | undefined => {
+export const tokensOf = (summary: RunSummary, field: "input" | "output" | "total"): number | undefined => {
   const tokens = summary.metrics.tokens;
   if (!tokens) return undefined;
   if (field === "input") return tokens.input;
@@ -177,7 +177,7 @@ function cell(metric: MetricName, statistic: ScalarAggregation, rows: readonly R
   return { value, sampled: samples.length };
 }
 
-const bucketStart = (startedAt: string, bucket: "hour" | "day"): string =>
+export const bucketStart = (startedAt: string, bucket: "hour" | "day"): string =>
   bucket === "hour" ? startedAt.slice(0, 13) + ":00:00.000Z" : startedAt.slice(0, 10) + "T00:00:00.000Z";
 
 /**

@@ -332,5 +332,41 @@ export interface EvaluationResult {
   evaluatedAt: string; jobId?: string;
 }
 
+// #172 — mirrors glassbox/reliability.ts: GET /api/agents/:id/reliability and GET /api/reliability/compare.
+export interface TaskCompletionRate { evaluatorId: string; version: number; evaluated: number; passed: number; rate: number | null }
+export interface ReliabilityNumbers {
+  runs: number;
+  executionCompletionRate: number | null;
+  taskCompletionRate: TaskCompletionRate;
+  toolFailureRate: number | null;
+  avgToolCalls: number | null;
+  tokens: { avgInput: number | null; avgOutput: number | null; sum: number | null; sampled: number };
+  latency: { p50: number | null; p95: number | null; sampled: number };
+  denialRate: number | null;
+}
+export interface ReliabilitySeriesPoint extends ReliabilityNumbers { bucket: string }
+export interface ReliabilityProvenance {
+  count: number; runIds?: string[];
+  filter: { agentId?: string; configHash?: string; from?: string; to?: string };
+}
+export interface ReliabilityBlock extends ReliabilityNumbers { series: ReliabilitySeriesPoint[]; provenance: ReliabilityProvenance }
+export interface ReliabilityReport extends ReliabilityBlock { schemaVersion: string; capturePolicy: CapturePolicy; agentId: string }
+export interface ReliabilityDeltas {
+  runs: number;
+  executionCompletionRate: number | null;
+  taskCompletionRate: number | null;
+  toolFailureRate: number | null;
+  avgToolCalls: number | null;
+  tokens: { avgInput: number | null; avgOutput: number | null; sum: number | null };
+  latency: { p50: number | null; p95: number | null };
+  denialRate: number | null;
+}
+export interface ReliabilityCompareReport {
+  schemaVersion: string; capturePolicy: CapturePolicy; agentId: string;
+  a: ReliabilityBlock & { configHash: string };
+  b: ReliabilityBlock & { configHash: string };
+  deltas: ReliabilityDeltas;
+}
+
 // Mirrors WorkspaceManager.listTemplates(): a bad template (symlink, over limits) is reported, not a 500.
 export type WorkspaceTemplate = { name: string; fileCount: number; bytes: number } | { name: string; error: string };

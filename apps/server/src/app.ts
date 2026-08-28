@@ -11,6 +11,7 @@ import { createTraceContext, type TraceContext } from "./glassbox/context.js";
 import type { ObservationEmitter } from "./glassbox/emitter.js";
 import type { EvaluationStore } from "./glassbox/evaluation.js";
 import { MetricStore, metricQueryBody } from "./glassbox/metrics.js";
+import { ReliabilityService, reliabilityCompareQuerySchema, reliabilityQuerySchema } from "./glassbox/reliability.js";
 import { buildTrace, projectAudit, type TraceView } from "./glassbox/query.js";
 import { CATEGORIES, SCHEMA_VERSION, STATUSES } from "./glassbox/schema.js";
 import type { RunIndexEntry, TraceStore } from "./glassbox/store.js";
@@ -275,6 +276,20 @@ export async function createApp(
       const metrics = new MetricStore(glassbox.summaries, glassbox.evaluations);
       app.post("/api/metrics/query", async (request) =>
         ({ capturePolicy: glassbox.emitter.capturePolicy, ...(await metrics.query(metricQueryBody.parse(request.body))) }));
+      // #172: historical reliability aggregates — the same window/percentile/rate semantics as the metric
+      // catalogue above, shaped for the dashboard: one block per Agent (+ optional configHash and time
+      // range), a compare of two configHashes with deltas. Every number carries provenance.
+      const reliability = new ReliabilityService(glassbox.summaries, glassbox.evaluations);
+      app.get("/api/agents/:id/reliability", async (request) => {
+        const { id } = agentIdParams.parse(request.params);
+        service.getAgent(id);
+        return { capturePolicy: glassbox.emitter.capturePolicy, ...(await reliability.forAgent(id, reliabilityQuerySchema.parse(request.query))) };
+      });
+      app.get("/api/reliability/compare", async (request) => {
+        const query = reliabilityCompareQuerySchema.parse(request.query);
+        service.getAgent(query.agentId);
+        return { capturePolicy: glassbox.emitter.capturePolicy, ...(await reliability.compare(query)) };
+      });
     }
     if (glassbox.evaluations) {
       app.get("/api/evaluators", async () => ({ evaluators: await glassbox.evaluations!.listDefinitions() }));
