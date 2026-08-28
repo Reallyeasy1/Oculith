@@ -504,7 +504,8 @@ describe("GlassBox control-plane adapter", () => {
       { requestId: "req-1", method: "POST", path: "/api/agents/x/messages" },
       "metadata_only",
     );
-    const { run } = await service.sendMessage(agent.id, "hello", ctx);
+    const prompt = "hello";
+    const { run } = await service.sendMessage(agent.id, prompt, ctx);
     expect(ctx.runId).toBe(run.id);
     expect(service.getRun(run.id).traceId).toBe(ctx.traceId);
     await settle(service, run.id);
@@ -521,6 +522,7 @@ describe("GlassBox control-plane adapter", () => {
     ]);
     expect(events[1]!.parentSpanId).toBe(ctx.rootSpanId);
     expect(events[1]!.attributes.configHash).toBe(service.getRun(run.id).configHash);
+    expect(events[1]!.attributes.promptHash).toBe("2cf24dba5fb0a30e");
     expect(events[2]!.parentSpanId).toBe(ctx.rootSpanId);
     expect(events.every((e) => e.traceId === ctx.traceId && e.requestId === "req-1")).toBe(true);
     expect(events.find((e) => e.type === "run.completed")!.attributes).toMatchObject({
@@ -529,7 +531,7 @@ describe("GlassBox control-plane adapter", () => {
       finalMessageBytes: 16,
       reportedFailure: false,
     });
-    expect(JSON.stringify(events)).not.toContain("hello"); // prompt text is never stored
+    expect(JSON.stringify(events)).not.toContain(prompt); // prompt text is never stored; only its bounded hash is retained
   });
 
   it("persists only outcome metadata under metadata_only and a redacted bounded summary under safe_summary", async () => {

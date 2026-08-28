@@ -509,7 +509,13 @@ export class AgentService {
       name: "run.created",
       status: "ok",
       source: { component: "AgentService", observed: true },
-      attributes: { promptBytes: Buffer.byteLength(prompt, "utf8"), configHash: run.configHash!, workspace: agentAtStart.workspaceName ?? path.basename(agentAtStart.workspacePath), ...options.tags },
+      attributes: {
+        promptBytes: Buffer.byteLength(prompt, "utf8"),
+        configHash: run.configHash!,
+        workspace: agentAtStart.workspaceName ?? path.basename(agentAtStart.workspacePath),
+        ...options.tags,
+        promptHash: createHash("sha256").update(prompt, "utf8").digest("hex").slice(0, 16),
+      },
       // #258: bounded prompt summary, opt-in only — same gate as the run.completed outcome summary.
       // The emitter's redactEvent scans it and would also strip it at metadata_only (policy_drop_summary).
       ...(capturesSummaries(this.emitter.capturePolicy)
