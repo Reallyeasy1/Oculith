@@ -52,7 +52,6 @@ type ExecutionOptions = {
   tags?: Record<string, string | number | boolean>;
   persistMessages?: boolean;
   persistThread?: boolean;
-  cleanup?: () => Promise<void>;
 };
 
 export interface IsolatedRunInput {
@@ -560,7 +559,7 @@ export class AgentService {
    * Run a prompt from a new template copy and a fresh runner thread. It deliberately does not add
    * conversation messages or a thread id to the target Agent, while retaining the ordinary Run/trace.
    */
-  async runIsolated(input: IsolatedRunInput): Promise<{ run: AgentRun; message: Message }> {
+  async runIsolated(input: IsolatedRunInput): Promise<{ run: AgentRun; message: Message; workspacePath: string; cleanup: () => Promise<void> }> {
     const runId = randomUUID();
     const agent = this.getAgent(input.agentId);
     let materialized = false;
@@ -568,15 +567,22 @@ export class AgentService {
       const templateHash = await this.workspaces.templateHash(input.workspaceTemplate);
       const workspacePath = await this.workspaces.materializeEvalWorkspace(runId, input.workspaceTemplate, agent);
       materialized = true;
-      return await this.sendMessage(input.agentId, input.prompt, undefined, {
+      const sent = await this.sendMessage(input.agentId, input.prompt, undefined, {
         runId,
         workspacePath,
         workspaceName: input.workspaceTemplate,
         tags: { ...input.tags, templateHash },
         persistMessages: false,
         persistThread: false,
-        ...(this.config.keepEvalWorkspaces ? {} : { cleanup: () => this.workspaces.removeEvalWorkspace(runId) }),
       });
+      // #282 ordering: the workspace must outlive the Run — post_check assertions execute in it after
+      // the Run finishes, so removal is the caller's job (EvalRunner cleans up after evaluateAll), not
+      // executeRun's. KEEP_EVAL_WORKSPACES=1 keeps the workspace forever by making cleanup a no-op.
+      return {
+        ...sent,
+        workspacePath,
+        cleanup: this.config.keepEvalWorkspaces ? async () => undefined : () => this.workspaces.removeEvalWorkspace(runId),
+      };
     } catch (error) {
       if (materialized) await this.workspaces.removeEvalWorkspace(runId);
       throw error;
@@ -936,7 +942,6 @@ export class AgentService {
     } finally {
       this.spans.delete(run.id);
       this.onRunEnded?.(run.id, verify);
-      await options.cleanup?.();
     }
   }
 

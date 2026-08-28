@@ -273,7 +273,7 @@ export async function createApp(
       body.caseIds.forEach((id) => service.getRegressionCase(id));
       const snapshot = configSnapshot(agent, config);
       const evalRun = await service.createEvalRun({ caseIds: body.caseIds, target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } }, { force: body.force });
-      void new EvalRunner(service, { ...glassbox, pricing: tokenPricing }).execute(evalRun.id).catch(async (error) => {
+      void new EvalRunner(service, { ...glassbox, pricing: tokenPricing }, config).execute(evalRun.id).catch(async (error) => {
         await service.updateEvalRun(evalRun.id, (item) => { item.status = "failed"; item.completedAt = new Date().toISOString(); item.results.push({ caseId: "", results: [], error: error instanceof Error ? error.message : String(error) }); });
       });
       return reply.code(202).send({ evalRun });

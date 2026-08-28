@@ -295,6 +295,7 @@ Not covered — know this before putting anything sensitive near it:
 | `GLASSBOX_LOG_MAX_MB` | `50` | Run-correlated, redacted server log rotation (3 files kept) |
 | `GLASSBOX_STORE` / `DATABASE_URL` | `json` / — | `postgres` keeps Run summaries in PostgreSQL (`docker compose --profile postgres up`); traces stay NDJSON |
 | `GLASSBOX_PRICE_PER_MTOK_INPUT` / `_CACHED_INPUT` / `_OUTPUT` | — | Optional cost estimates; cached input defaults to the input rate |
+| `GLASSBOX_POSTCHECK_ALLOWLIST` | `npm test` | Comma-separated commands `post_check` assertions may run in eval workspaces; anything else fails closed |
 
 Full list including container/resource limits: [.env.example](.env.example).
 
