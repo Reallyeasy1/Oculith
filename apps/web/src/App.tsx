@@ -8,6 +8,7 @@ import Overview from "./Overview";
 import CompareView from "./CompareView";
 import { refreshIntervalMs } from "./trace-view-model";
 import { workspaceOptionLabel } from "./runs-view-model";
+import { runtimeCardModel } from "./system-view-model";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -49,6 +50,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [system, setSystem] = useState<SystemInfo | null>(null);
+  const [systemFailed, setSystemFailed] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [form, setForm] = useState(emptyForm);
@@ -97,6 +99,9 @@ export default function App() {
     setSelectedRunId(null);
     requestAnimationFrame(() => (document.querySelector<HTMLElement>(`[data-run-id="${runId}"]`) ?? document.getElementById("runs-heading"))?.focus());
   }, []);
+
+  // Sidebar Runtime pane (#200): neutral placeholder until the first /api/system response.
+  const runtimeCard = runtimeCardModel(system, systemFailed);
 
   const selected = useMemo(
     () => agents.find((agent) => agent.id === selectedId) ?? null,
@@ -174,7 +179,7 @@ export default function App() {
   }, [refreshTrace, selectedRunId]);
 
   const bootstrap = useCallback(async () => {
-    await Promise.all([refreshAgents(), refreshRuns(), refreshRegressionCases(), refreshEvalRuns(), api.system().then(setSystem), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces)), api.listWorkspaceTemplates().then((result) => setTemplates(result.templates))]);
+    await Promise.all([refreshAgents(), refreshRuns(), refreshRegressionCases(), refreshEvalRuns(), api.system().then((info) => { setSystem(info); setSystemFailed(false); }, (reason) => { setSystemFailed(true); throw reason; }), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces)), api.listWorkspaceTemplates().then((result) => setTemplates(result.templates))]);
     const runId = pendingDeepLinkRef.current;
     if (!runId) return;
     try {
@@ -585,9 +590,9 @@ export default function App() {
 
         <div className="runtime-card">
           <span className="eyebrow">Runtime</span>
-          <strong>{system?.runtime ?? "Checking…"}</strong>
+          <strong>{runtimeCard.runtimeLabel}</strong>
           <span>
-            {system?.arkModel ?? "Ark model not configured"}
+            {runtimeCard.modelLabel}
             {system?.containerEngine ? " · " + system.containerEngine : ""}
           </span>
         </div>
