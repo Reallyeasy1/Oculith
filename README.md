@@ -239,6 +239,37 @@ Named workspaces may be shared by multiple Agents and are never archived by Agen
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for component and extension
 boundaries.
 
+### Metrics query API (GlassBox)
+
+`POST /api/metrics/query` answers one aggregate question over a fixed metric catalogue — no expressions or
+free-form query language (PRD FR-23):
+
+```json
+{ "metric": "task_completion", "filter": { "agentId": "…", "configHash": "abc123" },
+  "range": { "lastRuns": 100 }, "aggregation": { "type": "rate" },
+  "evaluator": { "id": "task_completion", "version": 1 } }
+```
+
+Telemetry metrics come from stored Run summaries; the evaluation metric comes from evaluator results, and
+the two are labelled (`kind`) and never folded into one number:
+
+| metric | kind | aggregations |
+| --- | --- | --- |
+| `execution_completion` | telemetry | `rate` (completed / terminal Runs), `count` |
+| `tool_failure_rate` | telemetry | `rate` (Σ failures / Σ calls) |
+| `tool_calls`, `tokens` | telemetry | `avg`, `p50`, `p95`, `count` (sum) |
+| `latency` | telemetry | `avg`, `p50`, `p95` |
+| `denials` | telemetry | `count` (sum), `avg` |
+| `task_completion` | evaluation | `rate` (passed / evaluated; requires `evaluator { id, version? }`) |
+
+`aggregation: { "type": "series", "bucket": "hour"|"day", "statistic": … }` buckets any valid cell by UTC
+start time. An unknown metric or an aggregation outside the matrix is a 400 listing the valid choices.
+Percentiles are **nearest-rank** (`sorted[⌈q·n⌉−1]`): the answer is always a value some Run actually
+exhibited, never an interpolation. Runs missing the sampled field are excluded, visible as
+`provenance.sampled < provenance.count`; `task_completion` excludes unevaluated Runs and reports
+`provenance.evaluated`. Every response carries `provenance` (window size, contributing Runs, the effective
+filter to drill down with, and inline `runIds` for windows of ≤ 100 Runs).
+
 ## Validation
 
 ```bash

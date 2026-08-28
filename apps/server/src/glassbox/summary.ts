@@ -91,7 +91,8 @@ export class JsonRunSummaryStore implements RunSummaryStore {
       .filter((s) => (!q.agentId || s.agentId === q.agentId) && (!q.configHash || s.configHash === q.configHash)
         && (!q.executionStatus || s.executionStatus === q.executionStatus) && (!q.taskOutcome || s.taskOutcome === q.taskOutcome)
         && (!q.from || (s.startedAt ?? "") >= q.from) && (!q.to || (s.startedAt ?? "") <= q.to))
-      .sort((a, b) => (b.startedAt ?? b.updatedAt).localeCompare(a.startedAt ?? a.updatedAt))
+      // runId tie-break so a `limit` window is deterministic across identical queries (and backends)
+      .sort((a, b) => (b.startedAt ?? b.updatedAt).localeCompare(a.startedAt ?? a.updatedAt) || a.runId.localeCompare(b.runId))
       .slice(0, q.limit ?? Number.POSITIVE_INFINITY);
   }
 

@@ -59,7 +59,7 @@ export class PostgresRunSummaryStore implements RunSummaryStore {
     if (q.to) add("COALESCE(started_at, '') <= ?", q.to);
     const limit = q.limit === undefined ? "" : ` LIMIT $${params.push(q.limit)}`;
     const { rows } = await this.pool.query<{ doc: RunSummary }>(
-      `SELECT doc FROM runs_summary${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY COALESCE(started_at, updated_at) DESC${limit}`,
+      `SELECT doc FROM runs_summary${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY COALESCE(started_at, updated_at) DESC, run_id${limit}`,
       params,
     );
     return rows.map((r) => r.doc);

@@ -10,6 +10,7 @@ import { configHash, configSnapshot, type AgentService } from "./agent-service.j
 import { createTraceContext, type TraceContext } from "./glassbox/context.js";
 import type { ObservationEmitter } from "./glassbox/emitter.js";
 import type { EvaluationStore } from "./glassbox/evaluation.js";
+import { MetricStore, metricQueryBody } from "./glassbox/metrics.js";
 import { buildTrace, projectAudit, type TraceView } from "./glassbox/query.js";
 import { CATEGORIES, SCHEMA_VERSION, STATUSES } from "./glassbox/schema.js";
 import type { RunIndexEntry, TraceStore } from "./glassbox/store.js";
@@ -262,6 +263,13 @@ export async function createApp(
       });
       return reply.code(202).send({ evalRun });
     });
+    if (glassbox.summaries && glassbox.evaluations) {
+      // FR-23: one bounded query over the two read models; the schema's superRefine turns every contract
+      // violation (unknown metric, invalid metric×aggregation pair) into a ZodError → 400 with details.
+      const metrics = new MetricStore(glassbox.summaries, glassbox.evaluations);
+      app.post("/api/metrics/query", async (request) =>
+        ({ capturePolicy: glassbox.emitter.capturePolicy, ...(await metrics.query(metricQueryBody.parse(request.body))) }));
+    }
     if (glassbox.evaluations) {
       app.get("/api/evaluators", async () => ({ evaluators: await glassbox.evaluations!.listDefinitions() }));
       app.get("/api/runs/:id/evaluations", async (request) => {
