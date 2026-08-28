@@ -8,9 +8,11 @@ import {
   EMPTY_FILTER,
   STATUSES,
   barGeometry,
+  capabilityBadgeLabel,
   capabilityCopy,
   defaultExpanded,
   formatAttribute,
+  isFailed,
   indexSpans,
   interruptedSpanDurationMs,
   isFilterActive,
@@ -21,14 +23,14 @@ import {
 } from "./trace-view-model";
 
 // Three capability states (PRD §8): observed | unavailable | unknown. Unknown remains pending while a
-// Run is live; only an ended Run can say it was cut short. Short badge copy; long form in `title`.
+// Run is live; only a failed Run turns it into a warning (#137) — an ok chat-only Run legitimately has no tool evidence.
 function CapabilityBadge({ layer, state, status }: {
   layer: "model" | "tool";
   state: "observed" | "unavailable" | "unknown";
   status: TraceView["summary"]["status"];
 }) {
   const copy = capabilityCopy(state, status);
-  return <span className="badge" title={layer + ": " + copy.title}>{layer} {copy.label}</span>;
+  return <span className={"badge" + (state === "unknown" && isFailed(status) ? " badge-warn" : "")} title={layer + ": " + copy.title}>{capabilityBadgeLabel(layer, state, status)}</span>;
 }
 
 interface Props {
@@ -359,7 +361,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
                 {row.hasChildren ? (row.expanded ? "▾" : "▸") : "·"}
               </button>
               <span className={"status status-" + s.status}><span aria-hidden="true">{STATUS_ICON[s.status]}</span>{spanStatusLabel(s, summary.endedReason)}</span>
-              <span className="trace-name" title={[s.attributes.program, s.attributes.argument0].filter((value) => typeof value === "string" && value.length > 0).join(" ") || undefined}>{s.name}</span>
+              <span className="trace-name" title={[[s.attributes.program, s.attributes.argument0].filter((value) => typeof value === "string" && value.length > 0).join(" "), s.error?.message].filter(Boolean).join("\n") || undefined}>{s.name}</span>
               <span className="trace-cat">{s.category}</span>
               <span className="trace-badges">
                 {s.incomplete && <span className="badge badge-warn">incomplete</span>}
