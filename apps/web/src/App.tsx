@@ -93,6 +93,13 @@ export default function App() {
   selectedRunIdRef.current = selectedRunId;
   viewRef.current = view;
 
+  // The one way any chat affordance opens a trace — same path as a runs-table row click,
+  // so the ?run= URL sync and collapse behaviour stay identical (#264).
+  const openTrace = useCallback((runId: string) => {
+    setSelectedRunId(runId);
+    setPlaygroundExpanded(false);
+  }, []);
+
   // Escape/Close hands focus back to the Run's row; if a quick filter hides that row, the Runs heading keeps the keyboard user anchored (#103).
   const closeTrace = useCallback(() => {
     const runId = selectedRunIdRef.current;
@@ -625,7 +632,7 @@ export default function App() {
         )}
 
         {view === "overview" ? (
-          <><Overview runs={runs} cases={regressionCases} evalRuns={evalRuns} selectedAgent={selected} onRunCase={startEvaluation} onDeleteCase={deleteRegressionCase} /><CompareView evalRuns={evalRuns} onOpenEvidence={(runId, eventId) => { setFocusEventId(eventId ?? null); setSelectedRunId(runId); }} /></>
+          <><Overview runs={runs} cases={regressionCases} evalRuns={evalRuns} selectedAgent={selected} onRunCase={startEvaluation} onDeleteCase={deleteRegressionCase} /><CompareView evalRuns={evalRuns} onOpenEvidence={(runId, eventId) => { setFocusEventId(eventId ?? null); openTrace(runId); }} /></>
         ) : selected ? playgroundCollapsed ? (
           <div className="playground-bar">
             <div className="header-title-row">
@@ -796,6 +803,11 @@ export default function App() {
                       <div className="message-meta">
                         <strong>{message.role === "user" ? "You" : selected.name}</strong>
                         <span>{formatTime(message.createdAt)}</span>
+                        {message.role === "assistant" && (
+                          <button type="button" className="evidence-link message-trace" onClick={() => openTrace(message.runId)}>
+                            trace
+                          </button>
+                        )}
                       </div>
                       <div className="message-body">{message.content}</div>
                     </article>
@@ -818,6 +830,9 @@ export default function App() {
                   <article className="run-error">
                     <strong>Run failed</strong>
                     <span>{activeRun.error}</span>
+                    <button type="button" className="evidence-link run-error-trace" onClick={() => openTrace(activeRun.id)}>
+                      View trace
+                    </button>
                   </article>
                 )}
                 <div ref={messageEnd} />
@@ -901,7 +916,7 @@ export default function App() {
           key={view}
           runs={view === "agent" && selectedId ? runs.filter((run) => run.agentId === selectedId) : runs}
           selectedRunId={selectedRunId}
-          onOpenTrace={(runId) => { setSelectedRunId(runId); setPlaygroundExpanded(false); }}
+          onOpenTrace={openTrace}
           showAgent={view === "overview"}
           title={view === "agent" && selected ? "Runs · " + selected.name : "Runs"}
           emptyText={view === "agent" && selected ? "No Runs for this Agent yet." : "No Runs observed yet."}

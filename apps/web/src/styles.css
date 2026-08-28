@@ -2046,3 +2046,8 @@ textarea:focus {
 .comparison-regression { background: #fff5f5; }
 .evidence-link { border: 0; background: transparent; padding: 0; color: inherit; cursor: pointer; text-align: left; }
 .evidence-link:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
+
+/* Chat → trace affordances (#264): per-reply muted link and the failure bubble's View trace. */
+.message-trace { color: #96968f; font-size: 9px; }
+.message-trace:hover { text-decoration: underline; color: var(--purple); }
+.run-error-trace { align-self: flex-start; font-size: 11px; text-decoration: underline; }
