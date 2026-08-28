@@ -17,6 +17,12 @@ const SHELL_WRAPPERS = new Set(["bash", "sh", "zsh", "dash", "powershell", "powe
  * knows known credential shapes, so anything else is dropped from the label rather than trusted. */
 const SAFE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._@/:-]{0,63}$/;
 
+const labelFrom = (tokens: string[]): RunActivity => {
+  const text = redactText(tokens.join(" ")).text.trim();
+  if (!text) return GENERIC_COMMAND;
+  return { kind: "command", label: ("Running " + text).slice(0, 96) + "…" };
+};
+
 /** Bounded, content-safe label for a command_execution item: only the command's identity tokens
  * (program + first argument, the same #130 metadata the trace stores) survive, filtered to safe
  * word shapes and re-scanned by the redactor. Anything that goes wrong falls back to the generic
@@ -27,12 +33,12 @@ function commandActivity(item: Record<string, unknown>): RunActivity {
     if (!SAFE_TOKEN.test(identity.program)) return GENERIC_COMMAND;
     const raw = "argument0" in identity ? identity.argument0 : undefined;
     const argument0 = raw !== undefined && SAFE_TOKEN.test(raw) ? raw : undefined;
-    const tokens = SHELL_WRAPPERS.has(identity.program.toLowerCase())
-      ? [argument0 ?? identity.program]
-      : [identity.program, ...(argument0 ? [argument0] : [])];
-    const text = redactText(tokens.join(" ")).text.trim();
-    if (!text) return GENERIC_COMMAND;
-    return { kind: "command", label: ("Running " + text).slice(0, 96) + "…" };
+    if (SHELL_WRAPPERS.has(identity.program.toLowerCase())) {
+      // The wrapper is never the activity signal; a script whose first token was dropped as
+      // unsafe has no derivable identity, so fail closed rather than show "Running bash…".
+      return argument0 ? labelFrom([argument0]) : GENERIC_COMMAND;
+    }
+    return labelFrom([identity.program, ...(argument0 ? [argument0] : [])]);
   } catch {
     return GENERIC_COMMAND;
   }

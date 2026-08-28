@@ -42,6 +42,16 @@ describe("CodexActivityTracker labels (metadata-only, redacted)", () => {
     expect(label).toContain("Running");
   });
 
+  it("fails closed to the generic label when a wrapped script's first token is unsafe — never the wrapper", () => {
+    const { seen, tracker } = collect();
+    tracker.onItemStarted({
+      id: "item_1",
+      type: "command_execution",
+      command: "/bin/bash -lc 'DB_PASSWORD=hunter2secret ./migrate.sh'",
+    });
+    expect(seen).toEqual([{ kind: "command", label: "Running a command…" }]);
+  });
+
   it("falls back to generic copy when the command has no identity", () => {
     const { seen, tracker } = collect();
     tracker.onItemStarted({ id: "item_1", type: "command_execution", command: "", status: "in_progress" });

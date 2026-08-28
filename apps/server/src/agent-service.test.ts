@@ -179,6 +179,60 @@ describe("Agent lifecycle", () => {
     expect(service.getRun(second.id).currentActivity).toBeUndefined();
   });
 
+  it("coalesces a synchronous burst of activity updates into at most two store writes", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
+    temporaryDirectories.push(root);
+    const config = loadConfig({
+      NODE_ENV: "test",
+      APP_DATA_DIR: path.join(root, "data"),
+      AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+      WORKSPACE_TEMPLATES_DIR: path.join(root, "templates"),
+      CODEX_HOME: path.join(root, "codex"),
+      ARK_API_KEY: "test-key",
+      ARK_MODEL: "ep-test",
+    });
+    const store = new JsonStore(path.join(root, "data", "db.json"));
+    const rawMutate = store.mutate.bind(store);
+    let counting = false;
+    let writes = 0;
+    store.mutate = ((mutation: never) => {
+      if (counting) writes += 1;
+      return rawMutate(mutation);
+    }) as typeof store.mutate;
+    let report!: (activity: RunActivity | null) => void;
+    let finish!: (result: RunnerResult) => void;
+    const runner: AgentRunner = {
+      run: (request: RunnerRequest) =>
+        new Promise((resolve) => {
+          report = (activity) => request.onActivity?.(activity);
+          finish = resolve;
+        }),
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = new AgentService(
+      config,
+      store,
+      new WorkspaceManager(path.join(root, "workspaces"), config.workspaceTemplatesDirectory),
+      runner,
+    );
+    await service.initialize();
+    const agent = await service.createAgent({ name: "Burst" });
+    const { run } = await service.sendMessage(agent.id, "spam activities");
+    await expect.poll(() => service.getRun(run.id).status).toBe("running");
+    // Let the run-start bookkeeping writes drain so only activity writes are counted below.
+    await rawMutate(() => undefined);
+    counting = true;
+    for (let index = 1; index <= 5; index += 1) {
+      report({ kind: "command", label: "Running step" + index + "…" });
+    }
+    await expect.poll(() => service.getRun(run.id).currentActivity?.label).toBe("Running step5…");
+    counting = false;
+    expect(writes).toBeLessThanOrEqual(2);
+    finish({ output: "done", threadId: "thread", usage: null });
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+  });
+
   it("hashes canonical configuration independently of object key insertion order", () => {
     const agent = { id: "a", name: "A", description: "", instructions: "Run tests", status: "ready", workspacePath: ".", codexThreadId: null, lastError: null, createdAt: "", updatedAt: "" } as const;
     const config = loadConfig({ NODE_ENV: "test", ARK_API_KEY: "secret", ARK_MODEL: "model" });

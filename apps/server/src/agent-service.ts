@@ -23,6 +23,7 @@ import type {
   CreateAgentInput,
   Message,
   RegressionCase,
+  RunActivity,
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -655,17 +656,36 @@ export class AgentService {
           : {}),
         ...(this.config.glassboxDemoFailure === "timeout" ? { timeoutMs: 3_000 } : {}),
         // Best-effort live status for the polled Run (#223). Fire-and-forget: a failed write can
-        // never reach the runner or change the Run's outcome (invariant 4).
-        onActivity: (activity) => {
-          void this.store
-            .mutate((database) => {
-              const storedRun = database.runs.find((item) => item.id === run.id);
-              if (storedRun && storedRun.status === "running") {
-                storedRun.currentActivity = activity ?? undefined;
-              }
-            })
-            .catch(() => undefined);
-        },
+        // never reach the runner or change the Run's outcome (invariant 4). Writes are coalesced —
+        // at most one store mutation in flight; a burst of events collapses to the latest state —
+        // so a chatty stream can't queue a disk write per event behind the terminal write.
+        onActivity: (() => {
+          let latest: RunActivity | null = null;
+          let written: RunActivity | null = null;
+          let writing = false;
+          const flush = (): void => {
+            if (writing) return;
+            writing = true;
+            const next = latest;
+            void this.store
+              .mutate((database) => {
+                const storedRun = database.runs.find((item) => item.id === run.id);
+                if (storedRun && storedRun.status === "running") {
+                  storedRun.currentActivity = next ?? undefined;
+                }
+              })
+              .catch(() => undefined)
+              .then(() => {
+                writing = false;
+                written = next;
+                if (latest !== written) flush();
+              });
+          };
+          return (activity: RunActivity | null) => {
+            latest = activity;
+            flush();
+          };
+        })(),
         ...(bindings
           ? {
               logger: {
