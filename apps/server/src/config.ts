@@ -61,6 +61,8 @@ const envSchema = z.object({
   // `KNOB=` (empty) means unset → default, not 0 (which would silently disable the knob).
   GLASSBOX_RETENTION_DAYS: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.coerce.number().finite().min(0).default(7)),
   GLASSBOX_MAX_DISK_MB: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.coerce.number().finite().min(0).default(200)),
+  GLASSBOX_STORE: z.enum(["json", "postgres"]).default("json"),
+  DATABASE_URL: z.string().min(1).optional(),
   /** Keep completed isolated evaluation workspaces for post-check/debugging; the default cleans them up. */
   KEEP_EVAL_WORKSPACES: z.enum(["0", "1"]).default("0"),
 });
@@ -117,6 +119,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     ),
     glassboxRetentionDays: env.GLASSBOX_RETENTION_DAYS,
     glassboxMaxDiskMb: env.GLASSBOX_MAX_DISK_MB,
+    glassboxStore: env.GLASSBOX_STORE,
+    databaseUrl: env.DATABASE_URL,
     keepEvalWorkspaces: env.KEEP_EVAL_WORKSPACES === "1",
   };
 }
