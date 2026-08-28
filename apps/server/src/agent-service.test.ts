@@ -566,6 +566,38 @@ describe("GlassBox control-plane adapter", () => {
     expect(lines.join("\n")).not.toContain(secret);
   });
 
+  it("redacts stream-derived label text on the pino sibling of run-log lines (#232 privacy review)", async () => {
+    // argument0 can be a `NAME=value` first token of a model-authored command: the uppercase form is
+    // caught by env_assignment, the lowercase form only by LOG_SECRET_ASSIGNMENT — pin both surfaces.
+    const upper = "MY_TOKEN=sk-proj-abcdefghij1234567890abc";
+    const lower = "token=lowercase-secret-000000";
+    const { service, runLogs } = await makeTraced(new (class extends FakeRunner {
+      override async run(request: RunnerRequest): Promise<RunnerResult> {
+        request.logger?.warn?.("Sandbox declined shell:bash " + upper);
+        request.logger?.error("Tool failed shell:bash " + lower + " (exit code 1)");
+        return super.run(request);
+      }
+    })());
+    const pinoLines: string[] = [];
+    service.setLogger({ child: () => ({
+      info: (message) => { pinoLines.push(message); },
+      warn: (message) => { pinoLines.push(message); },
+      error: (detail, message) => { pinoLines.push(JSON.stringify(detail) + " " + message); },
+    }) });
+    const agent = await service.createAgent({ name: "denied" });
+    const { run } = await service.sendMessage(agent.id, "go");
+    await settle(service, run.id);
+    await runLogs.flush();
+    const pino = pinoLines.join("\n");
+    expect(pino).toContain("Sandbox declined shell:bash");
+    expect(pino).toContain("Tool failed shell:bash");
+    expect(pino).not.toContain(upper);
+    expect(pino).not.toContain(lower);
+    const stored = JSON.stringify((await runLogs.readRun(run.id, { limit: 100 })).lines);
+    expect(stored).not.toContain(upper);
+    expect(stored).not.toContain(lower);
+  });
+
   it("writes a per-Run log story: start, workspace summary, completion summary with runner stats (#232)", async () => {
     const { service, runLogs } = await makeTraced(new (class extends FakeRunner {
       override async run(request: RunnerRequest): Promise<RunnerResult> {

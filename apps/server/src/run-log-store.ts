@@ -19,7 +19,7 @@ export interface RunLogLine {
 export type RunLogViewLine = Pick<RunLogLine, "time" | "level" | "msg"> &
   Partial<Pick<RunLogLine, "component" | "spanId" | "err">>;
 
-const LOG_SECRET_ASSIGNMENT = /\b(?:token|secret|password|api[_-]?key)\s*=\s*[^\s]+/gi;
+export const LOG_SECRET_ASSIGNMENT = /\b(?:token|secret|password|api[_-]?key)\s*=\s*[^\s]+/gi;
 
 export class RunLogStore {
   private readonly file: string;

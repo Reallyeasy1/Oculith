@@ -27,7 +27,7 @@ import type {
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
-import type { RunLogStore } from "./run-log-store.js";
+import { LOG_SECRET_ASSIGNMENT, type RunLogStore } from "./run-log-store.js";
 import { boundedChangedPaths, diffWorkspace, snapshotWorkspace } from "./workspace-snapshot.js";
 
 const now = () => new Date().toISOString();
@@ -691,18 +691,21 @@ export class AgentService {
         ...(bindings
           ? {
               logger: {
+                // Messages can carry stream-derived text (a command's argument0 may be a `SECRET=…`
+                // assignment): pino writes to stdout with no redaction of its own, so redact here.
+                // RunLogStore.append re-redacts its copy — defense in depth, not duplication.
                 info: (message: string) => {
-                  pino?.info(message);
+                  pino?.info(redactText(message, [LOG_SECRET_ASSIGNMENT]).text);
                   void runnerLogger?.info(message).catch(() => undefined);
                 },
                 warn: (message: string) => {
-                  pino?.warn?.(message);
+                  pino?.warn?.(redactText(message, [LOG_SECRET_ASSIGNMENT]).text);
                   void runnerLogger?.warn(message).catch(() => undefined);
                 },
                 error: (message: string, error?: unknown) => {
                   // Never hand pino the Error itself: its err serializer writes message/stack verbatim to stdout.
                   const detail = error === undefined ? undefined : redactText(String(error)).text.slice(0, 2_048);
-                  pino?.error(detail ? { detail } : {}, message);
+                  pino?.error(detail ? { detail } : {}, redactText(message, [LOG_SECRET_ASSIGNMENT]).text);
                   void runnerLogger?.error(message, detail).catch(() => undefined);
                 },
               },
