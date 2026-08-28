@@ -7,7 +7,7 @@ import { EvalRunner } from "./eval/runner.js";
 import { RunCancelledError } from "./errors.js";
 import { loadConfig } from "./config.js";
 import { JsonStore } from "./store.js";
-import type { AgentConfigSnapshot, AgentRunner, RunActivity, RunnerRequest, RunnerResult } from "./types.js";
+import type { AgentConfigSnapshot, AgentRun, AgentRunner, QueuedMessageReceipt, RunActivity, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 import { createTraceContext } from "./glassbox/context.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
@@ -144,12 +144,17 @@ describe("Agent lifecycle", () => {
     let report!: (activity: RunActivity | null) => void;
     let finish!: (result: RunnerResult) => void;
     let fail!: (error: Error) => void;
+    // Wait for the runner to be reached, not for status "running": the status is written several awaits
+    // before run() assigns `report`, so polling it raced under full-suite load ("report is not a function").
+    let reached!: () => void;
+    let runnerReached = new Promise<void>((resolve) => { reached = resolve; });
     const runner: AgentRunner = {
       run: (request: RunnerRequest) =>
         new Promise((resolve, reject) => {
           report = (activity) => request.onActivity?.(activity);
           finish = resolve;
           fail = reject;
+          reached();
         }),
       cancel: async () => false,
       isAvailable: async () => true,
@@ -159,6 +164,7 @@ describe("Agent lifecycle", () => {
 
     const first = (await service.sendMessage(agent.id, "multi-step task")).run;
     expect(service.getRun(first.id).currentActivity).toBeUndefined();
+    await runnerReached;
     await expect.poll(() => service.getRun(first.id).status).toBe("running");
     report({ kind: "command", label: "Running npm…" });
     await expect.poll(() => service.getRun(first.id).currentActivity?.label).toBe("Running npm…");
@@ -171,7 +177,9 @@ describe("Agent lifecycle", () => {
     await expect.poll(() => service.getRun(first.id).status).toBe("completed");
     expect(service.getRun(first.id).currentActivity).toBeUndefined();
 
+    runnerReached = new Promise<void>((resolve) => { reached = resolve; });
     const second = (await service.sendMessage(agent.id, "and fail")).run;
+    await runnerReached;
     await expect.poll(() => service.getRun(second.id).status).toBe("running");
     report({ kind: "command", label: "Running npm…" });
     await expect.poll(() => service.getRun(second.id).currentActivity?.label).toBe("Running npm…");
@@ -202,11 +210,15 @@ describe("Agent lifecycle", () => {
     }) as typeof store.mutate;
     let report!: (activity: RunActivity | null) => void;
     let finish!: (result: RunnerResult) => void;
+    // Same race as the live-activity test above: wait for run() itself, not for status "running".
+    let reached!: () => void;
+    const runnerReached = new Promise<void>((resolve) => { reached = resolve; });
     const runner: AgentRunner = {
       run: (request: RunnerRequest) =>
         new Promise((resolve) => {
           report = (activity) => request.onActivity?.(activity);
           finish = resolve;
+          reached();
         }),
       cancel: async () => false,
       isAvailable: async () => true,
@@ -219,7 +231,8 @@ describe("Agent lifecycle", () => {
     );
     await service.initialize();
     const agent = await service.createAgent({ name: "Burst" });
-    const { run } = await service.sendMessage(agent.id, "spam activities");
+    const { run } = (await service.sendMessage(agent.id, "spam activities")) as { run: AgentRun };
+    await runnerReached;
     await expect.poll(() => service.getRun(run.id).status).toBe("running");
     // Let the run-start bookkeeping writes drain so only activity writes are counted below.
     await rawMutate(() => undefined);
@@ -273,36 +286,50 @@ describe("Agent lifecycle", () => {
     expect(service.getAgent(agent.id).codexThreadId).toBe("fake-thread");
   });
 
-  it("atomically accepts only one concurrent run per Agent", async () => {
-    let finish!: (result: RunnerResult) => void;
-    const pending = new Promise<RunnerResult>((resolve) => {
-      finish = resolve;
-    });
+  it("admits exactly one Run under a concurrent burst and queues the rest FIFO (#254)", async () => {
+    const resolvers: (() => void)[] = [];
+    const prompts: string[] = [];
+    let active = 0;
+    let maxActive = 0;
     const runner: AgentRunner = {
-      run: () => pending,
+      run: (request: RunnerRequest) => {
+        prompts.push(request.prompt);
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        return new Promise((resolve) =>
+          resolvers.push(() => {
+            active -= 1;
+            resolve({ output: "done", threadId: "thread", usage: null });
+          }),
+        );
+      },
       cancel: async () => false,
       isAvailable: async () => true,
     };
     const service = await makeService(runner);
     const agent = await service.createAgent({ name: "Concurrent" });
-    const attempts = await Promise.allSettled([
+    const results = await Promise.all([
       service.sendMessage(agent.id, "first"),
       service.sendMessage(agent.id, "second"),
+      service.sendMessage(agent.id, "third"),
     ]);
-
-    expect(attempts.filter((attempt) => attempt.status === "fulfilled")).toHaveLength(1);
-    const rejected = attempts.find((attempt) => attempt.status === "rejected");
-    expect(rejected).toMatchObject({ reason: { statusCode: 409 } });
+    expect(results.filter((result) => !("queued" in result))).toHaveLength(1);
+    expect(results.filter((result) => "queued" in result).map((result) => (result as { position: number }).position).sort()).toEqual([1, 2]);
+    // Queued messages enter the chat only when dequeued into their own Run.
     expect(service.getMessages(agent.id)).toHaveLength(1);
 
-    finish({ output: "done", threadId: "thread", usage: null });
-    const accepted = attempts.find((attempt) => attempt.status === "fulfilled");
-    if (accepted?.status === "fulfilled") {
-      await expect.poll(() => service.getRun(accepted.value.run.id).status).toBe("completed");
+    for (let index = 0; index < 3; index += 1) {
+      await expect.poll(() => resolvers.length).toBe(index + 1);
+      resolvers[index]!();
     }
+    await expect.poll(() => service.getRuns(agent.id).filter((run) => run.status === "completed").length).toBe(3);
+    expect(maxActive).toBe(1); // the one-active-Run invariant held through every dequeue
+    expect(prompts).toEqual(["first", "second", "third"]);
+    expect(service.getAgent(agent.id).pendingMessages ?? []).toEqual([]);
+    expect(service.getMessages(agent.id).filter((message) => message.role === "user")).toHaveLength(3);
   });
 
-  it("does not let start reset a busy Agent and admit a second run", async () => {
+  it("does not let start reset a busy Agent, and queues a second message instead of admitting it", async () => {
     let finish!: (result: RunnerResult) => void;
     const pending = new Promise<RunnerResult>((resolve) => {
       finish = resolve;
@@ -313,15 +340,16 @@ describe("Agent lifecycle", () => {
       isAvailable: async () => true,
     });
     const agent = await service.createAgent({ name: "Busy" });
-    const { run } = await service.sendMessage(agent.id, "first");
+    const { run } = (await service.sendMessage(agent.id, "first")) as { run: AgentRun };
 
     await expect(service.startAgent(agent.id)).rejects.toMatchObject({ statusCode: 409 });
-    await expect(service.sendMessage(agent.id, "second")).rejects.toMatchObject({
-      statusCode: 409,
-    });
+    // #254: a second message no longer 409s — it queues behind the active Run.
+    expect(await service.sendMessage(agent.id, "second")).toMatchObject({ queued: true, position: 1 });
 
     finish({ output: "done", threadId: "thread", usage: null });
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    // the queued message dequeued into its own Run (the shared runner promise is already resolved)
+    await expect.poll(() => service.getRuns(agent.id).filter((item) => item.status === "completed").length).toBe(2);
   });
 
 });
@@ -819,7 +847,7 @@ describe("GlassBox control-plane adapter: cancellation and rejection", () => {
     });
   });
 
-  it("opens no trace when the Run is rejected", async () => {
+  it("opens no trace when the message is queued or rejected", async () => {
     const { service, store, emitter } = await makeTraced(
       new (class extends FakeRunner {
         override run(): Promise<RunnerResult> {
@@ -829,16 +857,23 @@ describe("GlassBox control-plane adapter: cancellation and rejection", () => {
     );
     const agent = await service.createAgent({ name: "busy" });
     await service.sendMessage(agent.id, "first");
+    // #254: the busy Agent queues the message — still no Run, so the ingress context stays unset.
     const ctx = createTraceContext({ requestId: "req-2", method: "POST" }, "metadata_only");
-    await expect(service.sendMessage(agent.id, "second", ctx)).rejects.toMatchObject({
+    expect(await service.sendMessage(agent.id, "second", ctx)).toMatchObject({ queued: true, position: 1 });
+    const stopped = await service.createAgent({ name: "stopped" });
+    await service.stopAgent(stopped.id);
+    const rejectedCtx = createTraceContext({ requestId: "req-3", method: "POST" }, "metadata_only");
+    await expect(service.sendMessage(stopped.id, "refused", rejectedCtx)).rejects.toMatchObject({
       statusCode: 409,
     });
     await emitter.flush();
-    // The ingress hook ends the root span only when both are set, so a rejected POST must leave
-    // them undefined — otherwise onResponse emits an http.request.completed for a Run that never was.
-    expect(ctx.runId).toBeUndefined();
-    expect(ctx.agentId).toBeUndefined();
-    expect(store.listRuns().map((entry) => entry.traceId)).not.toContain(ctx.traceId);
+    // The ingress hook ends the root span only when both are set, so a queued or rejected POST must
+    // leave them undefined — otherwise onResponse emits an http.request.completed for a Run that never was.
+    for (const context of [ctx, rejectedCtx]) {
+      expect(context.runId).toBeUndefined();
+      expect(context.agentId).toBeUndefined();
+      expect(store.listRuns().map((entry) => entry.traceId)).not.toContain(context.traceId);
+    }
   });
 });
 
@@ -964,5 +999,162 @@ describe("post-run verification (#253)", () => {
     expect(cleared.verifyCommand).toBeUndefined();
     expect(configSnapshot(cleared, config).verifyCommand).toBeUndefined();
     expect(configHash(configSnapshot(cleared, config))).not.toBe(configHash(configSnapshot(updated, config)));
+  });
+});
+
+describe("per-Agent message queue (#254)", () => {
+  /** Resolves each run() only when the test says so; records prompt order for FIFO assertions. */
+  class StepRunner extends FakeRunner {
+    readonly resolvers: (() => void)[] = [];
+    readonly prompts: string[] = [];
+    override run(request: RunnerRequest): Promise<RunnerResult> {
+      this.prompts.push(request.prompt);
+      return new Promise((resolve) =>
+        this.resolvers.push(() => resolve({ output: "done: " + request.prompt, threadId: "thread", usage: null })),
+      );
+    }
+  }
+
+  it("dequeues FIFO with a fresh trace per Run and queuedMs on run.created", async () => {
+    const runner = new StepRunner();
+    const { service, store, emitter } = await makeTraced(runner);
+    const agent = await service.createAgent({ name: "queue" });
+    const first = await service.sendMessage(agent.id, "one");
+    expect("queued" in first).toBe(false);
+    const second = (await service.sendMessage(agent.id, "two")) as QueuedMessageReceipt;
+    const third = (await service.sendMessage(agent.id, "three")) as QueuedMessageReceipt;
+    expect(second).toMatchObject({ queued: true, position: 1, messageId: expect.any(String) });
+    expect(third).toMatchObject({ queued: true, position: 2 });
+    expect(service.getAgent(agent.id).pendingMessages?.map((item) => item.content)).toEqual(["two", "three"]);
+
+    for (let index = 0; index < 3; index += 1) {
+      await expect.poll(() => runner.resolvers.length).toBe(index + 1);
+      runner.resolvers[index]!();
+    }
+    await expect.poll(() => service.getRuns(agent.id).filter((run) => run.status === "completed").length).toBe(3);
+    expect(runner.prompts).toEqual(["one", "two", "three"]);
+    expect(service.getAgent(agent.id).pendingMessages ?? []).toEqual([]);
+
+    const runs = service.getRuns(agent.id);
+    expect(new Set(runs.map((run) => run.traceId)).size).toBe(3); // each dequeued Run opens its own trace
+    await emitter.flush();
+    for (const prompt of ["two", "three"]) {
+      const run = runs.find((item) => item.prompt === prompt)!;
+      const created = (await store.readRun(run.id)).find((event) => event.type === "run.created")!;
+      expect(created.attributes.queuedMs).toEqual(expect.any(Number));
+      expect(created.attributes.queuedMs as number).toBeGreaterThanOrEqual(0);
+      expect(created.attributes.configHash).toBe(run.configHash);
+    }
+    const firstCreated = (await store.readRun(runs.find((item) => item.prompt === "one")!.id)).find((event) => event.type === "run.created")!;
+    expect(firstCreated.attributes.queuedMs).toBeUndefined();
+    // the dequeued user Messages keep the receipt ids, so cancel/inspect stays correlated
+    const userMessageIds = service.getMessages(agent.id).filter((message) => message.role === "user").map((message) => message.id);
+    expect(userMessageIds).toContain(second.messageId);
+    expect(userMessageIds).toContain(third.messageId);
+  });
+
+  it("caps the queue at 10 and refuses the next message with 429", async () => {
+    const service = await makeService({
+      run: () => new Promise(() => undefined),
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "full" });
+    await service.sendMessage(agent.id, "active");
+    for (let index = 0; index < 10; index += 1) {
+      expect(await service.sendMessage(agent.id, "queued " + index)).toMatchObject({ queued: true, position: index + 1 });
+    }
+    await expect(service.sendMessage(agent.id, "overflow")).rejects.toMatchObject({ statusCode: 429 });
+    expect(service.getAgent(agent.id).pendingMessages).toHaveLength(10);
+  });
+
+  it("cancels a pending message so it never runs, and 404s an unknown or already-started one", async () => {
+    const runner = new StepRunner();
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "cancelq" });
+    await service.sendMessage(agent.id, "active");
+    const cancelled = (await service.sendMessage(agent.id, "never runs")) as QueuedMessageReceipt;
+    await service.sendMessage(agent.id, "still runs");
+    await service.cancelPendingMessage(agent.id, cancelled.messageId);
+    expect(service.getAgent(agent.id).pendingMessages?.map((item) => item.content)).toEqual(["still runs"]);
+    await expect(service.cancelPendingMessage(agent.id, cancelled.messageId)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(service.cancelPendingMessage("12345678-1234-4234-8234-123456789abc", cancelled.messageId)).rejects.toMatchObject({ statusCode: 404 });
+
+    await expect.poll(() => runner.resolvers.length).toBe(1);
+    runner.resolvers[0]!();
+    await expect.poll(() => runner.resolvers.length).toBe(2);
+    runner.resolvers[1]!();
+    await expect.poll(() => service.getRuns(agent.id).filter((run) => run.status === "completed").length).toBe(2);
+    expect(runner.prompts).toEqual(["active", "still runs"]);
+    expect(service.getMessages(agent.id).some((message) => message.content === "never runs")).toBe(false);
+  });
+
+  it("keeps queued messages across a restart, resumes them, and notes the interruption on the run log", async () => {
+    let reached!: () => void;
+    const runnerReached = new Promise<void>((resolve) => { reached = resolve; });
+    const { service, config, jsonStore, workspaces, emitter, runLogs } = await makeTraced(
+      new (class extends FakeRunner {
+        override run(): Promise<RunnerResult> {
+          reached();
+          return new Promise(() => undefined);
+        }
+      })(),
+    );
+    const agent = await service.createAgent({ name: "restart-queue" });
+    const { run } = (await service.sendMessage(agent.id, "interrupted")) as { run: AgentRun };
+    await runnerReached;
+    expect(await service.sendMessage(agent.id, "queued survivor")).toMatchObject({ queued: true, position: 1 });
+
+    // a second service on the same store simulates a process restart
+    const restarted = new AgentService(config, jsonStore, workspaces, new FakeRunner(), emitter, undefined, runLogs);
+    await restarted.initialize();
+    expect(restarted.getRun(run.id).status).toBe("cancelled");
+    await expect.poll(() => restarted.getRuns(agent.id).find((item) => item.prompt === "queued survivor")?.status).toBe("completed");
+    expect(restarted.getAgent(agent.id).pendingMessages ?? []).toEqual([]);
+
+    const revived = restarted.getRuns(agent.id).find((item) => item.prompt === "queued survivor")!;
+    await runLogs.flush();
+    const { lines } = await runLogs.readRun(revived.id, { limit: 100 });
+    expect(lines.map((line) => line.msg)).toContain(
+      "Server restarted while messages were queued for this Agent; resuming the queue",
+    );
+  });
+
+  it("keeps the queue on stop without starting it, and resumes it on start", async () => {
+    class StoppableRunner extends FakeRunner {
+      private rejectRun: ((error: unknown) => void) | undefined;
+      private markReached: (() => void) | undefined;
+      readonly reached = new Promise<void>((resolve) => { this.markReached = resolve; });
+      calls = 0;
+      override run(request: RunnerRequest): Promise<RunnerResult> {
+        this.calls += 1;
+        if (this.calls === 1) {
+          this.markReached?.();
+          return new Promise((_resolve, reject) => { this.rejectRun = reject; });
+        }
+        return super.run(request);
+      }
+      override async cancel(): Promise<boolean> {
+        this.rejectRun?.(new RunCancelledError());
+        return true;
+      }
+    }
+    const runner = new StoppableRunner();
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "stop-keeps-queue" });
+    const { run } = (await service.sendMessage(agent.id, "active")) as { run: AgentRun };
+    await runner.reached;
+    expect(await service.sendMessage(agent.id, "waits for start")).toMatchObject({ queued: true });
+
+    await service.stopAgent(agent.id);
+    expect(service.getRun(run.id).status).toBe("cancelled");
+    // a cancel is a user "stop": the queue is kept but nothing auto-starts
+    expect(service.getAgent(agent.id)).toMatchObject({ status: "stopped" });
+    expect(service.getAgent(agent.id).pendingMessages).toHaveLength(1);
+
+    const started = await service.startAgent(agent.id);
+    expect(started.status).toBe("busy"); // start resumed the queue
+    await expect.poll(() => service.getRuns(agent.id).find((item) => item.prompt === "waits for start")?.status).toBe("completed");
+    expect(service.getAgent(agent.id).pendingMessages ?? []).toEqual([]);
   });
 });

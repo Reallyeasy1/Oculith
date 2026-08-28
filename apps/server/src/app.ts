@@ -50,6 +50,8 @@ const messageBody = z.object({
   // workspace state); the id is only stamped on run.created.attributes so lineage is queryable.
   rerunOf: z.string().uuid().optional(),
 });
+// #254: cancel-while-queued — both ids are server-issued UUIDs.
+const pendingMessageParams = z.object({ id: z.string().uuid(), messageId: z.string().uuid() });
 const evalRunBody = z.object({ agentId: z.string().uuid(), caseIds: z.array(z.string().uuid()).min(1).max(20).refine((ids) => new Set(ids).size === ids.length, "caseIds must be unique"), force: z.boolean().optional() });
 // A case is always derived from the trace evidence. The UI may only name it or remove an
 // automatically proposed assertion; it cannot supply a different prompt or template.
@@ -234,8 +236,18 @@ export async function createApp(
     const body = messageBody.parse(request.body);
     const result = await service.sendMessage(id, body.content, request.glassbox,
       body.rerunOf === undefined ? {} : { tags: { rerunOf: body.rerunOf } });
+    // #254: a busy Agent queued the message — no Run yet, so nothing to bind the request log to.
+    // The client tells the two 202 bodies apart by the `queued: true` discriminator.
+    if ("queued" in result) return reply.code(202).send(result);
     request.log = request.log.child({ traceId: result.run.traceId, runId: result.run.id, agentId: id });
     return reply.code(202).send(result);
+  });
+
+  // #254: cancel a message that is still waiting in the Agent's queue.
+  app.delete("/api/agents/:id/messages/:messageId", async (request, reply) => {
+    const { id, messageId } = pendingMessageParams.parse(request.params);
+    await service.cancelPendingMessage(id, messageId);
+    return reply.code(204).send();
   });
 
   app.get("/api/runs/:id", async (request) => {

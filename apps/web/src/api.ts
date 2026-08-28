@@ -1,4 +1,4 @@
-import type { Agent, AgentRun, Assertion, AuditRow, CapturePolicy, EvalRun, EvaluationResult, Message, RegressionCase, ReliabilityReport, RunListItem, RunLogLine, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
+import type { Agent, AgentRun, Assertion, AuditRow, CapturePolicy, EvalRun, EvaluationResult, Message, QueuedMessageReceipt, RegressionCase, ReliabilityReport, RunListItem, RunLogLine, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -76,14 +76,18 @@ export const api = {
   runBaseline: (id: string) =>
     request<{ baseline: import("./types").AgentRunBaseline }>("/api/agents/" + id + "/runs/baseline"),
   // rerunOf (#256): id of the Run this prompt re-dispatches; stamped on run.created for lineage.
+  // #254: a busy Agent answers with a QueuedMessageReceipt instead of a started Run.
   sendMessage: (id: string, content: string, rerunOf?: string) =>
-    request<{ run: AgentRun; message: Message }>(
+    request<{ run: AgentRun; message: Message } | QueuedMessageReceipt>(
       "/api/agents/" + id + "/messages",
       {
         method: "POST",
         body: JSON.stringify({ content, ...(rerunOf ? { rerunOf } : {}) }),
       },
     ),
+  // #254: cancel a message still waiting in the Agent's queue.
+  cancelPendingMessage: (agentId: string, messageId: string) =>
+    request<void>("/api/agents/" + agentId + "/messages/" + messageId, { method: "DELETE" }),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
   listRuns: (options: { agentId?: string; limit?: number } = {}) =>
     request<{ schemaVersion: string; capturePolicy: CapturePolicy; runs: RunListItem[] }>(

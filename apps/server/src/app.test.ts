@@ -166,6 +166,33 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     await app.close();
   });
 
+  it("passes the queued receipt through as 202 and cancels a pending message (#254)", async () => {
+    const agentId = "2c1b9f8e-3b7e-4b9d-9d3a-1c2d3e4f5a6b";
+    const messageId = "9e107d9d-3721-4a2f-8f3b-1a2b3c4d5e6f";
+    const cancelled: string[][] = [];
+    const svc = {
+      ...service,
+      sendMessage: async () => ({ queued: true, position: 2, messageId }),
+      cancelPendingMessage: async (id: string, message: string) => { cancelled.push([id, message]); },
+    } as unknown as AgentService;
+    const app = await createApp(config(), svc);
+    const posted = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agentId}/messages`,
+      headers: { ...auth, "content-type": "application/json" },
+      payload: { content: "hi" },
+    });
+    expect(posted.statusCode).toBe(202);
+    expect(posted.json()).toEqual({ queued: true, position: 2, messageId });
+
+    const removed = await app.inject({ method: "DELETE", url: `/api/agents/${agentId}/messages/${messageId}`, headers: auth });
+    expect(removed.statusCode).toBe(204);
+    expect(cancelled).toEqual([[agentId, messageId]]);
+    expect((await app.inject({ method: "DELETE", url: `/api/agents/${agentId}/messages/not-a-uuid`, headers: auth })).statusCode).toBe(400);
+    expect((await app.inject({ method: "DELETE", url: `/api/agents/${agentId}/messages/${messageId}` })).statusCode).toBe(401);
+    await app.close();
+  });
+
   it("serves one Run's log lines under auth, bounded, with truncation reported (#75)", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "run-logs-"));
     const logs = new RunLogStore(dir, 1_000_000);
