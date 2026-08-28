@@ -3,7 +3,7 @@
 // (vitest is hoisted from the server workspace — no new dependency.)
 import { describe, expect, it } from "vitest";
 import type { Span, TraceView } from "./types";
-import { EMPTY_FILTER, barGeometry, capabilityBadgeLabel, capabilityCopy, defaultExpanded, matchesSpan, refreshIntervalMs, spanStatusLabel, timelineTicks, visibleRows } from "./trace-view-model";
+import { EMPTY_FILTER, barGeometry, capabilityBadgeLabel, capabilityCopy, defaultExpanded, interruptedSpanDurationMs, matchesSpan, refreshIntervalMs, spanStatusLabel, timelineTicks, visibleRows } from "./trace-view-model";
 
 const t0 = "2026-08-26T10:00:00.000Z";
 const at = (ms: number) => new Date(Date.parse(t0) + ms).toISOString();
@@ -29,7 +29,7 @@ const view: TraceView = {
   summary: {
     schemaVersion: "1.0", capturePolicy: "metadata_only", runId: "r", traceId: "t", agentId: "ag", status: "error",
     startedAt: t0, durationMs: 1000, eventCount: 0, spanCount: 6, incompleteSpans: 0, redactedEvents: 0, degraded: false,
-    denials: 0, audit: { actions: 0, denials: 0, actors: [] }, truncated: false, evicted: false, metrics: { terminalStatus: "error", toolCalls: 0, toolFailures: 0, modelCalls: 0, retries: 0, denials: 0 }, capabilities: { model: "unavailable", tool: "unavailable" },
+    denials: 0, audit: { actions: 0, denials: 0, actors: [] }, truncated: false, evicted: false, metrics: { terminalStatus: "error", toolCalls: 0, toolFailures: 0, modelCalls: 0, timeSplit: { modelMs: 0, toolMs: 0, containerStartMs: 0 }, retries: 0, denials: 0 }, capabilities: { model: "unavailable", tool: "unavailable" },
     failure: { kind: "error", spanId: "a1", eventId: "e", sequence: 3, name: "a1", category: "runtime", component: "test", path: ["root", "a", "a1"], diagnosis: "x" },
   },
   spans: [root],
@@ -44,11 +44,17 @@ describe("trace-view-model", () => {
     expect(capabilityBadgeLabel("model", "unknown", "running")).toBe("model pending");
   });
 
-  it("expands roots plus the failure path by default and omits collapsed subtrees from the rows", () => {
+  it("expands a small successful trace completely but keeps large traces bounded", () => {
+    const small = { ...view, summary: { ...view.summary, spanCount: 6, failure: undefined } };
+    expect(defaultExpanded(small).size).toBe(6);
+    const large = { ...view, summary: { ...view.summary, spanCount: 41, failure: undefined } };
+    expect(defaultExpanded(large)).toEqual(new Set(["root"]));
+  });
+  it("expands every small trace by default", () => {
     const expanded = defaultExpanded(view);
-    expect([...expanded].sort()).toEqual(["a", "a1", "root"]);
+    expect([...expanded].sort()).toEqual(["a", "a1", "b", "b1", "b2", "root"]);
     const ids = visibleRows(view.spans, expanded, EMPTY_FILTER).map((r) => r.span.spanId);
-    expect(ids).toEqual(["root", "a", "a1", "b"]); // b collapsed → b1/b2 not rendered
+    expect(ids).toEqual(["root", "a", "a1", "b", "b1", "b2"]);
   });
 
   it("keeps ancestors as context and auto-expands when a filter is active", () => {
@@ -94,6 +100,12 @@ describe("trace-view-model", () => {
     expect(spanStatusLabel({ status: "running", incomplete: true }, "server_restart")).toBe("interrupted");
     expect(spanStatusLabel({ status: "running", incomplete: true })).toBe("running");
     expect(spanStatusLabel({ status: "cancelled", incomplete: false }, "server_restart")).toBe("cancelled");
+  });
+
+  it("uses the restart marker as the honest lower bound for an incomplete span", () => {
+    const interrupted = span("open", { startedAt: at(8_000), incomplete: true });
+    expect(interruptedSpanDurationMs(interrupted, { ...view.summary, endedReason: "server_restart", endedAt: at(61_000), interruptedAfterMs: 61_000 })).toBe(53_000);
+    expect(interruptedSpanDurationMs({ ...interrupted, incomplete: false }, view.summary)).toBeUndefined();
   });
 
   it("computes readable ticks including the exact Run duration", () => {

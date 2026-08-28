@@ -60,7 +60,7 @@ describe("Container Codex runner", () => {
     // that could not remove the container — the fallback is to signal the client process.
     const dir = await mkdtemp(path.join(tmpdir(), "container-runner-"));
     dirs.push(dir);
-    await writeFile(path.join(dir, "run"), "setTimeout(() => {}, 10_000);");
+    await writeFile(path.join(dir, "run"), 'process.stdout.write("x"); setTimeout(() => {}, 10_000);');
     const store = new MemoryTraceStore();
     const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
     const config = loadConfig({
@@ -77,9 +77,13 @@ describe("Container Codex runner", () => {
     expect(await runner.cancel("agt-1")).toBe(true);
     await expect(pending).rejects.toBeInstanceOf(RunCancelledError);
     await emitter.flush();
-    const stopped = (await store.readRun("run-1")).find((e) => e.type === "runtime.container.stopped");
+    const events = await store.readRun("run-1");
+    const stopped = events.find((e) => e.type === "runtime.container.stopped");
     expect(stopped).toMatchObject({ status: "cancelled", attributes: { cleanup: "signal" } });
     expect(stopped!.attributes).not.toHaveProperty("removed");
+    const firstOutput = events.filter((e) => e.type === "runtime.codex.first_output");
+    expect(firstOutput).toHaveLength(1);
+    expect(firstOutput[0]).toMatchObject({ phase: "instant", parentSpanId: expect.any(String), attributes: { latencyMs: expect.any(Number) } });
   }, 30_000);
 
   it("resumes a thread inside the mounted Runtime workspace", () => {
