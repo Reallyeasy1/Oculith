@@ -2,12 +2,12 @@
 //   npx vitest run apps/web/src/runs-view-model.test.ts
 import { describe, expect, it } from "vitest";
 import type { RunListItem, TraceStatus } from "./types";
-import { liveRuns, matchesFilter, needsAttention, recoveredFailures, summarizeRuns, workspaceLabel, workspaceOptionLabel } from "./runs-view-model";
+import { formatRunDuration, formatUsage, liveRuns, matchesFilter, needsAttention, recoveredFailures, summarizeRuns, workspaceLabel, workspaceOptionLabel } from "./runs-view-model";
 
 function run(status: TraceStatus, degraded = false, agentId = "a", agentName = "A", extra: Partial<RunListItem> = {}): RunListItem {
   return {
     runId: "r", traceId: "t", agentId, agentName, status, eventCount: 0, runtime: "x", model: "y", toolCalls: 0, toolFailures: 0,
-    capabilities: { model: "unknown", tool: "unknown" }, denials: 0, actions: 0, degraded, truncated: false, evicted: false, redacted: false, ...extra,
+    capabilities: { model: "unknown", tool: "unknown" }, denials: 0, actions: 0, executionStatus: "running", taskOutcome: "unknown", degraded, truncated: false, evicted: false, redacted: false, ...extra,
   };
 }
 
@@ -62,6 +62,12 @@ describe("needsAttention", () => {
     expect(matchesFilter(run("ok", false, "a", "A", { toolFailures: 2 }), "failed")).toBe(false);
   });
 
+  it("flags an ok Run when the agent reports failure in its final message", () => {
+    const reported = run("ok", false, "a", "A", { outcome: { finalMessageBytes: 20, reportedFailure: true } });
+    expect(needsAttention(reported)).toBe(true);
+    expect(matchesFilter(reported, "attention")).toBe(true);
+  });
+
   it("includes a denial even when the Run reached an otherwise successful terminal state", () => {
     const denied = { ...run("ok"), denials: 1 };
     expect(needsAttention(denied)).toBe(true);
@@ -73,6 +79,19 @@ describe("needsAttention", () => {
     expect(matchesFilter(run("timeout"), "failed")).toBe(false);
     expect(matchesFilter(run("ok", true), "degraded")).toBe(true);
     expect(matchesFilter(run("unset"), "all")).toBe(true);
+  });
+});
+
+describe("formatUsage", () => {
+  it("keeps small usage exact and compacts wide token counts", () => {
+    expect(formatUsage({ inputTokens: 37384, outputTokens: 383 })).toBe("37k in · 383 out");
+    expect(formatUsage({ inputTokens: 999, outputTokens: 1200 })).toBe("999 in · 1.2k out");
+  });
+});
+
+describe("formatRunDuration", () => {
+  it("renders restart time as a lower bound and keeps the last evidence offset", () => {
+    expect(formatRunDuration(52, "server_restart", 61_000)).toBe("≥ 1m 01s · interrupted (last evidence +52 ms)");
   });
 });
 

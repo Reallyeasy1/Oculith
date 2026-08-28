@@ -46,6 +46,13 @@ export function spanStatusLabel(span: Pick<Span, "status" | "incomplete">, ended
   return endedReason === "server_restart" && span.incomplete ? "interrupted" : span.status;
 }
 
+export function interruptedSpanDurationMs(span: Pick<Span, "startedAt" | "incomplete">, summary: TraceView["summary"]): number | undefined {
+  if (!span.incomplete || summary.endedReason !== "server_restart" || !summary.startedAt || summary.interruptedAfterMs === undefined) return undefined;
+  const start = Date.parse(span.startedAt);
+  const bound = Date.parse(summary.startedAt) + summary.interruptedAfterMs; // summary.endedAt is the next boot, not the cut
+  return Number.isNaN(start) || Number.isNaN(bound) ? undefined : Math.max(0, bound - start);
+}
+
 export function isFilterActive(f: TraceFilter): boolean {
   return f.category !== "" || f.status !== "" || f.text.trim() !== "" || f.errorsOnly;
 }
@@ -72,8 +79,9 @@ export function indexSpans(spans: Span[]): Map<string, Span> {
   return out;
 }
 
-/** Default expansion: every root plus the API's failure path (all ancestors of the failing span). */
+/** Default expansion: all spans for a small trace, otherwise roots plus the failure path. */
 export function defaultExpanded(view: TraceView): Set<string> {
+  if (view.summary.spanCount <= 40) return new Set(indexSpans(view.spans).keys());
   const set = new Set(view.spans.map((s) => s.spanId));
   for (const id of view.summary.failure?.path ?? []) set.add(id);
   return set;

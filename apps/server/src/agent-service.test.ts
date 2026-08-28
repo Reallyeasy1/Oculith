@@ -1,8 +1,8 @@
-import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentService, configHash, configSnapshot } from "./agent-service.js";
+import { AgentService, configHash, configSnapshot, serverHeartbeatPath } from "./agent-service.js";
 import { EvalRunner } from "./eval/runner.js";
 import { RunCancelledError } from "./errors.js";
 import { loadConfig } from "./config.js";
@@ -235,8 +235,8 @@ class TimeoutRunner extends FakeRunner {
   }
 }
 
-async function makeTraced(runner: AgentRunner = new FakeRunner(), store: TraceStore = new MemoryTraceStore()) {
-  const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+async function makeTraced(runner: AgentRunner = new FakeRunner(), store: TraceStore = new MemoryTraceStore(), capturePolicy: "metadata_only" | "safe_summary" = "metadata_only") {
+  const emitter = new ObservationEmitter({ store, capturePolicy });
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
   temporaryDirectories.push(root);
   const config = loadConfig({
@@ -271,13 +271,42 @@ describe("GlassBox control-plane adapter", () => {
     const agent = await service.createAgent({ name: "Eval target", instructions: "complete the task" });
     const snapshot = configSnapshot(agent, config);
     const regressionCase = await service.createRegressionCase({ name: "case", prompt: "do it", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions: [{ type: "terminal_status", expected: "ok" }] });
+    expect(regressionCase.templateHash).toMatch(/^[0-9a-f]{64}$/);
     const evalRun = await service.createEvalRun({ caseIds: [regressionCase.id], target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } });
+    expect(evalRun).toMatchObject({ templateHashes: { fixture: regressionCase.templateHash } });
+    expect(evalRun.templateHashMismatch).toBeUndefined();
     await new EvalRunner(service, { emitter, store }).execute(evalRun.id);
     const finished = service.getEvalRun(evalRun.id);
     expect(finished).toMatchObject({ status: "completed", runIds: [expect.any(String)] });
     expect(finished.results[0]).toMatchObject({ caseId: regressionCase.id, runId: finished.runIds[0], results: [expect.objectContaining({ type: "terminal_status", pass: true })] });
     await emitter.flush();
-    expect((await store.readRun(finished.runIds[0]!)).find((event) => event.type === "run.created")?.attributes).toMatchObject({ evalRunId: evalRun.id, caseId: regressionCase.id });
+    expect((await store.readRun(finished.runIds[0]!)).find((event) => event.type === "run.created")?.attributes).toMatchObject({ evalRunId: evalRun.id, caseId: regressionCase.id, templateHash: regressionCase.templateHash });
+  });
+
+  it("refuses an EvalRun whose template changed since the case was recorded unless forced", async () => {
+    const { service, config, jsonStore } = await makeTraced();
+    const template = path.join(config.workspaceTemplatesDirectory, "fixture");
+    await mkdir(template, { recursive: true });
+    await writeFile(path.join(template, "starting.txt"), "v1", "utf8");
+    const agent = await service.createAgent({ name: "Eval target", instructions: "complete the task" });
+    const snapshot = configSnapshot(agent, config);
+    const target = { agentId: agent.id, snapshot, configHash: configHash(snapshot) };
+    const regressionCase = await service.createRegressionCase({ name: "case", prompt: "do it", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions: [{ type: "terminal_status", expected: "ok" }] });
+    await writeFile(path.join(template, "starting.txt"), "v2", "utf8");
+    await expect(service.createEvalRun({ caseIds: [regressionCase.id], target })).rejects.toMatchObject({ statusCode: 409, message: "template changed since the case was recorded" });
+    const forced = await service.createEvalRun({ caseIds: [regressionCase.id], target }, { force: true });
+    expect(forced.templateHashMismatch).toBe(true);
+    expect(forced.templateHashes!.fixture).not.toBe(regressionCase.templateHash);
+    // a case saved before hashes existed is unknown, never refused
+    await service.createRegressionCase({ name: "legacy", prompt: "do it", workspaceTemplate: "fixture", baselineConfigHash: "baseline", assertions: [{ type: "terminal_status", expected: "ok" }] });
+    const legacy = service.listRegressionCases().find((item) => item.name === "legacy")!;
+    await jsonStore.mutate((database) => { delete database.regressionCases.find((item) => item.id === legacy.id)!.templateHash; });
+    await writeFile(path.join(template, "starting.txt"), "v3", "utf8");
+    expect((await service.createEvalRun({ caseIds: [legacy.id], target })).templateHashMismatch).toBeUndefined();
+    await expect(service.createRegressionCase({ name: "missing", prompt: "x", workspaceTemplate: "nope", baselineConfigHash: "b", assertions: [{ type: "terminal_status", expected: "ok" }] })).rejects.toMatchObject({ statusCode: 400 });
+    // a template deleted after the case was recorded is a 400 at EvalRun creation, not a 500
+    await rm(template, { recursive: true, force: true });
+    await expect(service.createEvalRun({ caseIds: [regressionCase.id], target })).rejects.toMatchObject({ statusCode: 400 });
   });
 
   it("records a throwing case and still runs the remaining cases", async () => {
@@ -323,7 +352,7 @@ describe("GlassBox control-plane adapter", () => {
       }
     }
     const runner = new CapturingRunner();
-    const { service, store, emitter, config } = await makeTraced(runner);
+    const { service, store, emitter, config, workspaces } = await makeTraced(runner);
     await mkdir(path.join(config.workspaceTemplatesDirectory, "fixture"), { recursive: true });
     await writeFile(path.join(config.workspaceTemplatesDirectory, "fixture", "starting.txt"), "template starting state", "utf8");
     const agent = await service.createAgent({ name: "Evaluator", instructions: "Run the supplied regression case." });
@@ -351,7 +380,7 @@ describe("GlassBox control-plane adapter", () => {
     await expect.poll(async () => stat(isolatedRequest.workspacePath).then(() => true, () => false)).toBe(false);
 
     const created = (await store.readRun(run.id)).find((event) => event.type === "run.created");
-    expect(created?.attributes).toMatchObject({ evalRunId: "eval-1", caseId: "case-1", configHash: run.configHash });
+    expect(created?.attributes).toMatchObject({ evalRunId: "eval-1", caseId: "case-1", configHash: run.configHash, templateHash: await workspaces.templateHash("fixture") });
   });
 
   it("links the Run to a trace and emits root, control and terminal events in order", async () => {
@@ -383,8 +412,35 @@ describe("GlassBox control-plane adapter", () => {
     expect(events.find((e) => e.type === "run.completed")!.attributes).toMatchObject({
       inputTokens: 12,
       outputTokens: 5,
+      finalMessageBytes: 16,
+      reportedFailure: false,
     });
     expect(JSON.stringify(events)).not.toContain("hello"); // prompt text is never stored
+  });
+
+  it("persists only outcome metadata under metadata_only and a redacted bounded summary under safe_summary", async () => {
+    const secret = "ark-12345678-1234-1234-1234-123456789abc";
+    const runner = new (class extends FakeRunner {
+      override async run(): Promise<RunnerResult> {
+        return { output: `Unable to continue with ${secret}`, threadId: "thread", usage: null };
+      }
+    })();
+    const metadata = await makeTraced(runner);
+    const metadataAgent = await metadata.service.createAgent({ name: "metadata outcome" });
+    const metadataRun = (await metadata.service.sendMessage(metadataAgent.id, "go")).run;
+    await settle(metadata.service, metadataRun.id); await metadata.emitter.flush();
+    const metadataEvent = (await metadata.store.readRun(metadataRun.id)).find((event) => event.type === "run.completed")!;
+    expect(metadataEvent.attributes).toMatchObject({ reportedFailure: true, finalMessageBytes: expect.any(Number) });
+    expect(metadataEvent.summary).toBeUndefined();
+    expect(JSON.stringify(metadataEvent)).not.toContain(secret);
+
+    const safe = await makeTraced(runner, new MemoryTraceStore(), "safe_summary");
+    const safeAgent = await safe.service.createAgent({ name: "safe outcome" });
+    const safeRun = (await safe.service.sendMessage(safeAgent.id, "go")).run;
+    await settle(safe.service, safeRun.id); await safe.emitter.flush();
+    const safeEvent = (await safe.store.readRun(safeRun.id)).find((event) => event.type === "run.completed")!;
+    expect(safeEvent.summary?.text).toContain("[REDACTED:ark_key]");
+    expect(JSON.stringify(safeEvent)).not.toContain(secret);
   });
 
   it("observes workspace path changes without storing file contents", async () => {
@@ -461,6 +517,8 @@ describe("GlassBox control-plane adapter", () => {
     const { run } = await service.sendMessage(agent.id, "x");
     await runnerReached;
     await emitter.flush();
+    const lastSeenAt = "2026-08-28T10:00:00.000Z";
+    await writeFile(serverHeartbeatPath(config.dataDirectory), JSON.stringify({ lastSeenAt }));
     // a second service on the same store simulates a process restart
     const restarted = new AgentService(config, jsonStore, workspaces, new FakeRunner(), emitter);
     await restarted.initialize();
@@ -477,7 +535,7 @@ describe("GlassBox control-plane adapter", () => {
       status: "cancelled",
       actorId: "server",
       actorType: "service",
-      attributes: { reason: "server_restart" },
+      attributes: { reason: "server_restart", lastSeenAt },
       parentSpanId: serviceSpan?.spanId,
     });
   });

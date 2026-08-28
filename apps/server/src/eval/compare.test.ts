@@ -34,5 +34,12 @@ describe("EvalRun comparison", () => {
     expect(compareEvalRuns(run("base", [[true]]), run("candidate", [[undefined]])).cases[0]?.assertions[0]?.message).toBe("candidate result missing");
   });
 
+  it("flags baseline/candidate pairs whose template hashes differ without throwing", () => {
+    const base = { ...run("base", [[true]]), templateHashes: { fixture: "aaa" } };
+    expect(compareEvalRuns(base, { ...run("candidate", [[true]]), templateHashes: { fixture: "bbb" } }).templateMismatch).toBe(true);
+    expect(compareEvalRuns(base, { ...run("candidate", [[true]]), templateHashes: { fixture: "aaa" } }).templateMismatch).toBe(false);
+    expect(compareEvalRuns(base, run("candidate", [[true]])).templateMismatch).toBe(false); // pre-#176 EvalRun: unknown, never flagged
+  });
+
   it("refuses mismatched case sets", () => { expect(() => compareEvalRuns(run("base", [[true]]), run("candidate", [[true]], ["other"]))).toThrow("same case set"); });
 });

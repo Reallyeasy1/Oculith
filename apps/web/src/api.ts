@@ -1,4 +1,4 @@
-import type { Agent, AgentRun, AuditRow, CapturePolicy, Message, RunListItem, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
+import type { Agent, AgentRun, Assertion, AuditRow, CapturePolicy, EvalRun, Message, RegressionCase, RunListItem, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -87,5 +87,23 @@ export const api = {
       "/api/runs?" + new URLSearchParams({ limit: String(options.limit ?? 100), ...(options.agentId ? { agentId: options.agentId } : {}) }),
     ),
   trace: (runId: string) => request<TraceView>("/api/runs/" + runId + "/trace"),
+  listRegressionCases: () => request<{ cases: RegressionCase[] }>("/api/regression-cases"),
+  // Read-only prefill (#158): nothing is persisted until saveRunAsRegressionCase.
+  regressionCaseDraft: (runId: string) => request<{ draft: { name: string; assertions: Assertion[] } }>("/api/runs/" + runId + "/regression-case"),
+  saveRunAsRegressionCase: (runId: string, body: { name: string; assertions: Assertion[] }) =>
+    request<{ regressionCase: RegressionCase }>("/api/runs/" + runId + "/regression-case", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  deleteRegressionCase: (id: string) =>
+    request<void>("/api/regression-cases/" + id, { method: "DELETE" }),
+  listEvalRuns: () => request<{ evalRuns: EvalRun[] }>("/api/eval-runs"),
+  evalRun: (id: string) => request<{ evalRun: EvalRun }>("/api/eval-runs/" + id),
+  compareEvalRuns: (baselineId: string, candidateId: string) => request<import("./types").EvalComparison>("/api/eval-runs/" + baselineId + "/compare/" + candidateId),
+  startEvalRun: (body: { agentId: string; caseIds: string[] }) =>
+    request<{ evalRun: EvalRun }>("/api/eval-runs", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   audit: (runId: string) => request<{ schemaVersion: string; capturePolicy: CapturePolicy; audit: AuditRow[] }>("/api/runs/" + runId + "/audit"),
 };

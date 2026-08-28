@@ -18,6 +18,9 @@ export function workspaceOptionLabel(workspace: Workspace): string {
   return `${workspace.name} · ${agents} · ${workspace.managed ? "managed" : "unmanaged"} · ${workspace.fileCount} files`;
 }
 
+/** #132 chip tooltip — the flag is a derived phrase match on the final message, not an evaluator judgement. */
+export const REPORTED_FAILURE_HINT = "Derived: the agent's final message contains a failure phrase (e.g. \"not installed\", \"unable to\"). Not an evaluator judgement.";
+
 /** Tool failures + denials an ok Run worked around (#131); 0 unless the Run ended ok. */
 export function recoveredFailures(run: RunListItem): number {
   return run.status === "ok" ? run.toolFailures + run.denials : 0;
@@ -25,7 +28,7 @@ export function recoveredFailures(run: RunListItem): number {
 
 /** error ∪ timeout ∪ cancelled ∪ degraded ∪ any tool failure/denial — the default Runs filter (#35, #131). */
 export function needsAttention(run: RunListItem): boolean {
-  return run.degraded || run.toolFailures > 0 || run.denials > 0 || run.status === "error" || run.status === "timeout" || run.status === "cancelled";
+  return run.outcome?.reportedFailure === true || run.degraded || run.toolFailures > 0 || run.denials > 0 || run.status === "error" || run.status === "timeout" || run.status === "cancelled";
 }
 
 /** Running Runs, newest first — the "Live now" strip, independent of the quick filter (#131). */
@@ -100,9 +103,15 @@ export function formatDuration(ms: number | undefined): string {
   return minutes + "m " + String(seconds).padStart(2, "0") + "s";
 }
 
+export function formatRunDuration(durationMs: number | undefined, endedReason?: "server_restart", interruptedAfterMs?: number): string {
+  if (endedReason !== "server_restart") return formatDuration(durationMs);
+  return `≥ ${formatDuration(interruptedAfterMs)} · interrupted (last evidence +${formatDuration(durationMs)})`;
+}
+
 export function formatUsage(usage: RunListItem["usage"]): string {
   if (!usage || (usage.inputTokens === undefined && usage.outputTokens === undefined)) return "—";
-  return (usage.inputTokens ?? 0) + " in · " + (usage.outputTokens ?? 0) + " out";
+  const compact = (value: number) => value >= 1000 ? (value / 1000).toFixed(value >= 10_000 ? 0 : 1).replace(/\.0$/, "") + "k" : String(value);
+  return compact(usage.inputTokens ?? 0) + " in · " + compact(usage.outputTokens ?? 0) + " out";
 }
 
 const clock = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
