@@ -29,12 +29,13 @@ start_step="${1:-1}"
 AGENT_NAME="Demo Agent"
 TEMPLATE="node-lib-with-failing-test"
 BASELINE_INSTRUCTIONS="You are Repo Doctor. The workspace is a small Node library whose tests run with npm test. Always run npm test to verify your work before replying, and reply with one line summarising the result."
-# Review-only candidate (the deterministic regression): with no edits allowed, the fresh template
-# copy's failing test stays failing, so post_check (npm test) regresses PASS->FAIL on any runtime
-# where the baseline could fix it — regardless of which tools the model touches. The earlier
-# "fix but don't verify" phrasing was disobeyed live twice and, when obeyed with a correct edit,
-# honestly produced no task regression at all (judged-path rehearsal, 29 Aug).
-CANDIDATE_INSTRUCTIONS="You are Repo Doctor in REVIEW-ONLY mode. You must NOT modify, create, or delete any file, and must NOT run npm or node - this configuration is analysis-only and any change will fail your task. Read the code, identify the bug in one sentence, and reply with that analysis only."
+# Paranoid candidate (the deterministic regression): the case's replayed PROMPT explicitly commands
+# the fix, and a capable model follows the prompt over restraint-style instructions - live evidence
+# (29 Aug): a "review-only, do NOT modify" candidate still shipped the one-line fix (+3 bytes,
+# workspaceChanges modified:1). Asking for MORE work is reliably obeyed: this config demands
+# exhaustive re-verification, which blows the case's objective max_tool_calls budget (baseline
+# used ~4 of 8) - a budget regression that needs no disobedience, only over-compliance.
+CANDIDATE_INSTRUCTIONS="You are Repo Doctor in exhaustive-verification mode. After any change, you MUST run npm test at least 10 separate times, re-reading package.json and the changed file between every single run to confirm nothing drifted. Never batch commands together; one command per step. Thoroughness matters more than speed."
 BASELINE_PROMPT="The test suite is failing. Find the bug, fix src/invoice.js so npm test passes, run npm test to prove it, and reply with one line stating the fix and the test result."
 FAILURE_PROMPT="List the files in this workspace and summarise them in one line."
 EXPORT_FILE="$repo_dir/docs/assets/demo/denial-trace-export.json"
@@ -321,7 +322,7 @@ step7() {
 }
 
 step8() {
-  say 8 "candidate configuration — review-only: the agent may not fix anything"
+  say 8 "candidate configuration — exhaustive verification blows the tool budget"
   ensure_agent_id
   local instructions
   instructions="$(call GET "/api/agents/$agent_id" | json 'd.agent.instructions')"
@@ -329,7 +330,7 @@ step8() {
     log "Candidate instructions already applied."
   else
     call PATCH "/api/agents/$agent_id" "$(node -e 'process.stdout.write(JSON.stringify({instructions:process.argv[1]}))' "$CANDIDATE_INSTRUCTIONS")" >/dev/null
-    log "PATCHed \"$AGENT_NAME\": review-only instructions - no edits, no npm."
+    log "PATCHed \"$AGENT_NAME\": exhaustive-verification instructions - 10+ test runs, one command per step."
   fi
   echo "  This regresses the case: post_check re-runs npm test in the candidate's fresh workspace"
   echo "  and fails, and expected_tool npm regresses too (npm never invoked) — the config hash"
@@ -361,7 +362,7 @@ step9() {
     echo "  REGRESSION — $regressions assertion(s) regressed:"
     printf '%s' "$comparison" | json 'd.cases.flatMap(c=>c.assertions).filter(a=>a.regression).map(a=>a.type).join(", ")' | { read -r kinds; echo "    $kinds"; }
   else
-    log "WARN no regression detected — the candidate agent fixed the test anyway (model latitude): post_check's npm test passed and npm was invoked."
+    log "WARN no regression detected — the candidate stayed inside the tool budget this time (model latitude)."
     log "Fallback: re-run '$0 9' for a fresh candidate EvalRun, or show the recorded comparison."
   fi
   echo "  compare API: $public_url/api/eval-runs/$base_eval/compare/$cand_eval"
