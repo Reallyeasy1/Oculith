@@ -156,6 +156,8 @@ export interface FailureFocus {
   message?: string;
   path: string[];
   diagnosis: string;
+  /** #265 — deterministic provider-error hint derived server-side from the stored error text by fixed rules. */
+  hint?: string;
 }
 
 export type AuditOutcome = "allowed" | "denied" | "ok" | "error" | "timeout" | "cancelled";

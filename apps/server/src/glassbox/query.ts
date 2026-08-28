@@ -10,6 +10,8 @@ export interface Span {
 export interface FailureFocus {
   kind: "error" | "timeout" | "cancelled" | "denied" | "degraded"; spanId: string; eventId: string; sequence: number;
   name: string; category: Category; component: string; message?: string | undefined; path: string[]; diagnosis: string;
+  /** #265 — deterministic provider-error hint derived from the stored error text by PROVIDER_HINTS (invariant 3: fixed rules, no LLM). */
+  hint?: string | undefined;
 }
 export type AuditOutcome = "allowed" | "denied" | "ok" | "error" | "timeout" | "cancelled";
 export interface AuditRow {
@@ -190,6 +192,19 @@ export function formatExitCode(code: number): string {
   return decimal + hex + (hint ? ` — ${hint}` : "");
 }
 
+// #265 — provider-error vocabulary, the EXIT_HINTS pattern applied to stored codex.error / failure text.
+// First match wins; anything unmatched carries no hint (invariant 3 — never fabricate).
+const PROVIDER_HINTS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\b40[13]\b|unauthorized|api key/i, "Runtime credentials rejected — check ARK_API_KEY / model access in .env"],
+  [/\b429\b|rate limit/i, "Rate limited by the provider — retry later"],
+  [/ENOTFOUND|ECONNREFUSED|ETIMEDOUT/, "Provider unreachable — check network/ARK_BASE_URL"],
+];
+
+export function providerHint(message: string | undefined): string | undefined {
+  if (!message) return undefined;
+  return PROVIDER_HINTS.find(([pattern]) => pattern.test(message))?.[1];
+}
+
 const formatFailureMessage = (message: string | undefined): string | undefined => {
   // Matches the observer's bare "exit code N" and the runners' "Codex exited with code N: detail".
   return message?.replace(/\b((?:exited with|exit) code )(\d+)/i, (_, prefix: string, code: string) => prefix + formatExitCode(Number(code)));
@@ -258,7 +273,7 @@ function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, stat
       : "",
     degraded ? "Trace store was degraded during this Run; evidence may be incomplete." : "",
   ].filter(Boolean).join(" ");
-  return { kind, ...target, path, diagnosis };
+  return { kind, ...target, path, diagnosis, hint: providerHint(first.error?.message) };
 }
 
 const isRestartCancel = (e: ObservationEvent): boolean => e.type === "run.cancelled" && e.attributes.reason === "server_restart";

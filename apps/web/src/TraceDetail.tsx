@@ -324,6 +324,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
           <div>
             <strong>{failure.kind === "denied" ? "First denial" : "First actionable " + failure.kind}: {failure.name}</strong>
             <span className="trace-banner-meta">{failure.category} · {failure.component}{failure.message ? " · " + failure.message : ""}</span>
+            {failure.hint && <span className="badge badge-warn" title="Derived from the stored provider error by a fixed rule — not a judgement.">{failure.hint}</span>}
             <p id="trace-diagnosis" className="trace-diagnosis">{failure.diagnosis}</p>
           </div>
           {failingSpan && (
