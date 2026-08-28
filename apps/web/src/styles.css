@@ -1287,6 +1287,17 @@ textarea:focus {
   letter-spacing: 0;
 }
 
+.tool-call-summary {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.tool-call-summary .badge {
+  margin-right: 0;
+}
+
 /* "Live now" strip (#131): running Runs above the table, whatever the quick filter says. */
 .live-strip {
   display: flex;
