@@ -3,7 +3,8 @@ import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
 import { RunCancelledError } from "./errors.js";
-import { CodexStreamObserver, RUNNER_ACTOR } from "./glassbox/codex-observer.js";
+import { CodexActivityTracker } from "./glassbox/activity.js";
+import { CodexStreamObserver, RUNNER_ACTOR, type CodexStreamSink } from "./glassbox/codex-observer.js";
 import { createDefaultEmitter, type ObservationEmitter } from "./glassbox/emitter.js";
 import { newId } from "./glassbox/schema.js";
 import { redactText } from "./glassbox/redact.js";
@@ -224,6 +225,9 @@ export class ContainerCodexRunner implements AgentRunner {
       request.trace && span
         ? new CodexStreamObserver(this.emitter, request.trace, span.spanId, "ContainerCodexRunner")
         : undefined;
+    const sink: CodexStreamSink | undefined = request.onActivity
+      ? new CodexActivityTracker(request.onActivity, observer)
+      : observer;
 
     const child = spawn(
       this.config.containerEngine,
@@ -280,7 +284,7 @@ export class ContainerCodexRunner implements AgentRunner {
         stdout += chunk.toString("utf8");
         const lines = stdout.split(/\r?\n/);
         stdout = lines.pop() ?? "";
-        for (const line of lines) parseCodexEventLine(line, parsed, observer);
+        for (const line of lines) parseCodexEventLine(line, parsed, sink);
       } else {
         stderrBytes += chunk.byteLength;
         stderr += chunk.toString("utf8");
@@ -336,7 +340,7 @@ export class ContainerCodexRunner implements AgentRunner {
       });
       // The child can close before `rm --force` reports back; wait so the span records the real cleanup.
       if (active.termination) await active.termination;
-      if (stdout.trim()) parseCodexEventLine(stdout.trim(), parsed, observer);
+      if (stdout.trim()) parseCodexEventLine(stdout.trim(), parsed, sink);
       const output = parsed.messages.at(-1)?.trim();
       const outcome = active.cancelled
         ? "cancelled"

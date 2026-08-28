@@ -123,6 +123,7 @@ export class AgentService {
           run.status = "cancelled";
           run.error = "Server restarted while this run was active";
           run.completedAt = now();
+          run.currentActivity = undefined;
         }
       }
       for (const agent of database.agents) {
@@ -653,6 +654,18 @@ export class AgentService {
             }
           : {}),
         ...(this.config.glassboxDemoFailure === "timeout" ? { timeoutMs: 3_000 } : {}),
+        // Best-effort live status for the polled Run (#223). Fire-and-forget: a failed write can
+        // never reach the runner or change the Run's outcome (invariant 4).
+        onActivity: (activity) => {
+          void this.store
+            .mutate((database) => {
+              const storedRun = database.runs.find((item) => item.id === run.id);
+              if (storedRun && storedRun.status === "running") {
+                storedRun.currentActivity = activity ?? undefined;
+              }
+            })
+            .catch(() => undefined);
+        },
         ...(bindings
           ? {
               logger: {
@@ -705,6 +718,7 @@ export class AgentService {
         storedRun.output = result.output;
         storedRun.usage = result.usage;
         storedRun.completedAt = completedAt;
+        storedRun.currentActivity = undefined;
         if (options.persistMessages !== false) {
           database.messages.push({
             id: randomUUID(),
@@ -761,6 +775,7 @@ export class AgentService {
           storedRun.status = cancelled ? "cancelled" : "failed";
           storedRun.error = message;
           storedRun.completedAt = completedAt;
+          storedRun.currentActivity = undefined;
         }
         if (agent) {
           if (agent.status !== "stopped") {

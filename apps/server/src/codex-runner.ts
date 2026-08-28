@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
+import { CodexActivityTracker } from "./glassbox/activity.js";
 import { CodexStreamObserver, RUNNER_ACTOR, type CodexStreamSink } from "./glassbox/codex-observer.js";
 import { createDefaultEmitter, type ObservationEmitter } from "./glassbox/emitter.js";
 import { newId } from "./glassbox/schema.js";
@@ -192,6 +193,9 @@ export class CodexRunner implements AgentRunner {
       request.trace && span
         ? new CodexStreamObserver(this.emitter, request.trace, span.spanId, "CodexRunner")
         : undefined;
+    const sink: CodexStreamSink | undefined = request.onActivity
+      ? new CodexActivityTracker(request.onActivity, observer)
+      : observer;
 
     const args = buildCodexArgs(request, this.config.codexSandboxMode);
     const child = spawn(this.config.codexBin, args, {
@@ -246,7 +250,7 @@ export class CodexRunner implements AgentRunner {
         const lines = stdout.split(/\r?\n/);
         stdout = lines.pop() ?? "";
         for (const line of lines) {
-          parseCodexEventLine(line, parsed, observer);
+          parseCodexEventLine(line, parsed, sink);
         }
       } else {
         stderrBytes += chunk.byteLength;
@@ -273,7 +277,7 @@ export class CodexRunner implements AgentRunner {
         child.once("close", (code) => resolve(code ?? 1));
       });
       if (stdout.trim()) {
-        parseCodexEventLine(stdout.trim(), parsed, observer);
+        parseCodexEventLine(stdout.trim(), parsed, sink);
       }
       const output = parsed.messages.at(-1)?.trim();
       const outcome = active.cancelled

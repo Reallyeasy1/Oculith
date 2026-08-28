@@ -9,6 +9,7 @@ import { loadConfig } from "./config.js";
 import { JsonStore } from "./store.js";
 import type { AgentConfigSnapshot, AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import type { RunActivity } from "./glassbox/activity.js";
 import { createTraceContext } from "./glassbox/context.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
 import { MemoryTraceStore, type TraceStore } from "./glassbox/store.js";
@@ -137,6 +138,46 @@ describe("Agent lifecycle", () => {
     expect(changed.configSnapshot?.instructions).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(changed.configSnapshot?.instructions).not.toContain("Skip tests");
     expect(JSON.stringify(changed.configSnapshot)).not.toMatch(/apiKey|token|secret|password/i);
+  });
+
+  it("surfaces live runner activity on the polled Run and clears it on terminal states", async () => {
+    let report!: (activity: RunActivity | null) => void;
+    let finish!: (result: RunnerResult) => void;
+    let fail!: (error: Error) => void;
+    const runner: AgentRunner = {
+      run: (request: RunnerRequest) =>
+        new Promise((resolve, reject) => {
+          report = (activity) => request.onActivity?.(activity);
+          finish = resolve;
+          fail = reject;
+        }),
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Live" });
+
+    const first = (await service.sendMessage(agent.id, "multi-step task")).run;
+    expect(service.getRun(first.id).currentActivity).toBeUndefined();
+    await expect.poll(() => service.getRun(first.id).status).toBe("running");
+    report({ kind: "command", label: "Running npm…" });
+    await expect.poll(() => service.getRun(first.id).currentActivity?.label).toBe("Running npm…");
+    report({ kind: "thinking", label: "Thinking…" });
+    await expect.poll(() => service.getRun(first.id).currentActivity?.kind).toBe("thinking");
+    report(null);
+    await expect.poll(() => service.getRun(first.id).currentActivity).toBeUndefined();
+    report({ kind: "thinking", label: "Thinking…" });
+    finish({ output: "done", threadId: "thread", usage: null });
+    await expect.poll(() => service.getRun(first.id).status).toBe("completed");
+    expect(service.getRun(first.id).currentActivity).toBeUndefined();
+
+    const second = (await service.sendMessage(agent.id, "and fail")).run;
+    await expect.poll(() => service.getRun(second.id).status).toBe("running");
+    report({ kind: "command", label: "Running npm…" });
+    await expect.poll(() => service.getRun(second.id).currentActivity?.label).toBe("Running npm…");
+    fail(new Error("runner exploded"));
+    await expect.poll(() => service.getRun(second.id).status).toBe("failed");
+    expect(service.getRun(second.id).currentActivity).toBeUndefined();
   });
 
   it("hashes canonical configuration independently of object key insertion order", () => {
