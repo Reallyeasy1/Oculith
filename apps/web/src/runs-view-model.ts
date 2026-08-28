@@ -16,6 +16,29 @@ export function recoveredFailures(run: RunListItem): number {
   return run.status === "ok" ? run.toolFailures + run.denials : 0;
 }
 
+export interface EvidenceBadge {
+  label: string;
+  title: string;
+  warn: boolean;
+}
+
+/** Keep absence claims layer-specific: zero observed calls is not the same as missing evidence. */
+export function evidenceBadges(run: RunListItem): EvidenceBadge[] {
+  if (run.status === "ok") {
+    return run.toolCalls === 0
+      ? [{ label: "no tool calls", title: "This Run completed successfully without any observed tool calls.", warn: false }]
+      : [];
+  }
+  if (run.status === "running") return [];
+  return (["model", "tool"] as const)
+    .filter((layer) => run.capabilities[layer] === "unknown")
+    .map((layer) => ({
+      label: `${layer}: no evidence`,
+      title: `No ${layer} events were observed and the Run did not end ok, so nothing can be said about this layer; absence proves nothing.`,
+      warn: true,
+    }));
+}
+
 /** error ∪ timeout ∪ cancelled ∪ degraded ∪ any tool failure/denial — the default Runs filter (#35, #131). */
 export function needsAttention(run: RunListItem): boolean {
   return run.outcome?.reportedFailure === true || run.degraded || run.toolFailures > 0 || run.denials > 0 || run.status === "error" || run.status === "timeout" || run.status === "cancelled";

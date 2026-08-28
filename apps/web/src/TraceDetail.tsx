@@ -8,9 +8,11 @@ import {
   EMPTY_FILTER,
   STATUSES,
   barGeometry,
+  capabilityBadgeLabel,
   capabilityCopy,
   defaultExpanded,
   formatAttribute,
+  isFailed,
   indexSpans,
   interruptedSpanDurationMs,
   isFilterActive,
@@ -21,14 +23,14 @@ import {
 } from "./trace-view-model";
 
 // Three capability states (PRD §8): observed | unavailable | unknown. Unknown remains pending while a
-// Run is live; only an ended Run can say it was cut short. Short badge copy; long form in `title`.
+// Run is live; only a failed Run turns it into a warning (#137) — an ok chat-only Run legitimately has no tool evidence.
 function CapabilityBadge({ layer, state, status }: {
   layer: "model" | "tool";
   state: "observed" | "unavailable" | "unknown";
   status: TraceView["summary"]["status"];
 }) {
   const copy = capabilityCopy(state, status);
-  return <span className="badge" title={layer + ": " + copy.title}>{layer} {copy.label}</span>;
+  return <span className={"badge" + (state === "unknown" && isFailed(status) ? " badge-warn" : "")} title={layer + ": " + copy.title}>{capabilityBadgeLabel(layer, state, status)}</span>;
 }
 
 interface Props {
