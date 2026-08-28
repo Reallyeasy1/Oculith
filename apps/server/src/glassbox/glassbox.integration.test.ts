@@ -155,11 +155,19 @@ describe("P0 verification invariants", () => {
     expect(audit.every((row: { eventId: string; spanId: string }) => eventIds.has(row.eventId) && view.events.some((event: { spanId: string }) => event.spanId === row.spanId))).toBe(true);
 
     const toolSpanIds = new Set(view.events.filter((event: { type: string }) => event.type.startsWith("tool.call.")).map((event: { spanId: string }) => event.spanId));
-    const modelSpanIds = new Set(view.events.filter((event: { type: string }) => event.type.startsWith("model.")).map((event: { spanId: string }) => event.spanId));
+    // #207: per-call granularity — each completed turn carries the observed reasoning/agent_message
+    // count, and a turn that ran counts as at least one call. The capture holds two pairs in one turn.
+    const observedModelCalls = view.events
+      .filter((event: { type: string }) => event.type === "model.completed")
+      .reduce((total: number, event: { attributes: Record<string, unknown> }) => {
+        const observed = event.attributes.modelCallsObserved;
+        return total + Math.max(1, typeof observed === "number" ? observed : 0);
+      }, 0);
+    expect(observedModelCalls).toBe(2);
     expect(view.summary.metrics).toMatchObject({
       toolCalls: toolSpanIds.size,
       toolFailures: new Set(view.events.filter((event: { type: string }) => event.type === "tool.call.failed").map((event: { spanId: string }) => event.spanId)).size,
-      modelCalls: modelSpanIds.size,
+      modelCalls: observedModelCalls,
       denials: view.events.filter((event: { type: string }) => event.type === "policy.denied").length,
     });
     // #130/#129 metrics, hand-computed from the same evidence: bounded tool identities and the tool time of the split.

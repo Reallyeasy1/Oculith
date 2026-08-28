@@ -56,7 +56,9 @@ const USAGE_KEYS: Record<string, string> = {
 /**
  * Turns an observed Codex event stream into ObservationEvents. Mapping is pinned to the captures
  * catalogued in `docs/CODEX_EVENTS.md` — nothing here is inferred from a schema we have not seen:
- *  - `reasoning` items are never captured (no chain-of-thought, deliberately unmapped, E7).
+ *  - `reasoning` items are never captured (no chain-of-thought, deliberately unmapped, E7); only their
+ *    count is kept, as a per-turn model-call proxy (#207) — codex exec emits exactly one turn per
+ *    prompt, so the turn span alone cannot distinguish one model call from many.
  *  - an `item.type === "error"` is a non-fatal notice on every Ark run (E8) and is dropped.
  *  - top-level `error` lines are retry noise (E11); the last one is buffered and only surfaces as a
  *    single `error.recorded` when the run itself fails.
@@ -73,6 +75,8 @@ export class CodexStreamObserver implements CodexStreamSink {
   private lastError: string | undefined;
   private turnIndex = 0;
   private activeTurn: { spanId: string; turnIndex: number } | undefined;
+  private observedCalls = 0;
+  private unpairedReasoning = 0;
   private readonly activeItems = new Map<string, { spanId: string; kind: string }>();
 
   constructor(
@@ -143,6 +147,16 @@ export class CodexStreamObserver implements CodexStreamSink {
   onItemCompleted(item: Record<string, unknown>): void {
     this.sawAnyEvent = true;
     const kind = str(item.type);
+    if (kind === "reasoning") {
+      // Each reasoning item is one model call (#207). Count only — the text stays unmapped (E7).
+      this.observedCalls++;
+      this.unpairedReasoning++;
+    } else if (kind === "agent_message") {
+      // A message produced by the same call as its reasoning is not a second call; without one
+      // (non-reasoning models) the message is the only evidence the call happened.
+      if (this.unpairedReasoning > 0) this.unpairedReasoning--;
+      else this.observedCalls++;
+    }
     if (kind === "command_execution") {
       this.commandExecution(item);
     } else if (kind === "file_change") {
@@ -151,8 +165,9 @@ export class CodexStreamObserver implements CodexStreamSink {
     } else if (kind === "mcp_tool_call" || kind === "web_search") {
       this.completeGenericTool(item, kind);
     }
-    // agent_message: the runner's final output, not trace content.
-    // reasoning: deliberately never captured. error: non-fatal notice (E8), not a failure.
+    // agent_message: the runner's final output, not trace content (counted above only).
+    // reasoning: deliberately never captured (counted above only).
+    // error: non-fatal notice (E8), not a failure.
   }
 
   private commandExecution(item: Record<string, unknown>): void {
@@ -261,9 +276,17 @@ export class CodexStreamObserver implements CodexStreamSink {
       category: "model",
       ...(this.activeTurn ? { phase: "end" as const } : {}),
       status: "ok",
-      attributes: { turnIndex: turn.turnIndex, ...attributes },
+      // modelCallsObserved (#207) is the count of reasoning/agent_message items seen this turn; when no
+      // item evidence arrived it is omitted rather than guessed (buildTrace floors the turn at one call).
+      attributes: {
+        turnIndex: turn.turnIndex,
+        ...(this.observedCalls > 0 ? { modelCallsObserved: this.observedCalls } : {}),
+        ...attributes,
+      },
     });
     this.activeTurn = undefined;
+    this.observedCalls = 0;
+    this.unpairedReasoning = 0;
   }
 
   /** Buffers only: a stream `error` line is a retry notice until the run actually fails (trap 3). */

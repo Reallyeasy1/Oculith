@@ -175,7 +175,7 @@ Defined with zod in `apps/server/src/glassbox/schema.ts` (`SCHEMA_VERSION "1.0"`
 
 - **Spans** are reconstructed from `start`/`end`/`instant` events (out-of-order `start` after `end` is tolerated; an `end` without `start` derives a provisional start and stays `incomplete`); parent cycles are guarded; the tree is ordered by `sequence`.
 - **Summary** fields: `status`, `startedAt`, `endedAt`, `durationMs`, `endedReason`, `eventCount`, `spanCount`, `incompleteSpans`, `redactedEvents`, `denials`, `degraded`, `truncated`, `evicted`, `usage`, `metrics`, `configHash`, `capabilities`, `workspaceChanges`, `audit`, `firstFailingStep`, `failure`.
-- **Metrics** (`TraceMetrics`, #74): `durationMs`, `terminalStatus`, `toolCalls`, `toolFailures`, `modelCalls`, `tokens { input, cachedInput, output }`, `retries`, `denials` — all equal to direct event counts. (`modelCalls` currently counts `model.completed` events only; #129 adds per-turn spans.)
+- **Metrics** (`TraceMetrics`, #74): `durationMs`, `terminalStatus`, `toolCalls`, `toolFailures`, `modelCalls`, `tokens { input, cachedInput, output }`, `retries`, `denials` — all equal to direct event counts. (`modelCalls` prefers the observer's per-turn `modelCallsObserved` count of reasoning/agent_message items, flooring each turn at one call, #207; traces without it fall back to the `model.turn` span count, #129.)
 - **Capabilities** (three states, PRD §8): `observed` when any event of that category exists, `unavailable` only when the runtime declared `capability.unavailable`, otherwise `unknown` — never inferred from absence.
 - **Failure focus**: candidates are events with error/timeout/cancelled status or `error.recorded`; ranked by match with the terminal status, then denials, then sequence, then category rank (`tool` first). A restart-cancel points at the deepest incomplete runtime span instead of itself. `formatExitCode` adds hints for 2, 124, 126, 127, 130, 137 and Windows `0xC0000142`; the diagnosis sentence includes cleanup evidence (container exit / termination signal), capability gaps and degradation.
 - **Audit projection** (`projectAudit`, #82, #135): one row per control, policy, sandbox, tool and terminal runtime event — `{ at, actor {type,id}, action, resource, outcome (allowed|denied|error|timeout|cancelled), eventId, spanId }`; `summary.audit = { actions, denials, actors[] }`. Rows are never synthesized; every `eventId` exists in `/events`.
@@ -334,7 +334,7 @@ _The feature-by-feature coverage table, the E2E lane steps and the list of untes
 | Finding | Evidence | Issue |
 |---|---|---|
 | `ok` means the process exited 0, not that the task succeeded | S2 failed (`curl` absent, exit 127) and read `ok`; S1 needed 9 tool calls with 2 failures and looked clean | #131 (shipped), #132 |
-| Model time is a black hole | 83 s + 62 s of S1's 177 s had no event; `modelCalls` always 1 | #129 |
+| Model time is a black hole | 83 s + 62 s of S1's 177 s had no event; `modelCalls` always 1 | #129, #207 |
 | Tool calls have no duration or identity | instants only; `bash · 61 bytes · exit 0` | #130 |
 | Exit codes without hints | 127 twice | #133 (shipped) |
 | No per-Agent baseline | 464 k input tokens for one command not flagged | #134 |
