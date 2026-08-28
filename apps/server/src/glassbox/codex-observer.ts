@@ -112,6 +112,13 @@ export class CodexStreamObserver implements CodexStreamSink {
   onTurnStarted(): void {
     this.sawAnyEvent = true;
     this.sawModel = true;
+    // A turn abandoned without turn.completed (E12 turn.failed) must not donate its item count to the
+    // next turn — buildTrace already floors the abandoned span at one call. Items seen before any
+    // turn.started (out-of-order streams) still belong to the turn that is opening now.
+    if (this.activeTurn) {
+      this.observedCalls = 0;
+      this.unpairedReasoning = 0;
+    }
     const turn = { spanId: newId("spn"), turnIndex: ++this.turnIndex };
     this.activeTurn = turn;
     this.emitter.emit({

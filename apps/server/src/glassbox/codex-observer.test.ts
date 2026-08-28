@@ -158,6 +158,28 @@ describe("CodexStreamObserver", () => {
     expect(ends[1]!.attributes).not.toHaveProperty("modelCallsObserved");
   });
 
+  it("drops an abandoned turn's item count instead of donating it to the next turn", async () => {
+    const store = new MemoryTraceStore();
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner");
+    const p = parsed();
+    // Turn 1 never completes (E12 turn.failed ends the stream without turn.completed); the retry
+    // turn must not inherit its two reasoning items — buildTrace floors the open span at one call.
+    for (const line of [
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "i1", type: "reasoning", text: "A" } },
+      { type: "item.completed", item: { id: "i2", type: "reasoning", text: "B" } },
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "i3", type: "agent_message", text: "Done" } },
+      { type: "turn.completed", usage: { input_tokens: 5, output_tokens: 1 } },
+    ]) parseCodexEventLine(JSON.stringify(line), p, obs);
+    obs.finish();
+    await em.flush();
+
+    const end = (await store.readRun("run-1")).find((e) => e.type === "model.completed")!;
+    expect(end.attributes).toMatchObject({ turnIndex: 2, modelCallsObserved: 1 });
+  });
+
   it("metadata_only keeps command text and its secrets out entirely", async () => {
     const store = new MemoryTraceStore();
     const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
