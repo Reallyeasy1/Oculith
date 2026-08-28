@@ -37,7 +37,7 @@ The Glass Box track asks for correlated Run and step events in a timeline or tre
 
 **Deferred (deliberately):** OTLP export (mapping library exists, unwired), SSE (polling until P0 is done, per PRD), PostgreSQL backend (optional profile; NDJSON + JSON is the judged path), evaluation-jobs UI, cost in the metric catalogue (per-Run estimate exists, display-only), alerting (explicit non-goal). `workspace.changed` takes the platform's before/after disk snapshot as ground truth; the stream-side file-change report is a fallback observed only when the model uses apply_patch — neither path invents diffs.
 
-**Prohibited, not deferred:** raw prompt/completion capture and chain-of-thought capture. `full/raw` is forbidden by the PRD, not merely unimplemented.
+**Prohibited, not deferred:** raw prompts, completions and chain-of-thought are never stored; under an explicit opt-in tier (`reasoning_summary`, #259), reasoning appears only as 240-char redacted summaries — and judges can still be handed the export file. `full/raw` is forbidden by the PRD, not merely unimplemented.
 
 ### One slide of architecture (in words)
 
@@ -113,7 +113,7 @@ _Nine steps matching the #92 runbook (`docs/DEMO.md`). **Say** lines are the spo
 2. **Why templates instead of exact replay?** A rerun is new execution from a versioned starting state (template + content hash) — replaying a stochastic agent byte-for-byte proves nothing, while a fresh run against the same start state tests the contract that actually matters.
 3. **What does redaction cover, and what doesn't it?** It is exact on structured attributes (key denylist) and best-effort on free text (bounded pattern scan for bearer/`sk-`/`ark-`/AK-SK/private-key shapes); a novel secret format in a command string could slip past — which is exactly why the default policy stores metadata only.
 4. **Why only one runtime?** Depth over breadth in six days: one runtime instrumented honestly end to end, behind a provider-neutral versioned event contract and an `AgentRunner` seam, so a second runtime is a new adapter, not a rewrite.
-5. **Why no chain-of-thought capture?** Because that is the product promise — traces you can hand to anyone; we capture the reasoning stream's *shape* instead (per-item model-call counts and reasoning-token usage), never its text.
+5. **Why no chain-of-thought capture?** Because that is the product promise — traces you can hand to anyone: raw prompts, completions and chain-of-thought are never stored. We capture the reasoning stream's *shape* at every policy (per-item model-call counts and reasoning-token usage); under an explicit opt-in tier (`reasoning_summary`), reasoning appears only as 240-char redacted summaries — and judges can still be handed the export file.
 6. **Codex emits one turn — how do you count 22 model calls?** We count the observed reasoning and message items in Codex's own event stream (#207/#230), so `modelCallsObserved` is a count of things that actually happened, verified against a 321k-token production Run.
 7. **What happens when the trace store fails mid-Run?** The emitter is non-blocking: the Run completes normally and the trace shows an explicit `telemetry.degraded` gap — observability failure is itself observable, and never costs the user their result.
 8. **How is the cost figure computed?** Display-only: operator-configured prices per million tokens multiplied by observed usage — no configured price, no number shown, and it never feeds any decision.

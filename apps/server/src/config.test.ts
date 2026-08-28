@@ -53,6 +53,16 @@ describe("GlassBox retention config", () => {
   });
 });
 
+describe("GlassBox capture policy config (#259)", () => {
+  it("defaults to metadata_only, accepts all three tiers, rejects unknown values", () => {
+    expect(loadConfig({ NODE_ENV: "test" }).glassboxCapturePolicy).toBe("metadata_only");
+    expect(loadConfig({ NODE_ENV: "test", GLASSBOX_CAPTURE_POLICY: "safe_summary" }).glassboxCapturePolicy).toBe("safe_summary");
+    expect(loadConfig({ NODE_ENV: "test", GLASSBOX_CAPTURE_POLICY: "reasoning_summary" }).glassboxCapturePolicy).toBe("reasoning_summary");
+    expect(() => loadConfig({ NODE_ENV: "test", GLASSBOX_CAPTURE_POLICY: "full" })).toThrow();
+    expect(() => loadConfig({ NODE_ENV: "test", GLASSBOX_CAPTURE_POLICY: "raw" })).toThrow();
+  });
+});
+
 describe("GlassBox cost display config", () => {
   it("keeps pricing optional and accepts non-negative per-million token rates", () => {
     expect(loadConfig({ NODE_ENV: "test" })).toMatchObject({ glassboxPricePerMtokInput: undefined, glassboxPricePerMtokOutput: undefined });

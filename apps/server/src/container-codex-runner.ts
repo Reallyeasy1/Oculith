@@ -6,7 +6,7 @@ import { RunCancelledError } from "./errors.js";
 import { CodexActivityTracker } from "./glassbox/activity.js";
 import { CodexStreamObserver, RUNNER_ACTOR, type CodexStreamSink } from "./glassbox/codex-observer.js";
 import { createDefaultEmitter, type ObservationEmitter } from "./glassbox/emitter.js";
-import { newId } from "./glassbox/schema.js";
+import { capturesSummaries, newId } from "./glassbox/schema.js";
 import { redactText } from "./glassbox/redact.js";
 import type {
   AgentRunner,
@@ -329,7 +329,7 @@ export class ContainerCodexRunner implements AgentRunner {
         type: status === "ok" ? "runtime.codex.completed" : "runtime.codex.failed",
         attributes: { ...endAttrs, ...extra },
         ...(error ? { error } : {}),
-        ...(status !== "ok" && this.emitter.capturePolicy === "safe_summary" && stderr.trim()
+        ...(status !== "ok" && capturesSummaries(this.emitter.capturePolicy) && stderr.trim()
           ? { summary: { text: redactText(stderr).text.slice(-2_048), policy: "safe_summary" as const } }
           : {}),
       });

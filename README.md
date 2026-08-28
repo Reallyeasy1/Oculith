@@ -156,8 +156,10 @@ never started, so absence proves nothing). An ok Run with zero tool calls shows 
 
 **Capture policies.** `GLASSBOX_CAPTURE_POLICY=metadata_only` (default) stores IDs/timing/status/counts
 only; `safe_summary` adds four bounded, redacted text fields (including the Outcome line — the demo
-sets `safe_summary`; the default keeps that column empty by design). `full`/raw capture is prohibited
-by PRD §4, not merely unimplemented.
+sets `safe_summary`; the default keeps that column empty by design); `reasoning_summary` (opt-in, #259)
+adds everything `safe_summary` does plus one `model.reasoning` event per observed reasoning item,
+carrying only a 240-char redacted summary. `full`/raw capture is prohibited by PRD §4, not merely
+unimplemented.
 
 **Metrics and reliability.** `POST /api/metrics/query` answers one aggregate question over a fixed
 metric catalogue (completion/failure rates, tool calls, tokens, latency, denials, task completion —
@@ -221,10 +223,13 @@ Covered:
   `token`, `secret`, `password`, `cookie`, `privateKey`) → bounded pattern scan (bearer tokens, `sk-`,
   `ark-`, AK/SK pairs, private-key blocks, credential URLs) → truncation. If the redactor itself
   errors, only metadata is persisted.
-- **No chain-of-thought, ever.** Reasoning *token counts* are recorded; reasoning text is never
-  captured at any policy (invariant, PRD §4).
-- **No raw prompts/completions** at the default policy; `safe_summary` adds only bounded, redacted
-  summaries. The E2E lane sweeps seeded fake credentials across every persisted and rendered surface.
+- **No raw chain-of-thought, ever.** Reasoning *token counts* are recorded at every policy; raw
+  reasoning text is never stored. Under the explicit opt-in `reasoning_summary` policy only, each
+  reasoning item is kept as a 240-char redacted summary through the same pipeline — never by default
+  (invariant 5, PRD §4).
+- **No raw prompts/completions** at the default policy; `safe_summary`/`reasoning_summary` add only
+  bounded, redacted summaries. The E2E lane sweeps seeded fake credentials across every persisted and
+  rendered surface.
 - API keys reach Codex only via explicit env allow-lists, never argv; child processes never inherit the
   full environment.
 
@@ -283,7 +288,7 @@ Not covered — know this before putting anything sensitive near it:
 | `RUNTIME_PROVIDER` | `local-process` | `container` for disposable Runtime containers (`npm run poc` sets this) |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox; falls back to `danger-full-access` without Landlock |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn |
-| `GLASSBOX_CAPTURE_POLICY` | `metadata_only` | Or `safe_summary` (bounded, redacted summaries + the Outcome column — the demo sets it); raw capture is not implemented |
+| `GLASSBOX_CAPTURE_POLICY` | `metadata_only` | Or `safe_summary` (bounded, redacted summaries + the Outcome column — the demo sets it), or `reasoning_summary` (safe_summary plus 240-char redacted reasoning summaries, #259); raw capture is not implemented. Summaries already persisted stay on disk and are served after a policy downgrade — mind that when lowering the tier |
 | `GLASSBOX_DEMO_FAILURE` | `off` | `timeout` forces the 3 s demo failure through the real Run path |
 | `GLASSBOX_TRACE_DIR` | `$APP_DATA_DIR/traces` | Per-Run NDJSON trace files |
 | `GLASSBOX_RETENTION_DAYS` / `GLASSBOX_MAX_DISK_MB` | `7` / `200` | Startup-only compaction of finished Runs to terminal events + tombstone; `0` disables |

@@ -48,7 +48,7 @@ export interface AgentConfigSnapshot {
   codexSandboxMode: "read-only" | "workspace-write" | "danger-full-access";
   runtimeProvider: "local-process" | "container";
   containerRuntimeImage: string;
-  capturePolicy: "metadata_only" | "safe_summary";
+  capturePolicy: "metadata_only" | "safe_summary" | "reasoning_summary";
   /** sha256 of the Agent's verifyCommand (hashed like `instructions`); absent when none is set. */
   verifyCommand?: string | undefined;
 }
