@@ -7,6 +7,7 @@ import { createApp } from "../app.js";
 import { parseCodexEventLine, type ParsedEvents } from "../codex-runner.js";
 import { loadConfig } from "../config.js";
 import { JsonStore } from "../store.js";
+import { RunLogStore } from "../run-log-store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "../types.js";
 import { WorkspaceManager } from "../workspace.js";
 import { ObservationEmitter } from "./emitter.js";
@@ -50,6 +51,13 @@ async function harness(runner: AgentRunner | ((emitter: ObservationEmitter) => A
   });
   const traceStore = store ?? new NdjsonTraceStore(config.traceDirectory);
   await traceStore.initialize();
+  const runLogStore = new RunLogStore(
+    path.join(config.dataDirectory, "logs"),
+    config.glassboxLogMaxMb * 1024 * 1024,
+    3,
+    [/CANARY-SECRET-\d+/g],
+  );
+  await runLogStore.initialize();
   const logs: string[] = [];
   const emitter = new ObservationEmitter({
     store: traceStore,
@@ -64,9 +72,11 @@ async function harness(runner: AgentRunner | ((emitter: ObservationEmitter) => A
     new WorkspaceManager(path.join(root, "ws")),
     resolvedRunner,
     emitter,
+    undefined,
+    runLogStore,
   );
   await service.initialize();
-  const app = await createApp(config, service, { emitter, store: traceStore });
+  const app = await createApp(config, service, { emitter, store: traceStore, logs: runLogStore });
   const agent = await service.createAgent({ name: "int", instructions: "keep " + OAI });
   const send = async (content: string) => {
     const res = await app.inject({ method: "POST", url: "/api/agents/" + agent.id + "/messages", payload: { content } });
@@ -76,9 +86,10 @@ async function harness(runner: AgentRunner | ((emitter: ObservationEmitter) => A
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     await emitter.flush();
+    await runLogStore.flush();
     return run.id as string;
   };
-  return { config, service, app, emitter, logs, agent, send, traceStore };
+  return { config, service, app, emitter, logs, agent, send, traceStore, runLogStore };
 }
 
 const surfaces = async (h: Awaited<ReturnType<typeof harness>>, runId: string) => {
@@ -90,6 +101,8 @@ const surfaces = async (h: Awaited<ReturnType<typeof harness>>, runId: string) =
     await ok("/api/runs/" + runId + "/audit"),
     await ok("/api/runs"),
     await ok("/api/traces/" + h.service.getRun(runId).traceId + "/audit"),
+    await readFile(path.join(h.config.dataDirectory, "logs", "server.ndjson"), "utf8"),
+    await ok("/api/runs/" + runId + "/logs"),
     await ok("/api/traces/" + h.service.getRun(runId).traceId + "/export"),
     h.logs.join("\n"),
   ];
@@ -106,6 +119,9 @@ describe("AC-03 privacy across surfaces", () => {
       const trace = (await h.app.inject({ method: "GET", url: "/api/runs/" + runId + "/trace" })).json();
       expect(trace.summary.redactedEvents).toBeGreaterThan(0);
       expect((await readFile(path.join(h.config.traceDirectory, runId + ".ndjson"), "utf8"))).toContain("[REDACTED:");
+      const runLogs = (await h.app.inject({ method: "GET", url: "/api/runs/" + runId + "/logs" })).json().lines;
+      expect(runLogs.every((line: Record<string, unknown>) => !("runId" in line) && !("traceId" in line) && !("agentId" in line))).toBe(true);
+      if (mode === "throw") expect(JSON.stringify(runLogs)).toContain("[REDACTED:");
       for (const surface of await surfaces(h, runId)) {
         expect(surface).not.toContain("0f0f0f0f");
         expect(surface).not.toContain("abcdefghijklmnop");

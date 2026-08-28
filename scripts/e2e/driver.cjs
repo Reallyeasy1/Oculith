@@ -433,6 +433,11 @@ async function closeResources() {
   eq(badRun.view.summary.metrics.denials, badRun.view.events.filter((event) => event.type === "policy.denied").length, "denials metric equals a direct event count (#90)");
   // A turn.started can arrive before the 3 s cut (#129 marks the model observed on it), so only the absence claim is asserted.
   ok(badRun.view.summary.capabilities.model !== "unavailable" && badRun.view.summary.capabilities.tool !== "unavailable", "capabilities never read unavailable on a cut-short run (#60): " + JSON.stringify(badRun.view.summary.capabilities));
+  const badLogsResponse = await api("/api/runs/" + badRun.run.id + "/logs");
+  eq(badLogsResponse.status, 200, "/logs resolves for the gated timeout Run");
+  const badLogs = badLogsResponse.json().lines;
+  ok(badLogs.some((line) => line.level === "error" && /timed out/i.test(line.msg + " " + (line.err || ""))), "/logs carries the runner timeout line");
+  sweep("/api/runs/" + badRun.run.id + "/logs", badLogsResponse.text);
   const stopped = badRun.view.events.find((e) => e.type === "runtime.container.stopped");
   eq(stopped && stopped.attributes.cleanup, "rm --force", "container teardown evidence: runtime.container.stopped cleanup=rm --force");
   ok(badRun.view.events.some((e) => e.type === "run.timed_out" && /3000/.test(e.error && e.error.message)), "run.timed_out names the 3000 ms fixture timeout");
@@ -514,9 +519,13 @@ async function closeResources() {
   const ndjson = fs.readdirSync(traceDir, { recursive: true }).filter((f) => String(f).endsWith(".ndjson"));
   ok(ndjson.length >= 2, ndjson.length + " NDJSON trace files under " + traceDir);
   for (const f of ndjson) sweep("file " + f, fs.readFileSync(path.join(traceDir, String(f)), "utf8"));
+  const logDir = path.join(ROOT, "data", "logs");
+  const logFiles = fs.readdirSync(logDir).filter((f) => f.startsWith("server.ndjson"));
+  ok(logFiles.length >= 1 && logFiles.length <= 3, logFiles.length + " bounded server NDJSON log file(s) under " + logDir);
+  for (const f of logFiles) sweep("log file " + f, fs.readFileSync(path.join(logDir, f), "utf8"));
   sweep("/api/runs", (await api("/api/runs")).text);
   for (const r of [okRun, badRun]) {
-    for (const url of ["/api/runs/" + r.run.id + "/trace", "/api/runs/" + r.run.id + "/audit", "/api/traces/" + r.run.traceId + "/audit", "/api/traces/" + r.run.traceId + "/events", "/api/traces/" + r.run.traceId + "/export"]) {
+    for (const url of ["/api/runs/" + r.run.id + "/trace", "/api/runs/" + r.run.id + "/audit", "/api/runs/" + r.run.id + "/logs", "/api/traces/" + r.run.traceId + "/audit", "/api/traces/" + r.run.traceId + "/events", "/api/traces/" + r.run.traceId + "/export"]) {
       const res = await api(url);
       eq(res.status, 200, url + " resolves (a 404 body would be trivially secret-free)");
       sweep(url, res.text);

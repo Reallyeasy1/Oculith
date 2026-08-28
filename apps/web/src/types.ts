@@ -261,6 +261,15 @@ export interface TraceView {
   events: ObservationEvent[];
 }
 
+export interface RunLogLine {
+  time: string;
+  level: string;
+  msg: string;
+  component?: string;
+  spanId?: string;
+  err?: string;
+}
+
 export interface SystemInfo {
   modelConfigured: boolean;
   modelProvider: "ark" | "openai";

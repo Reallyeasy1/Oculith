@@ -11,6 +11,7 @@ import {
   type ObservationEmitter,
   type SpanHandle,
 } from "./glassbox/emitter.js";
+import { redactText } from "./glassbox/redact.js";
 import { newId, type TraceStatus } from "./glassbox/schema.js";
 import { JsonStore } from "./store.js";
 import type {
@@ -25,11 +26,16 @@ import type {
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import type { RunLogStore } from "./run-log-store.js";
 import { boundedChangedPaths, diffWorkspace, snapshotWorkspace } from "./workspace-snapshot.js";
 
 const now = () => new Date().toISOString();
 const HEARTBEAT_INTERVAL_MS = 15_000;
 export const serverHeartbeatPath = (dataDirectory: string) => path.join(dataDirectory, "server-heartbeat.json");
+
+interface AppLogger {
+  child(bindings: Record<string, unknown>): { info(message: string): void; error(error: unknown, message?: string): void };
+}
 
 type ExecutionOptions = {
   runId?: string;
@@ -90,6 +96,7 @@ export class AgentService {
       cancelRequestedAt?: string | undefined;
     }
   >();
+  private appLogger?: AppLogger | undefined;
 
   constructor(
     private readonly config: AppConfig,
@@ -99,7 +106,10 @@ export class AgentService {
     private readonly emitter: ObservationEmitter = createDefaultEmitter(),
     /** Fires after a Run's terminal event is emitted (Run end and restart-cancel); wired to the summary rollup (#168). */
     private readonly onRunEnded?: ((runId: string) => void) | undefined,
+    private readonly runLogs?: RunLogStore | undefined,
   ) {}
+
+  setLogger(logger: AppLogger): void { this.appLogger = logger; }
 
   async initialize(): Promise<void> {
     const lastSeenAt = await this.readHeartbeat();
@@ -574,7 +584,13 @@ export class AgentService {
         }
       : undefined;
     let service: SpanHandle | undefined;
+    const bindings = run.traceId ? { traceId: run.traceId, runId: run.id, agentId: run.agentId } : undefined;
+    const logger = bindings ? this.runLogs?.child({ ...bindings, component: "AgentService" }) : undefined;
+    const runnerLogger = bindings ? this.runLogs?.child({ ...bindings, component: "AgentRunner" }) : undefined;
+    const pino = bindings ? this.appLogger?.child(bindings) : undefined;
     try {
+      pino?.info("Run started");
+      await logger?.info("Run started").catch(() => undefined);
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         if (storedRun) {
@@ -637,6 +653,22 @@ export class AgentService {
             }
           : {}),
         ...(this.config.glassboxDemoFailure === "timeout" ? { timeoutMs: 3_000 } : {}),
+        ...(bindings
+          ? {
+              logger: {
+                info: (message: string) => {
+                  pino?.info(message);
+                  void runnerLogger?.info(message).catch(() => undefined);
+                },
+                error: (message: string, error?: unknown) => {
+                  // Never hand pino the Error itself: its err serializer writes message/stack verbatim to stdout.
+                  const detail = error === undefined ? undefined : redactText(String(error)).text.slice(0, 2_048);
+                  pino?.error(detail ? { detail } : {}, message);
+                  void runnerLogger?.error(message, detail).catch(() => undefined);
+                },
+              },
+            }
+          : {}),
       });
       if (workspaceBefore && ids && service) {
         const workspaceAfter = await snapshotWorkspace(agentAtStart.workspacePath).catch(() => undefined);
@@ -663,6 +695,8 @@ export class AgentService {
         }
       }
       const completedAt = now();
+      pino?.info("Run completed");
+      await logger?.info("Run completed").catch(() => undefined);
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
@@ -714,6 +748,12 @@ export class AgentService {
       const completedAt = now();
       const cancelled = error instanceof RunCancelledError;
       const message = error instanceof Error ? error.message : String(error);
+      if (!cancelled) {
+        const logMessage = /timed out/i.test(message) ? "Runner timed out" : "Runner failed";
+        const detail = redactText(message).text.slice(0, 2_048);
+        pino?.error({ detail }, logMessage);
+        await runnerLogger?.error(logMessage, detail).catch(() => undefined);
+      }
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);

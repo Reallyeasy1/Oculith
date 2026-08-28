@@ -454,6 +454,21 @@ describe("GlassBox control-plane adapter", () => {
     expect(JSON.stringify(safeEvent)).not.toContain(secret);
   });
 
+  it("redacts a runner failure before it reaches the process logger (#75)", async () => {
+    const secret = "ark-12345678-1234-1234-1234-123456789abc";
+    const { service } = await makeTraced(new (class extends FakeRunner {
+      override async run(): Promise<RunnerResult> { throw new Error("boom " + secret); }
+    })());
+    const lines: string[] = [];
+    service.setLogger({ child: () => ({ info: (message) => { lines.push(message); }, error: (detail, message) => { lines.push(JSON.stringify(detail) + " " + message); } }) });
+    const agent = await service.createAgent({ name: "leaky" });
+    const run = (await service.sendMessage(agent.id, "go")).run;
+    expect((await settle(service, run.id)).status).toBe("failed");
+    expect(lines.join("\n")).toContain("Runner failed");
+    expect(lines.join("\n")).toContain("[REDACTED:ark_key]");
+    expect(lines.join("\n")).not.toContain(secret);
+  });
+
   it("observes workspace path changes without storing file contents", async () => {
     const { service, store, emitter } = await makeTraced(new (class extends FakeRunner {
       override async run(request: RunnerRequest): Promise<RunnerResult> {

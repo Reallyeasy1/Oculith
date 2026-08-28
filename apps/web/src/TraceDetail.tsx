@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import type { Assertion, AuditRow, ObservationEvent, RunListItem, Span, TraceView } from "./types";
+import type { Assertion, AuditRow, ObservationEvent, RunListItem, RunLogLine, Span, TraceView } from "./types";
 import { REPORTED_FAILURE_HINT, STATUS_ICON, formatClock, formatDuration, formatRunDuration, formatUsage, workspaceLabel } from "./runs-view-model";
 import {
   CATEGORIES,
@@ -53,6 +53,9 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
   const [expandedState, setExpanded] = useState<Set<string> | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [logs, setLogs] = useState<RunLogLine[]>([]);
+  const [logsTruncated, setLogsTruncated] = useState(false);
+  const [logLevel, setLogLevel] = useState("");
   const [showSaveCase, setShowSaveCase] = useState(false);
   const saveCaseRef = useRef<HTMLFormElement>(null);
   const onSaveCaseKeyDown = useFocusTrap(saveCaseRef, () => { if (!savingCase) setShowSaveCase(false); }, String(showSaveCase));
@@ -71,6 +74,9 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
   // Once per open (App keys this component by runId): bring the header + banner into the first viewport.
   const sectionRef = useRef<HTMLElement>(null);
   useEffect(() => { sectionRef.current?.scrollIntoView({ block: "start" }); }, []);
+  useEffect(() => {
+    void api.logs(runId, logLevel).then((result) => { setLogs(result.lines); setLogsTruncated(result.truncated); }).catch(() => undefined);
+  }, [logLevel, runId]);
 
   const byId = useMemo(() => (view ? indexSpans(view.spans) : new Map<string, Span>()), [view]);
   // Per-row redaction comes from the full event list: the server only nests intermediate events under
@@ -416,7 +422,33 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
         </>
       )}
 
-      {!showAudit && openSpan && <SpanDrawer span={openSpan} view={view} parentName={openSpan.parentSpanId ? byId.get(openSpan.parentSpanId)?.name : undefined} onClose={closeDrawer} />}
+      {!showAudit && (
+        <>
+          <details className="trace-logs">
+            <summary>Logs · {logs.length}{logsTruncated ? "+" : ""}</summary>
+            <label>Level
+              <select value={logLevel} onChange={(event) => setLogLevel(event.target.value)}>
+                <option value="">all</option>
+                <option value="info">info</option>
+                <option value="error">error</option>
+              </select>
+            </label>
+            {logs.length === 0 ? <p className="runs-empty">No log lines carry this Run&apos;s id.</p> : (
+              <ol className="run-logs">
+                {logs.map((line, index) => (
+                  <li key={line.time + ":" + index}>
+                    <time>{formatClock(line.time)}</time> <strong>{line.level}</strong>{" "}
+                    {line.spanId && byId.has(line.spanId) ? <button type="button" onClick={() => focusRow(line.spanId!)}>{line.msg}</button> : <span>{line.msg}</span>}
+                    {line.err && <small>{line.err}</small>}
+                  </li>
+                ))}
+              </ol>
+            )}
+          </details>
+
+          {openSpan && <SpanDrawer span={openSpan} view={view} parentName={openSpan.parentSpanId ? byId.get(openSpan.parentSpanId)?.name : undefined} onClose={closeDrawer} />}
+        </>
+      )}
       {showSaveCase && (
         <div className="modal-backdrop" onMouseDown={() => !savingCase && setShowSaveCase(false)}>
           <form ref={saveCaseRef} className="modal regression-case-modal" role="dialog" aria-modal="true" aria-labelledby="save-case-title" onSubmit={saveCase} onMouseDown={(event) => event.stopPropagation()} onKeyDown={onSaveCaseKeyDown}>

@@ -1241,6 +1241,18 @@ textarea:focus {
   font-size: 13px;
 }
 
+.trace-logs {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.trace-logs summary { cursor: pointer; font-weight: 700; }
+.trace-logs label { display: inline-grid; gap: 4px; margin: 12px 0; }
+.run-logs { margin: 0; padding-left: 24px; font: 12px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.run-logs small { display: block; color: var(--muted); }
+
 .runs-empty-action {
   margin-left: 8px;
   padding: 4px 8px;

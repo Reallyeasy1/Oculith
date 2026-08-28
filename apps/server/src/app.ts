@@ -14,6 +14,7 @@ import { buildTrace, projectAudit, type TraceView } from "./glassbox/query.js";
 import { CATEGORIES, SCHEMA_VERSION, STATUSES } from "./glassbox/schema.js";
 import type { RunIndexEntry, TraceStore } from "./glassbox/store.js";
 import { executionStatusOf, isFresh, rollupRun, summaryFromView, traceStatusOf, type RunSummary, type RunSummaryStore } from "./glassbox/summary.js";
+import type { RunLogStore } from "./run-log-store.js";
 import { caseFromRun, regressionCaseInput } from "./eval/cases.js";
 import { EvalRunner } from "./eval/runner.js";
 import { compareEvalRuns } from "./eval/compare.js";
@@ -51,7 +52,7 @@ const regressionCaseFromRunBody = z.object({
 export async function createApp(
   config: AppConfig,
   service: AgentService,
-  glassbox?: { emitter: ObservationEmitter; store: TraceStore; summaries?: RunSummaryStore | undefined; evaluations?: EvaluationStore | undefined },
+  glassbox?: { emitter: ObservationEmitter; store: TraceStore; summaries?: RunSummaryStore | undefined; evaluations?: EvaluationStore | undefined; logs?: RunLogStore | undefined },
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -60,6 +61,9 @@ export async function createApp(
     },
     bodyLimit: 1_048_576,
   });
+  // Some boundary tests use a deliberately minimal service double; production AgentService exposes
+  // this hook so its per-Run pino child shares Fastify's configured redaction and stdout sink.
+  (service as AgentService & { setLogger?: (logger: typeof app.log) => void }).setLogger?.(app.log);
 
   await app.register(cors, {
     origin:
@@ -215,6 +219,7 @@ export async function createApp(
     const { id } = agentIdParams.parse(request.params);
     const body = messageBody.parse(request.body);
     const result = await service.sendMessage(id, body.content, request.glassbox);
+    request.log = request.log.child({ traceId: result.run.traceId, runId: result.run.id, agentId: id });
     return reply.code(202).send(result);
   });
 
@@ -327,6 +332,12 @@ export async function createApp(
       return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, runs: items };
     });
     app.get("/api/runs/:runId/trace", async (request) => { const { runId } = z.object({ runId: z.string().min(1) }).parse(request.params); service.getRun(runId); return viewFor(runId); });
+    app.get("/api/runs/:runId/logs", async (request) => {
+      const { runId } = z.object({ runId: z.string().min(1) }).parse(request.params);
+      service.getRun(runId);
+      const query = z.object({ level: z.string().max(20).optional(), limit: z.coerce.number().int().min(1).max(500).default(100) }).parse(request.query);
+      return glassbox.logs ? glassbox.logs.readRun(runId, query) : { lines: [], truncated: false };
+    });
     app.get("/api/runs/:runId/audit", async (request) => {
       const { runId } = z.object({ runId: z.string().min(1) }).parse(request.params); service.getRun(runId);
       const view = await viewFor(runId);
