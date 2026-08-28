@@ -1,4 +1,4 @@
-import type { Agent, AgentRun, Assertion, AuditRow, CapturePolicy, EvalRun, Message, RegressionCase, RunListItem, RunLogLine, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
+import type { Agent, AgentRun, Assertion, AuditRow, CapturePolicy, EvalRun, EvaluationResult, Message, RegressionCase, ReliabilityReport, RunListItem, RunLogLine, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -107,6 +107,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  // #173: historical reliability aggregates for the Agent detail panel (#172's endpoint; server defaults
+  // to daily buckets and the seeded task_completion evaluator).
+  reliability: (agentId: string) =>
+    request<ReliabilityReport>("/api/agents/" + agentId + "/reliability"),
+  // #173: stored evaluation results for one Run, shown in the trace detail.
+  runEvaluations: (runId: string) =>
+    request<{ evaluations: EvaluationResult[] }>("/api/runs/" + runId + "/evaluations"),
   logs: (runId: string, level = "") => request<{ lines: RunLogLine[]; truncated: boolean }>("/api/runs/" + runId + "/logs?" + new URLSearchParams({ limit: "500", ...(level ? { level } : {}) })),
   audit: (runId: string) => request<{ schemaVersion: string; capturePolicy: CapturePolicy; audit: AuditRow[] }>("/api/runs/" + runId + "/audit"),
   exportTrace: async (traceId: string): Promise<{ blob: Blob; filename: string }> => {
