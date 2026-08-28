@@ -6,7 +6,7 @@ import type { CapturePolicy, TraceStatus } from "./schema.js";
 import type { RunIndexEntry, TraceStore } from "./store.js";
 
 /** Bump when `summaryFromView` changes shape or meaning; `npm run glassbox:backfill` then rewrites older records. */
-export const ROLLUP_VERSION = 5;
+export const ROLLUP_VERSION = 6; // 6: metrics.timeSplit / timeToFirstToolMs (#129)
 
 export type ExecutionStatus = "running" | "completed" | "failed" | "timeout" | "cancelled";
 export type TaskOutcome = "passed" | "failed" | "unknown";

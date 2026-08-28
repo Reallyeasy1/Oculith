@@ -7,6 +7,7 @@ import { newId, type EventInput, type EventType } from "./schema.js";
  * Every hook is optional work for the parser's existing callers — the sink argument is optional. */
 export interface CodexStreamSink {
   onThreadStarted(threadId: string): void;
+  onTurnStarted(): void;
   onItemStarted(item: Record<string, unknown>): void;
   onItemCompleted(item: Record<string, unknown>): void;
   onTurnCompleted(usage: Record<string, unknown>): void;
@@ -57,6 +58,8 @@ export class CodexStreamObserver implements CodexStreamSink {
   private sawModel = false;
   private finished = false;
   private lastError: string | undefined;
+  private turnIndex = 0;
+  private activeTurn: { spanId: string; turnIndex: number } | undefined;
   private readonly activeItems = new Map<string, { spanId: string; kind: string }>();
 
   constructor(
@@ -87,6 +90,20 @@ export class CodexStreamObserver implements CodexStreamSink {
   onThreadStarted(threadId: string): void {
     this.sawAnyEvent = true;
     this.sessionId = threadId;
+  }
+
+  onTurnStarted(): void {
+    this.sawAnyEvent = true;
+    this.sawModel = true;
+    const turn = { spanId: newId("spn"), turnIndex: ++this.turnIndex };
+    this.activeTurn = turn;
+    this.emitter.emit({
+      ...this.base("model.request", "model.turn", turn.spanId),
+      category: "model",
+      phase: "start",
+      status: "running",
+      attributes: { turnIndex: turn.turnIndex },
+    });
   }
 
   /** Bounded identity (#130): basename of the program plus its first argument, 64 chars max. Codex wraps every
@@ -238,12 +255,15 @@ export class CodexStreamObserver implements CodexStreamSink {
       const value = num(usage[from]);
       if (value !== undefined) attributes[to] = value;
     }
+    const turn = this.activeTurn ?? { spanId: newId("spn"), turnIndex: ++this.turnIndex };
     this.emitter.emit({
-      ...this.base("model.completed", "model.completed"),
+      ...this.base("model.completed", "model.turn", turn.spanId),
       category: "model",
+      ...(this.activeTurn ? { phase: "end" as const } : {}),
       status: "ok",
-      attributes,
+      attributes: { turnIndex: turn.turnIndex, ...attributes },
     });
+    this.activeTurn = undefined;
   }
 
   /** Buffers only: a stream `error` line is a retry notice until the run actually fails (trap 3). */

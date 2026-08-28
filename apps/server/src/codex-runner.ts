@@ -65,6 +65,10 @@ export function parseCodexEventLine(
     sink?.onThreadStarted(event.thread_id);
   }
 
+  if (event.type === "turn.started") {
+    sink?.onTurnStarted();
+  }
+
   if (event.type === "item.completed" && event.item && typeof event.item === "object") {
     const item = event.item as Record<string, unknown>;
     sink?.onItemCompleted(item);

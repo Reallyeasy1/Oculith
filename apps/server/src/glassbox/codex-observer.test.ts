@@ -36,6 +36,7 @@ const lines = [
     },
   }),
   JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Done" } }),
+  JSON.stringify({ type: "turn.started" }),
   JSON.stringify({ type: "turn.completed", usage: { input_tokens: 100, cached_input_tokens: 40, output_tokens: 7 } }),
 ] as const;
 
@@ -62,6 +63,7 @@ describe("CodexStreamObserver", () => {
       "tool.call.failed",
       "tool.call.completed",
       "workspace.changed",
+      "model.request",
       "model.completed",
     ]);
     expect(events.every((e) => e.parentSpanId === "spn_rt" && e.source.observed)).toBe(true);
@@ -74,9 +76,35 @@ describe("CodexStreamObserver", () => {
     expect(events[1]).toMatchObject({ status: "error", error: { type: "exit_code", message: "exit code 1" } });
     expect(events[2]!.attributes).toEqual({ tool: "file_change" });
     expect(events[3]!.attributes).toMatchObject({ fileCount: 2, added: 1, updated: 1 });
-    expect(events[4]!.attributes).toEqual({ inputTokens: 100, cachedInputTokens: 40, outputTokens: 7 });
+    expect(events[4]).toMatchObject({ name: "model.turn", phase: "start", status: "running", attributes: { turnIndex: 1 } });
+    expect(events[5]).toMatchObject({ name: "model.turn", phase: "end", status: "ok", attributes: { turnIndex: 1, inputTokens: 100, cachedInputTokens: 40, outputTokens: 7 } });
+    expect(events[5]!.spanId).toBe(events[4]!.spanId);
     expect(JSON.stringify(events)).not.toContain("SECRET THOUGHTS");
     expect(events.some((e) => e.type === "capability.unavailable")).toBe(false);
+  });
+
+  it("emits one timed model.turn span per turn and leaves a cut-short turn incomplete", async () => {
+    const store = new MemoryTraceStore();
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner");
+    const p = parsed();
+    for (const line of [
+      JSON.stringify({ type: "turn.started" }),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 10, output_tokens: 2 } }),
+      JSON.stringify({ type: "turn.started" }),
+    ]) parseCodexEventLine(line, p, obs);
+    obs.finish("cancelled");
+    await em.flush();
+
+    const events = await store.readRun("run-1");
+    expect(events.map((event) => [event.name, event.phase])).toEqual([
+      ["model.turn", "start"],
+      ["model.turn", "end"],
+      ["model.turn", "start"],
+    ]);
+    expect(events[0]!.spanId).toBe(events[1]!.spanId);
+    expect(events[2]!.spanId).not.toBe(events[0]!.spanId);
+    expect(events.map((event) => event.attributes.turnIndex)).toEqual([1, 1, 2]);
   });
 
   it("metadata_only keeps command text and its secrets out entirely", async () => {
@@ -289,7 +317,7 @@ describe("CodexStreamObserver", () => {
     const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
     const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner");
     obs.onError("Reconnecting... 1/5");
-    parseCodexEventLine(lines[6]!, parsed(), obs);
+    parseCodexEventLine(lines[7]!, parsed(), obs);
     obs.finish();
     await em.flush();
 
@@ -343,10 +371,11 @@ describe.skipIf(!existsSync(fixtureDir))("CodexStreamObserver against real captu
     expect(failure!.attributes.exitCode).toBe(-1);
   });
 
-  it("codex-0.111-turn-failed.jsonl degrades to capability.unavailable plus one error.recorded", async () => {
+  it("codex-0.111-turn-failed.jsonl keeps the started model turn plus one error.recorded", async () => {
     const { events, parsed: p } = await feed("codex-0.111-turn-failed.jsonl", "metadata_only", "error");
     const types = events.map((e) => e.type);
-    expect(types).toContain("capability.unavailable");
+    expect(types).toContain("model.request");
+    expect(types).not.toContain("capability.unavailable");
     expect(types.filter((t) => t === "error.recorded")).toHaveLength(1);
     // trap 1: turn.failed nests its message under error.message.
     expect(p.errors.at(-1)).toContain("401 Unauthorized");

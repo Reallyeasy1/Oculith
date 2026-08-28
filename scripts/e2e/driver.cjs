@@ -214,6 +214,11 @@ async function closeResources() {
   ok(okRun.view.summary.outcome && typeof okRun.view.summary.outcome.finalMessageBytes === "number", "trace summary carries final-message outcome metadata");
   ok(typeof okRun.view.summary.outcome.text === "string" && okRun.view.summary.outcome.text.length <= 240, "safe-summary outcome text is present and bounded to 240 characters");
   ok(okRun.view.events.some((e) => e.type === "runtime.container.started") && okRun.view.events.some((e) => e.type === "runtime.container.stopped"), "trace shows the real container start/stop spans");
+  const turnStarts = okRun.view.events.filter((e) => e.name === "model.turn" && e.phase === "start");
+  const turnEnds = okRun.view.events.filter((e) => e.name === "model.turn" && e.phase === "end");
+  ok(turnStarts.length > 0 && turnStarts.length === turnEnds.length, "real ModelArk Run records one complete model.turn span per turn (#129)");
+  eq(okRun.view.summary.metrics.modelCalls, turnStarts.length, "metrics.modelCalls equals the observed turn count (#129)");
+  ok(okRun.view.summary.metrics.timeSplit.modelMs >= 0 && okRun.view.summary.metrics.timeSplit.toolMs >= 0 && okRun.view.summary.metrics.timeSplit.containerStartMs >= 0, "trace exposes the model/tool/container time split (#129)");
   const toolSpans = flattenSpans(okRun.view.spans).filter((span) => span.category === "tool");
   ok(toolSpans.length > 0 && toolSpans.every((span) => typeof span.durationMs === "number" && span.endedAt), "real tool calls are reconstructed as completed spans with durations (#130)");
   const commandSpan = toolSpans.find((span) => typeof span.attributes.program === "string" && typeof span.attributes.argument0 === "string");
@@ -278,6 +283,9 @@ async function closeResources() {
   ok((await page.locator("#runs-heading").innerText()).includes("E2E GlassBox"), "Runs table is scoped to the selected Agent");
   eq(await page.locator(`${RUNS_TABLE} th`, { hasText: /^Agent$/ }).count(), 0, "Agent column is hidden in the Agent view");
   await openTraceByKeyboard(page, okRun.run.id);
+  const timeSplitField = page.locator(".trace-summary dt", { hasText: /^Time split$/ });
+  await timeSplitField.waitFor({ timeout: 10_000 });
+  ok((await timeSplitField.locator("..").innerText()).includes("model"), "Trace header renders the observed time split (#129)");
   await drawerRoundTrip(page);
   await page.locator(".trace-detail input[type=search]").fill(commandSpan.attributes.program);
   const identifiedTool = page.locator(".trace-name[title]").first();
@@ -381,7 +389,8 @@ async function closeResources() {
   eq((await api("/api/runs")).json().runs.find((r) => r.runId === badRun.run.id).firstFailingStep, "codex exec", "/api/runs firstFailingStep = codex exec");
   const badAudit = (await api("/api/runs/" + badRun.run.id + "/audit")).json().audit;
   ok(badAudit.some((row) => row.outcome === "timeout"), "/audit includes the gated timeout evidence");
-  eq(badRun.view.summary.capabilities.model + "/" + badRun.view.summary.capabilities.tool, "unknown/unknown", "capabilities read unknown on a cut-short run (#60)");
+  // A turn.started can arrive before the 3 s cut (#129 marks the model observed on it), so only the absence claim is asserted.
+  ok(badRun.view.summary.capabilities.model !== "unavailable" && badRun.view.summary.capabilities.tool !== "unavailable", "capabilities never read unavailable on a cut-short run (#60): " + JSON.stringify(badRun.view.summary.capabilities));
   const stopped = badRun.view.events.find((e) => e.type === "runtime.container.stopped");
   eq(stopped && stopped.attributes.cleanup, "rm --force", "container teardown evidence: runtime.container.stopped cleanup=rm --force");
   ok(badRun.view.events.some((e) => e.type === "run.timed_out" && /3000/.test(e.error && e.error.message)), "run.timed_out names the 3000 ms fixture timeout");

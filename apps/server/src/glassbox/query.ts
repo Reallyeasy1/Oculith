@@ -47,6 +47,8 @@ export interface TraceMetrics {
   toolFailures: number;
   toolIdentities?: string[] | undefined;
   modelCalls: number;
+  timeToFirstToolMs?: number | undefined;
+  timeSplit: { modelMs: number; toolMs: number; containerStartMs: number };
   tokens?: { input?: number | undefined; cachedInput?: number | undefined; output?: number | undefined } | undefined;
   retries: number;
   denials: number;
@@ -276,6 +278,18 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
     span.category === "model" && events.some((event) => event.spanId === span.spanId && event.type.startsWith("model.")),
   );
   const retrySpans = new Set(events.filter((event) => event.attempt > 1).map((event) => event.spanId));
+  const firstRunEvent = events.find((event) => event.type === "run.started" || event.type === "run.created");
+  const firstToolEvent = events.find((event) => event.category === "tool");
+  const containerStarted = events.find((event) => event.type === "runtime.container.started");
+  const codexStarted = events.find((event) => event.type === "runtime.codex.started");
+  const spanDuration = (span: Span): number => span.durationMs ?? 0;
+  // A model.turn span is wall-clock turn time and wraps the tool calls made inside it: subtract the
+  // overlap so modelMs and toolMs do not double-count (#129/#130).
+  const spanEnd = (span: Span): number => span.endedAt ? Date.parse(span.endedAt) : Date.parse(span.startedAt) + spanDuration(span);
+  const overlapMs = (a: Span, b: Span): number =>
+    Math.max(0, Math.min(spanEnd(a), spanEnd(b)) - Math.max(Date.parse(a.startedAt), Date.parse(b.startedAt)));
+  const modelOnlyMs = (span: Span): number =>
+    Math.max(0, spanDuration(span) - toolSpans.reduce((total, tool) => total + overlapMs(span, tool), 0));
   const toolIdentities = [...new Set(toolSpans.map((span) => {
     const program = typeof span.attributes.program === "string" ? span.attributes.program : "";
     const argument0 = typeof span.attributes.argument0 === "string" ? span.attributes.argument0 : "";
@@ -291,6 +305,16 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
     ).length,
     ...(toolIdentities.length > 0 ? { toolIdentities } : {}),
     modelCalls: modelSpans.length,
+    ...(firstRunEvent && firstToolEvent
+      ? { timeToFirstToolMs: Math.max(0, Date.parse(firstToolEvent.timestamp) - Date.parse(firstRunEvent.timestamp)) }
+      : {}),
+    timeSplit: {
+      modelMs: modelSpans.reduce((total, span) => total + modelOnlyMs(span), 0),
+      toolMs: toolSpans.reduce((total, span) => total + spanDuration(span), 0),
+      containerStartMs: containerStarted && codexStarted
+        ? Math.max(0, Date.parse(codexStarted.timestamp) - Date.parse(containerStarted.timestamp))
+        : 0,
+    },
     ...(usage && (usage.inputTokens !== undefined || usage.cachedInputTokens !== undefined || usage.outputTokens !== undefined)
       ? { tokens: {
           ...(usage.inputTokens !== undefined ? { input: usage.inputTokens } : {}),
