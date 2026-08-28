@@ -323,15 +323,10 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
         <div className="error-banner trace-banner" aria-live="polite">
           <div>
             <strong>{failure.kind === "denied" ? "First denial" : "First actionable " + failure.kind}: {failure.name}</strong>
-<<<<<<< Updated upstream
-            <span className="trace-banner-meta">{failure.category} · {failure.component}{failure.message ? " · " + failure.message : ""}</span>
-            {failure.hint && <span className="badge badge-warn" title="Derived from the stored provider error by a fixed rule — not a judgement.">{failure.hint}</span>}
-            <p id="trace-diagnosis" className="trace-diagnosis">{failure.diagnosis}</p>
-=======
             {/* #263: the meta line names the origin only; the full error text renders once, in the diagnosis. */}
             <span className="trace-banner-meta" title={failure.message || undefined}>{failure.category} · {failure.component}</span>
+            {failure.hint && <span className="badge badge-warn" title="Derived from the stored provider error by a fixed rule — not a judgement.">{failure.hint}</span>}
             <p id="trace-diagnosis" className="trace-diagnosis">{collapseRequestId(failure.diagnosis)}</p>
->>>>>>> Stashed changes
           </div>
           {failingSpan && (
             <button type="button" className="button button-primary" onClick={jump} aria-describedby="trace-diagnosis">Jump to failing span</button>
