@@ -20,7 +20,7 @@ E1–E3 run in parallel with S6–S8 on lane F; S7's demo script (PRD §13 v4) w
 | S5 | Execute and compare | #105→#85, #86, #89 | S4 | Ordinary isolated EvalRun; comparison flags PASS→FAIL as REGRESSION | in review (#127, #142, #144); #89 open |
 | E1 | Evaluate foundations | #167 (PRD v4) → #168, #169; #176 | S5 on main (#142, #144); PRD v4 merged before #168/#169 code lands | `/api/runs` served from summaries with `taskOutcome: unknown` and zero NDJSON reads; versioned evaluator definitions and redacted results persisted; template hash checked at rerun | in progress (#167, #168, #176) |
 | E2 | Jobs, judge, aggregates | #170 → #171; #172 | E1 stores merged | A job over the ~20 local Runs is resumable after restart and never delays a live Run; `task_completion@1` returns cited results on the UAT fixtures with the fake judge; reliability and compare endpoints equal hand computation with provenance | not started |
-| E3 | Dashboard and comparison | #173 → #174; P1 #175; P2 #177 | E2 endpoints and stored results | AC-09 from the browser with stored results; lane step covers the panel and drill-back; comparison says "quality drift", never REGRESSION; `npm run poc` unchanged with Postgres optional | not started |
+| E3 | Dashboard and comparison | #173 → #174; P1 #191 (PR #197); P2 #175, #177 | E2 endpoints and stored results | AC-09 from the browser with stored results; lane step covers the panel and drill-back; comparison says "quality drift", never REGRESSION; `npm run poc` unchanged with Postgres optional | not started |
 | S6 | Verify | #91; finish #90 | S2 + S5 | Regression story in `npm run check`; new surfaces in verification lane | not started |
 | S7 | Demo | #92; stretch #67, #103 | S5 | Demo script reaches step 9 from clean state; two rehearsals ≤ 3:00 | not started |
 | S8 | Submission | #93, #35, #94, #95 | S7 | README verified on a clean clone; video ≤ 3:00 | not started |
@@ -29,7 +29,7 @@ Critical path: **S1 → S3 (#64→#68) → S4 (#84) → S5 (#105→#85→#86→#
 
 Cut order: **#67 → #80 → #89 → #87**. Never cut **#79, #81, #84, #85, #86, or #92**.
 
-Evaluate critical path: **#167 → #168 → #169 → #170 → #171 → #172 → #173 → #174** (E3 feeds S7's rehearsals). Evaluate cut order: **#177 → #175 → #176**; never cut the P0 chain #168–#174 (PRD §13 v4 walks it).
+Evaluate critical path: **#167 → #168 → #169 → #170 → #171 → #172 → #173 → #174** (E3 feeds S7's rehearsals). Evaluate cut order: **#177 → #175 → #176**; never cut #168, #190, #172, #173 (the P0 observability core; PRD §13 v4 walks it); #169–#171 and #174 are the P1 fast follow.
 
 ## Next up (28 August — observability first, main `189986c`)
 
@@ -39,8 +39,8 @@ Direction locked 28 August: **data → query → aggregation → visualization**
 |---|---|---|---|
 | A — land the Verify chain | 1 | #151 (#88) → #152 (#89) → #178 (#167) → #189 (#168) → #179 (#176) | all reviewed; #152's deep-link blocker fixed; #179 needs a `main` merge after #151 |
 | B — observability core (P0) | 2 | #168 → #190 (metric query + `MetricStore` facade) → #172 (reliability/compare as sugar) → #173 (dashboard, drill-back) | the rollup is the Metric Processor; the query contract is what makes the dashboard queryable, not just drawn |
-| | 3 | #130 → #129 → #132 → #136 | evidence quality feeds the objective metrics (tool identity, model turns, outcome line — #132 raised to P0) |
-| C — storage (P1, started) | 4 | #191 (Postgres phase C: summaries, then evaluation results) | opt-in `GLASSBOX_STORE=postgres`; judged path stays JSON/NDJSON; #175's trace/agents phases → P2 |
+| | 3 | #130 → #129 → #132 → #136 (P1) | evidence quality feeds the objective metrics (tool identity, model turns, outcome line — #132 raised to P0) |
+| C — storage (P1, started) | 4 | #191 / PR #197 (Postgres phase C: summaries, then evaluation results) | opt-in `GLASSBOX_STORE=postgres`; judged path stays JSON/NDJSON; #175's trace/agents phases → P2 |
 | D — semantic evaluation (P1, fast follow) | 5 | #169 → #170 → #171 → #174 → #192 (user-defined evaluators) | the Batch Evaluator branch; dashboard shows telemetry-only until these land |
 | E — submission | 6 | #92, #35, #93, #94, #95 | unchanged |
 
