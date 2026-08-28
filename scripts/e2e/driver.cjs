@@ -166,6 +166,10 @@ const glassboxText = (page) => page.evaluate(() => Array.from(document.querySele
 let server = null;
 let browser = null;
 let exitCode = 0;
+// Exits that skip the finally below (Ctrl+C, uncaught throw): Playwright kills Chrome on 'exit'; nothing else kills
+// the server child, and on Windows it is not in this console's job. kill() is synchronous, so 'exit' is enough.
+process.on("exit", () => { if (server) server.kill(); });
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => process.exit(130));
 
 async function flushOutput() {
   await Promise.all([process.stdout, process.stderr].map((stream) => new Promise((resolve) => {
