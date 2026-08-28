@@ -73,6 +73,10 @@ export function parseCodexEventLine(
     }
   }
 
+  if (event.type === "item.started" && event.item && typeof event.item === "object") {
+    sink?.onItemStarted(event.item as Record<string, unknown>);
+  }
+
   if (event.type === "turn.completed" && event.usage && typeof event.usage === "object") {
     const usage = event.usage as Record<string, unknown>;
     sink?.onTurnCompleted(usage);
