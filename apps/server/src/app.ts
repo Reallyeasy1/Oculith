@@ -60,6 +60,11 @@ export async function createApp(
   service: AgentService,
   glassbox?: { emitter: ObservationEmitter; store: TraceStore; summaries?: RunSummaryStore | undefined; evaluations?: EvaluationStore | undefined; jobs?: EvaluationJobWorker | undefined; logs?: RunLogStore | undefined },
 ): Promise<FastifyInstance> {
+  const tokenPricing = {
+    inputPerMillion: config.glassboxPricePerMtokInput,
+    cachedInputPerMillion: config.glassboxPricePerMtokCachedInput,
+    outputPerMillion: config.glassboxPricePerMtokOutput,
+  };
   const app = Fastify({
     logger: {
       level: config.logLevel,
@@ -268,7 +273,7 @@ export async function createApp(
       body.caseIds.forEach((id) => service.getRegressionCase(id));
       const snapshot = configSnapshot(agent, config);
       const evalRun = await service.createEvalRun({ caseIds: body.caseIds, target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } }, { force: body.force });
-      void new EvalRunner(service, glassbox).execute(evalRun.id).catch(async (error) => {
+      void new EvalRunner(service, { ...glassbox, pricing: tokenPricing }).execute(evalRun.id).catch(async (error) => {
         await service.updateEvalRun(evalRun.id, (item) => { item.status = "failed"; item.completedAt = new Date().toISOString(); item.results.push({ caseId: "", results: [], error: error instanceof Error ? error.message : String(error) }); });
       });
       return reply.code(202).send({ evalRun });
@@ -336,10 +341,7 @@ export async function createApp(
         // The builder selects the newest 20 terminal Runs; the bounded query leaves headroom so recent
         // in-progress Runs cannot displace older completed evidence from that window (#213).
         const summaries = await glassbox.summaries!.query({ agentId: id, limit: BASELINE_QUERY_LIMIT });
-        return { baseline: buildAgentRunBaseline(summaries, {
-          inputPerMillion: config.glassboxPricePerMtokInput,
-          outputPerMillion: config.glassboxPricePerMtokOutput,
-        }) };
+        return { baseline: buildAgentRunBaseline(summaries, tokenPricing) };
       });
     }
     // Derives the case from the Run's trace evidence; 409 without a template, 400 when the Run cannot be a baseline.
@@ -377,7 +379,7 @@ export async function createApp(
       // this map triggers a stored re-rollup of its Run on every poll. The key is omitted entirely when
       // unfiltered so a backend that distinguishes "present but undefined" cannot misread it as a filter.
       const known = new Map(((await glassbox.summaries?.query(q.agentId ? { agentId: q.agentId } : {})) ?? []).map((s) => [s.runId, s]));
-      const rollup = glassbox.summaries ? { traces: glassbox.store, emitter: glassbox.emitter, summaries: glassbox.summaries } : undefined;
+      const rollup = glassbox.summaries ? { traces: glassbox.store, emitter: glassbox.emitter, summaries: glassbox.summaries, pricing: tokenPricing } : undefined;
       const empty = (runId: string): RunSummary => summaryFromView(buildTrace([], { capturePolicy: glassbox.emitter.capturePolicy, degraded: glassbox.emitter.isDegraded(runId) }));
       const items = [];
       for (const run of runs) {
@@ -392,7 +394,7 @@ export async function createApp(
           : summaryFromView(await viewFor(run.id, entry));
         const status = s.eventCount ? traceStatusOf(s.executionStatus) : run.status === "completed" ? "ok" : run.status === "failed" ? "error" : run.status === "cancelled" ? "cancelled" : "running";
         if (q.status && status !== q.status) continue;
-        const cost = estimatedCost(s, { inputPerMillion: config.glassboxPricePerMtokInput, outputPerMillion: config.glassboxPricePerMtokOutput });
+        const cost = s.estimatedCostUsd ?? estimatedCost(s, tokenPricing);
         items.push({ runId: run.id, traceId: run.traceId ?? s.traceId, agentId: run.agentId, agentName: agents.get(run.agentId) ?? "", workspace: s.workspace, status, startedAt: s.startedAt ?? run.createdAt, durationMs: s.durationMs, endedReason: s.endedReason, interruptedAfterMs: s.interruptedAfterMs,
           firstFailingStep: s.firstFailingStep, eventCount: s.eventCount, runtime: config.runtimeProvider, model: config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default",
           usage: s.usage, workspaceChanges: s.workspaceChanges, outcome: s.outcome, capabilities: s.capabilities, toolCalls: s.metrics.toolCalls, toolFailures: s.metrics.toolFailures, toolIdentities: s.metrics.toolIdentities,

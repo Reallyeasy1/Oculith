@@ -1,5 +1,8 @@
 import { computeMetric, percentile, type MetricName, type MetricQuery } from "./metrics.js";
 import type { RunSummary } from "./summary.js";
+import { estimatedCost, type TokenPricing } from "./cost.js";
+
+export { estimatedCost, type TokenPricing } from "./cost.js";
 
 export interface BaselineDistribution {
   p50?: number | undefined;
@@ -23,11 +26,6 @@ export interface AgentRunBaseline {
   estimatedCostUsd?: BaselineDistribution | undefined;
 }
 
-export interface TokenPricing {
-  inputPerMillion?: number | undefined;
-  outputPerMillion?: number | undefined;
-}
-
 function distribution(values: Array<number | undefined>): BaselineDistribution {
   const sorted = values.filter((value): value is number => value !== undefined && Number.isFinite(value) && value >= 0).sort((a, b) => a - b);
   const p50 = percentile(sorted, 0.5);
@@ -35,28 +33,23 @@ function distribution(values: Array<number | undefined>): BaselineDistribution {
   return { ...(p50 === null ? {} : { p50 }), ...(p95 === null ? {} : { p95 }) };
 }
 
-export function estimatedCost(summary: RunSummary, pricing: TokenPricing): number | undefined {
-  const input = summary.usage?.inputTokens ?? summary.metrics.tokens?.input;
-  const output = summary.usage?.outputTokens ?? summary.metrics.tokens?.output;
-  const hasInput = input !== undefined && pricing.inputPerMillion !== undefined;
-  const hasOutput = output !== undefined && pricing.outputPerMillion !== undefined;
-  if (!hasInput && !hasOutput) return undefined;
-  return ((hasInput ? input! * pricing.inputPerMillion! : 0) + (hasOutput ? output! * pricing.outputPerMillion! : 0)) / 1_000_000;
-}
-
 /**
  * FR-23 sugar (#208/#213): the catalogue-representable columns are literal `computeMetric` calls over
  * `range: { lastRuns: 20 }`, so the baseline can never disagree with `POST /api/metrics/query` on the same
  * window. `executionStatus != running` is not expressible as a catalogue filter, so terminal Runs are
  * pre-filtered here; `computeMetric`'s window predicates are idempotent over pre-filtered rows.
- * `inputTokens` (the `usage` fallback the runs list and outlier chips compare against) and
- * `estimatedCostUsd` (priced from config) are not catalogue metrics — they share the nearest-rank
- * `percentile` and the same window instead.
+ * `inputTokens` keeps the `usage` fallback the runs list and outlier chips compare against. Cost is hydrated
+ * only for legacy rows that predate rollup version 7; new rows use the persisted catalogue metric.
  */
 export function buildAgentRunBaseline(summaries: RunSummary[], pricing: TokenPricing = {}): AgentRunBaseline {
-  const window = summaries.filter((summary) => summary.executionStatus !== "running")
+  const legacyWindow = summaries.filter((summary) => summary.executionStatus !== "running")
     .sort((a, b) => (b.startedAt ?? b.updatedAt).localeCompare(a.startedAt ?? a.updatedAt) || a.runId.localeCompare(b.runId))
     .slice(0, BASELINE_WINDOW);
+  const window = legacyWindow.map((summary) => {
+    if (summary.estimatedCostUsd !== undefined) return summary;
+    const cost = estimatedCost(summary, pricing);
+    return cost === undefined ? summary : { ...summary, estimatedCostUsd: cost };
+  });
   const catalogue = (metric: MetricName): BaselineDistribution => {
     const stat = (statistic: "p50" | "p95"): number | null => {
       const query: MetricQuery = { metric, aggregation: { type: statistic }, range: { lastRuns: BASELINE_WINDOW } };
@@ -75,6 +68,6 @@ export function buildAgentRunBaseline(summaries: RunSummary[], pricing: TokenPri
     toolCalls: catalogue("tool_calls"),
     toolFailures: catalogue("tool_failures"),
   };
-  const costs = distribution(window.map((summary) => estimatedCost(summary, pricing)));
+  const costs = catalogue("estimated_cost_usd");
   return costs.p50 === undefined ? baseline : { ...baseline, estimatedCostUsd: costs };
 }

@@ -182,4 +182,15 @@ describe("rollup and backfill", () => {
     await expect(scheduleRollup({ traces, emitter, summaries: broken, log: (m) => logs.push(m) }, "run-1")).resolves.toBeUndefined();
     expect(logs).toEqual(["summary.rollup_failed"]);
   });
+  it("persists the configured cost estimate in the terminal Run rollup", async () => {
+    const { summaries } = await tempStore();
+    const traces = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store: traces, capturePolicy: "metadata_only" });
+    emitAll(emitter, fixture().map((event) => event.type === "model.completed"
+      ? { ...event, attributes: { ...event.attributes, cachedInputTokens: 4 } }
+      : event));
+    await emitter.flush();
+    await rollupRun({ traces, emitter, summaries, pricing: { inputPerMillion: 2, cachedInputPerMillion: 1, outputPerMillion: 4 } }, "run-1");
+    expect((await summaries.get("run-1"))?.estimatedCostUsd).toBe(0.000036);
+  });
 });

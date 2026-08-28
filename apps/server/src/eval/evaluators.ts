@@ -46,8 +46,11 @@ function toolEvents(view: TraceView) {
 function toolMatches(event: TraceView["events"][number], program: string): boolean {
   const expected = program.toLowerCase();
   const observedProgram = typeof event.attributes.program === "string" ? event.attributes.program.toLowerCase() : "";
+  // The wrapper shell (powershell.exe / bash) is the program on both runtimes; argument0 is the
+  // script's own first token ("npm", "node") — the only field that can discriminate commands (#283).
+  const observedArgument0 = typeof event.attributes.argument0 === "string" ? event.attributes.argument0.toLowerCase() : "";
   const name = event.name.toLowerCase();
-  return observedProgram === expected || name === expected || name.endsWith(":" + expected);
+  return observedProgram === expected || observedArgument0 === expected || name === expected || name.endsWith(":" + expected);
 }
 
 const result = (type: Assertion["type"], pass: boolean, expected: string | number, observed: string | number | null, evidenceEventIds: string[], message: string): EvalResult => ({ type, pass, expected, observed, evidenceEventIds, message });

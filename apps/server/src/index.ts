@@ -54,7 +54,11 @@ await evaluations.initialize();
 const evaluationJobs = new EvaluationJobWorker({ jobs: new JsonEvaluationJobStore(store), summaries, evaluations, evaluators: builtinRunEvaluators(), log: glassboxLog });
 await evaluationJobs.initialize();
 evaluationJobs.start();
-const rollup = { traces: traceStore, emitter, summaries, log: glassboxLog };
+const rollup = { traces: traceStore, emitter, summaries, log: glassboxLog, pricing: {
+  inputPerMillion: config.glassboxPricePerMtokInput,
+  cachedInputPerMillion: config.glassboxPricePerMtokCachedInput,
+  outputPerMillion: config.glassboxPricePerMtokOutput,
+} };
 const service = new AgentService(config, store, workspaces, runner, emitter, (runId, verify) => void scheduleRollup(rollup, runId, verify), runLogs);
 await service.initialize();
 await service.startHeartbeat();
