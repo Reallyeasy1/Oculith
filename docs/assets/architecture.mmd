@@ -1,0 +1,46 @@
+flowchart LR
+  subgraph browser["Experience boundary · browser"]
+    Web["React UI<br/>App.tsx · RunsView.tsx · TraceDetail.tsx<br/>Overview.tsx · CompareView.tsx"]
+  end
+  subgraph control["Control plane · host / ECS task"]
+    API["Fastify<br/>app.ts"] --> Service["AgentService<br/>agent-service.ts"]
+    Service --> Json["JsonStore<br/>store.ts"]
+    Service --> Workspaces["WorkspaceManager<br/>workspace.ts"]
+    subgraph glassbox["GlassBox instrumentation boundary"]
+      Context["context.ts"] --> Adapter["service + runner adapters"]
+      Observer["CodexStreamObserver"] --> Adapter
+      Adapter -->|ObservationEvent| Emitter["ObservationEmitter"] --> Redact["REDACTION POINT"] --> EventStore["NDJSON TraceStore + index"]
+      EventStore --> Query["buildTrace / projectAudit"] --> Projections["Trace · Audit · Metrics"]
+      Query -->|rollup at Run end| Summaries["RunSummaryStore<br/>JSON · PostgreSQL"] --> Json
+      Denial["FAILURE / DENIAL EVIDENCE"] --> Emitter
+    end
+    subgraph eval["Regression path"]
+      Cases["RegressionCase"] --> EvalRunner["EvalRunner"] -->|isolated Run| Service
+      EventStore --> Evaluators["deterministic evaluators"] --> EvalRecord["EvalRun"] --> Compare["compareEvalRuns"]
+      EvalRunner --> Evaluators
+      EvalRecord --> Json
+    end
+  end
+  subgraph runtime["Agent Runtime trust boundary"]
+    Runner["CodexRunner / ContainerCodexRunner"] --> Codex["Codex CLI"] --> Model["Ark / OpenAI"]
+    Runner --> Workspace["Agent workspace"]
+  end
+  Web -->|/api/*| API
+  Service -->|AgentRunner.run| Runner
+  API --> Context
+  Service --> Adapter
+  Runner --> Observer
+  Runner -->|exit / timeout / cancel| Denial
+  Observer -->|declined command| Denial
+  Projections --> API
+  Summaries -->|/api/runs list| API
+  Controller["Future controller<br/>NOT BUILT"] -. rulings .-> Denial
+  Controller -. actions .-> Service
+  classDef trust fill:#eef5ff,stroke:#2563eb,stroke-width:2px;
+  classDef privacy fill:#ecfdf5,stroke:#059669,stroke-width:2px;
+  classDef failure fill:#fff7ed,stroke:#ea580c,stroke-width:2px;
+  classDef future fill:#f8fafc,stroke:#64748b,stroke-dasharray:5 5;
+  class browser,runtime trust;
+  class Redact privacy;
+  class Denial failure;
+  class Controller future;

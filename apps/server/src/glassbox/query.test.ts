@@ -14,6 +14,20 @@ const svcStart = () => ev({ type: "agent_service.run.started", category: "contro
 const rtStart = () => ev({ type: "runtime.codex.started", category: "runtime", spanId: "rt", parentSpanId: "svc", phase: "start", status: "running", source: { component: "AgentRunner", observed: true } });
 
 describe("buildTrace", () => {
+  it("projects safe text and metadata-only failure hints from the terminal Run event", () => {
+    const completed = ev({
+      type: "run.completed", category: "control", spanId: "done", status: "ok",
+      attributes: { finalMessageBytes: 42, reportedFailure: true },
+      summary: { text: "Unable to continue", policy: "safe_summary" },
+    });
+    expect(buildTrace([completed], { capturePolicy: "safe_summary" }).summary.outcome).toEqual({
+      text: "Unable to continue", finalMessageBytes: 42, reportedFailure: true,
+    });
+    expect(buildTrace([{ ...completed, summary: undefined }], { capturePolicy: "metadata_only" }).summary.outcome).toEqual({
+      finalMessageBytes: 42, reportedFailure: true,
+    });
+  });
+
   it("formats Windows crash and SIGKILL exit codes with deterministic operator hints", () => {
     expect(formatExitCode(3221225794)).toBe("3221225794 (0xC0000142) — process failed to initialise — the runtime CLI could not start; restart the server");
     expect(formatExitCode(137)).toBe("137 — SIGKILL (timeout, cancellation, or out-of-memory termination)");
@@ -97,6 +111,8 @@ describe("buildTrace", () => {
       toolCalls: 1,
       toolFailures: 0,
       modelCalls: 1,
+      timeToFirstToolMs: 30,
+      timeSplit: { modelMs: 0, toolMs: 5, containerStartMs: 0 },
       tokens: { input: 10, output: 2 },
       retries: 0,
       denials: 0,
@@ -126,6 +142,7 @@ describe("buildTrace", () => {
       toolCalls: 0,
       toolFailures: 0,
       modelCalls: 0,
+      timeSplit: { modelMs: 0, toolMs: 0, containerStartMs: 0 },
       retries: 0,
       denials: 0,
     });
@@ -141,6 +158,53 @@ describe("buildTrace", () => {
       terminalStatus: "ok", toolCalls: 1, toolFailures: 1, modelCalls: 1,
       tokens: { input: 3, cachedInput: 2, output: 1 }, retries: 1, denials: 1,
     });
+  });
+  it("derives model/tool/container timing and time to first tool from observed spans", () => {
+    seq = 0;
+    const events = [
+      root(),
+      ev({ type: "run.created", category: "control", spanId: "created" }),
+      ev({ type: "runtime.container.started", category: "infrastructure", spanId: "container", phase: "start", status: "running" }),
+      ev({ type: "runtime.codex.started", category: "runtime", spanId: "codex", parentSpanId: "container", phase: "start", status: "running" }),
+      ev({ type: "model.request", category: "model", spanId: "turn-1", parentSpanId: "codex", phase: "start", status: "running", name: "model.turn" }),
+      ev({ type: "model.completed", category: "model", spanId: "turn-1", parentSpanId: "codex", phase: "end", status: "ok", name: "model.turn" }),
+      ev({ type: "tool.call.started", category: "tool", spanId: "tool-1", parentSpanId: "codex", phase: "start", status: "running" }),
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tool-1", parentSpanId: "codex", phase: "end", status: "ok" }),
+      ev({ type: "run.completed", category: "control", spanId: "done", status: "ok" }),
+    ];
+    expect(buildTrace(events, { capturePolicy: "metadata_only" }).summary.metrics).toMatchObject({
+      modelCalls: 1,
+      toolCalls: 1,
+      timeToFirstToolMs: 50,
+      timeSplit: { modelMs: 10, toolMs: 10, containerStartMs: 10 },
+    });
+  });
+  it("subtracts tool time nested inside a model.turn so the time split does not double-count", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "model.request", category: "model", spanId: "turn-1", parentSpanId: "rt", phase: "start", status: "running", name: "model.turn" }),
+      ev({ type: "tool.call.started", category: "tool", spanId: "tool-1", parentSpanId: "rt", phase: "start", status: "running" }),
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tool-1", parentSpanId: "rt", phase: "end", status: "ok" }),
+      ev({ type: "model.completed", category: "model", spanId: "turn-1", parentSpanId: "rt", phase: "end", status: "ok", name: "model.turn" }),
+      ev({ type: "run.completed", category: "control", spanId: "done", parentSpanId: "svc", status: "ok" }),
+    ];
+    // turn spans 30ms of wall clock; the tool inside it takes 10ms, so the model itself gets 20ms.
+    expect(buildTrace(events, { capturePolicy: "metadata_only" }).summary.metrics.timeSplit).toEqual({ modelMs: 20, toolMs: 10, containerStartMs: 0 });
+  });
+  it("reconstructs paired tool durations and keeps only the first three bounded identities", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "tool.call.started", category: "tool", spanId: "tool-1", parentSpanId: "rt", phase: "start", status: "running", name: "shell:python3", attributes: { program: "python3", argument0: "missing_script.py" } }),
+      ev({ type: "tool.call.failed", category: "tool", spanId: "tool-1", parentSpanId: "rt", phase: "end", status: "error", name: "shell:python3", attributes: { program: "python3", argument0: "missing_script.py", exitCode: 2 } }),
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tool-2", parentSpanId: "rt", status: "ok", attributes: { program: "npm", argument0: "test" } }),
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tool-3", parentSpanId: "rt", status: "ok", attributes: { program: "git", argument0: "status" } }),
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tool-4", parentSpanId: "rt", status: "ok", attributes: { program: "node", argument0: "check.js" } }),
+      ev({ type: "run.completed", category: "control", spanId: "done", parentSpanId: "svc", status: "ok" }),
+    ];
+    const view = buildTrace(events, { capturePolicy: "metadata_only" });
+    const first = flattenSpans(view.spans).find((span) => span.spanId === "tool-1");
+    expect(first).toMatchObject({ incomplete: false, durationMs: 10, attributes: { program: "python3", argument0: "missing_script.py" } });
+    expect(view.summary.metrics.toolIdentities).toEqual(["python3 missing_script.py", "npm test", "git status"]);
   });
   it("handled tool failure keeps parent ok; cancelled never rolls up ok; open spans are incomplete", () => {
     seq = 0;
@@ -166,19 +230,21 @@ describe("buildTrace", () => {
     const events = [root(), svcStart(),
       ev({ type: "runtime.container.started", category: "runtime", spanId: "ct", parentSpanId: "svc", phase: "start", status: "running", name: "docker run" }),
       ev({ type: "runtime.codex.started", category: "runtime", spanId: "rt", parentSpanId: "ct", phase: "start", status: "running", name: "codex exec", source: { component: "AgentRunner", observed: true } }),
-      ev({ type: "run.cancelled", category: "control", spanId: "rc", parentSpanId: "svc", status: "cancelled", timestamp: t(60_000), source: { component: "AgentService", observed: true }, attributes: { reason: "server_restart" } })];
+      ev({ type: "run.cancelled", category: "control", spanId: "rc", parentSpanId: "svc", status: "cancelled", timestamp: t(60_000), source: { component: "AgentService", observed: true }, attributes: { reason: "server_restart", lastSeenAt: t(45_000) } })];
     const view = buildTrace(events, { capturePolicy: "metadata_only" });
     expect(view.summary.status).toBe("cancelled");
     expect(view.summary.endedReason).toBe("server_restart");
     expect(view.summary.endedAt).toBe(t(60_000));
     expect(view.summary.durationMs).toBe(30); // codex exec start (t40) - root (t10), not the restart-cancel at t60000
+    expect(view.summary.interruptedAfterMs).toBe(44_990); // last heartbeat (t45000) - root (t10): the boot at t60000 is not evidence the Run was alive
+    expect(buildTrace(events.map((e) => (e.type === "run.cancelled" ? { ...e, attributes: { reason: "server_restart" } } : e)), { capturePolicy: "metadata_only" }).summary.interruptedAfterMs).toBe(30); // no heartbeat: falls back to last evidence
     expect(view.summary.failure?.kind).toBe("cancelled");
     expect(view.summary.failure?.spanId).toBe("rt");
     expect(view.summary.failure?.eventId).toBe("evt_4");
     expect(view.summary.failure?.path).toEqual(["root", "svc", "ct", "rt"]);
     expect(view.summary.failure?.component).toBe("AgentRunner");
     expect(view.summary.firstFailingStep).toBe("codex exec");
-    expect(view.summary.failure?.diagnosis).toBe("Run interrupted by a server restart after 0.0 s of observed activity; the runtime span codex exec never closed.");
+    expect(view.summary.failure?.diagnosis).toBe("Run interrupted by a server restart after 45.0 s; last trace evidence was 30 ms after the Run started; the runtime span codex exec never closed.");
   });
   it("user cancel (no reason): still focuses the cancelled codex exec span; no endedReason; full duration", () => {
     seq = 0;
