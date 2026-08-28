@@ -23,6 +23,6 @@ export RUNTIME_INSTANCE_ID="e2e-$$" GLASSBOX_CAPTURE_POLICY="${GLASSBOX_CAPTURE_
 
 echo "[e2e] state root: $root  port: $PORT  instance: $RUNTIME_INSTANCE_ID" >&2
 status=0
-LOCAL_POC_COMMAND="node scripts/e2e/driver.cjs" bash scripts/start-local-poc.sh || status=$?
+LOCAL_POC_COMMAND="exec node scripts/e2e/driver.cjs" bash scripts/start-local-poc.sh || status=$?
 if (( status == 0 )); then rm -rf "$root"; else echo "[e2e] FAILED (exit $status); state kept at $root (server.log is there)" >&2; fi
 exit "$status"

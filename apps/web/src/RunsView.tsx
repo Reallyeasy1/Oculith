@@ -3,9 +3,11 @@ import type { RunListItem } from "./types";
 import {
   FILTER_LABEL,
   QUICK_FILTERS,
+  REPORTED_FAILURE_HINT,
   STATUS_ICON,
   formatClock,
   formatDuration,
+  formatRunDuration,
   formatUsage,
   liveRuns,
   matchesFilter,
@@ -48,7 +50,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
       <div className="playground-topbar">
         <div>
           <span className="eyebrow">GlassBox</span>
-          <h2 id="runs-heading">{title}</h2>
+          <h2 id="runs-heading" tabIndex={-1}>{title}</h2>
         </div>
         <div className="runs-filters" role="group" aria-label="Quick filters">
           {QUICK_FILTERS.map((item) => (
@@ -83,7 +85,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
           ))}
         </ul>
       )}
-      <div className="runs-table-wrap">
+      <div className="runs-table-wrap runs-table-wrap-scroll-hint">
         <table className="runs-table">
           <thead>
             <tr>
@@ -92,6 +94,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
               <th scope="col">Workspace</th>
               <th scope="col">Start</th>
               <th scope="col">Duration</th>
+              <th scope="col">Outcome</th>
               <th scope="col">First failing step</th>
               <th scope="col">Events</th>
               <th scope="col">Config</th>
@@ -107,7 +110,6 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 key={run.runId}
                 data-run-id={run.runId}
                 tabIndex={0}
-                role="button"
                 className={run.runId === selectedRunId ? "selected" : undefined}
                 aria-label={"Open trace for " + (run.agentName || run.runId) + ", " + run.status + ", " + formatClock(run.startedAt)}
                 onClick={() => onOpenTrace(run.runId)}
@@ -130,15 +132,16 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 {showAgent && <td>{run.agentName || run.agentId}</td>}
                 <td>{run.workspace ?? "—"}</td>
                 <td>{formatClock(run.startedAt)}</td>
-                <td>{formatDuration(run.durationMs)}{run.endedReason === "server_restart" ? " · interrupted" : ""}</td>
+                <td>{formatRunDuration(run.durationMs, run.endedReason, run.interruptedAfterMs)}</td>
+                <td className="runs-outcome" title={run.outcome?.text}>{run.outcome?.text ?? (run.outcome?.reportedFailure ? <span className="badge badge-warn" title={REPORTED_FAILURE_HINT}>agent reported failure</span> : "—")}</td>
                 <td>{run.firstFailingStep ?? "—"}</td>
                 <td>{run.eventCount}</td>
                 <td title={run.configSnapshot ? JSON.stringify(run.configSnapshot) : undefined}>
                   <code>{run.configHash?.slice(0, 8) ?? "—"}</code>
                 </td>
-                <td>{run.runtime} · {run.model}</td>
+                <td className="runs-runtime" title={run.runtime + " · " + run.model}>{run.runtime} · {run.model}</td>
                 <td>{formatUsage(run.usage)}</td>
-                <td>
+                <td title={run.toolIdentities?.join(", ")}>
                   <span>{run.toolCalls}{run.toolFailures > 0 && <> · {run.toolFailures} failed</>}</span>{" "}
                   {run.redacted && <span className="badge">redacted</span>}
                   {run.denials > 0 && <span className="badge badge-warn">denied {run.denials}</span>}
