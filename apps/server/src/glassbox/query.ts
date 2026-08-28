@@ -173,7 +173,11 @@ const EXIT_HINTS: Record<number, string> = {
   126: "found but not executable — permissions or wrong interpreter",
   127: "command not found — the program is missing from the runtime image",
   130: "interrupted — SIGINT",
+  128: "invalid exit argument, or the shell could not run the command",
+  134: "SIGABRT — the process aborted itself",
   137: "SIGKILL (timeout, cancellation, or out-of-memory termination)",
+  139: "SIGSEGV — segmentation fault",
+  143: "SIGTERM — asked to stop",
   3221225794: "process failed to initialise — the runtime CLI could not start; restart the server",
 };
 

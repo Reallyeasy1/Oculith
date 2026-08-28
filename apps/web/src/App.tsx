@@ -714,8 +714,10 @@ export default function App() {
                   {workspaces.map((workspace) => <option key={workspace.name} value={workspace.name} label={workspaceOptionLabel(workspace)} />)}
                 </datalist>
                 <p className="form-help" id="workspace-help-settings">
-                  Current workspace: <strong>{selectedWorkspace?.managed ? "managed" : selectedWorkspaceName}</strong>
-                  {selectedWorkspace?.managed && <> (<code>{selectedWorkspaceName}</code>)</>}
+                  {/* `managed` on the workspace goes false as soon as a second Agent attaches; the Agent's own
+                      workspaceManaged is what makes this label stable (#155). */}
+                  Current workspace: <strong>{selected?.workspaceManaged ?? selectedWorkspace?.managed ? "managed" : selectedWorkspaceName}</strong>
+                  {(selected?.workspaceManaged ?? selectedWorkspace?.managed) && <> (<code>{selectedWorkspaceName}</code>)</>}
                   {sharingAgents.length > 0 ? ` · Shared with ${sharingAgents.join(", ")}.` : " · No other Agents share it."}
                   {" "}Switching resets this Agent&apos;s Codex conversation thread.
                 </p>

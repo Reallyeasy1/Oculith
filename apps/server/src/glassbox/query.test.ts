@@ -31,6 +31,10 @@ describe("buildTrace", () => {
   it("formats Windows crash and SIGKILL exit codes with deterministic operator hints", () => {
     expect(formatExitCode(3221225794)).toBe("3221225794 (0xC0000142) — process failed to initialise — the runtime CLI could not start; restart the server");
     expect(formatExitCode(137)).toBe("137 — SIGKILL (timeout, cancellation, or out-of-memory termination)");
+    // the 128+N signal family a container runtime reports (observed 128 in UAT round 6)
+    expect(formatExitCode(128)).toBe("128 — invalid exit argument, or the shell could not run the command");
+    expect(formatExitCode(143)).toBe("143 — SIGTERM — asked to stop");
+    expect(formatExitCode(1)).toBe("1");
     expect(formatExitCode(1)).toBe("1");
   });
   it("explains exit code 127 as a missing program", () => {
