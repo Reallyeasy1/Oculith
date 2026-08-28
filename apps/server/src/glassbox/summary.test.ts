@@ -95,6 +95,8 @@ describe("JsonRunSummaryStore", () => {
     expect((await summaries.query({ limit: 1 })).map((s) => s.runId)).toEqual(["r2"]);
     expect(await summaries.query({ taskOutcome: "passed" })).toEqual([]);
     await summaries.setTaskOutcome("r3", "passed", "deterministic:eval-1");
+    // a rollup racing the evaluator cannot undo its verdict: upsert never touches the outcome fields
+    expect(await summaries.upsert(stub({ runId: "r3", agentId: "a", configHash: "c2", startedAt: t(200), executionStatus: "failed" }))).toMatchObject({ executionStatus: "failed", taskOutcome: "passed", taskOutcomeSource: "deterministic:eval-1" });
     expect(await summaries.get("r3")).toMatchObject({ taskOutcome: "passed", taskOutcomeSource: "deterministic:eval-1" });
     expect((await summaries.query({ taskOutcome: "passed" })).map((s) => s.runId)).toEqual(["r3"]);
     await expect(summaries.setTaskOutcome("nope", "failed", "x")).rejects.toThrow("Run summary not found");

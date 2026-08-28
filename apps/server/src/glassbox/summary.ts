@@ -42,8 +42,14 @@ export interface RunSummaryQuery {
   executionStatus?: ExecutionStatus | undefined; taskOutcome?: TaskOutcome | undefined; limit?: number | undefined;
 }
 
+/**
+ * Contract shared by every backend: `upsert` owns the rollup fields only and never overwrites `taskOutcome` /
+ * `taskOutcomeSource` on an existing row (the evaluation plane writes those through `setTaskOutcome`, which
+ * may race a rollup); it returns the row as stored. `setTaskOutcome` needs the row to exist — a caller that
+ * finishes before the terminal event was rolled up should `await rollupRun(...)` first (it is idempotent).
+ */
 export interface RunSummaryStore {
-  upsert(summary: RunSummary): Promise<void>;
+  upsert(summary: RunSummary): Promise<RunSummary>;
   get(runId: string): Promise<RunSummary | undefined>;
   /** Newest `startedAt` first. */
   query(query?: RunSummaryQuery): Promise<RunSummary[]>;
@@ -85,11 +91,15 @@ export class JsonRunSummaryStore implements RunSummaryStore {
       .slice(0, q.limit ?? Number.POSITIVE_INFINITY);
   }
 
-  async upsert(summary: RunSummary): Promise<void> {
+  async upsert(summary: RunSummary): Promise<RunSummary> {
+    let stored = summary;
     await this.store.mutate((db) => {
       const i = db.runSummaries.findIndex((s) => s.runId === summary.runId);
-      if (i >= 0) db.runSummaries[i] = summary; else db.runSummaries.push(summary);
+      const previous = db.runSummaries[i];
+      stored = previous ? { ...summary, taskOutcome: previous.taskOutcome, taskOutcomeSource: previous.taskOutcomeSource } : summary;
+      if (i >= 0) db.runSummaries[i] = stored; else db.runSummaries.push(stored);
     });
+    return stored;
   }
 
   async setTaskOutcome(runId: string, outcome: TaskOutcome, source: string): Promise<void> {
@@ -106,16 +116,13 @@ export interface RollupDeps {
   log?: ((message: string, meta: Record<string, unknown>) => void) | undefined;
 }
 
-/** Reads the trace, derives the summary and stores it; keeps an outcome the evaluation plane already wrote. */
+/** Reads the trace, derives the summary and stores it; the store keeps an outcome the evaluation plane already wrote. */
 export async function rollupRun(deps: RollupDeps, runId: string, entry?: RunIndexEntry | undefined): Promise<RunSummary | undefined> {
   const events = await deps.traces.readRun(runId);
   if (events.length === 0) return undefined;
   const found = entry ?? deps.traces.listRuns().find((e) => e.runId === runId);
   const view = buildTrace(events, { capturePolicy: deps.emitter.capturePolicy, degraded: deps.emitter.isDegraded(runId), truncated: found?.truncated });
-  const previous = await deps.summaries.get(runId);
-  const summary = summaryFromView(view, { taskOutcome: previous?.taskOutcome, taskOutcomeSource: previous?.taskOutcomeSource });
-  await deps.summaries.upsert(summary);
-  return summary;
+  return deps.summaries.upsert(summaryFromView(view));
 }
 
 /** Write path (invariant 3): waits for the terminal event to land, then rolls up; a failure is logged, never raised. */
