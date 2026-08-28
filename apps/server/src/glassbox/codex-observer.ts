@@ -77,11 +77,16 @@ export class CodexStreamObserver implements CodexStreamSink {
     this.sessionId = threadId;
   }
 
+  /** Bounded identity (#130): basename of the program plus its first argument, 64 chars max. Codex wraps every
+   * command as `/bin/bash -lc '<script>'` (E3/E4) or `powershell.exe -Command "<script>"` (E5), so the first
+   * argument of a shell wrapper is the script's own first token — `bash python3`, not `bash -lc`. */
   private commandIdentity(command: string): { program: string } | { program: string; argument0: string } {
-    const tokens = command.trim().match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+    const tokenize = (text: string): string[] => text.trim().match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
     const unquote = (token: string): string => token.replace(/^(?:"|')|(?:"|')$/g, "");
+    const tokens = tokenize(command);
     const program = path.win32.basename(unquote(tokens[0] ?? "")).slice(0, 40);
-    const argument0 = tokens[1] ? unquote(tokens[1]).slice(0, 64) : undefined;
+    const script = /^-(?:l?c|Command)$/i.test(tokens[1] ?? "") && tokens[2] ? tokenize(unquote(tokens[2]))[0] : undefined;
+    const argument0 = (script ?? (tokens[1] ? unquote(tokens[1]) : undefined))?.slice(0, 64);
     return { program, ...(argument0 ? { argument0 } : {}) };
   }
 

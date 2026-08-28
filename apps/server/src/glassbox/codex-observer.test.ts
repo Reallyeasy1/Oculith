@@ -156,6 +156,34 @@ describe("CodexStreamObserver", () => {
     expect(JSON.stringify(events)).not.toContain("11111111-2222");
   });
 
+  it("unwraps the shell wrapper so argument0 is the script's first token (E3/E4, E5 shapes)", async () => {
+    const store = new MemoryTraceStore();
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner");
+    const p = parsed();
+    const bash = "/bin/bash -lc 'python3 missing_script.py --token ark-11111111-2222-3333-4444-555555555555-abcdef'";
+    parseCodexEventLine(JSON.stringify({ type: "item.started", item: { id: "item_2", type: "command_execution", command: bash, aggregated_output: "", exit_code: null, status: "in_progress" } }), p, obs);
+    parseCodexEventLine(JSON.stringify({ type: "item.completed", item: { id: "item_2", type: "command_execution", command: bash, aggregated_output: "", exit_code: 2, status: "completed" } }), p, obs);
+    // E5 verbatim: a quoted absolute powershell.exe path, -Command, a double-quoted script with escaped inner quotes.
+    const ps = JSON.stringify({ type: "item.completed", item: { id: "item_3", type: "command_execution", command: '"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Set-Content -LiteralPath .\\hello.txt -Value \\"hello\\"; cat .\\hello.txt"', aggregated_output: "", exit_code: 0, status: "completed" } });
+    parseCodexEventLine(ps, p, obs);
+    parseCodexEventLine(JSON.stringify({ type: "item.completed", item: { id: "item_4", type: "command_execution", command: "ls", aggregated_output: "", exit_code: 0, status: "completed" } }), p, obs);
+    await em.flush();
+
+    const events = await store.readRun("run-1");
+    expect(events.map((e) => [e.type, e.attributes.program, e.attributes.argument0])).toEqual([
+      ["tool.call.started", "bash", "python3"],
+      ["tool.call.failed", "bash", "python3"],
+      ["tool.call.completed", "powershell.exe", "Set-Content"],
+      ["tool.call.completed", "ls", undefined],
+    ]);
+    expect(events[1]!.spanId).toBe(events[0]!.spanId);
+    expect(events[1]).toMatchObject({ phase: "end", error: { type: "exit_code", message: "exit code 2" } });
+    expect(events[2]!.phase).toBe("instant");
+    expect(JSON.stringify(events)).not.toContain("missing_script");
+    expect(JSON.stringify(events)).not.toContain("11111111-2222");
+  });
+
   it("records a declined command (exit_code -1) as a denied tool failure", async () => {
     const store = new MemoryTraceStore();
     const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
