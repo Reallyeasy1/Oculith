@@ -33,7 +33,7 @@ export interface RunSummary {
   /** #132 — `text` is an observed fact (the agent's own final words, safe_summary only); `reportedFailure` is a derived phrase match. Neither is `taskOutcome`. */
   outcome?: TraceSummary["outcome"];
   degraded: boolean; truncated: boolean; evicted: boolean; redactedEvents: number; eventCount: number;
-  firstFailingStep?: string | undefined; endedReason?: TraceSummary["endedReason"];
+  firstFailingStep?: string | undefined; endedReason?: TraceSummary["endedReason"]; interruptedAfterMs?: number | undefined;
   rollupVersion: number; updatedAt: string;
 }
 
@@ -70,7 +70,7 @@ export function summaryFromView(view: TraceView, extra: { taskOutcome?: TaskOutc
     workspace: s.workspace, sessionId: s.sessionId,
     metrics: s.metrics, usage: s.usage, denials: s.denials, actions: s.audit.actions, capabilities: s.capabilities, workspaceChanges: s.workspaceChanges, outcome: s.outcome,
     degraded: s.degraded, truncated: s.truncated, evicted: s.evicted, redactedEvents: s.redactedEvents, eventCount: s.eventCount,
-    firstFailingStep: s.firstFailingStep, endedReason: s.endedReason,
+    firstFailingStep: s.firstFailingStep, endedReason: s.endedReason, interruptedAfterMs: s.interruptedAfterMs,
     rollupVersion: ROLLUP_VERSION, updatedAt: extra.updatedAt ?? new Date().toISOString(),
   };
 }

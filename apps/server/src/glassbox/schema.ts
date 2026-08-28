@@ -13,7 +13,7 @@ export const EVENT_TYPES = [
   "http.request.received", "http.request.completed",
   "agent_service.run.started", "agent_service.run.completed", "agent_service.run.failed",
   "runtime.container.started", "runtime.container.stopped",
-  "runtime.codex.started", "runtime.codex.completed", "runtime.codex.failed",
+  "runtime.codex.started", "runtime.codex.first_output", "runtime.codex.completed", "runtime.codex.failed",
   "runtime.postcheck.started", "runtime.postcheck.completed", "runtime.postcheck.failed",
   "model.request", "model.completed",
   "tool.call.started", "tool.call.completed", "tool.call.failed",

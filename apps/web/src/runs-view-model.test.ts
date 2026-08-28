@@ -2,7 +2,7 @@
 //   npx vitest run apps/web/src/runs-view-model.test.ts
 import { describe, expect, it } from "vitest";
 import type { RunListItem, TraceStatus } from "./types";
-import { formatUsage, liveRuns, matchesFilter, needsAttention, recoveredFailures, summarizeRuns } from "./runs-view-model";
+import { formatRunDuration, formatUsage, liveRuns, matchesFilter, needsAttention, recoveredFailures, summarizeRuns } from "./runs-view-model";
 
 function run(status: TraceStatus, degraded = false, agentId = "a", agentName = "A", extra: Partial<RunListItem> = {}): RunListItem {
   return {
@@ -86,6 +86,12 @@ describe("formatUsage", () => {
   it("keeps small usage exact and compacts wide token counts", () => {
     expect(formatUsage({ inputTokens: 37384, outputTokens: 383 })).toBe("37k in · 383 out");
     expect(formatUsage({ inputTokens: 999, outputTokens: 1200 })).toBe("999 in · 1.2k out");
+  });
+});
+
+describe("formatRunDuration", () => {
+  it("renders restart time as a lower bound and keeps the last evidence offset", () => {
+    expect(formatRunDuration(52, "server_restart", 61_000)).toBe("≥ 1m 01s · interrupted (last evidence +52 ms)");
   });
 });
 

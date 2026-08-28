@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AppConfig } from "./config.js";
 import { isModelConfigured } from "./config.js";
@@ -27,6 +28,8 @@ import { WorkspaceManager } from "./workspace.js";
 import { boundedChangedPaths, diffWorkspace, snapshotWorkspace } from "./workspace-snapshot.js";
 
 const now = () => new Date().toISOString();
+const HEARTBEAT_INTERVAL_MS = 15_000;
+export const serverHeartbeatPath = (dataDirectory: string) => path.join(dataDirectory, "server-heartbeat.json");
 
 type ExecutionOptions = {
   runId?: string;
@@ -73,6 +76,7 @@ export function configHash(snapshot: AgentConfigSnapshot): string {
 }
 
 export class AgentService {
+  private heartbeatTimer: NodeJS.Timeout | undefined;
   private readonly activeExecutions = new Map<string, Promise<void>>();
   private readonly cancellationRequests = new Set<string>();
   private readonly spans = new Map<
@@ -98,6 +102,7 @@ export class AgentService {
   ) {}
 
   async initialize(): Promise<void> {
+    const lastSeenAt = await this.readHeartbeat();
     await this.store.initialize();
     await this.workspaces.initialize();
     const interrupted: AgentRun[] = [];
@@ -145,10 +150,40 @@ export class AgentService {
         name: "run.cancelled",
         status: "cancelled",
         source: { component: "AgentService", observed: true },
-        attributes: { reason: "server_restart" },
+        attributes: { reason: "server_restart", ...(lastSeenAt ? { lastSeenAt } : {}) },
       });
       this.onRunEnded?.(run.id);
     }
+  }
+
+  private async readHeartbeat(): Promise<string | undefined> {
+    try {
+      const value = JSON.parse(await readFile(serverHeartbeatPath(this.config.dataDirectory), "utf8")) as { lastSeenAt?: unknown };
+      if (typeof value.lastSeenAt !== "string" || Number.isNaN(Date.parse(value.lastSeenAt))) return undefined;
+      return new Date(value.lastSeenAt).toISOString();
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async writeHeartbeat(): Promise<void> {
+    const target = serverHeartbeatPath(this.config.dataDirectory);
+    const temporary = target + ".tmp";
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(temporary, JSON.stringify({ lastSeenAt: now() }) + "\n", "utf8");
+    await rename(temporary, target);
+  }
+
+  async startHeartbeat(): Promise<void> {
+    this.stopHeartbeat();
+    await this.writeHeartbeat();
+    this.heartbeatTimer = setInterval(() => void this.writeHeartbeat().catch(() => undefined), HEARTBEAT_INTERVAL_MS);
+    this.heartbeatTimer.unref();
+  }
+
+  stopHeartbeat(): void {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = undefined;
   }
 
   listAgents(): Agent[] {
