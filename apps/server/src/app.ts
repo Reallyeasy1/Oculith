@@ -12,6 +12,7 @@ import type { ObservationEmitter } from "./glassbox/emitter.js";
 import { buildTrace, projectAudit, type TraceView } from "./glassbox/query.js";
 import { CATEGORIES, SCHEMA_VERSION, STATUSES } from "./glassbox/schema.js";
 import type { RunIndexEntry, TraceStore } from "./glassbox/store.js";
+import { executionStatusOf, isFresh, rollupRun, summaryFromView, traceStatusOf, type RunSummary, type RunSummaryStore } from "./glassbox/summary.js";
 import { caseFromRun, regressionCaseInput } from "./eval/cases.js";
 import { EvalRunner } from "./eval/runner.js";
 import { compareEvalRuns } from "./eval/compare.js";
@@ -49,7 +50,7 @@ const regressionCaseFromRunBody = z.object({
 export async function createApp(
   config: AppConfig,
   service: AgentService,
-  glassbox?: { emitter: ObservationEmitter; store: TraceStore },
+  glassbox?: { emitter: ObservationEmitter; store: TraceStore; summaries?: RunSummaryStore | undefined },
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -285,23 +286,29 @@ export async function createApp(
       // the page can still come back under `limit` even though older matching runs exist.
       const runs = service.allRuns().filter((r) => (!q.agentId || r.agentId === q.agentId) && (!q.from || r.createdAt >= q.from) && (!q.to || r.createdAt <= q.to))
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, q.limit * 2);
+      // Stored summaries are the read model (#168): one snapshot per request, no NDJSON read for a fresh row.
+      const known = new Map(((await glassbox.summaries?.query()) ?? []).map((s) => [s.runId, s]));
+      const rollup = glassbox.summaries ? { traces: glassbox.store, emitter: glassbox.emitter, summaries: glassbox.summaries } : undefined;
+      const empty = (runId: string): RunSummary => summaryFromView(buildTrace([], { capturePolicy: glassbox.emitter.capturePolicy, degraded: glassbox.emitter.isDegraded(runId) }));
       const items = [];
       for (const run of runs) {
         const entry = index.get(run.id);
-        // No index entry means no stored events, so skip the NDJSON read entirely: the empty view
-        // falls through to the record-derived status branch below.
-        const view = entry
-          ? await viewFor(run.id, entry)
-          : buildTrace([], { capturePolicy: glassbox.emitter.capturePolicy, degraded: glassbox.emitter.isDegraded(run.id) });
-        const status = view.summary.eventCount ? view.summary.status : run.status === "completed" ? "ok" : run.status === "failed" ? "error" : run.status === "cancelled" ? "cancelled" : "running";
+        const cached = known.get(run.id);
+        // No index entry means no stored events (the empty summary falls through to the record-derived status
+        // below). A missing or stale summary of a finished Run is rolled up and stored once; a running Run is
+        // rebuilt from its trace on every poll and not stored — its terminal event writes the record.
+        const s: RunSummary = !entry ? empty(run.id)
+          : isFresh(cached, entry) ? cached
+          : rollup && entry.status !== "running" ? (await rollupRun(rollup, run.id, entry)) ?? empty(run.id)
+          : summaryFromView(await viewFor(run.id, entry));
+        const status = s.eventCount ? traceStatusOf(s.executionStatus) : run.status === "completed" ? "ok" : run.status === "failed" ? "error" : run.status === "cancelled" ? "cancelled" : "running";
         if (q.status && status !== q.status) continue;
-        const s = view.summary;
         items.push({ runId: run.id, traceId: run.traceId ?? s.traceId, agentId: run.agentId, agentName: agents.get(run.agentId) ?? "", workspace: s.workspace, status, startedAt: s.startedAt ?? run.createdAt, durationMs: s.durationMs, endedReason: s.endedReason,
           firstFailingStep: s.firstFailingStep, eventCount: s.eventCount, runtime: config.runtimeProvider, model: config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default",
           usage: s.usage, workspaceChanges: s.workspaceChanges, capabilities: s.capabilities, toolCalls: s.metrics.toolCalls, toolFailures: s.metrics.toolFailures,
           tokens: s.metrics.tokens?.output !== undefined ? { output: s.metrics.tokens.output } : undefined,
-          denials: s.denials, actions: s.audit.actions, configHash: s.configHash ?? run.configHash, configSnapshot: run.configSnapshot,
-          degraded: s.degraded, truncated: s.truncated, evicted: s.evicted, redacted: s.redactedEvents > 0, lastEventAt: view.events.at(-1)?.timestamp });
+          denials: s.denials, actions: s.actions, executionStatus: executionStatusOf(status), taskOutcome: s.taskOutcome, configHash: s.configHash ?? run.configHash, configSnapshot: run.configSnapshot,
+          degraded: s.degraded, truncated: s.truncated, evicted: s.evicted, redacted: s.redactedEvents > 0, lastEventAt: s.lastEventAt });
         if (items.length >= q.limit) break;
       }
       return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, runs: items };
