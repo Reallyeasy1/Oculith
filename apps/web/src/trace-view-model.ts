@@ -38,7 +38,8 @@ export function capabilityCopy(
   }
   return {
     label: "no evidence",
-    title: "The Run was cancelled, timed out, or its stream never started, so nothing was said about this layer; absence proves nothing.",
+    // Reachable on an ok Run too: the observer only declares `unavailable` when *both* layers are unseen (#182 marks the model on every turn).
+    title: "The Run ended without any events for this layer and the runtime declared nothing about it; absence proves nothing.",
   };
 }
 

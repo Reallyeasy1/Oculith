@@ -34,7 +34,7 @@ export function evidenceBadges(run: RunListItem): EvidenceBadge[] {
     .filter((layer) => run.capabilities[layer] === "unknown")
     .map((layer) => ({
       label: `${layer}: no evidence`,
-      title: `No ${layer} evidence — the Run ended before ${layer} calls could be observed; absence proves nothing.`,
+      title: `No ${layer} events were observed and the Run did not end ok, so nothing can be said about this layer; absence proves nothing.`,
       warn: true,
     }));
 }

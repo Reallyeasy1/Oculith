@@ -42,6 +42,7 @@ describe("trace-view-model", () => {
     expect(capabilityBadgeLabel("model", "unknown", "cancelled")).toBe("model: no evidence");
     expect(capabilityBadgeLabel("tool", "observed", "ok")).toBe("tool observed");
     expect(capabilityBadgeLabel("model", "unknown", "running")).toBe("model pending");
+    expect(capabilityBadgeLabel("tool", "unknown", "ok")).toBe("tool: no evidence"); // reachable: chat-only ok Run
   });
 
   it("expands a small successful trace completely but keeps large traces bounded", () => {
