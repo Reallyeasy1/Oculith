@@ -77,7 +77,8 @@ describe("CodexStreamObserver", () => {
     expect(events[2]!.attributes).toEqual({ tool: "file_change" });
     expect(events[3]!.attributes).toMatchObject({ fileCount: 2, added: 1, updated: 1 });
     expect(events[4]).toMatchObject({ name: "model.turn", phase: "start", status: "running", attributes: { turnIndex: 1 } });
-    expect(events[5]).toMatchObject({ name: "model.turn", phase: "end", status: "ok", attributes: { turnIndex: 1, inputTokens: 100, cachedInputTokens: 40, outputTokens: 7 } });
+    // One reasoning + one agent_message pair = one observed model call (#207).
+    expect(events[5]).toMatchObject({ name: "model.turn", phase: "end", status: "ok", attributes: { turnIndex: 1, modelCallsObserved: 1, inputTokens: 100, cachedInputTokens: 40, outputTokens: 7 } });
     expect(events[5]!.spanId).toBe(events[4]!.spanId);
     expect(JSON.stringify(events)).not.toContain("SECRET THOUGHTS");
     expect(events.some((e) => e.type === "capability.unavailable")).toBe(false);
@@ -105,6 +106,78 @@ describe("CodexStreamObserver", () => {
     expect(events[0]!.spanId).toBe(events[1]!.spanId);
     expect(events[2]!.spanId).not.toBe(events[0]!.spanId);
     expect(events.map((event) => event.attributes.turnIndex)).toEqual([1, 1, 2]);
+  });
+
+  it("counts observed reasoning/agent_message items as model calls on the turn end, without capturing them", async () => {
+    const store = new MemoryTraceStore();
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner");
+    const p = parsed();
+    // A three-step run: each reasoning item is one model call; the final message came from the last
+    // call (its pair), not a fourth one (#207).
+    const stream = [
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "i1", type: "reasoning", text: "PLAN STEP ONE" } },
+      { type: "item.completed", item: { id: "i2", type: "command_execution", command: "npm test", exit_code: 0, aggregated_output: "" } },
+      { type: "item.completed", item: { id: "i3", type: "reasoning", text: "PLAN STEP TWO" } },
+      { type: "item.completed", item: { id: "i4", type: "command_execution", command: "ls", exit_code: 0, aggregated_output: "" } },
+      { type: "item.completed", item: { id: "i5", type: "reasoning", text: "WRAP UP" } },
+      { type: "item.completed", item: { id: "i6", type: "agent_message", text: "Done" } },
+      { type: "turn.completed", usage: { input_tokens: 9, output_tokens: 3 } },
+    ];
+    for (const line of stream) parseCodexEventLine(JSON.stringify(line), p, obs);
+    obs.finish();
+    await em.flush();
+
+    const events = await store.readRun("run-1");
+    const end = events.find((e) => e.type === "model.completed")!;
+    expect(end.attributes.modelCallsObserved).toBe(3);
+    expect(JSON.stringify(events)).not.toContain("PLAN STEP");
+  });
+
+  it("counts a bare agent_message as one call and resets the count across turns", async () => {
+    const store = new MemoryTraceStore();
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner");
+    const p = parsed();
+    // Non-reasoning models emit no reasoning items: the message is the only evidence the call happened.
+    for (const line of [
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "i1", type: "agent_message", text: "First" } },
+      { type: "turn.completed", usage: { input_tokens: 5, output_tokens: 1 } },
+      { type: "turn.started" },
+      { type: "turn.completed", usage: { input_tokens: 5, output_tokens: 1 } },
+    ]) parseCodexEventLine(JSON.stringify(line), p, obs);
+    obs.finish();
+    await em.flush();
+
+    const ends = (await store.readRun("run-1")).filter((e) => e.type === "model.completed");
+    expect(ends).toHaveLength(2);
+    expect(ends[0]!.attributes.modelCallsObserved).toBe(1);
+    // The second turn produced no item evidence: no fabricated count.
+    expect(ends[1]!.attributes).not.toHaveProperty("modelCallsObserved");
+  });
+
+  it("drops an abandoned turn's item count instead of donating it to the next turn", async () => {
+    const store = new MemoryTraceStore();
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner");
+    const p = parsed();
+    // Turn 1 never completes (E12 turn.failed ends the stream without turn.completed); the retry
+    // turn must not inherit its two reasoning items — buildTrace floors the open span at one call.
+    for (const line of [
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "i1", type: "reasoning", text: "A" } },
+      { type: "item.completed", item: { id: "i2", type: "reasoning", text: "B" } },
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "i3", type: "agent_message", text: "Done" } },
+      { type: "turn.completed", usage: { input_tokens: 5, output_tokens: 1 } },
+    ]) parseCodexEventLine(JSON.stringify(line), p, obs);
+    obs.finish();
+    await em.flush();
+
+    const end = (await store.readRun("run-1")).find((e) => e.type === "model.completed")!;
+    expect(end.attributes).toMatchObject({ turnIndex: 2, modelCallsObserved: 1 });
   });
 
   it("metadata_only keeps command text and its secrets out entirely", async () => {
@@ -355,6 +428,8 @@ describe.skipIf(!existsSync(fixtureDir))("CodexStreamObserver against real captu
       expect(types.filter((t) => t.startsWith("tool.call.")).length).toBeGreaterThanOrEqual(1);
       expect(types).toContain("model.completed");
       expect(types).not.toContain("capability.unavailable");
+      // Each capture holds one reasoning + one agent_message: one observed model call (#207).
+      expect(events.find((e) => e.type === "model.completed")!.attributes.modelCallsObserved).toBe(1);
       // E7/E8: reasoning text and the non-fatal notice never reach the store.
       expect(JSON.stringify(events)).not.toContain("The task is simple");
       expect(JSON.stringify(events)).not.toContain("Model metadata");

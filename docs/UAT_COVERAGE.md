@@ -38,7 +38,7 @@ Legend — **Unit**: vitest in `apps/server` / `apps/web`; **E2E**: step of `scr
 | Restart / incomplete spans (#33, #101) | agent-service + integration AC-06 (wait-for-runner) | [5] | 3 (forensic) | ok; duration semantics → #136 |
 | Timeline axis and open-ended bars (#73) | view-model tests | — | 3, 4 | ok |
 | configHash (#79) | agent-service + query tests | [2] export/summary | 3, 4 | ok |
-| Per-Run metrics (#74) | query tests | [2] counts equal trace | 3, 4 | ok; `modelCalls` always 1 → #129 |
+| Per-Run metrics (#74) | query tests | [2] counts equal trace | 3, 4 | ok; `modelCalls` per-call via observed reasoning/message items (#207) |
 | Policy denials (#81) | observer + query tests | — | — | **not demonstrable in the POC** (`danger-full-access`, no sandbox setting) → note on #92 |
 | Audit projection and view (#82, #87) | query + app tests | [6] rows equal API | 4 | ok |
 | Actor attribution (#135) | observer + query tests | — | 4 (new Run: agent/runner/human) | ok |
