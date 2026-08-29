@@ -395,7 +395,8 @@ async function closeResources() {
   await page.locator(".runs-empty", { hasText: "No Runs for this Agent yet." }).waitFor({ timeout: 10_000 });
   eq(await rows().count(), 0, "new Agent under 'All': no rows from the other Agent");
   await page.locator(".agent-header button", { hasText: "Settings" }).click();
-  const settingsHelp = page.locator(".settings-panel .form-help");
+  // #253 added a second .form-help (verify command) to the settings panel; target the workspace one.
+  const settingsHelp = page.locator(".settings-panel #workspace-help-settings");
   ok((await settingsHelp.innerText()).includes("Shared with E2E GlassBox"), "Settings identifies the Agent sharing the current workspace");
   ok((await settingsHelp.innerText()).includes("Switching resets this Agent's Codex conversation thread"), "Settings warns that switching resets the Codex thread");
   await page.locator(".settings-panel button", { hasText: "×" }).click();
