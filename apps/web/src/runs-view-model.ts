@@ -8,6 +8,23 @@ export const QUICK_FILTERS: QuickFilter[] = ["attention", "all", "failed", "runn
 
 export const FILTER_LABEL: Partial<Record<QuickFilter, string>> = { attention: "Needs attention", timeout: "Timed out" };
 
+/** #173 — taskOutcome is an evaluation verdict, not process status, so it filters on its own axis. */
+export type TaskOutcomeFilter = "all" | "passed" | "failed" | "unknown";
+
+export const TASK_OUTCOME_FILTERS: TaskOutcomeFilter[] = ["all", "passed", "failed", "unknown"];
+
+export function matchesTaskOutcome(run: RunListItem, filter: TaskOutcomeFilter): boolean {
+  return filter === "all" || run.taskOutcome === filter;
+}
+
+export const TASK_OUTCOME_HINT = "Task outcome: an evaluator or Eval Run verdict on whether the task succeeded — independent of whether the process completed.";
+
+/** Task column chip; `unknown` is the absence of a verdict, so it renders as no claim (—), not a chip. */
+export function taskOutcomeChip(run: RunListItem): { label: string; warn: boolean } | undefined {
+  if (run.taskOutcome === "unknown") return undefined;
+  return { label: "task " + run.taskOutcome, warn: run.taskOutcome === "failed" };
+}
+
 export function workspaceLabel(workspace: string | undefined, agentId: string): { text: string; title?: string } {
   if (!workspace) return { text: "—" };
   return workspace === agentId ? { text: "managed", title: workspace } : { text: workspace };

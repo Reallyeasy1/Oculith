@@ -5,6 +5,7 @@ import { showLastErrorHint } from "./agent-view-model";
 import type { Agent, AgentRun, AgentRunBaseline, EvalRun, Message, RegressionCase, ReliabilityReport, RunListItem, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
 import RunsView from "./RunsView";
 import ReliabilityPanel from "./ReliabilityPanel";
+import type { ReliabilityDrill } from "./reliability-view-model";
 import TraceDetail from "./TraceDetail";
 import Overview from "./Overview";
 import CompareView from "./CompareView";
@@ -62,6 +63,8 @@ export default function App() {
   const [runs, setRuns] = useState<RunListItem[]>([]);
   const [runBaseline, setRunBaseline] = useState<AgentRunBaseline | null>(null);
   const [reliability, setReliability] = useState<ReliabilityReport | null>(null);
+  // #173 drill-back: a fresh object per tile click so RunsView re-applies the filters on repeat clicks.
+  const [runsDrill, setRunsDrill] = useState<ReliabilityDrill | null>(null);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [templates, setTemplates] = useState<WorkspaceTemplate[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
@@ -77,6 +80,9 @@ export default function App() {
   const playgroundCollapsed = selectedRunId !== null && !playgroundExpanded;
   // Switching Agents or views closes the open trace: the bar must never show one Agent above another's trace.
   useEffect(() => { setSelectedRunId(null); }, [selectedId, view]);
+  // A drill belongs to the Agent whose panel was clicked; drop it when the scope changes so a remounted
+  // RunsView opens on its default filter, not a stale drill.
+  useEffect(() => { setRunsDrill(null); }, [selectedId, view]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -1000,7 +1006,7 @@ export default function App() {
           </div>
         )}
 
-        {view === "agent" && selected && <ReliabilityPanel report={reliability} />}
+        {view === "agent" && selected && <ReliabilityPanel report={reliability} onDrill={(drill) => setRunsDrill({ ...drill })} />}
         {selectedRunId && (
           <TraceDetail
             key={selectedRunId}
@@ -1025,6 +1031,7 @@ export default function App() {
           title={view === "agent" && selected ? "Runs · " + selected.name : "Runs"}
           emptyText={view === "agent" && selected ? "No Runs for this Agent yet." : "No Runs observed yet."}
           baseline={view === "agent" ? runBaseline : null}
+          drill={runsDrill}
         />
       </main>
 
