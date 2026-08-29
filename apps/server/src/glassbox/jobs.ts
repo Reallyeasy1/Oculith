@@ -135,10 +135,14 @@ export const terminalStatusEvaluator: RunEvaluator = {
   },
 };
 
-export const builtinRunEvaluators = (taskCompletion?: RunEvaluator | undefined): RunEvaluatorRegistry =>
+export const builtinRunEvaluators = (
+  taskCompletion?: RunEvaluator | undefined,
+  safety?: RunEvaluator | undefined,
+): RunEvaluatorRegistry =>
   new Map([
     ["terminal_status", terminalStatusEvaluator],
     ...(taskCompletion ? [["task_completion", taskCompletion] as const] : []),
+    ...(safety ? [["safety", safety] as const] : []),
   ]);
 
 export interface EvaluationJobWorkerDeps {
