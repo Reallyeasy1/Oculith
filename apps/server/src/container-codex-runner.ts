@@ -333,13 +333,14 @@ export class ContainerCodexRunner implements AgentRunner {
           ? { summary: { text: redactText(stderr).text.slice(-2_048), policy: "safe_summary" as const } }
           : {}),
       });
+      // Only the container's own outcome (status/exitCode/cleanup) — the codex `error` belongs to the
+      // codex span above, not to the container wrapper (#54).
       containerSpan?.end(status, {
         type: "runtime.container.stopped",
         attributes: {
           ...(child.exitCode !== null ? { exitCode: child.exitCode } : {}),
           ...(active.cleanup ? { cleanup: active.cleanup } : {}),
         },
-        ...(error ? { error } : {}),
       });
     };
 

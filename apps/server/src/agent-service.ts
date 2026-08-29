@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AppConfig } from "./config.js";
-import { isModelConfigured } from "./config.js";
+import { configuredModel, isModelConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
 import { createTraceContext, type TraceContext } from "./glassbox/context.js";
 import { describeFinalMessage } from "./glassbox/codex-observer.js";
@@ -72,7 +72,7 @@ export function configSnapshot(agent: Agent, config: AppConfig): AgentConfigSnap
   return {
     instructions: "sha256:" + createHash("sha256").update(agent.instructions).digest("hex"),
     modelProvider: config.modelProvider,
-    model: config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default",
+    model: configuredModel(config),
     codexSandboxMode: config.codexSandboxMode,
     runtimeProvider: config.runtimeProvider,
     containerRuntimeImage: config.containerRuntimeImage,

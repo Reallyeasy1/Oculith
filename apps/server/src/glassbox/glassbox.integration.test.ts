@@ -227,6 +227,10 @@ describe("FR-11 gated failure fixture", () => {
     await h.app.close();
   });
 
+  // Shape determinism leans on an ordering the code guarantees only indirectly (#54): the POST responds
+  // (onResponse emits http.request.completed) before executeRun's first store.mutate finishes, so the
+  // ingress end always lands ahead of run.started. If executeRun ever emits before that mutate, or the
+  // response is delayed past it, the two shapes below will (rightly) stop matching.
   it("GLASSBOX_DEMO_FAILURE=timeout yields a deterministic timeout trace twice", async () => {
     const h = await harness(new LeakyRunner("timeout"), { GLASSBOX_DEMO_FAILURE: "timeout" });
     const shapes: string[] = [];

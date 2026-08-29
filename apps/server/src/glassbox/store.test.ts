@@ -182,6 +182,37 @@ describe("shrinkToCap", () => {
     expect(out.privacy.reason).toBe("event_truncated");
     expect(shrinkToCap(ev(2))).toEqual(ev(2));
   });
+  it("a size cap is a truncation, not a redaction: the redacted flag survives unchanged (#54)", () => {
+    const many: Record<string, string> = {}; for (let i = 0; i < 40; i++) many["k" + i] = "v".repeat(1000);
+    const clean = shrinkToCap(ev(1, { attributes: many }));
+    expect(clean.privacy).toMatchObject({ redacted: false, reason: "event_truncated" });
+    const redacted = shrinkToCap(ev(2, { attributes: many, privacy: { redacted: true, rulesetVersion: "1", rules: ["bearer"] } }));
+    expect(redacted.privacy).toMatchObject({ redacted: true, reason: "event_truncated" });
+  });
+});
+
+describe("BaseTraceStore bookkeeping", () => {
+  it("drops the per-run append queue entry once the run is terminal (no growth over a long-lived process)", async () => {
+    const store = new MemoryTraceStore();
+    await store.initialize();
+    const queues = (store as unknown as { queues: Map<string, unknown> }).queues;
+    await store.append(ev(1));
+    expect(queues.size).toBe(1);
+    await store.append(ev(2, { type: "run.completed", category: "control", status: "ok" }));
+    expect(queues.size).toBe(0);
+    // A late append still works — it just recreates (and then re-drops) the entry.
+    await store.append(ev(3));
+    expect(queues.size).toBe(0);
+    expect((await store.readRun("run-1")).map((e) => e.sequence)).toEqual([1, 2, 3]);
+  });
+  it("a throwing log callback never breaks reads or appends", async () => {
+    const dir = path.join(await tmp(), "traces");
+    const store = new NdjsonTraceStore(dir, () => { throw new Error("logger exploded"); });
+    await store.initialize();
+    await store.append(ev(1));
+    await writeFile(path.join(dir, "run-1.ndjson"), JSON.stringify(ev(1)) + "\nnot-json\n", "utf8");
+    await expect(store.readRun("run-1")).resolves.toHaveLength(1);
+  });
 });
 
 describe("cleanup (retention, FR-14)", () => {

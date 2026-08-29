@@ -81,6 +81,10 @@ describe("Container Codex runner", () => {
     const stopped = events.find((e) => e.type === "runtime.container.stopped");
     expect(stopped).toMatchObject({ status: "cancelled", attributes: { cleanup: "signal" } });
     expect(stopped!.attributes).not.toHaveProperty("removed");
+    // #54: container.stopped carries only the container outcome (status/exitCode/cleanup);
+    // the codex span's error stays on the codex span.
+    expect(stopped!.error).toBeUndefined();
+    expect(events.find((e) => e.type === "runtime.codex.failed")!.error).toMatchObject({ type: "cancelled" });
     const firstOutput = events.filter((e) => e.type === "runtime.codex.first_output");
     expect(firstOutput).toHaveLength(1);
     expect(firstOutput[0]).toMatchObject({ phase: "instant", parentSpanId: expect.any(String), attributes: { latencyMs: expect.any(Number) } });

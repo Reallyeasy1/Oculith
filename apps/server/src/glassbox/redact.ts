@@ -30,6 +30,8 @@ const PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
   // follows the URL inside JSON or markup (e.g. a sibling `"runId":"r_42"` key).
   ["credential_url", /\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:[^\s/@]+@[^\s"'<>]*/gi],
   ["env_assignment", /\b[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)\s*=\s*\S{6,}/g],
+  // ponytail: no volc_sk rule — Volcengine SKs are unanchored base64 (a pattern would false-positive on
+  // ordinary output); add one when a real shape appears. A key split across attribute values stays a known ceiling.
 ];
 
 export function redactText(text: string, extra: RegExp[] = []): { text: string; rules: string[] } {
@@ -54,19 +56,28 @@ export function redactEvent(event: ObservationEvent, options: RedactOptions): Ob
   for (const [key, value] of Object.entries(event.attributes)) {
     if (isDenied(key)) { rules.add("denylist_key"); continue; }
     if (typeof value === "string") {
-      const r = redactText(value, extra); r.rules.forEach((x) => rules.add(x)); attributes[key] = r.text;
+      // Clamps after substitution (here and on name/sessionId/requestId below): a [REDACTED:…] marker can be
+      // longer than the secret it replaced, and an over-bound field would quarantine the event instead of storing it (#54).
+      const r = redactText(value, extra); r.rules.forEach((x) => rules.add(x)); attributes[key] = r.text.slice(0, 2048);
     } else attributes[key] = value;
   }
   const out: ObservationEvent = { ...event, attributes };
 
   // Controller ruling: a runner thread id or span name can carry a key, so scan these string fields too.
+  // requestId is untrusted for the same reason — Fastify copies an inbound `request-id` header into it.
+  // parentSpanId stays unscanned: it is always a server-generated newId, never copied from outside.
   const nameResult = redactText(event.name, extra);
   nameResult.rules.forEach((x) => rules.add(x));
-  out.name = nameResult.text;
+  out.name = nameResult.text.slice(0, 120);
   if (event.sessionId !== undefined) {
     const sessionResult = redactText(event.sessionId, extra);
     sessionResult.rules.forEach((x) => rules.add(x));
-    out.sessionId = sessionResult.text;
+    out.sessionId = sessionResult.text.slice(0, 128);
+  }
+  if (event.requestId !== undefined) {
+    const requestResult = redactText(event.requestId, extra);
+    requestResult.rules.forEach((x) => rules.add(x));
+    out.requestId = requestResult.text.slice(0, 128);
   }
 
   if (event.error) {
@@ -110,6 +121,9 @@ export function failClosed(event: ObservationEvent): ObservationEvent {
   };
   delete out.summary;
   delete out.sessionId;
+  // requestId can be copied from an inbound `request-id` header — untrusted, so dropped like sessionId.
+  // parentSpanId is always a server-generated newId and is kept so the span tree survives.
+  delete out.requestId;
   if (event.error) out.error = { type: event.error.type, message: "[REDACTED:failed_closed]" };
   return out;
 }

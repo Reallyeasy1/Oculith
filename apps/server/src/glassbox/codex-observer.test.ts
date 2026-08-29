@@ -690,9 +690,14 @@ const feed = async (
 };
 
 describe.skipIf(!existsSync(fixtureDir))("CodexStreamObserver against real captures", () => {
-  it.each(["codex-0.111.jsonl", "codex-0.142.jsonl"])(
+  // Each fixture's reasoning text opens with its own phrase (#54: the 0.111 phrase asserted against
+  // 0.142 was vacuously absent) — grep the fixture before changing a phrase here.
+  it.each([
+    ["codex-0.111.jsonl", "The task is simple"],
+    ["codex-0.142.jsonl", "The user wants me to create"],
+  ])(
     "%s maps one shell tool call and the turn usage",
-    async (name) => {
+    async (name, reasoningPhrase) => {
       const { events, obs } = await feed(name, "safe_summary");
       const types = events.map((e) => e.type);
       expect(obs.sessionId).toBeTruthy();
@@ -702,7 +707,7 @@ describe.skipIf(!existsSync(fixtureDir))("CodexStreamObserver against real captu
       // Each capture is reasoning → command → message: the post-tool message is a second call (#230).
       expect(events.find((e) => e.type === "model.completed")!.attributes.modelCallsObserved).toBe(2);
       // E7/E8: reasoning text and the non-fatal notice never reach the store.
-      expect(JSON.stringify(events)).not.toContain("The task is simple");
+      expect(JSON.stringify(events)).not.toContain(reasoningPhrase);
       expect(JSON.stringify(events)).not.toContain("Model metadata");
       // No file_change was ever observed, so no workspace event may be invented.
       expect(types).not.toContain("workspace.changed");

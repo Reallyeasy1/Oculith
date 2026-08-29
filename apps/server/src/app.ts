@@ -4,7 +4,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import type { AppConfig } from "./config.js";
+import { configuredModel, type AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import { configHash, configSnapshot, type AgentService } from "./agent-service.js";
 import { createTraceContext, type TraceContext } from "./glassbox/context.js";
@@ -173,7 +173,8 @@ export async function createApp(
     app.addHook("onRequest", async (request) => {
       if (
         request.method === "POST" &&
-        /^\/api\/agents\/[^/]+\/messages$/.test(request.url)
+        // The matched route pattern, not request.url: a query string (?x=1) must not bypass the http root span (#54).
+        request.routeOptions.url === "/api/agents/:id/messages"
       ) {
         request.glassbox = createTraceContext(
           {
@@ -524,7 +525,7 @@ export async function createApp(
         if (q.status && status !== q.status) continue;
         const cost = s.estimatedCostUsd ?? estimatedCost(s, tokenPricing);
         items.push({ runId: run.id, traceId: run.traceId ?? s.traceId, agentId: run.agentId, agentName: agents.get(run.agentId) ?? "", workspace: s.workspace, sessionId: s.sessionId, status, startedAt: s.startedAt ?? run.createdAt, durationMs: s.durationMs, endedReason: s.endedReason, interruptedAfterMs: s.interruptedAfterMs,
-          firstFailingStep: s.firstFailingStep, eventCount: s.eventCount, runtime: config.runtimeProvider, model: config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default",
+          firstFailingStep: s.firstFailingStep, eventCount: s.eventCount, runtime: config.runtimeProvider, model: configuredModel(config),
           usage: s.usage, workspaceChanges: s.workspaceChanges, outcome: s.outcome, capabilities: s.capabilities, toolCalls: s.metrics.toolCalls, toolFailures: s.metrics.toolFailures, toolIdentities: s.metrics.toolIdentities,
           tokens: s.metrics.tokens?.output !== undefined ? { output: s.metrics.tokens.output } : undefined,
           denials: s.denials, actions: s.actions, executionStatus: executionStatusOf(status), taskOutcome: s.taskOutcome, taskOutcomeSource: s.taskOutcomeSource, configHash: s.configHash ?? run.configHash, configSnapshot: run.configSnapshot,
@@ -563,7 +564,8 @@ export async function createApp(
       const { traceId } = traceParams.parse(request.params); const q = eventsQuery.parse(request.query);
       const runId = runIdFor(traceId);
       const categories = q.category === undefined ? undefined : z.array(z.enum(CATEGORIES)).min(1).parse(q.category.split(",").map((value) => value.trim()).filter(Boolean));
-      const events = (await glassbox.store.readRun(runId)).filter((e) => (!categories || categories.includes(e.category)) && (!q.status || e.status === q.status) && (!q.q || (e.name + " " + (e.error?.message ?? "")).toLowerCase().includes(q.q.toLowerCase())));
+      // q scans name + error + summary text (#54): the captured summary is often the only place a phrase appears.
+      const events = (await glassbox.store.readRun(runId)).filter((e) => (!categories || categories.includes(e.category)) && (!q.status || e.status === q.status) && (!q.q || (e.name + " " + (e.error?.message ?? "") + " " + (e.summary?.text ?? "")).toLowerCase().includes(q.q.toLowerCase())));
       return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, events };
     });
   }

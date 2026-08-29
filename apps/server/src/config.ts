@@ -151,9 +151,10 @@ export function isModelConfigured(config: AppConfig): boolean {
     : !isPlaceholder(config.arkApiKey) && !isPlaceholder(config.arkModel);
 }
 
-/** The model name the active provider will run — the same value `configSnapshot` stamps on each Run. */
+/** The model name the active provider will run — the same value `configSnapshot` stamps on each Run.
+ * An unset ARK_MODEL falls back to the placeholder `codexConfigToml` writes, never to "" (#54). */
 export function configuredModel(config: AppConfig): string {
-  return config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default";
+  return config.modelProvider === "ark" ? config.arkModel || "ep-not-configured" : config.openaiModel || "openai-default";
 }
 
 export function codexConfigToml(config: AppConfig): string {

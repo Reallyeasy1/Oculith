@@ -1,7 +1,7 @@
 import path from "node:path";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
-import { isModelConfigured, loadConfig, writeCodexConfig } from "./config.js";
+import { configuredModel, isModelConfigured, loadConfig, writeCodexConfig } from "./config.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
 import { LiveNotifier } from "./glassbox/live.js";
 import { JsonEvaluationStore } from "./glassbox/evaluation.js";
@@ -53,8 +53,7 @@ for (const entry of traceStore.listRuns()) emitter.seedSequence(entry.traceId, e
 const runner = createRunner(config, emitter);
 // Per-Run summaries (#168): rolled up after each terminal event, off the Run's path; the list route reads them.
 const summaries = await openSummaryStore(config, store);
-const configuredModel = config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default";
-const evaluations = new JsonEvaluationStore(store, summaries, undefined, configuredModel);
+const evaluations = new JsonEvaluationStore(store, summaries, undefined, configuredModel(config));
 await evaluations.initialize();
 // Evaluation jobs (#170): background worker over stored summaries; restart honesty first, then the
 // loop picks up whatever was queued. The real task-completion judge is Ark-only; the deterministic
@@ -75,7 +74,8 @@ const rollup = { traces: traceStore, emitter, summaries, log: glassboxLog, prici
   cachedInputPerMillion: config.glassboxPricePerMtokCachedInput,
   outputPerMillion: config.glassboxPricePerMtokOutput,
 } };
-const service = new AgentService(config, store, workspaces, runner, emitter, (runId, verify) => void scheduleRollup(rollup, runId, verify), runLogs, summaries);
+// evictRun after the rollup (which reads isDegraded): frees the emitter's per-run bookkeeping (#54).
+const service = new AgentService(config, store, workspaces, runner, emitter, (runId, verify) => void scheduleRollup(rollup, runId, verify).then(() => emitter.evictRun(runId)), runLogs, summaries);
 await service.initialize();
 await service.startHeartbeat();
 

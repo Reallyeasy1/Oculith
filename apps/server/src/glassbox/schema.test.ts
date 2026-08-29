@@ -62,6 +62,13 @@ describe("ObservationEvent schema", () => {
     const a = newId("evt"); const b = newId("evt");
     expect(a.startsWith("evt_")).toBe(true); expect(a).not.toBe(b); expect(a.length).toBeLessThanOrEqual(30);
   });
+  it("web types.ts hand-mirrors SCHEMA_VERSION: every hardcoded literal there matches (#54)", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const source = await readFile(new URL("../../../web/src/types.ts", import.meta.url), "utf8");
+    const literals = [...source.matchAll(/schemaVersion: "([^"]+)"/g)].map((m) => m[1]);
+    expect(literals.length).toBeGreaterThan(0);
+    for (const literal of literals) expect(literal).toBe(SCHEMA_VERSION);
+  });
   it("createTraceContext binds ingress identifiers", () => {
     const ctx = createTraceContext({ requestId: "req-1", method: "POST", path: "/api/agents/x/messages" }, "metadata_only");
     expect(ctx.traceId.startsWith("trc_")).toBe(true);
