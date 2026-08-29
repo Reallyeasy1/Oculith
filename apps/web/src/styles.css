@@ -13,7 +13,17 @@
   --purple-soft: #efecff;
   --green: #33906d;
   --red: #c55353;
-  --shadow: 0 24px 60px rgba(39, 38, 33, 0.12);
+  /* #325: activity (running/busy/live) gets its own hue so status never reads as a button. */
+  --blue: #2e6da4;
+  --blue-soft: #e2eef8;
+  --mono: ui-monospace, "Cascadia Code", "Cascadia Mono", Consolas, "SF Mono", monospace;
+  --shadow: 0 1px 2px rgba(39, 38, 33, 0.05), 0 10px 30px rgba(39, 38, 33, 0.08);
+}
+
+h1,
+h2,
+h3 {
+  letter-spacing: -0.015em;
 }
 
 * {
@@ -287,12 +297,12 @@ button {
   background: #7a7a73;
 }
 
-.mini-ready,
-.mini-busy {
+.mini-ready {
   background: #5fc99e;
 }
 
 .mini-busy {
+  background: #5b9bd0;
   animation: pulse 1.2s infinite;
 }
 
@@ -497,8 +507,8 @@ button {
 }
 
 .status-busy {
-  color: #5640bc;
-  background: #e8e4fb;
+  color: var(--blue);
+  background: var(--blue-soft);
 }
 
 .status-error {
@@ -1250,6 +1260,23 @@ textarea:focus {
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.runs-table code {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+/* #325: numeric columns right-align so magnitudes line up. */
+.runs-table th.num,
+.runs-table td.num {
+  text-align: right;
+}
+
+/* #325: placeholder em-dashes recede so real values carry the row. */
+.dash {
+  color: #bcbbb2;
 }
 
 .runs-runtime,
@@ -1372,8 +1399,8 @@ textarea:focus {
 }
 
 .status-running {
-  color: #5640bc;
-  background: #e8e4fb;
+  color: var(--blue);
+  background: var(--blue-soft);
 }
 
 .status-timeout,
@@ -1433,9 +1460,9 @@ textarea:focus {
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
-  border: 1px solid var(--purple);
+  border: 1px solid var(--blue);
   border-radius: 12px;
-  background: var(--purple-soft);
+  background: var(--blue-soft);
   color: var(--ink);
   font: inherit;
   font-size: 12px;
@@ -1444,7 +1471,7 @@ textarea:focus {
 
 .live-run:hover,
 .live-run.selected {
-  background: #e8e4fb;
+  background: #d3e5f5;
 }
 
 .live-run:focus-visible {
@@ -2066,6 +2093,7 @@ textarea:focus {
   margin: 2px 0 0;
   font-size: 20px;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
 .summary-agents {
@@ -2172,11 +2200,18 @@ textarea:focus {
   padding: 0;
   background: none;
   font: inherit;
-  color: var(--purple-dark);
+  /* #325: the value reads as data (ink), the purple underline alone carries the drill affordance. */
+  color: var(--ink);
   cursor: pointer;
   text-decoration: underline;
   text-decoration-color: var(--purple);
-  text-underline-offset: 3px;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 4px;
+}
+
+.reliability-drill:hover,
+.reliability-drill:focus-visible {
+  color: var(--purple-dark);
 }
 
 /* #173 — taskOutcome filter axis next to the quick filters (own class: E2E counts one pressed quick filter) */
