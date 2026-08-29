@@ -11,9 +11,11 @@ import {
   barGeometry,
   capabilityBadgeLabel,
   capabilityCopy,
+  coalesceErrorRows,
   defaultExpanded,
   firstFailedSpanId,
   formatActors,
+  formatAuditActor,
   formatReasoningTokens,
   formatAttribute,
   isFailed,
@@ -90,7 +92,11 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
   // `span.events`, and redaction usually lands on the span's own start/end event.
   const redactedSpans = useMemo(() => new Set(view?.events.filter((e) => e.privacy.redacted).map((e) => e.spanId)), [view]);
   const expanded = useMemo(() => expandedState ?? (view ? defaultExpanded(view) : new Set<string>()), [expandedState, view]);
-  const rows = useMemo(() => (view ? visibleRows(view.spans, expanded, filter) : []), [view, expanded, filter]);
+  const rows = useMemo(() => {
+    if (!view) return [];
+    const base = visibleRows(view.spans, expanded, filter);
+    return filter.errorsOnly ? coalesceErrorRows(base) : base;
+  }, [view, expanded, filter]);
   const ticks = useMemo(() => timelineTicks(view?.summary.durationMs), [view?.summary.durationMs]);
   const rovingId = focusId && rows.some((r) => r.span.spanId === focusId) ? focusId : (rows[0]?.span.spanId ?? null);
 
@@ -475,6 +481,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
               </span>
               <span className="trace-cat">{s.category}</span>
               <span className="trace-badges">
+                {(row.repeat ?? 1) > 1 && <span className="badge" title={`${row.repeat} consecutive identical errors collapsed`}>×{row.repeat}</span>}
                 {s.incomplete && <span className="badge badge-warn">incomplete</span>}
                 {!s.source.observed && <span className="badge">unavailable</span>}
                 {redactedSpans.has(s.spanId) && <span className="badge">redacted</span>}
@@ -587,8 +594,8 @@ function AuditTable({ rows, error, onOpenSpan }: { rows: AuditRow[] | null; erro
             if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpenSpan(row.spanId); }
           }} aria-label={`Open evidence for ${row.action} by ${row.actor.type}/${row.actor.id}`}>
             <td>{formatClock(row.at)}</td>
-            <td>{row.actor.type}/{row.actor.id}</td>
-            <td><button type="button" className="audit-evidence" onClick={() => onOpenSpan(row.spanId)}>{row.action}</button></td>
+            <td title={formatAuditActor(row.actor).title}>{formatAuditActor(row.actor).text}</td>
+            <td><button type="button" className="audit-evidence" onClick={(event) => { event.stopPropagation(); onOpenSpan(row.spanId); }}>{row.action}</button></td>
             <td>{row.resource}</td>
             <td><span className={"badge audit-outcome" + (row.outcome === "denied" ? " badge-error" : "")}>{row.outcome}</span></td>
           </tr>

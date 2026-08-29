@@ -12,10 +12,27 @@
   --purple-dark: #513db9;
   --purple-soft: #efecff;
   --green: #33906d;
+  --green-ink: #277756;
+  --green-soft: #dcf2e9;
   --red: #c55353;
+  /* #338: -ink shades are the text-on-soft-tint reds/greens — darker than the
+     accent tokens on purpose so chip text keeps its contrast. */
+  --red-ink: #ac4343;
+  --red-soft: #f6dfdc;
+  /* #338: warning family for timeout/degraded chips; --amber-bar is the
+     mid-amber used for timeline bar fills/markers where the ink shade is too dark. */
+  --amber: #8a6d1f;
+  --amber-soft: #f6ecd2;
+  --amber-bar: #c9a13d;
   /* #325: activity (running/busy/live) gets its own hue so status never reads as a button. */
   --blue: #2e6da4;
   --blue-soft: #e2eef8;
+  /* #338: radius + control-height scale (9→8, 11→10, 13→12, 14/17/18→16 drift folded in). */
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --control-h: 40px;
   --mono: ui-monospace, "Cascadia Code", "Cascadia Mono", Consolas, "SF Mono", monospace;
   --shadow: 0 1px 2px rgba(39, 38, 33, 0.05), 0 10px 30px rgba(39, 38, 33, 0.08);
 }
@@ -41,14 +58,14 @@ body {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: radial-gradient(circle at top, #f0edff, #f2f1ed 45%);
+  background: radial-gradient(circle at top, var(--purple-soft), #f2f1ed 45%);
 }
 
 .auth-card {
   width: min(420px, 100%);
   padding: 34px;
   border: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: var(--radius-xl);
   background: var(--paper);
   box-shadow: var(--shadow);
 }
@@ -78,9 +95,9 @@ body {
 }
 
 .auth-card input {
-  min-height: 44px;
+  min-height: var(--control-h);
   border: 1px solid var(--line);
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   padding: 0 12px;
 }
 
@@ -101,13 +118,25 @@ button {
 }
 
 .sidebar {
+  /* #338: dark sidebar palette, deliberately separate from the light-theme tokens
+     (folding it into --line/--muted/--purple would force visible changes).
+     Scoped here so every dark-surface color has one home; one-off shades on
+     descendants (avatars, dots, runtime card) stay literal below. */
+  --sb-bg: #242421;
+  --sb-ink: #f5f3ed;
+  --sb-line: #363632;
+  --sb-muted: #85857e;
+  --sb-hover: #2e2e2a;
+  --sb-selected: #353430;
+  --sb-selected-line: #464540;
+  --sb-accent: #826ff0;
   min-height: 100vh;
   padding: 24px 18px;
-  background: #242421;
-  color: #f5f3ed;
+  background: var(--sb-bg);
+  color: var(--sb-ink);
   display: flex;
   flex-direction: column;
-  border-right: 1px solid #363632;
+  border-right: 1px solid var(--sb-line);
 }
 
 .brand {
@@ -120,7 +149,7 @@ button {
 .brand-mark {
   width: 38px;
   height: 38px;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   display: grid;
   place-items: center;
   color: white;
@@ -149,8 +178,8 @@ button {
 
 .button {
   border: 0;
-  border-radius: 10px;
-  min-height: 38px;
+  border-radius: var(--radius-md);
+  min-height: var(--control-h);
   padding: 0 15px;
   font-weight: 600;
   font-size: 13px;
@@ -214,8 +243,8 @@ button {
 }
 
 .button-danger {
-  background: #f7e9e7;
-  color: #ae4646;
+  background: var(--red-soft);
+  color: var(--red-ink);
 }
 
 .button-danger:hover:not(:disabled) {
@@ -225,9 +254,9 @@ button {
 .create-button {
   width: 100%;
   justify-content: flex-start;
-  min-height: 44px;
+  min-height: var(--control-h);
   padding-left: 16px;
-  background: #6b56db;
+  background: var(--purple);
 }
 
 .create-button span {
@@ -239,7 +268,7 @@ button {
   display: flex;
   justify-content: space-between;
   padding: 25px 7px 10px;
-  color: #85857e;
+  color: var(--sb-muted);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.12em;
@@ -257,7 +286,7 @@ button {
   border: 1px solid transparent;
   background: transparent;
   padding: 9px;
-  border-radius: 11px;
+  border-radius: var(--radius-md);
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) 8px;
   align-items: center;
@@ -268,13 +297,13 @@ button {
 }
 
 .agent-card:hover {
-  background: #2e2e2a;
+  background: var(--sb-hover);
 }
 
 .agent-card.selected {
-  background: #353430;
-  border-color: #464540;
-  box-shadow: inset 3px 0 #826ff0;
+  background: var(--sb-selected);
+  border-color: var(--sb-selected-line);
+  box-shadow: inset 3px 0 var(--sb-accent);
 }
 
 .agent-avatar {
@@ -282,7 +311,7 @@ button {
   height: 34px;
   display: grid;
   place-items: center;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   color: #dcd4ff;
   background: #4a415f;
   font-size: 13px;
@@ -341,7 +370,7 @@ button {
   font-size: 12px;
   text-align: center;
   border: 1px dashed #42423d;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   padding: 24px 12px;
 }
 
@@ -354,7 +383,7 @@ button {
 .runtime-card {
   margin-top: auto;
   border: 1px solid #3d3d38;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   padding: 13px;
   background: #292925;
 }
@@ -370,7 +399,7 @@ button {
 }
 
 .runtime-card > span:last-child {
-  color: #85857e;
+  color: var(--sb-muted);
   font-size: 9px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -399,7 +428,7 @@ button {
   margin: 0 auto 14px;
   display: flex;
   align-items: center;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   padding: 10px 13px;
   font-size: 12px;
 }
@@ -416,7 +445,7 @@ button {
   height: 22px;
   display: grid;
   place-items: center;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   color: white;
   font-weight: 700;
   background: #bc9239;
@@ -443,8 +472,8 @@ button {
 
 .error-banner {
   justify-content: space-between;
-  color: #a13f3f;
-  background: #fae8e6;
+  color: var(--red-ink);
+  background: var(--red-soft);
   border: 1px solid #edc4c0;
 }
 
@@ -516,9 +545,13 @@ button {
 
 .status {
   border-radius: 999px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  /* #338: inline-block (not inline-flex) so sentence-long pill content can
+     ellipsize — text-overflow never applies to anonymous flex items. */
+  display: inline-block;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   padding: 4px 9px;
   font-size: 9px;
   font-weight: 700;
@@ -529,14 +562,20 @@ button {
 }
 
 .status-dot {
+  display: inline-block;
   width: 6px;
   height: 6px;
   background: currentColor;
 }
 
+/* Replaces the old flex gap: the leading dot / glyph span keeps its 6px gap to the label. */
+.status > span:first-child {
+  margin-right: 6px;
+}
+
 .status-ready {
-  color: #277756;
-  background: #dcf2e9;
+  color: var(--green-ink);
+  background: var(--green-soft);
 }
 
 .status-busy {
@@ -545,8 +584,8 @@ button {
 }
 
 .status-error {
-  color: #ac4343;
-  background: #f6dfdc;
+  color: var(--red-ink);
+  background: var(--red-soft);
 }
 
 .settings-panel,
@@ -561,7 +600,7 @@ button {
 
 .settings-panel {
   padding: 20px;
-  border-radius: 14px;
+  border-radius: var(--radius-xl);
   margin-bottom: 14px;
 }
 
@@ -603,9 +642,9 @@ input,
 textarea,
 select {
   width: 100%;
-  border: 1px solid #d9d7cf;
+  border: 1px solid var(--line);
   background: white;
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   color: var(--ink);
   outline: none;
   transition: 150ms ease;
@@ -613,7 +652,7 @@ select {
 
 input,
 select {
-  height: 40px;
+  height: var(--control-h);
   padding: 0 12px;
   margin-top: 6px;
 }
@@ -628,7 +667,7 @@ textarea {
 input:focus,
 textarea:focus,
 select:focus {
-  border-color: #8a78e8;
+  border-color: var(--purple);
   box-shadow: 0 0 0 3px rgba(105, 84, 217, 0.11);
 }
 
@@ -652,9 +691,11 @@ select:focus {
 }
 
 .playground {
+  /* ponytail: fixed header assumption (150px) — flexing .main regressed wide
+     tables (min-width:auto) and page height; revisit only with a real fix. */
   height: calc(100vh - 150px);
   min-height: 560px;
-  border-radius: 17px;
+  border-radius: var(--radius-xl);
   overflow: hidden;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
@@ -668,7 +709,7 @@ select:focus {
   justify-content: space-between;
   align-items: center;
   gap: 10px 24px;
-  border-bottom: 1px solid #e5e3dc;
+  border-bottom: 1px solid var(--line);
   background: rgba(251, 250, 247, 0.94);
 }
 
@@ -693,7 +734,7 @@ select:focus {
 .session-info {
   color: #777870;
   font-size: 9px;
-  border: 1px solid #e0ded6;
+  border: 1px solid var(--line);
   border-radius: 999px;
   padding: 5px 9px;
   display: flex;
@@ -703,12 +744,12 @@ select:focus {
 
 /* #257 session-health line: muted like the rest of the chip, amber past the advisory threshold. */
 .session-health {
-  border-left: 1px solid #e0ded6;
+  border-left: 1px solid var(--line);
   padding-left: 6px;
 }
 
 .session-health-warn {
-  color: #8a6d1f;
+  color: var(--amber);
 }
 
 .pulse {
@@ -725,7 +766,7 @@ select:focus {
   padding: 28px max(28px, calc((100% - 760px) / 2));
   background:
     linear-gradient(rgba(255, 255, 255, 0.52), rgba(255, 255, 255, 0.52)),
-    radial-gradient(circle at 20% 0, #f1effb, transparent 38%);
+    radial-gradient(circle at 20% 0, var(--purple-soft), transparent 38%);
 }
 
 .welcome {
@@ -765,7 +806,7 @@ select:focus {
 .welcome-orbit::after {
   width: 5px;
   height: 5px;
-  background: #7e68e6;
+  background: var(--purple);
   top: 8px;
   right: 13px;
   box-shadow: -52px 35px 0 #bcaef2;
@@ -776,7 +817,7 @@ select:focus {
   height: 34px;
   display: grid;
   place-items: center;
-  border-radius: 11px;
+  border-radius: var(--radius-md);
   color: white;
   background: linear-gradient(145deg, #8f7af0, #644ed0);
   font-size: 22px;
@@ -806,8 +847,8 @@ select:focus {
 
 .prompt-grid button {
   min-height: 86px;
-  border: 1px solid #e0ded6;
-  border-radius: 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
   padding: 12px;
   background: rgba(255, 255, 255, 0.72);
   text-align: left;
@@ -868,16 +909,16 @@ select:focus {
 }
 
 .message-user .message-body {
-  background: #ebe7fc;
+  background: var(--purple-soft);
   color: #4b3d86;
   border: 1px solid #ddd6f8;
-  border-radius: 13px 4px 13px 13px;
+  border-radius: var(--radius-lg) 4px var(--radius-lg) var(--radius-lg);
   padding: 11px 13px;
 }
 
 .message-assistant .message-body {
   padding-left: 14px;
-  border-left: 2px solid #8a76e7;
+  border-left: 2px solid var(--purple);
 }
 
 .thinking {
@@ -907,9 +948,9 @@ select:focus {
   flex-direction: column;
   gap: 5px;
   border-left: 2px solid var(--red);
-  background: #fbefed;
+  background: var(--red-soft);
   padding: 10px 12px;
-  color: #9e4545;
+  color: var(--red-ink);
   font-size: 11px;
 }
 
@@ -922,9 +963,9 @@ select:focus {
   align-items: baseline;
   gap: 4px 10px;
   border-left: 2px solid var(--red);
-  background: #fbefed;
+  background: var(--red-soft);
   padding: 4px 12px;
-  color: #9e4545;
+  color: var(--red-ink);
   font-size: 11px;
 }
 
@@ -944,8 +985,8 @@ select:focus {
 .last-run-hint {
   margin: 0;
   padding: 6px max(22px, calc((100% - 800px) / 2));
-  border-top: 1px solid #e1dfd8;
-  color: #ac4343;
+  border-top: 1px solid var(--line);
+  color: var(--red-ink);
   font-size: 12px;
   line-height: 1.45;
   overflow-wrap: anywhere;
@@ -953,7 +994,7 @@ select:focus {
 
 .composer {
   margin: 0;
-  border-top: 1px solid #e1dfd8;
+  border-top: 1px solid var(--line);
   padding: 13px max(22px, calc((100% - 800px) / 2)) 15px;
   background: #f8f7f3;
 }
@@ -984,7 +1025,7 @@ select:focus {
 .send-button {
   width: 32px;
   height: 32px;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   border: 0;
   color: white;
   background: var(--purple);
@@ -1047,7 +1088,7 @@ select:focus {
 .modal {
   width: min(560px, 100%);
   border: 1px solid rgba(255, 255, 255, 0.55);
-  border-radius: 18px;
+  border-radius: var(--radius-xl);
   background: var(--paper);
   padding: 25px;
   box-shadow: var(--shadow);
@@ -1088,7 +1129,7 @@ select:focus {
   gap: 12px;
   padding: 8px 10px;
   border: 1px solid var(--line);
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   background: var(--paper);
 }
 
@@ -1244,6 +1285,12 @@ select:focus {
     min-height: 490px;
   }
 
+  /* #338: the 76px gutter assumed the 900px-breakpoint sidebar rail, which no
+     longer exists at this width (the sidebar is a top bar here). */
+  .span-drawer {
+    width: min(460px, 100vw);
+  }
+
   .playground-topbar {
     padding: 14px;
   }
@@ -1271,7 +1318,7 @@ select:focus {
   margin: 18px auto 0;
   background: var(--paper);
   border: 1px solid var(--line);
-  border-radius: 17px;
+  border-radius: var(--radius-xl);
   box-shadow: 0 12px 36px rgba(43, 42, 38, 0.06);
   overflow: hidden;
 }
@@ -1310,7 +1357,7 @@ select:focus {
   margin: 0 0 0.75rem;
   padding: 0 22px;
   color: var(--muted);
-  font-size: 0.86rem;
+  font-size: 13px;
 }
 
 .badge-outlier {
@@ -1391,7 +1438,8 @@ select:focus {
 
 .runs-table th,
 .runs-table td {
-  padding: 8px 10px;
+  /* #338: compact density — 8px vertical padding read ~2× taller than needed. */
+  padding: 5px 10px;
   text-align: left;
   white-space: nowrap;
   border-bottom: 1px solid #ecebe5;
@@ -1429,7 +1477,7 @@ select:focus {
 @media (max-width: 1439px) {
   .runs-table th,
   .runs-table td {
-    padding: 8px;
+    padding: 5px 8px;
   }
 
   .runs-runtime {
@@ -1460,15 +1508,15 @@ select:focus {
   margin-top: 16px;
   padding: 12px;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
 }
 
 .trace-logs summary { cursor: pointer; font-weight: 700; }
 .trace-logs label { display: inline-grid; gap: 4px; margin: 12px 0; }
 .run-logs { margin: 0; padding-left: 24px; font: 12px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .run-logs small { display: block; color: var(--muted); }
-.run-logs .log-error strong { color: #a13f3f; }
-.run-logs .log-warn strong { color: #8a6d1f; }
+.run-logs .log-error strong { color: var(--red-ink); }
+.run-logs .log-warn strong { color: var(--amber); }
 
 .runs-empty-action {
   margin-left: 8px;
@@ -1476,8 +1524,8 @@ select:focus {
 }
 
 .status-ok {
-  color: #277756;
-  background: #dcf2e9;
+  color: var(--green-ink);
+  background: var(--green-soft);
 }
 
 .status-running {
@@ -1486,8 +1534,8 @@ select:focus {
 }
 
 .status-timeout {
-  color: #8a6d1f;
-  background: #f6ecd2;
+  color: var(--amber);
+  background: var(--amber-soft);
 }
 
 /* Cancelled/started are neutral, not warnings — amber stays for timeout/degraded. */
@@ -1511,9 +1559,9 @@ select:focus {
 }
 
 .badge-warn {
-  color: #8a6d1f;
+  color: var(--amber);
   border-color: #e3cf95;
-  background: #f6ecd2;
+  background: var(--amber-soft);
 }
 
 .badge-recovered {
@@ -1549,7 +1597,7 @@ select:focus {
   gap: 10px;
   padding: 8px 12px;
   border: 1px solid var(--blue);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   background: var(--blue-soft);
   color: var(--ink);
   font: inherit;
@@ -1572,9 +1620,9 @@ select:focus {
 }
 
 .badge-error {
-  color: #ac4343;
+  color: var(--red-ink);
   border-color: #e8b4ae;
-  background: #f6dfdc;
+  background: var(--red-soft);
 }
 
 
@@ -1605,7 +1653,7 @@ select:focus {
   gap: 12px;
   background: var(--paper);
   border: 1px solid var(--line);
-  border-radius: 17px;
+  border-radius: var(--radius-xl);
 }
 
 .playground-bar h1 {
@@ -1747,7 +1795,7 @@ select:focus {
   margin: 0;
   padding: 5px 8px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: #fff;
   color: var(--ink);
 }
@@ -1879,7 +1927,7 @@ select:focus {
 }
 
 .trace-row.failing {
-  background: #fae8e6;
+  background: var(--red-soft);
 }
 
 .trace-row.context {
@@ -1960,7 +2008,7 @@ select:focus {
 
 .trace-bar-fill.fill-timeout,
 .trace-bar-fill.fill-cancelled {
-  background: #c9a13d;
+  background: var(--amber-bar);
 }
 
 /* #325 activity-blue: a still-running span is activity, not brand purple. */
@@ -1984,7 +2032,7 @@ select:focus {
 
 .trace-bar-fill.open-ended.fill-timeout,
 .trace-bar-fill.open-ended.fill-cancelled {
-  color: #c9a13d;
+  color: var(--amber-bar);
 }
 
 .trace-bar-fill.open-ended.fill-running {
@@ -2011,7 +2059,7 @@ select:focus {
 
 .trace-bar-marker.fill-timeout,
 .trace-bar-marker.fill-cancelled {
-  background: #c9a13d;
+  background: var(--amber-bar);
 }
 
 .trace-bar-marker.fill-running {
@@ -2125,7 +2173,7 @@ select:focus {
 
 .span-event-error {
   grid-column: 1 / -1;
-  color: #a13f3f;
+  color: var(--red-ink);
   overflow-wrap: anywhere;
 }
 
@@ -2199,7 +2247,7 @@ select:focus {
   min-width: 120px;
   padding: 10px 14px;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   background: var(--paper);
 }
 
@@ -2245,11 +2293,11 @@ select:focus {
 .comparison-view { margin-top: 18px; }
 .comparison-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; padding: 14px; }
 .comparison-controls label { display: grid; gap: 4px; font-size: 11px; color: var(--muted); }
-.comparison-banner { margin: 0 14px 14px; padding: 10px 12px; border-radius: 9px; }
-.comparison-banner.has-regression { color: #8d2727; background: #fbe5e5; border: 1px solid #e2aaaa; border-left: 4px solid #8d2727; }
+.comparison-banner { margin: 0 14px 14px; padding: 10px 12px; border-radius: var(--radius-sm); }
+.comparison-banner.has-regression { color: #8d2727; background: var(--red-soft); border: 1px solid #e2aaaa; border-left: 4px solid #8d2727; }
 .comparison-banner.has-regression strong { text-transform: uppercase; letter-spacing: 0.06em; font-weight: 800; }
-.comparison-banner.no-regression { color: #277756; background: #dcf2e9; border: 1px solid #9ed8bb; }
-.comparison-regression { background: #fdeaea; }
+.comparison-banner.no-regression { color: var(--green-ink); background: var(--green-soft); border: 1px solid #9ed8bb; }
+.comparison-regression { background: var(--red-soft); }
 .comparison-regression td:last-child { color: #8d2727; font-weight: 600; }
 .evidence-link { border: 0; background: transparent; padding: 0; color: inherit; cursor: pointer; text-align: left; }
 .evidence-link:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
@@ -2257,16 +2305,17 @@ select:focus {
 /* #174 — historical config comparison: raw deltas, redacted snapshot hashes, provenance drill-back. */
 .config-comparison { margin-top: 18px; }
 .config-comparison-controls input,
-.config-comparison-controls select { height: auto; min-height: 34px; margin: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink); font: inherit; }
+.config-comparison-controls select { height: auto; min-height: 34px; margin: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; color: var(--ink); font: inherit; }
 .config-comparison-note { margin: 0 14px 14px; color: var(--muted); }
-.config-comparison-copy { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin: 0 14px 14px; padding: 12px 14px; border: 1px solid var(--purple); border-radius: 10px; background: var(--purple-soft); font-size: 12px; }
+.config-comparison-copy { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin: 0 14px 14px; padding: 12px 14px; border: 1px solid var(--purple); border-radius: var(--radius-md); background: var(--purple-soft); font-size: 12px; }
 .config-comparison-subheading { margin: 18px 14px 8px; font-size: 13px; }
 .config-diff-table th[scope="row"],
 .config-metrics-table th[scope="row"] { text-transform: none; letter-spacing: 0; color: var(--ink); font-size: 11px; }
-.config-diff-table code { display: block; max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
+/* #338: max-width guards column width but long values wrap instead of being hard-clipped. */
+.config-diff-table code { display: block; max-width: 360px; white-space: normal; overflow-wrap: anywhere; }
 .config-diff-table .badge { margin-left: 6px; }
-.config-changed { background: #f5f2ff; }
-.comparison-metric { width: 100%; min-width: 110px; padding: 5px 7px; border: 0; border-radius: 7px; background: transparent; color: var(--purple-dark); text-align: left; cursor: pointer; }
+.config-changed { background: var(--purple-soft); }
+.comparison-metric { width: 100%; min-width: 110px; padding: 5px 7px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--purple-dark); text-align: left; cursor: pointer; }
 .comparison-metric:hover { background: var(--purple-soft); }
 .comparison-metric:focus-visible { outline: 2px solid var(--purple); outline-offset: -2px; }
 .comparison-metric strong,
@@ -2386,7 +2435,7 @@ select:focus {
 
 .trace-evaluations h3 {
   margin: 0 0 6px;
-  font-size: 0.95rem;
+  font-size: 15px;
 }
 
 .trace-evaluations ul {
@@ -2402,7 +2451,7 @@ select:focus {
   flex-wrap: wrap;
   align-items: baseline;
   gap: 8px;
-  font-size: 0.86rem;
+  font-size: 13px;
 }
 
 .trace-evaluations .evidence-link {

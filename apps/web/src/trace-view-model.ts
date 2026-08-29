@@ -40,6 +40,12 @@ export function formatActors(audit: TraceView["summary"]["audit"]): { text: stri
   };
 }
 
+/** Audit ACTOR cell (#338): `kind · shortId` so a ~40-char id isn't repeated on every row; full id lives in the title. */
+export function formatAuditActor(actor: { type: string; id: string }): { text: string; title: string } {
+  const shortId = actor.id.length > 10 ? actor.id.slice(0, 8) + "…" : actor.id;
+  return { text: `${actor.type} · ${shortId}`, title: `${actor.type}/${actor.id}` };
+}
+
 export function refreshIntervalMs(status: TraceStatus | undefined): number {
   return status === "running" ? 1_500 : 5_000;
 }
@@ -134,6 +140,30 @@ export interface VisibleRow {
   expanded: boolean;
   /** Ancestor kept only so a filtered match stays in context. */
   context: boolean;
+  /** Errors-only view (#338): how many consecutive identical error rows this row stands for (absent = 1). */
+  repeat?: number;
+}
+
+/**
+ * Errors-only view (#338): collapse a run of consecutive identical leaf error rows (same name, depth and
+ * error message) into one row carrying a repeat count. Parents are never collapsed — their children rows
+ * would be orphaned in the flattened list.
+ */
+export function coalesceErrorRows(rows: VisibleRow[]): VisibleRow[] {
+  const out: VisibleRow[] = [];
+  for (const row of rows) {
+    const prev = out[out.length - 1];
+    const message = row.span.error?.message;
+    if (
+      prev && message !== undefined && !row.hasChildren && !prev.hasChildren &&
+      prev.span.error?.message === message && prev.span.name === row.span.name && prev.span.depth === row.span.depth
+    ) {
+      out[out.length - 1] = { ...prev, repeat: (prev.repeat ?? 1) + 1 };
+    } else {
+      out.push(row);
+    }
+  }
+  return out;
 }
 
 /**

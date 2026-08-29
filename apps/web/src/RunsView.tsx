@@ -14,7 +14,6 @@ import {
   formatCount,
   formatCost,
   formatDuration,
-  formatRunDuration,
   formatUsage,
   liveRuns,
   matchesFilter,
@@ -22,7 +21,9 @@ import {
   matchesTaskOutcome,
   outlierLabel,
   recoveredFailures,
+  runDurationCell,
   runOutlier,
+  runsColumns,
   sortNewestFirst,
   summarizeRuns,
   taskOutcomeChip,
@@ -64,7 +65,8 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
   // Elapsed is computed at render time: the dashboard poll (#98) replaces `runs` every tick, so it ticks with the poll.
   const live = liveRuns(runs);
   const now = Date.now();
-  const showCost = runs.some((run) => run.estimatedCostUsd !== undefined);
+  // #338 — a column empty ("—") on every listed Run is hidden (extends the old showCost check).
+  const cols = runsColumns(runs);
 
   return (
     <section className="runs-view" aria-labelledby="runs-heading">
@@ -140,14 +142,14 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
               <th scope="col">Workspace</th>
               <th scope="col">Start</th>
               <th scope="col" className="num">Duration</th>
-              <th scope="col">Outcome</th>
-              <th scope="col">Task</th>
-              <th scope="col">First failing step</th>
+              {cols.outcome && <th scope="col">Outcome</th>}
+              {cols.task && <th scope="col">Task</th>}
+              {cols.failStep && <th scope="col">First failing step</th>}
               <th scope="col" className="num">Events</th>
-              <th scope="col">Config</th>
+              {cols.config && <th scope="col">Config</th>}
               <th scope="col">Runtime / model</th>
-              <th scope="col" className="num">Usage</th>
-              {showCost && <th scope="col" className="num">Est. cost</th>}
+              {cols.usage && <th scope="col" className="num">Usage</th>}
+              {cols.cost && <th scope="col" className="num">Est. cost</th>}
               <th scope="col">Tool calls</th>
               <th scope="col">Last event</th>
             </tr>
@@ -157,11 +159,13 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
               const task = taskOutcomeChip(run);
               const taskSource = task ? taskOutcomeProvenance(run.taskOutcomeSource) : undefined;
               const outlier = runOutlier(run, baseline);
+              const duration = runDurationCell(run.durationMs, run.endedReason, run.interruptedAfterMs);
               const outlierTitle = outlier ? [outlier.durationMultiple === undefined ? "" : `duration ×${outlier.durationMultiple.toFixed(1)}`, outlier.inputTokensMultiple === undefined ? "" : `tokens ×${outlier.inputTokensMultiple.toFixed(1)}`].filter(Boolean).join(" · ") + ` versus the last ${baseline?.sampleCount ?? 0} terminal Runs` : undefined;
               return (
               <tr
                 key={run.runId}
                 data-run-id={run.runId}
+                role="button"
                 tabIndex={0}
                 className={run.runId === selectedRunId ? "selected" : undefined}
                 aria-label={"Open trace for " + (run.agentName || run.runId) + ", " + run.status + ", " + formatClock(run.startedAt)}
@@ -186,18 +190,20 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 {showAgent && <td>{run.agentName || run.agentId}</td>}
                 <td className="runs-workspace" title={workspaceLabel(run.workspace, run.agentId).title ?? workspaceLabel(run.workspace, run.agentId).text}>{workspaceLabel(run.workspace, run.agentId).text}</td>
                 <td>{formatClock(run.startedAt)}</td>
-                <td className="num">{formatRunDuration(run.durationMs, run.endedReason, run.interruptedAfterMs)}</td>
-                <td className="runs-outcome" title={run.outcome?.text}>{run.outcome?.text ?? (run.outcome?.reportedFailure ? <span className="badge badge-warn" title={REPORTED_FAILURE_HINT}>agent reported failure</span> : <span className="dash">—</span>)}</td>
-                <td className="runs-task">{task ? <span className="runs-task-verdict"><span className={"badge" + (task.warn ? " badge-warn" : "")} title={TASK_OUTCOME_HINT}>{task.label}</span>{taskSource && <span className="runs-task-source" title={taskSource.title}>{taskSource.label}</span>}</span> : <span className="dash">—</span>}</td>
+                <td className="num" title={duration.title}>{duration.text}</td>
+                {cols.outcome && <td className="runs-outcome" title={run.outcome?.text}>{run.outcome?.text ?? (run.outcome?.reportedFailure ? <span className="badge badge-warn" title={REPORTED_FAILURE_HINT}>agent reported failure</span> : <span className="dash">—</span>)}</td>}
+                {cols.task && <td className="runs-task">{task ? <span className="runs-task-verdict"><span className={"badge" + (task.warn ? " badge-warn" : "")} title={TASK_OUTCOME_HINT}>{task.label}</span>{taskSource && <span className="runs-task-source" title={taskSource.title}>{taskSource.label}</span>}</span> : <span className="dash">—</span>}</td>}
                 {/* #263: cell text is a truncated head; the full step text stays in the title tooltip. */}
-                <td className="runs-fail-step" title={run.firstFailingStep}>{run.firstFailingStep ? errorHead(run.firstFailingStep) : <span className="dash">—</span>}</td>
+                {cols.failStep && <td className="runs-fail-step" title={run.firstFailingStep}>{run.firstFailingStep ? errorHead(run.firstFailingStep) : <span className="dash">—</span>}</td>}
                 <td className="num">{run.eventCount}</td>
-                <td title={run.configSnapshot ? JSON.stringify(run.configSnapshot) : undefined}>
-                  <code>{run.configHash?.slice(0, 8) ?? <span className="dash">—</span>}</code>
-                </td>
+                {cols.config && (
+                  <td title={run.configSnapshot ? JSON.stringify(run.configSnapshot) : undefined}>
+                    <code>{run.configHash?.slice(0, 8) ?? <span className="dash">—</span>}</code>
+                  </td>
+                )}
                 <td className="runs-runtime" title={run.runtime + " · " + run.model}>{run.runtime} · {run.model}</td>
-                <td className="num">{formatUsage(run.usage)}</td>
-                {showCost && <td className="num">{formatCost(run.estimatedCostUsd)}</td>}
+                {cols.usage && <td className="num">{formatUsage(run.usage)}</td>}
+                {cols.cost && <td className="num">{formatCost(run.estimatedCostUsd)}</td>}
                 <td className="runs-tools" title={run.toolIdentities?.join(", ")}>
                   <span className="tool-call-summary">
                     <span>{run.toolCalls}{run.toolFailures > 0 && <> · {run.toolFailures} failed</>}</span>

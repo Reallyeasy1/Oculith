@@ -14,12 +14,14 @@ export default function CompareView({ evalRuns, onOpenEvidence, selection }: Pro
   const [candidateId, setCandidateId] = useState("");
   const [comparison, setComparison] = useState<EvalComparison | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
   const compatible = useMemo(() => evalRuns.filter((item) => item.status !== "running"), [evalRuns]);
   const load = async (baseline: string, candidate: string) => {
     if (!baseline || !candidate || baseline === candidate) return;
-    setError(null);
+    setLoading(true); setError(null);
     try { setComparison(await api.compareEvalRuns(baseline, candidate)); }
     catch (reason) { setComparison(null); setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setLoading(false); }
   };
   const compare = () => load(baselineId, candidateId);
   useEffect(() => {
@@ -29,16 +31,22 @@ export default function CompareView({ evalRuns, onOpenEvidence, selection }: Pro
   // The ids are the stable selection identity; `load` intentionally has no captured component state.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selection?.baselineId, selection?.candidateId]);
-  if (compatible.length < 2) return null;
   // Counted from the per-assertion rows the table renders, so the banner and the rows can never disagree.
   const rows = comparison?.cases.flatMap((item) => item.assertions.map((assertion, index) => ({ item, assertion, index }))) ?? [];
   const regressions = rows.filter(({ assertion }) => assertion.regression).length;
+  // #338: under two finished evaluations the panel explains itself (as ConfigComparison does) instead of vanishing.
+  if (compatible.length < 2) {
+    return <section id="eval-comparison" className="runs-view comparison-view" aria-labelledby="comparison-heading">
+      <div className="playground-topbar"><div><span className="eyebrow">Regression</span><h2 id="comparison-heading">Compare evaluations</h2></div></div>
+      <p className="runs-empty">Need at least two evaluation runs to compare. Run the evaluation suite again after a configuration change to unlock a baseline/candidate comparison.</p>
+    </section>;
+  }
   return <section id="eval-comparison" className="runs-view comparison-view" aria-labelledby="comparison-heading">
     <div className="playground-topbar"><div><span className="eyebrow">Regression</span><h2 id="comparison-heading">Compare evaluations</h2></div></div>
     <div className="comparison-controls">
       <label>Baseline <select value={baselineId} onChange={(event) => { setBaselineId(event.target.value); setComparison(null); }}><option value="">Choose evaluation</option>{compatible.map((item) => <option key={item.id} value={item.id}>{item.id.slice(0, 8)} · {item.status}</option>)}</select></label>
       <label>Candidate <select value={candidateId} onChange={(event) => { setCandidateId(event.target.value); setComparison(null); }}><option value="">Choose evaluation</option>{compatible.map((item) => <option key={item.id} value={item.id}>{item.id.slice(0, 8)} · {item.status}</option>)}</select></label>
-      <button type="button" className="button button-primary" onClick={() => void compare()} disabled={!baselineId || !candidateId || baselineId === candidateId}>Compare</button>
+      <button type="button" className="button button-primary" onClick={() => void compare()} disabled={loading || !baselineId || !candidateId || baselineId === candidateId}>{loading ? "Comparing…" : "Compare"}</button>
     </div>
     {error && <div className="error-banner" role="alert">{error}</div>}
     {comparison && <>
