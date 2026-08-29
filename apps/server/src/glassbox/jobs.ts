@@ -198,10 +198,19 @@ export class EvaluationJobWorker {
     this.stopped = true;
   }
 
+  /**
+   * #192: user-defined llm_judge definitions have no per-id runtime — they all share the
+   * task_completion judge, which frames its prompt and score bounds from the definition it is handed.
+   */
+  private runtimeFor(definition: EvaluatorDefinition): RunEvaluator | undefined {
+    return this.deps.evaluators.get(definition.id)
+      ?? (definition.type === "llm_judge" ? this.deps.evaluators.get("task_completion") : undefined);
+  }
+
   async enqueue(input: EvaluationJobInput): Promise<EvaluationJob> {
     const definition = await this.deps.evaluations.getDefinition(input.evaluatorId, input.evaluatorVersion);
     if (!definition) throw new HttpError(404, "Evaluator definition not found");
-    if (!this.deps.evaluators.has(definition.id)) {
+    if (!this.runtimeFor(definition)) {
       throw new HttpError(501, `Evaluator "${definition.id}" has no registered runtime implementation`);
     }
     const job: EvaluationJob = {
@@ -280,7 +289,7 @@ export class EvaluationJobWorker {
     const job = await this.getOrThrow(jobId);
     const definition = await this.deps.evaluations.getDefinition(job.evaluatorId, job.evaluatorVersion);
     if (!definition) throw new Error(`Evaluator definition ${job.evaluatorId}@${job.evaluatorVersion} no longer exists`);
-    const evaluator = this.deps.evaluators.get(definition.id);
+    const evaluator = this.runtimeFor(definition);
     if (!evaluator) throw new Error(`Evaluator "${definition.id}" has no registered runtime implementation`);
 
     // Selection is recomputed on every (re)start, so progress is derived from stored results and can

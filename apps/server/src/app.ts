@@ -59,6 +59,21 @@ const regressionCaseFromRunBody = z.object({
   name: z.string().trim().min(1).max(120).optional(),
   assertions: regressionCaseInput.shape.assertions.optional(),
 });
+// #192: user-defined llm_judge evaluators. The id is a slug of the name, so a changed rubric under
+// the same name versions the same definition (FR-20); the store redacts name/rubric before persisting.
+const createEvaluatorBody = z.object({
+  name: z.string().trim().min(1).max(80),
+  rubric: z.string().trim().min(1).max(4_000),
+  minScore: z.number().int().min(0).max(100),
+  maxScore: z.number().int().min(0).max(100),
+  passThreshold: z.number().int().min(0).max(100),
+  setsTaskOutcome: z.boolean().optional(),
+}).superRefine((value, ctx) => {
+  if (value.minScore >= value.maxScore) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["minScore"], message: "minScore must be less than maxScore" });
+  if (value.passThreshold < value.minScore || value.passThreshold > value.maxScore) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["passThreshold"], message: "passThreshold must be between minScore and maxScore" });
+});
+const evaluatorSlug = (name: string): string =>
+  name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 64);
 
 export async function createApp(
   config: AppConfig,
@@ -344,6 +359,19 @@ export async function createApp(
     }
     if (glassbox.evaluations) {
       app.get("/api/evaluators", async () => ({ evaluators: await glassbox.evaluations!.listDefinitions() }));
+      app.post("/api/evaluators", async (request, reply) => {
+        const body = createEvaluatorBody.parse(request.body);
+        const id = evaluatorSlug(body.name);
+        if (!id) throw new HttpError(400, "Evaluator name must contain letters or digits");
+        const existing = await glassbox.evaluations!.getDefinition(id);
+        if (existing && existing.type !== "llm_judge") throw new HttpError(409, `Evaluator "${id}" is a ${existing.type} evaluator and cannot become an llm_judge`);
+        const evaluator = await glassbox.evaluations!.createDefinition({
+          id, name: body.name, type: "llm_judge", rubric: body.rubric,
+          minScore: body.minScore, maxScore: body.maxScore, passThreshold: body.passThreshold,
+          config: {}, setsTaskOutcome: body.setsTaskOutcome ?? false,
+        });
+        return reply.code(201).send({ evaluator });
+      });
       app.get("/api/runs/:id/evaluations", async (request) => {
         const { id } = runIdParams.parse(request.params);
         service.getRun(id);

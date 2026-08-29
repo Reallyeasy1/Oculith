@@ -112,6 +112,17 @@ describe("TaskCompletionEvaluator", () => {
     await expect(new TaskCompletionEvaluator(source({ runId: summary.runId, capturePolicy: success.capturePolicy, userRequest: success.userRequest, finalResponse: success.finalResponse, events: success.events }), inconsistent).evaluate(summary, definition)).rejects.toThrow("inconsistent");
   });
 
+  it("bounds judge scores by the definition's own range, not a hardcoded 1-5 (#192)", async () => {
+    const custom: EvaluatorDefinition = { ...definition, id: "politeness_judge", minScore: 0, maxScore: 10, passThreshold: 7 };
+    const success = (await fixtures())[1]!;
+    const summary = summaryFromView(buildTrace(success.events, { capturePolicy: success.capturePolicy }));
+    const input = () => source({ runId: summary.runId, capturePolicy: success.capturePolicy, userRequest: success.userRequest, finalResponse: success.finalResponse, events: success.events });
+    const nine = new FakeTaskCompletionJudge(async () => ({ score: 9, passed: true, explanation: "polite", citedEventIds: [] }));
+    expect(await new TaskCompletionEvaluator(input(), nine).evaluate(summary, custom)).toMatchObject({ score: 9, passed: true });
+    const eleven = new FakeTaskCompletionJudge(async () => ({ score: 11, passed: true, explanation: "polite", citedEventIds: [] }));
+    await expect(new TaskCompletionEvaluator(input(), eleven).evaluate(summary, custom)).rejects.toThrow();
+  });
+
   it("does not call a judge when the conversation has no final response", async () => {
     const failed = (await fixtures())[0]!;
     const summary = summaryFromView(buildTrace(failed.events, { capturePolicy: failed.capturePolicy }));
@@ -208,6 +219,24 @@ describe("ArkTaskCompletionJudge", () => {
     const body = JSON.parse(String(request?.body));
     expect(body).toMatchObject({ model: "deepseek-v4-pro-260425", temperature: 0 });
     expect(JSON.stringify(request?.headers)).not.toContain("test-key");
+  });
+
+  it("frames the system prompt from the definition: id@version, score range, threshold, rubric (#192)", async () => {
+    let request: RequestInit | undefined;
+    const judge = new ArkTaskCompletionJudge({
+      apiKey: "test-key", baseUrl: "https://ark.example/api/v3", model: "m",
+      fetch: async (_url, init) => {
+        request = init;
+        return new Response(JSON.stringify({ output_text: '{"score":8,"passed":true,"explanation":"ok","citedEventIds":[]}' }), { status: 200 });
+      },
+    });
+    const custom: EvaluatorDefinition = { ...definition, id: "politeness_judge", version: 2, rubric: "Score politeness of the reply.", minScore: 0, maxScore: 10, passThreshold: 7 };
+    await judge.judge({ definition: custom, view: "{}" });
+    const system = String(JSON.parse(String(request?.body)).input[0].content[0].text);
+    expect(system).toContain("politeness_judge@2");
+    expect(system).toContain("0-10");
+    expect(system).toContain(">= 7");
+    expect(system).toContain("Score politeness of the reply.");
   });
 
   it("reports quota failures without including provider response bodies", async () => {
