@@ -181,6 +181,26 @@ export function formatRunDuration(durationMs: number | undefined, endedReason?: 
   return `≥ ${formatDuration(interruptedAfterMs)} · interrupted (last evidence +${formatDuration(durationMs)})`;
 }
 
+/** #338 — runs-table variant of formatRunDuration: the cell keeps only the width-stable "≥ <bound>"; the interruption story moves to `title`. */
+export function runDurationCell(durationMs: number | undefined, endedReason?: "server_restart", interruptedAfterMs?: number): { text: string; title?: string } {
+  if (endedReason !== "server_restart") return { text: formatDuration(durationMs) };
+  return { text: `≥ ${formatDuration(interruptedAfterMs)}`, title: formatRunDuration(durationMs, endedReason, interruptedAfterMs) };
+}
+
+/** #338 — columns that render "—" on every listed Run are hidden; same derivation as the original showCost check. */
+export interface RunsColumns { outcome: boolean; task: boolean; failStep: boolean; config: boolean; usage: boolean; cost: boolean }
+
+export function runsColumns(runs: RunListItem[]): RunsColumns {
+  return {
+    outcome: runs.some((run) => run.outcome?.text !== undefined || run.outcome?.reportedFailure === true),
+    task: runs.some((run) => taskOutcomeChip(run) !== undefined),
+    failStep: runs.some((run) => run.firstFailingStep !== undefined),
+    config: runs.some((run) => run.configHash !== undefined),
+    usage: runs.some((run) => run.usage !== undefined && (run.usage.inputTokens !== undefined || run.usage.outputTokens !== undefined)),
+    cost: runs.some((run) => run.estimatedCostUsd !== undefined),
+  };
+}
+
 export function formatUsage(usage: RunListItem["usage"]): string {
   if (!usage || (usage.inputTokens === undefined && usage.outputTokens === undefined)) return "—";
   return formatCount(usage.inputTokens ?? 0) + " in"
