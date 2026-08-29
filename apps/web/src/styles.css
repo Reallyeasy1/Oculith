@@ -848,6 +848,17 @@ textarea:focus {
   font-size: 11px;
 }
 
+/* #266: subtle persisted "last run failed" note above the composer, sourced from Agent.lastError. */
+.last-run-hint {
+  margin: 0;
+  padding: 6px max(22px, calc((100% - 800px) / 2));
+  border-top: 1px solid #e1dfd8;
+  color: #ac4343;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .composer {
   margin: 0;
   border-top: 1px solid #e1dfd8;

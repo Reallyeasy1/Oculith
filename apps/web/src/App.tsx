@@ -934,6 +934,15 @@ export default function App() {
                 <div ref={messageEnd} />
               </div>
 
+              {/* #266: a failed Run leaves the Agent ready; lastError is the persisted (redacted) evidence,
+                  cleared by the server on the next completed Run. Hidden while the richer run-error card or
+                  a live Run is on screen — this covers reload/agent-switch, where activeRun is unknown. */}
+              {selected.lastError && !(activeRun && ["queued", "running", "failed"].includes(activeRun.status)) && (
+                <p className="last-run-hint" role="status">
+                  Last run failed: {selected.lastError} — send a new message to retry.
+                </p>
+              )}
+
               <form className="composer" onSubmit={sendMessage}>
                 <textarea
                   value={prompt}
