@@ -145,14 +145,23 @@ find_eval() {
 }
 
 run_eval() { # run_eval LABEL → prints the terminal EvalRun id; fails loudly on a model problem
-  local label="$1" eval_id status
+  local label="$1" eval_id status evaluated
   eval_id="$(call POST /api/eval-runs "{\"agentId\":\"$agent_id\",\"caseIds\":[\"$case_id\"]}" | json 'd.evalRun.id')"
   log "$label EvalRun $eval_id started; waiting…"
   status="$(wait_eval "$eval_id")"
   if [[ "$status" != "completed" ]]; then
-    log "$label EvalRun $eval_id ended $status. If the model is misconfigured this is the same"
-    log "failure mode as step 3 — fix the credentials and re-run this step."
-    exit 1
+    # A candidate whose Run burned its whole budget against the knowledge gate ends `failed` WITH
+    # evaluated assertions — that IS the regression evidence (#315), not a model problem. A
+    # credentials failure evaluates nothing (the runner records an empty results array).
+    evaluated="$(call GET "/api/eval-runs/$eval_id" | json 'd.evalRun.results.some(r=>r.results.length>0)')"
+    if [[ "$label" == "candidate" && "$evaluated" == "true" ]]; then
+      log "candidate EvalRun $eval_id ended $status with evaluated assertions — the candidate burned"
+      log "its Run budget without passing the suite; keeping it as regression evidence."
+    else
+      log "$label EvalRun $eval_id ended $status. If the model is misconfigured this is the same"
+      log "failure mode as step 3 — fix the credentials and re-run this step."
+      exit 1
+    fi
   fi
   printf '%s' "$eval_id"
 }
