@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, setAuthToken } from "./api";
+import { api, ApiError, getAuthToken, setAuthToken } from "./api";
+import { connectLive } from "./live";
 import { agentPayload, budgetFormError } from "./agent-form";
 import { showLastErrorHint } from "./agent-view-model";
 import { budgetBanner } from "./budget-view-model";
@@ -451,34 +452,56 @@ export default function App() {
     }
   };
 
-  // The one dashboard refresh timer (#98). It covers both All runs and the selected Agent so Runs
-  // started outside this browser appear without a reload. Trace and poll failures stay soft.
+  // The one dashboard refresh routine, shared by the fallback timer (#98) and the SSE nudge (#40).
+  // It covers both All runs and the selected Agent so Runs started outside this browser appear
+  // without a reload. Trace and poll failures stay soft. Reads refs, so a stale closure is harmless.
+  const refreshVisibleRuns = async () => {
+    await refreshRuns();
+    const openRunId = selectedRunIdRef.current;
+    if (openRunId) await refreshTrace(openRunId).catch(() => undefined);
+    // the overview's case rows show the latest evaluation; keep them live after a reload mid-evaluation
+    if (viewRef.current === "overview") await refreshEvalRuns().catch(() => undefined);
+    const agentId = selectedIdRef.current;
+    if (viewRef.current !== "agent" || !agentId) return;
+    try {
+      const result = await api.runs(agentId);
+      if (selectedIdRef.current !== agentId) return;
+      const latest = result.runs[0] ?? null;
+      setActiveRun(latest);
+      if (latest && ["queued", "running"].includes(latest.status)) {
+        void pollRun(latest.id, agentId).catch(() => undefined);
+      }
+    } catch {
+      // ponytail: keep the last good Agent/run state when a refresh tick fails (invariant 12)
+    }
+  };
+
   useEffect(() => {
     if (view === "agent" && !selectedId) return;
-    const refreshVisibleRuns = async () => {
-      await refreshRuns();
-      const openRunId = selectedRunIdRef.current;
-      if (openRunId) await refreshTrace(openRunId).catch(() => undefined);
-      // the overview's case rows show the latest evaluation; keep them live after a reload mid-evaluation
-      if (viewRef.current === "overview") await refreshEvalRuns().catch(() => undefined);
-      const agentId = selectedIdRef.current;
-      if (viewRef.current !== "agent" || !agentId) return;
-      try {
-        const result = await api.runs(agentId);
-        if (selectedIdRef.current !== agentId) return;
-        const latest = result.runs[0] ?? null;
-        setActiveRun(latest);
-        if (latest && ["queued", "running"].includes(latest.status)) {
-          void pollRun(latest.id, agentId).catch(() => undefined);
-        }
-      } catch {
-        // ponytail: keep the last good Agent/run state when a refresh tick fails (invariant 12)
-      }
-    };
     const intervalMs = refreshIntervalMs(trace?.summary.status);
     const id = window.setInterval(() => void refreshVisibleRuns(), intervalMs);
     return () => window.clearInterval(id);
   }, [selectedId, trace?.summary.status, view]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // #40: live updates — an SSE notification triggers the same refresh path the timer runs, just
+  // sooner. The polling intervals above stay untouched as the safety net, so a failed or
+  // unsupported stream silently degrades to pre-#40 behaviour.
+  useEffect(() => {
+    if (authRequired !== false) return;
+    let pending: number | null = null;
+    const dispose = connectLive(getAuthToken, () => {
+      // coalesce a burst of observation events from one Run into a single refetch round
+      if (pending !== null) return;
+      pending = window.setTimeout(() => {
+        pending = null;
+        void refreshVisibleRuns();
+      }, 250);
+    });
+    return () => {
+      if (pending !== null) window.clearTimeout(pending);
+      dispose();
+    };
+  }, [authRequired]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Shared by the composer and Re-run (#256): POST the prompt, reflect the new Run locally, poll it.
   // #254: a busy Agent answers with a queued receipt instead of a Run — refresh so the queue rows

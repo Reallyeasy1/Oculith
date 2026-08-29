@@ -3,6 +3,7 @@ import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
 import { isModelConfigured, loadConfig, writeCodexConfig } from "./config.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
+import { LiveNotifier } from "./glassbox/live.js";
 import { JsonEvaluationStore } from "./glassbox/evaluation.js";
 import { builtinRunEvaluators, EvaluationJobWorker, JsonEvaluationJobStore } from "./glassbox/jobs.js";
 import { ArkTaskCompletionJudge, FakeTaskCompletionJudge, JsonTaskCompletionSource, TaskCompletionEvaluator } from "./glassbox/task-completion.js";
@@ -37,10 +38,14 @@ try {
 } catch (error) {
   glassboxLog("retention.failed", { error: String(error).slice(0, 200) });
 }
+// #40: live updates — every stored observation event becomes a lightweight SSE nudge; the web
+// client refetches through the ordinary REST endpoints (polling remains the fallback).
+const live = new LiveNotifier();
 const emitter = new ObservationEmitter({
   store: traceStore,
   capturePolicy: config.glassboxCapturePolicy,
   log: glassboxLog,
+  onEvent: (event) => live.publish({ type: "run.updated", runId: event.runId, agentId: event.agentId, status: event.status, ts: event.timestamp }),
 });
 // Resume sequence numbering across a restart so a trace file stays monotonic.
 for (const entry of traceStore.listRuns()) emitter.seedSequence(entry.traceId, entry.lastSequence);
@@ -74,7 +79,7 @@ const service = new AgentService(config, store, workspaces, runner, emitter, (ru
 await service.initialize();
 await service.startHeartbeat();
 
-const app = await createApp(config, service, { emitter, store: traceStore, summaries, evaluations, jobs: evaluationJobs, logs: runLogs });
+const app = await createApp(config, service, { emitter, store: traceStore, summaries, evaluations, jobs: evaluationJobs, logs: runLogs, live });
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");

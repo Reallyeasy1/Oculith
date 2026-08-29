@@ -15,6 +15,11 @@ export function setAuthToken(token: string): void {
   authToken = token.trim();
 }
 
+// #40: the SSE stream (live.ts) needs the token at connect time — EventSource cannot set headers.
+export function getAuthToken(): string {
+  return authToken;
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const headers = {
     ...(options?.body ? { "Content-Type": "application/json" } : {}),
