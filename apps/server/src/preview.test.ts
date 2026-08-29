@@ -347,7 +347,7 @@ describe("preview routes", () => {
 
     const missing = await app.inject({ method: "GET", url: "/api/agents/" + agent.id + "/preview" });
     expect(missing.statusCode).toBe(200);
-    expect(missing.json()).toEqual({ preview: null });
+    expect(missing.json()).toEqual({ preview: null, servable: { vite: false, static: false } });
 
     const created = await app.inject({ method: "POST", url: "/api/agents/" + agent.id + "/preview", payload: {} });
     expect(created.statusCode).toBe(201);
@@ -441,6 +441,37 @@ describe("preview routes", () => {
     expect(deleted.statusCode).toBe(200);
     expect(harness.previews.get(agent.id)).toBeUndefined();
     expect(harness.engine.runsFor("rm").length).toBeGreaterThan(0);
+    await app.close();
+  });
+});
+
+describe("preview servability (#335)", () => {
+  it("reports what the workspace can serve: local vite install and a built dist/", async () => {
+    const { previews, root } = await makeHarness();
+    const workspace = path.join(root, "workspaces", "servable-ws");
+    await mkdir(workspace, { recursive: true });
+    await expect(previews.servable(workspace)).resolves.toEqual({ vite: false, static: false });
+
+    await mkdir(path.join(workspace, "dist"), { recursive: true });
+    await expect(previews.servable(workspace)).resolves.toEqual({ vite: false, static: true });
+
+    await mkdir(path.join(workspace, "node_modules", ".bin"), { recursive: true });
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(path.join(workspace, "node_modules", ".bin", "vite"), "#!/bin/sh\n");
+    await expect(previews.servable(workspace)).resolves.toEqual({ vite: true, static: true });
+  });
+
+  it("GET /api/agents/:id/preview carries servability so the UI only offers what can serve", async () => {
+    const harness = await makeHarness();
+    const app = await createApp(harness.config, harness.service, undefined, harness.previews);
+    const agent = await harness.service.createAgent({ name: "Fresh" });
+
+    const fresh = await app.inject({ method: "GET", url: "/api/agents/" + agent.id + "/preview" });
+    expect(fresh.json()).toEqual({ preview: null, servable: { vite: false, static: false } });
+
+    await mkdir(path.join(agent.workspacePath, "dist"), { recursive: true });
+    const built = await app.inject({ method: "GET", url: "/api/agents/" + agent.id + "/preview" });
+    expect(built.json().servable).toEqual({ vite: false, static: true });
     await app.close();
   });
 });

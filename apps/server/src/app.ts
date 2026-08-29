@@ -370,8 +370,13 @@ export async function createApp(
 
     app.get("/api/agents/:id/preview", async (request) => {
       const { id } = agentIdParams.parse(request.params);
-      service.getAgent(id);
-      return { preview: (await previews.status(id)) ?? null };
+      const agent = service.getAgent(id);
+      // #335: servability rides along so the UI offers Preview only when the workspace has
+      // something to serve (local vite install or a built dist/).
+      return {
+        preview: (await previews.status(id)) ?? null,
+        servable: await previews.servable(agent.workspacePath),
+      };
     });
 
     app.delete("/api/agents/:id/preview", async (request) => {

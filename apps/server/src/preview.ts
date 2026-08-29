@@ -9,7 +9,7 @@ import { HttpError } from "./errors.js";
 import { createDefaultEmitter, type ObservationEmitter } from "./glassbox/emitter.js";
 import { redactText } from "./glassbox/redact.js";
 import { newId } from "./glassbox/schema.js";
-import type { PreviewCommand, WorkspacePreview } from "./types.js";
+import type { PreviewCommand, PreviewServability, WorkspacePreview } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -133,6 +133,17 @@ export class PreviewManager {
     return this.active.get(agentId)?.view;
   }
 
+  /** #335: what this Agent's workspace can serve right now — the same checks the commands
+   * themselves make (`npx --no-install vite` needs a local install; the static server needs
+   * `dist/`), so the UI can offer only start actions that would not die on boot. */
+  async servable(workspacePath: string): Promise<PreviewServability> {
+    const [vite, dist] = await Promise.all([
+      stat(path.join(workspacePath, "node_modules", ".bin", "vite")).then(() => true, () => false),
+      stat(path.join(workspacePath, "dist")).then((entry) => entry.isDirectory(), () => false),
+    ]);
+    return { vite, static: dist };
+  }
+
   /** #335: previews need a reachable engine daemon and the runtime image they run (`preview.ts`
    * containers use `containerRuntimeImage` too) — not `RUNTIME_PROVIDER=container`. Same probe
    * shape as `ContainerCodexRunner.isAvailable()`, routed through the injectable engine. */
@@ -179,11 +190,8 @@ export class PreviewManager {
     if (!(command in PREVIEW_COMMANDS)) {
       throw new HttpError(400, "Unknown preview command");
     }
-    if (command === "static") {
-      const distIsDirectory = await stat(path.join(agent.workspacePath, "dist")).then((s) => s.isDirectory(), () => false);
-      if (!distIsDirectory) {
-        throw new HttpError(400, "The static preview serves dist/ and this workspace has none — build first or use the vite command");
-      }
+    if (command === "static" && !(await this.servable(agent.workspacePath)).static) {
+      throw new HttpError(400, "The static preview serves dist/ and this workspace has none — build first or use the vite command");
     }
     const previewId = "prv-" + randomUUID();
     const traceId = newId("trc");

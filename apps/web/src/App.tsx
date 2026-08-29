@@ -4,7 +4,7 @@ import { connectLive } from "./live";
 import { agentPayload, budgetFormError } from "./agent-form";
 import { showLastErrorHint } from "./agent-view-model";
 import { budgetBanner } from "./budget-view-model";
-import type { Agent, AgentBudgetReport, AgentRun, AgentRunBaseline, EvalRun, Message, RegressionCase, ReliabilityReport, RunListItem, SystemInfo, TraceView, Workspace, WorkspacePreview, WorkspaceTemplate } from "./types";
+import type { Agent, AgentBudgetReport, AgentRun, AgentRunBaseline, EvalRun, Message, PreviewServability, RegressionCase, ReliabilityReport, RunListItem, SystemInfo, TraceView, Workspace, WorkspacePreview, WorkspaceTemplate } from "./types";
 import RunsView from "./RunsView";
 import ReliabilityPanel from "./ReliabilityPanel";
 import type { ReliabilityDrill } from "./reliability-view-model";
@@ -92,6 +92,10 @@ export default function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   // #96: the selected Agent's workspace preview; container runtime only, in-process server state.
   const [preview, setPreview] = useState<WorkspacePreview | null>(null);
+  // #335: what the selected workspace can serve (local vite / built dist); null while unknown.
+  const [previewServable, setPreviewServable] = useState<PreviewServability | null>(null);
+  /** The agent whose preview state is currently loaded — gates the clear-on-switch below. */
+  const previewAgentRef = useRef<string | null>(null);
   const [templates, setTemplates] = useState<WorkspaceTemplate[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [trace, setTrace] = useState<TraceView | null>(null);
@@ -156,6 +160,7 @@ export default function App() {
     [agents, selectedId],
   );
   const selectedWorkspaceName = selected?.workspaceName ?? selected?.workspacePath.split(/[\\/]/).at(-1) ?? "";
+  const selectedStatus = selected?.status;
   // #254: messages waiting behind the active Run, refreshed with the agents list.
   const pendingMessages = selected?.pendingMessages ?? [];
   const selectedWorkspace = workspaces.find((workspace) => workspace.name === selectedWorkspaceName);
@@ -298,15 +303,25 @@ export default function App() {
   const previewSupported = system?.previewAvailable === true;
 
   useEffect(() => {
-    setPreview(null);
+    // Clear only on an agent switch: a busy→ready refetch (below) must not blank a running
+    // preview's header for the fetch round-trip.
+    if (previewAgentRef.current !== selectedId) {
+      previewAgentRef.current = selectedId;
+      setPreview(null);
+      setPreviewServable(null);
+    }
     if (!selectedId || !previewSupported) return;
     void api
       .preview(selectedId)
       .then((result) => {
-        if (selectedIdRef.current === selectedId) setPreview(result.preview);
+        if (selectedIdRef.current !== selectedId) return;
+        setPreview(result.preview);
+        setPreviewServable(result.servable);
       })
       .catch(() => undefined); // no banner: the header simply shows no preview
-  }, [selectedId, previewSupported]);
+    // #335: selectedStatus is a dep so a Run finishing (busy → ready) re-checks servability —
+    // the build the Run just produced is what makes Preview worth offering.
+  }, [selectedId, previewSupported, selectedStatus]);
 
   useEffect(() => {
     if (selected) {
@@ -401,7 +416,8 @@ export default function App() {
         await api.stopPreview(selected.id);
         setPreview(null);
       } else {
-        setPreview((await api.startPreview(selected.id)).preview);
+        // #335: serve what the workspace actually has — vite when installed, else the built dist/.
+        setPreview((await api.startPreview(selected.id, previewServable?.vite ? "vite" : "static")).preview);
       }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -830,7 +846,7 @@ export default function App() {
                     Collapse Playground
                   </button>
                 )}
-                {previewSupported && !preview && (
+                {previewSupported && !preview && (previewServable?.vite || previewServable?.static) && (
                   <button
                     className="button button-ghost"
                     onClick={togglePreview}

@@ -1,4 +1,4 @@
-import type { Agent, AgentRun, Assertion, AuditRow, CapturePolicy, EvalRun, EvaluationResult, EvaluatorDefinition, Message, PreviewCommand, QueuedMessageReceipt, RegressionCase, ReliabilityCompareReport, ReliabilityReport, RunListItem, RunLogLine, SystemInfo, TraceView, Workspace, WorkspaceFile, WorkspaceListing, WorkspacePreview, WorkspaceTemplate } from "./types";
+import type { Agent, AgentRun, Assertion, AuditRow, CapturePolicy, EvalRun, EvaluationResult, EvaluatorDefinition, Message, PreviewCommand, PreviewServability, QueuedMessageReceipt, RegressionCase, ReliabilityCompareReport, ReliabilityReport, RunListItem, RunLogLine, SystemInfo, TraceView, Workspace, WorkspaceFile, WorkspaceListing, WorkspacePreview, WorkspaceTemplate } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -103,10 +103,11 @@ export const api = {
     request<{ agent: Agent }>("/api/agents/" + id + "/stop", {
       method: "POST",
     }),
-  // #96: workspace preview — one hardened container serving the workspace on a loopback port.
-  // Only meaningful when the runtime provider is `container`; other providers answer 409.
+  // #96/#335: workspace preview — one hardened container serving the workspace on a loopback
+  // port. Available whenever the engine probe passes (any runtime provider); an unavailable
+  // engine answers 409. `servable` says which commands would actually serve this workspace.
   preview: (id: string) =>
-    request<{ preview: WorkspacePreview | null }>("/api/agents/" + id + "/preview"),
+    request<{ preview: WorkspacePreview | null; servable: PreviewServability }>("/api/agents/" + id + "/preview"),
   startPreview: (id: string, command: PreviewCommand = "vite") =>
     request<{ preview: WorkspacePreview }>("/api/agents/" + id + "/preview", {
       method: "POST",
