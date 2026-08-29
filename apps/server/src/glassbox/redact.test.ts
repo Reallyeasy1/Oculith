@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { failClosed, redactEvent, redactText } from "./redact.js";
-import { SCHEMA_VERSION, type ObservationEvent } from "./schema.js";
+import { REDACTION_RULESET_VERSION, SCHEMA_VERSION, observationEventSchema, type ObservationEvent } from "./schema.js";
 
 // Built at runtime so no key-shaped literal is ever committed (GitHub push protection scans file contents).
 const FAKE_ARK = ["ark", "0f0f0f0f", "1a1a", "4b4b", "8c8c", "d0d0d0d0d0d0", "0abc1"].join("-");
@@ -118,6 +118,47 @@ describe("redactEvent", () => {
     expect(out.sessionId).toBeUndefined();
     expect(out.durationMs).toBe(42);
     expect(out.status).toBe("error");
+  });
+  it("scans requestId (Fastify copies an inbound request-id header into it — untrusted like sessionId)", () => {
+    const out = redactEvent(ev({ requestId: "req-" + FAKE_ARK }), { policy: "metadata_only" });
+    expect(out.requestId).toContain("[REDACTED:ark_key]");
+    expect(out.requestId).not.toContain("0f0f0f0f");
+    expect(out.privacy.rules).toContain("ark_key");
+  });
+  it("clamps scanned bounded fields after substitution so a redacted event still passes the schema (#54)", () => {
+    // A [REDACTED:…] marker is longer than most secrets; without a clamp the event is quarantined instead of stored.
+    const longName = "x".repeat(110) + " " + FAKE_ARK;
+    const out = redactEvent(
+      ev({ name: longName, sessionId: "s".repeat(120) + " " + FAKE_ARK, attributes: { note: "y".repeat(2040) + " " + FAKE_ARK } }),
+      { policy: "metadata_only" },
+    );
+    expect(out.name.length).toBeLessThanOrEqual(120);
+    expect((out.sessionId ?? "").length).toBeLessThanOrEqual(128);
+    expect(String(out.attributes.note).length).toBeLessThanOrEqual(2048);
+    expect(observationEventSchema.safeParse(out).success).toBe(true);
+  });
+  it("stamps this pass's rulesetVersion and never carries the input's privacy block through", () => {
+    const out = redactEvent(ev({ privacy: { redacted: true, rulesetVersion: "0", reason: "stale", rules: ["bogus"] } }), { policy: "metadata_only" });
+    expect(out.privacy).toEqual({ redacted: false, rulesetVersion: REDACTION_RULESET_VERSION });
+  });
+  it("applies extraPatterns through redactEvent and reports them as the custom rule", () => {
+    const out = redactEvent(ev({ attributes: { note: "CANARY-SECRET-42 present" } }), { policy: "metadata_only", extraPatterns: [/CANARY-SECRET-\d+/g] });
+    expect(out.attributes.note).toBe("[REDACTED:custom] present");
+    expect(out.privacy.rules).toEqual(["custom"]);
+  });
+  it("caps error messages at 2048 and summaries at the 4096 default", () => {
+    const out = redactEvent(
+      ev({ error: { type: "e", message: "m".repeat(3000) }, summary: { text: "s".repeat(5000), policy: "safe_summary" } }),
+      { policy: "safe_summary" },
+    );
+    expect(out.error?.message.length).toBe(2048);
+    expect(out.summary?.text.length).toBe(4096);
+    expect(out.privacy.rules).toContain("truncated");
+  });
+  it("failClosed drops requestId (header-copyable) but keeps the server-generated parentSpanId", () => {
+    const out = failClosed(ev({ requestId: "req-x", parentSpanId: "spn_0" }));
+    expect(out.requestId).toBeUndefined();
+    expect(out.parentSpanId).toBe("spn_0");
   });
   it("scans name and sessionId for key-shaped content (a runner thread id or span name can carry a key)", () => {
     const out = redactEvent(ev({ sessionId: "thr-" + FAKE_ARK, name: "run " + FAKE_ARK }), { policy: "metadata_only" });
