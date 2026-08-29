@@ -5,14 +5,15 @@ import { REDACTION_RULESET_VERSION, SCHEMA_VERSION, newId, observationEventSchem
 export const TRACE_CAPS = { maxEventsPerRun: 1000, maxEventBytes: 32 * 1024, maxRunBytes: 10 * 1024 * 1024 } as const;
 
 export const ALWAYS_KEEP_TYPES: ReadonlySet<string> = new Set([
-  "run.completed", "run.failed", "run.cancelled", "run.timed_out",
+  "run.completed", "run.failed", "run.cancelled", "run.timed_out", "run.refused",
   "agent_service.run.completed", "agent_service.run.failed",
   "runtime.codex.completed", "runtime.codex.failed", "runtime.container.stopped",
   "error.recorded", "telemetry.degraded", "trace.truncated", "capability.unavailable", "limit.exceeded",
 ]);
 
-/** Run terminal events → trace status. Shared by the index (retention needs "is this Run finished?") and the query rollup. */
-export const TERMINAL_EVENT_STATUS: Record<string, TraceStatus> = { "run.completed": "ok", "run.failed": "error", "run.cancelled": "cancelled", "run.timed_out": "timeout" };
+/** Run terminal events → trace status. Shared by the index (retention needs "is this Run finished?") and the query rollup.
+ * `run.refused` (#255) closes a refusal trace so retention can evict it — without it every 429 would pin an immortal file. */
+export const TERMINAL_EVENT_STATUS: Record<string, TraceStatus> = { "run.completed": "ok", "run.failed": "error", "run.cancelled": "cancelled", "run.timed_out": "timeout", "run.refused": "error" };
 export type EvictionReason = "retention_age" | "retention_disk";
 /** A `trace.truncated` written by retention cleanup (vs. one written by the emitter on a per-run cap). */
 export const isEvictionMarker = (e: ObservationEvent): boolean =>

@@ -12,6 +12,13 @@ export interface PendingMessage {
   queuedAt: string;
 }
 
+/** Per-Agent daily spend cap (#255). Enforced pre-run only: Codex reports usage at turn end, so a
+ * single Run can overshoot the cap — the gate refuses the next one. "Day" is a rolling 24 h window. */
+export interface AgentBudget {
+  maxTokensPerDay?: number | undefined;
+  maxEstimatedUsdPerDay?: number | undefined;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -24,6 +31,8 @@ export interface Agent {
   workspaceTemplate?: string | undefined;
   /** Operator-set shell command run in the workspace after every completed ordinary Run (#253); its exit code sets the Run's taskOutcome. */
   verifyCommand?: string | undefined;
+  /** Optional daily budget (#255); absent means no gate. No Database version bump — old files lack the key. */
+  budget?: AgentBudget | undefined;
   /** FIFO of messages accepted while busy (#254), capped at 10; absent means empty. No Database
    * version bump: old files simply lack the key, and old readers ignore it — the shape stays compatible. */
   pendingMessages?: PendingMessage[] | undefined;
@@ -77,6 +86,9 @@ export interface AgentConfigSnapshot {
   capturePolicy: "metadata_only" | "safe_summary" | "reasoning_summary";
   /** sha256 of the Agent's verifyCommand (hashed like `instructions`); absent when none is set. */
   verifyCommand?: string | undefined;
+  /** Budget limits (#255) are plain numbers, not secrets; absent when unset so pre-budget hashes stay stable. */
+  budgetMaxTokensPerDay?: number | undefined;
+  budgetMaxEstimatedUsdPerDay?: number | undefined;
 }
 
 export interface AgentRun {
@@ -147,6 +159,7 @@ export interface CreateAgentInput {
   workspace?: string | undefined;
   template?: string | undefined;
   verifyCommand?: string | undefined;
+  budget?: AgentBudget | null | undefined;
 }
 
 export interface UpdateAgentInput {
@@ -156,6 +169,8 @@ export interface UpdateAgentInput {
   workspace?: string | undefined;
   /** Empty string clears the command. */
   verifyCommand?: string | undefined;
+  /** `null` (or a budget with no limits) clears the stored budget (#255). */
+  budget?: AgentBudget | null | undefined;
 }
 
 /** Bounded per-Run counters observed from the runtime stream; feeds the completion-summary log line (#232). */

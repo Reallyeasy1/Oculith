@@ -10,6 +10,20 @@ export interface PendingMessage {
   queuedAt: string;
 }
 
+/** Per-Agent daily spend cap (#255). Enforced pre-run only — a single Run can overshoot; "day" is a rolling 24 h window. */
+export interface AgentBudget {
+  maxTokensPerDay?: number;
+  maxEstimatedUsdPerDay?: number;
+}
+
+/** GET /api/agents/:id/budget — live status behind the budget banner (#255). */
+export interface AgentBudgetReport {
+  budget: AgentBudget | null;
+  usage: { totalTokens: number; estimatedCostUsd: number; runs: number; windowStart: string };
+  exceeded: boolean;
+  denial?: { decision: "budget_exceeded"; limit: "maxTokensPerDay" | "maxEstimatedUsdPerDay"; limitValue: number; used: number };
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -22,6 +36,8 @@ export interface Agent {
   workspaceTemplate?: string;
   /** Operator-set command run in the workspace after every completed Run (#253); its exit code sets the Run's taskOutcome. */
   verifyCommand?: string;
+  /** Optional daily budget (#255); absent means no gate. */
+  budget?: AgentBudget;
   /** FIFO of messages accepted while busy (#254), capped at 10; absent means empty. */
   pendingMessages?: PendingMessage[];
   codexThreadId: string | null;
@@ -95,6 +111,9 @@ export interface AgentConfigSnapshot {
   capturePolicy: CapturePolicy;
   /** sha256 of the Agent's verifyCommand; absent when none is set. */
   verifyCommand?: string;
+  /** Budget limits (#255); absent when unset. */
+  budgetMaxTokensPerDay?: number;
+  budgetMaxEstimatedUsdPerDay?: number;
 }
 
 // --- GlassBox query types (mirrors apps/server/src/glassbox/{schema,query}.ts) ---

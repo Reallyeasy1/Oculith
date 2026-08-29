@@ -194,6 +194,16 @@ semantics for the dashboard, so the two APIs can never disagree on the same wind
   `telemetry.degraded`; after a server restart, in-flight Runs show as cancelled with open spans marked
   `endedReason=server_restart` — never silently closed. On redactor error the event is persisted as
   metadata only (`privacy.reason=redaction_failed_closed`).
+- **Budgets (#255, the first ControlDecision):** an Agent can carry `budget.maxTokensPerDay` /
+  `budget.maxEstimatedUsdPerDay` (set in Agent settings; part of the config snapshot, so a changed cap
+  is a config change). `POST …/messages` refuses with **429** once observed usage in the rolling 24 h
+  window has reached a limit, records the refusal as a `policy.denied` event
+  (`decision=budget_exceeded`) on the request's own trace, and `GET /api/agents/:id/budget` drives the
+  Playground banner. **Honesty constraint:** Codex reports usage only at turn end, so the gate is
+  pre-run only — a Run that already started can overshoot the cap; enforcement counts terminal Runs'
+  stored rollups (keyed on Run *start* time, so a Run that started just outside the window counts
+  zero), nothing is estimated mid-run. Queued messages (#254) are held, not dropped, while over
+  budget; `startAgent` resumes them once usage leaves the window.
 
 ## Regression workflow (Verify)
 

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import { agentPayload } from "./agent-form";
+import { agentPayload, budgetFormError } from "./agent-form";
 import { showLastErrorHint } from "./agent-view-model";
-import type { Agent, AgentRun, AgentRunBaseline, EvalRun, Message, RegressionCase, ReliabilityReport, RunListItem, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
+import { budgetBanner } from "./budget-view-model";
+import type { Agent, AgentBudgetReport, AgentRun, AgentRunBaseline, EvalRun, Message, RegressionCase, ReliabilityReport, RunListItem, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
 import RunsView from "./RunsView";
 import ReliabilityPanel from "./ReliabilityPanel";
 import type { ReliabilityDrill } from "./reliability-view-model";
@@ -30,6 +31,8 @@ const emptyForm = {
   workspace: "",
   template: "",
   verifyCommand: "",
+  maxTokensPerDay: "",
+  maxEstimatedUsdPerDay: "",
 };
 
 function formatTime(value: string): string {
@@ -66,6 +69,8 @@ export default function App() {
   const [runs, setRuns] = useState<RunListItem[]>([]);
   const [runBaseline, setRunBaseline] = useState<AgentRunBaseline | null>(null);
   const [reliability, setReliability] = useState<ReliabilityReport | null>(null);
+  // #255: live budget status behind the banner; null when no Agent is selected or the endpoint is absent.
+  const [budget, setBudget] = useState<AgentBudgetReport | null>(null);
   // #173 drill-back: a fresh object per tile click so RunsView re-applies the filters on repeat clicks.
   const [runsDrill, setRunsDrill] = useState<ReliabilityDrill | null>(null);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -164,16 +169,18 @@ export default function App() {
     const overview = viewRef.current === "overview";
     const agentId = selectedIdRef.current;
     const scope = overview ? "overview" : agentId;
-    if (!scope) { setRuns([]); setRunBaseline(null); setReliability(null); return; }
+    if (!scope) { setRuns([]); setRunBaseline(null); setReliability(null); setBudget(null); return; }
     try {
-      const [result, baselineResult, reliabilityResult] = await Promise.all([
+      const [result, baselineResult, reliabilityResult, budgetResult] = await Promise.all([
         api.listRuns(overview ? { limit: 200 } : { agentId: agentId!, limit: 100 }),
         overview ? Promise.resolve(null) : api.runBaseline(agentId!).catch(() => null),
         // #173: same fail-soft contract as the baseline — a server without the reliability endpoints just hides the panel.
         overview ? Promise.resolve(null) : api.reliability(agentId!).catch(() => null),
+        // #255: fail-soft too — no budget endpoint, no banner.
+        overview ? Promise.resolve(null) : api.agentBudget(agentId!).catch(() => null),
       ]);
       const stillCurrent = (viewRef.current === "overview" ? "overview" : selectedIdRef.current) === scope;
-      if (mountedRef.current && stillCurrent) { setRuns(result.runs); setRunBaseline(baselineResult?.baseline ?? null); setReliability(reliabilityResult); }
+      if (mountedRef.current && stillCurrent) { setRuns(result.runs); setRunBaseline(baselineResult?.baseline ?? null); setReliability(reliabilityResult); setBudget(budgetResult); }
     } catch {
       // ponytail: runs table goes stale, baseline keeps working (invariant 12)
     }
@@ -276,6 +283,8 @@ export default function App() {
         workspace: selected.workspaceName ?? selected.workspacePath.split(/[\\/]/).at(-1) ?? "",
         template: selected.workspaceTemplate ?? "",
         verifyCommand: selected.verifyCommand ?? "",
+        maxTokensPerDay: selected.budget?.maxTokensPerDay?.toString() ?? "",
+        maxEstimatedUsdPerDay: selected.budget?.maxEstimatedUsdPerDay?.toString() ?? "",
       });
     }
   }, [selected]);
@@ -291,6 +300,9 @@ export default function App() {
 
   const createAgent = async (event: React.FormEvent) => {
     event.preventDefault();
+    // #255: refuse the submit rather than let budgetPayload coerce a typo into "no limit".
+    const budgetError = budgetFormError(form);
+    if (budgetError) { setError(budgetError); return; }
     setBusy(true);
     setError(null);
     try {
@@ -310,6 +322,9 @@ export default function App() {
   const saveAgent = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!selected) return;
+    // #255: a typo in a budget field must not silently clear the stored cap on save.
+    const budgetError = budgetFormError(form);
+    if (budgetError) { setError(budgetError); return; }
     const currentWorkspace = selected.workspaceName ?? selected.workspacePath.split(/[\\/]/).at(-1) ?? "";
     if (form.workspace !== currentWorkspace && !window.confirm("Switch workspace? This clears the Agent's existing Codex conversation thread.")) return;
     setBusy(true);
@@ -835,6 +850,37 @@ export default function App() {
                   Runs in the workspace after every completed Run; its exit code becomes the Run&apos;s
                   outcome. Leave empty to keep the derived phrase heuristic.
                 </p>
+                <div className="form-grid">
+                  <label>
+                    Daily token budget
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={form.maxTokensPerDay}
+                      onChange={(event) => setForm({ ...form, maxTokensPerDay: event.target.value })}
+                      placeholder="no limit"
+                      aria-describedby="budget-help"
+                    />
+                  </label>
+                  <label>
+                    Daily cost budget (USD)
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={form.maxEstimatedUsdPerDay}
+                      onChange={(event) => setForm({ ...form, maxEstimatedUsdPerDay: event.target.value })}
+                      placeholder="no limit"
+                      aria-describedby="budget-help"
+                    />
+                  </label>
+                </div>
+                <p className="form-help" id="budget-help">
+                  {/* #255 honesty constraint: usage is only known at turn end, so the gate is pre-run. */}
+                  Refuses new runs once observed usage in the last 24 h reaches a limit. Checked before
+                  each run only — a run that already started can overshoot. Leave both empty for no budget.
+                </p>
                 <div className="panel-footer">
                   <code title={selected.workspacePath}>{selected.workspaceName ?? selected.workspacePath}</code>
                   <button className="button button-primary" disabled={busy}>
@@ -955,6 +1001,14 @@ export default function App() {
               {showLastErrorHint(selected.lastError, activeRun?.status ?? null) && (
                 <p className="last-run-hint" role="status">
                   Last run failed: {selected.lastError} — send a new message to retry.
+                </p>
+              )}
+
+              {/* #255: the pre-run gate is refusing new Runs for this Agent; sourced from the polled
+                  budget endpoint so it clears by itself once older usage leaves the rolling window. */}
+              {budgetBanner(budget) && (
+                <p className="budget-banner" role="status">
+                  {budgetBanner(budget)}
                 </p>
               )}
 

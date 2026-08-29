@@ -848,6 +848,18 @@ textarea:focus {
   font-size: 11px;
 }
 
+/* #255: pre-run budget gate is refusing new Runs — amber, because the Agent is healthy, just capped. */
+.budget-banner {
+  margin: 0;
+  padding: 6px max(22px, calc((100% - 800px) / 2));
+  border-top: 1px solid #eddda1;
+  background: #fff7d8;
+  color: #6c541b;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 /* #266: subtle persisted "last run failed" note above the composer, sourced from Agent.lastError. */
 .last-run-hint {
   margin: 0;
