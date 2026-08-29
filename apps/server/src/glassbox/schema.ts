@@ -92,6 +92,10 @@ export type Category = z.infer<typeof categorySchema>;
 export type EventType = z.infer<typeof eventTypeSchema>;
 export type CapturePolicy = z.infer<typeof capturePolicySchema>;
 
+// Ids must stay lowercase and fixed-format: the JSON backends order ids with localeCompare (ICU) while
+// the Postgres backend orders with COLLATE "C" (bytes), and the two only agree because every comparand
+// differs first at a digit/hex character. Mixed case or variable length would silently break that
+// cross-backend ordering parity (#216).
 export function newId(prefix: "trc" | "spn" | "evt"): string {
   return prefix + "_" + randomUUID().replace(/-/g, "").slice(0, 20);
 }

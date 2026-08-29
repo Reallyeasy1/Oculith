@@ -22,6 +22,16 @@ terraform fmt -check -recursive deploy/volcengine
 docker compose config
 ```
 
+The PostgreSQL store conformance cases are skipped unless `TEST_DATABASE_URL`
+points at a **throwaway** database (they empty its tables between cases — that
+is why they never read the app's `DATABASE_URL`):
+
+```bash
+docker run -d --rm --name testpg -e POSTGRES_PASSWORD=test -e POSTGRES_DB=launchpad_test -p 127.0.0.1:54329:5432 postgres:16-alpine
+TEST_DATABASE_URL="postgres://postgres:test@127.0.0.1:54329/launchpad_test" npm run test -w @launchpad/server
+docker rm -f testpg
+```
+
 ## Pull requests
 
 - Explain the behavior and reason for the change.

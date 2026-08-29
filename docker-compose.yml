@@ -37,6 +37,15 @@ services:
     pids_limit: 512
     mem_limit: 4g
     cpus: 2
+    # #216: wait for PG before starting the app so `--profile postgres up` doesn't crash-loop through
+    # "Cannot reach DATABASE_URL" until PG accepts connections. `required: false` keeps the default
+    # profile (no postgres service enabled) valid — the dependency only binds when the profile is active.
+    # Needs Compose >= 2.20.2: older Compose rejects `required` and fails `docker compose config` for
+    # EVERY profile (including the default one) with an unhelpful schema error.
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
   postgres:
     image: postgres:16-alpine
     profiles: ["postgres"]
@@ -48,3 +57,11 @@ services:
       - ./data/postgres:/var/lib/postgresql/data
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      # -h 127.0.0.1 forces TCP: during first-boot initdb the image runs a temporary server on the
+      # unix socket only, so a socket probe can go green before TCP (what launchpad connects to) is up.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
