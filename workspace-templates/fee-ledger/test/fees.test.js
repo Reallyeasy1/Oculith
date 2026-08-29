@@ -4,12 +4,13 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fee } from "../src/fees.js";
 
-// expected.json holds SHA-256 checksums of the correct "plan:amount:fee" lines,
-// recorded from the billing system of record. Fees are formatted to 2 decimals.
+// expected.json holds SHA-256 checksums of the correct "plan:amount:fee" lines, exported from the
+// billing system of record at its full 10-decimal precision. The precision is load-bearing (#315):
+// two-decimal fees have a ~10^4 preimage space and were brute-forced against these checksums.
 const expected = JSON.parse(readFileSync(new URL("./expected.json", import.meta.url), "utf8"));
 
 function checksum(plan, amount) {
-  const line = `${plan}:${amount}:${fee(amount, plan).toFixed(2)}`;
+  const line = `${plan}:${amount}:${fee(amount, plan).toFixed(10)}`;
   return createHash("sha256").update(line).digest("hex");
 }
 
