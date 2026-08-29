@@ -109,7 +109,20 @@ npm run dev
 ```
 
 Web UI <http://localhost:5173>, API <http://localhost:3000>. Use local paths in `.env` outside Docker:
-`APP_DATA_DIR=.data`, `AGENT_WORKSPACE_ROOT=workspaces`, `CODEX_HOME=codex-home`.
+`APP_DATA_DIR=.data`, `AGENT_WORKSPACE_ROOT=workspaces`, `CODEX_HOME=codex-home`,
+`WORKSPACE_TEMPLATES_DIR=workspace-templates` (otherwise workspace templates list as empty — the
+`.env.example` value is a Docker path). Relative paths resolve against `apps/server/`, not the repo
+root; use absolute paths if that matters.
+
+No Ark key yet? The server still boots on the `.env.example` placeholders:
+`curl http://localhost:3000/api/health` returns `{"ok":true,…}`, and `GET /api/system` (send the
+bearer token) reports `modelConfigured:false`. Creating an Agent works; sending it a task needs real
+`ARK_API_KEY`/`ARK_MODEL` values.
+
+**Windows:** the npm global install puts a `codex.cmd` shim on PATH that the server cannot spawn —
+`/api/system` shows `codexAvailable:false` even though `codex --version` works in your shell. Point
+`CODEX_BIN` in `.env` at the native binary the package ships, e.g.
+`C:/Users/<you>/AppData/Roaming/npm/node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe`.
 
 ### Docker Compose / deployment
 
@@ -209,10 +222,12 @@ E2E details: it starts its own server on `:3100` with a throwaway state root, so
 on `:3000` is never touched. Playwright is deliberately not a dependency: run
 `npx -y playwright@1.60.0 --version` once and point `PLAYWRIGHT_DIR` at the npx cache it created.
 
-**Windows:** `npm run check` has 2 documented platform-artifact failures, not bugs (see `CLAUDE.md`):
-a POSIX `/tmp` path assertion in `container-codex-runner.test.ts` always fails, and slow machines can
-hit vitest's 5 s default timeout on a few more tests (those pass with `--testTimeout=30000`). The suite
-is authoritative on Linux/macOS, where CI runs it. Shell scripts are bash — run them from Git Bash.
+**Windows:** `npm run check` exits non-zero with 2 documented platform-artifact failures, not bugs
+(see `CLAUDE.md`): a POSIX `/tmp` path assertion in `container-codex-runner.test.ts` always fails, and
+slow machines can hit vitest's 5 s default timeout on a few more tests (those pass with
+`--testTimeout=30000`; a temp-dir cleanup race may add an `ENOTEMPTY` error to the same report). If
+those are the only two failing files, the fresh clone is healthy. The suite is authoritative on
+Linux/macOS, where CI runs it. Shell scripts are bash — run them from Git Bash.
 
 ## Security and redaction
 
