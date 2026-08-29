@@ -96,7 +96,7 @@ export default function EvaluatorsPanel() {
                 <td>{item.type}</td>
                 <td>{item.minScore}–{item.maxScore}</td>
                 <td>{item.passThreshold}</td>
-                <td className="trace-muted">{item.rubric.length > 120 ? item.rubric.slice(0, 120) + "…" : item.rubric}</td>
+                <td className="trace-muted" title={item.rubric}>{item.rubric.length > 120 ? item.rubric.slice(0, 120) + "…" : item.rubric}</td>
               </tr>
             ))}
           </tbody>
