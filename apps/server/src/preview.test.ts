@@ -190,12 +190,13 @@ describe("PreviewManager lifecycle", () => {
     expect(previews.get("agent-1")).toBeUndefined();
   });
 
-  it("requires dist/ for the static command", async () => {
+  it("requires a built dist/index.html for the static command", async () => {
     const { previews, root } = await makeHarness();
     const workspace = path.join(root, "workspaces", "static-ws");
-    await mkdir(workspace, { recursive: true });
-    await expect(previews.start({ id: "agent-1", workspacePath: workspace }, "static")).rejects.toMatchObject({ statusCode: 400 });
     await mkdir(path.join(workspace, "dist"), { recursive: true });
+    await expect(previews.start({ id: "agent-1", workspacePath: workspace }, "static")).rejects.toMatchObject({ statusCode: 400 });
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(path.join(workspace, "dist", "index.html"), "<!doctype html>\n");
     const preview = await previews.start({ id: "agent-1", workspacePath: workspace }, "static");
     expect(preview.command).toBe("static");
   });
@@ -446,13 +447,20 @@ describe("preview routes", () => {
 });
 
 describe("preview servability (#335)", () => {
-  it("reports what the workspace can serve: local vite install and a built dist/", async () => {
+  it("reports what the workspace can serve: local vite install and a built web dist/", async () => {
     const { previews, root } = await makeHarness();
+    const { writeFile: write } = await import("node:fs/promises");
     const workspace = path.join(root, "workspaces", "servable-ws");
     await mkdir(workspace, { recursive: true });
     await expect(previews.servable(workspace)).resolves.toEqual({ vite: false, static: false });
 
+    // A dist/ of compiled JS (a Node CLI's tsc output) is not a servable page — the static
+    // server would answer "Not found" at /. Only dist/index.html makes it a site.
     await mkdir(path.join(workspace, "dist"), { recursive: true });
+    await write(path.join(workspace, "dist", "main.js"), "console.log(1)\n");
+    await expect(previews.servable(workspace)).resolves.toEqual({ vite: false, static: false });
+
+    await write(path.join(workspace, "dist", "index.html"), "<!doctype html>\n");
     await expect(previews.servable(workspace)).resolves.toEqual({ vite: false, static: true });
 
     await mkdir(path.join(workspace, "node_modules", ".bin"), { recursive: true });
@@ -469,6 +477,7 @@ describe("preview servability (#335)", () => {
     await mkdir(path.join(outside, "dist"), { recursive: true });
     await mkdir(path.join(workspace, "node_modules", ".bin"), { recursive: true });
     const { writeFile, symlink } = await import("node:fs/promises");
+    await writeFile(path.join(outside, "dist", "index.html"), "<!doctype html>\n");
     await writeFile(path.join(outside, ".bin", "vite"), "#!/bin/sh\n");
     // The failure seen live: an agent "installed" vite by symlinking a parent repo's binary.
     await symlink(path.join(outside, ".bin", "vite"), path.join(workspace, "node_modules", ".bin", "vite"));
@@ -493,6 +502,8 @@ describe("preview servability (#335)", () => {
     expect(fresh.json()).toEqual({ preview: null, servable: { vite: false, static: false } });
 
     await mkdir(path.join(agent.workspacePath, "dist"), { recursive: true });
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(path.join(agent.workspacePath, "dist", "index.html"), "<!doctype html>\n");
     const built = await app.inject({ method: "GET", url: "/api/agents/" + agent.id + "/preview" });
     expect(built.json().servable).toEqual({ vite: false, static: true });
     await app.close();

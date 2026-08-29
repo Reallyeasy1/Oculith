@@ -150,7 +150,9 @@ export class PreviewManager {
     };
     const [vite, dist] = await Promise.all([
       servesFromMount(path.join(workspacePath, "node_modules", ".bin", "vite"), false),
-      servesFromMount(path.join(workspacePath, "dist"), true),
+      // dist/index.html, not dist/ alone: a Node project's compiled-JS dist is a directory
+      // too, but the static server would answer "Not found" at / for it.
+      servesFromMount(path.join(workspacePath, "dist", "index.html"), false),
     ]);
     return { vite, static: dist };
   }
@@ -202,7 +204,7 @@ export class PreviewManager {
       throw new HttpError(400, "Unknown preview command");
     }
     if (command === "static" && !(await this.servable(agent.workspacePath)).static) {
-      throw new HttpError(400, "The static preview serves dist/ and this workspace has none — build first or use the vite command");
+      throw new HttpError(400, "The static preview serves dist/ and this workspace has no dist/index.html — build a web app first or use the vite command");
     }
     const previewId = "prv-" + randomUUID();
     const traceId = newId("trc");
