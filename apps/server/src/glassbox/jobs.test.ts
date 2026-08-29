@@ -240,6 +240,31 @@ describe("EvaluationJobWorker", () => {
     await untilStatus(jobStore, job.id, "completed");
   });
 
+  it("routes a user-defined llm_judge definition through the shared judge runtime (#192)", async () => {
+    const seen: string[] = [];
+    const judge: RunEvaluator = {
+      async evaluate(_summary, definition) {
+        seen.push(`${definition.id}@${definition.version}`);
+        return { score: definition.maxScore, passed: true, explanation: "judged " + definition.rubric, evidenceEventIds: [] };
+      },
+    };
+    const { summaries, evaluations, jobStore, worker } = await setup(new Map([["task_completion", judge]]));
+    await addSummary(summaries, "run-1", "agent-a", "2026-08-28T01:00:00.000Z");
+    const custom = await evaluations.createDefinition({
+      id: "politeness_judge", name: "Politeness", type: "llm_judge", rubric: "Score politeness.",
+      minScore: 0, maxScore: 10, passThreshold: 7, config: {}, setsTaskOutcome: false,
+    });
+
+    const job = await worker.enqueue({ evaluatorId: custom.id });
+    await untilStatus(jobStore, job.id, "completed");
+    expect(seen).toEqual(["politeness_judge@1"]);
+    // AC (#192): the result names the user-defined evaluator's own id and version.
+    expect((await evaluations.resultsForRun("run-1"))[0]).toMatchObject({ evaluatorId: "politeness_judge", evaluatorVersion: 1, score: 10, passed: true });
+
+    // Deterministic definitions never fall through to the judge runtime.
+    await expect(worker.enqueue({ evaluatorId: "expected_tool" })).rejects.toMatchObject({ statusCode: 501 });
+  });
+
   it("terminal_status judges deterministically from the stored summary", async () => {
     const { summaries, evaluations, jobStore, worker } = await setup(builtinRunEvaluators() as Map<string, RunEvaluator>);
     await addSummary(summaries, "run-ok", "agent-a", "2026-08-28T01:00:00.000Z", "completed");

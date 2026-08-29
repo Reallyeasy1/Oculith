@@ -220,7 +220,8 @@ export class ArkTaskCompletionJudge implements TaskCompletionJudge {
         model: this.model,
         temperature: 0,
         input: [
-          { role: "system", content: [{ type: "input_text", text: "You are task_completion@1. Judge only the supplied redacted evidence. Return exactly one JSON object with score (integer 1-5), passed (score >= 4), explanation, and citedEventIds. Every factual claim must cite supplied event ids. Rubric: " + request.definition.rubric }] },
+          // #192: user-defined judges share this runtime, so the frame comes from the definition.
+          { role: "system", content: [{ type: "input_text", text: `You are ${request.definition.id}@${request.definition.version}. Judge only the supplied redacted evidence. Return exactly one JSON object with score (integer ${request.definition.minScore}-${request.definition.maxScore}), passed (score >= ${request.definition.passThreshold}), explanation, and citedEventIds. Every factual claim must cite supplied event ids. Rubric: ` + request.definition.rubric }] },
           { role: "user", content: [{ type: "input_text", text: request.view }] },
         ],
       }),
@@ -295,7 +296,10 @@ export class TaskCompletionEvaluator implements RunEvaluator {
       return { passed: false, explanation: "no final response", evidenceEventIds: [], metadata: { noFinalResponse: true } };
     }
     const view = buildEvaluationView({ summary, userRequest: source.userRequest, finalResponse: source.finalResponse, events: source.events });
-    const output = taskCompletionOutputSchema.parse(await this.judge.judge({ definition, view: view.text }));
+    // #192: the score must sit inside the definition's own range (seeded task_completion stays 1-5).
+    const output = taskCompletionOutputSchema
+      .extend({ score: z.number().int().min(definition.minScore).max(definition.maxScore) })
+      .parse(await this.judge.judge({ definition, view: view.text }));
     if (output.passed !== (output.score >= definition.passThreshold)) throw new Error("Judge output is inconsistent with the evaluator pass threshold");
     const allowed = new Set(view.eventIds);
     const missing = output.citedEventIds.filter((id) => !allowed.has(id));

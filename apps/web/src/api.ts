@@ -1,4 +1,4 @@
-import type { Agent, AgentRun, Assertion, AuditRow, CapturePolicy, EvalRun, EvaluationResult, Message, QueuedMessageReceipt, RegressionCase, ReliabilityReport, RunListItem, RunLogLine, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
+import type { Agent, AgentRun, Assertion, AuditRow, CapturePolicy, EvalRun, EvaluationResult, EvaluatorDefinition, Message, QueuedMessageReceipt, RegressionCase, ReliabilityReport, RunListItem, RunLogLine, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -116,6 +116,13 @@ export const api = {
   // to daily buckets and the seeded task_completion evaluator).
   reliability: (agentId: string) =>
     request<ReliabilityReport>("/api/agents/" + agentId + "/reliability"),
+  // #192: the evaluator catalogue and the user-defined llm_judge create form.
+  listEvaluators: () => request<{ evaluators: EvaluatorDefinition[] }>("/api/evaluators"),
+  createEvaluator: (body: { name: string; rubric: string; minScore: number; maxScore: number; passThreshold: number; setsTaskOutcome?: boolean }) =>
+    request<{ evaluator: EvaluatorDefinition }>("/api/evaluators", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   // #173: stored evaluation results for one Run, shown in the trace detail.
   runEvaluations: (runId: string) =>
     request<{ evaluations: EvaluationResult[] }>("/api/runs/" + runId + "/evaluations"),

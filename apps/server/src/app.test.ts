@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -514,6 +514,67 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     // without the worker wired, the endpoints do not exist
     const bare = await createApp(config(), service, { emitter, store });
     expect((await bare.inject({ method: "GET", url: "/api/evaluation-jobs", headers: auth })).statusCode).toBe(404);
+    await bare.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("creates user-defined llm_judge evaluator definitions via POST /api/evaluators (#192)", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "custom-evaluators-api-"));
+    const store = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const json = new JsonStore(path.join(dir, "launchpad.json"));
+    await json.initialize();
+    const evaluations = new JsonEvaluationStore(json, new JsonRunSummaryStore(json));
+    await evaluations.initialize();
+    const app = await createApp(config(), service, { emitter, store, evaluations });
+    const post = (payload: unknown) => app.inject({ method: "POST", url: "/api/evaluators", headers: { ...auth, "content-type": "application/json" }, payload: payload as Record<string, unknown> });
+
+    const body = { name: "Politeness Judge", rubric: "Score the final response for politeness.", minScore: 0, maxScore: 10, passThreshold: 7 };
+    const created = await post(body);
+    expect(created.statusCode).toBe(201);
+    expect(created.json().evaluator).toMatchObject({ id: "politeness_judge", name: "Politeness Judge", version: 1, type: "llm_judge", minScore: 0, maxScore: 10, passThreshold: 7, setsTaskOutcome: false, config: {} });
+
+    // FR-20: an identical body is idempotent; a changed rubric under the same name creates version n+1.
+    expect((await post(body)).json().evaluator.version).toBe(1);
+    const v2 = await post({ ...body, rubric: "Score politeness and warmth." });
+    expect(v2.statusCode).toBe(201);
+    expect(v2.json().evaluator).toMatchObject({ id: "politeness_judge", version: 2 });
+    // AC (#192): two versions of one user-defined evaluator coexist in the catalogue.
+    const listed = (await app.inject({ method: "GET", url: "/api/evaluators", headers: auth })).json().evaluators
+      .filter((item: { id: string }) => item.id === "politeness_judge")
+      .map((item: { version: number }) => item.version)
+      .sort();
+    expect(listed).toEqual([1, 2]);
+
+    // Validation at the boundary → 400 with details; type conflicts → 409.
+    expect((await post({ ...body, passThreshold: 11 })).statusCode).toBe(400);
+    expect((await post({ ...body, minScore: 10, maxScore: 0 })).statusCode).toBe(400);
+    expect((await post({ ...body, rubric: "" })).statusCode).toBe(400);
+    expect((await post({ ...body, name: "***" })).statusCode).toBe(400); // no usable slug
+    expect((await post({ ...body, name: "Terminal Status" })).statusCode).toBe(409); // cannot turn a deterministic evaluator into a judge
+
+    // AC (#192): a rubric mentioning a seeded fake secret is stored redacted.
+    const secret = "sk-proj-" + "C".repeat(24);
+    const leaky = await post({ ...body, name: "Leaky Judge", rubric: "Never reveal " + secret });
+    expect(leaky.statusCode).toBe(201);
+    expect(leaky.json().evaluator.rubric).not.toContain(secret);
+    expect(await readFile(path.join(dir, "launchpad.json"), "utf8")).not.toContain(secret);
+
+    // Privacy review of #313: the id is slugged from the REDACTED name — a secret pasted as the
+    // name must not survive to the id, even dash/case-mangled by the slugger.
+    const mangled = secret.toLowerCase().replace(/[^a-z0-9]+/g, "_");
+    const leakyName = await post({ ...body, name: secret });
+    expect(leakyName.statusCode).toBe(201);
+    expect(leakyName.json().evaluator.id).not.toContain(mangled);
+    expect((await readFile(path.join(dir, "launchpad.json"), "utf8")).includes(mangled)).toBe(false);
+
+    // The seeded judge id is reserved: an innocent "Task Completion" must not shadow task_completion@1.
+    expect((await post({ ...body, name: "Task Completion" })).statusCode).toBe(409);
+    await app.close();
+
+    // without the evaluation store wired, the endpoint does not exist
+    const bare = await createApp(config(), service, { emitter, store });
+    expect((await bare.inject({ method: "POST", url: "/api/evaluators", headers: { ...auth, "content-type": "application/json" }, payload: body })).statusCode).toBe(404);
     await bare.close();
     await rm(dir, { recursive: true, force: true });
   });
