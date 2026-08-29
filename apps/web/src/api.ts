@@ -71,6 +71,29 @@ export const api = {
     request<WorkspaceListing>("/api/agents/" + id + "/workspace?path=" + encodeURIComponent(path)),
   readWorkspaceFile: (id: string, path: string) =>
     request<WorkspaceFile>("/api/agents/" + id + "/workspace/file?path=" + encodeURIComponent(path)),
+  // #66: workspace editing. Uploads travel as base64/utf8 inside JSON; the server enforces the
+  // caps (1 MB per PUT file, 20 files / 8 MB per batch), refuses managed files and credential-
+  // looking content with 400, and refuses everything with 409 while a Run has the workspace mounted.
+  writeWorkspaceFile: (id: string, file: { path: string; content: string; encoding: "utf8" | "base64" }) =>
+    request<{ file: { path: string; bytes: number } }>("/api/agents/" + id + "/workspace/file", {
+      method: "PUT",
+      body: JSON.stringify(file),
+    }),
+  seedWorkspaceFiles: (id: string, files: { path: string; content: string; encoding: "utf8" | "base64" }[]) =>
+    request<{ files: { path: string; bytes: number }[] }>("/api/agents/" + id + "/workspace/files", {
+      method: "POST",
+      body: JSON.stringify({ files }),
+    }),
+  deleteWorkspaceFile: (id: string, path: string) =>
+    request<{ file: { path: string; bytes: number } }>(
+      "/api/agents/" + id + "/workspace/file?path=" + encodeURIComponent(path),
+      { method: "DELETE" },
+    ),
+  resetWorkspace: (id: string, forgetThread: boolean) =>
+    request<{ agent: Agent; archivedWorkspace: string }>("/api/agents/" + id + "/workspace/reset", {
+      method: "POST",
+      body: JSON.stringify({ forgetThread }),
+    }),
   listWorkspaceTemplates: () => request<{ templates: WorkspaceTemplate[] }>("/api/workspace-templates"),
   startAgent: (id: string) =>
     request<{ agent: Agent }>("/api/agents/" + id + "/start", {

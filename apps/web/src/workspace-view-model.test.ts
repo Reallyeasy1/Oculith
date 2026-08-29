@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { WorkspaceEntry, WorkspaceListing } from "./types";
 import {
+  checkNewFilePath,
   childPath,
+  describeHistoryEntry,
   flattenWorkspaceTree,
   formatBytes,
   parentPath,
@@ -100,5 +102,45 @@ describe("formatBytes", () => {
     [5 * 1024 * 1024, "5.0 MB"],
   ])("formats %d as %s", (size, label) => {
     expect(formatBytes(size)).toBe(label);
+  });
+});
+
+describe("describeHistoryEntry (#66)", () => {
+  const base = { at: "2026-08-29T18:04:00.000Z", actor: "operator" };
+  it("describes each action with local time, path and size", () => {
+    const time = (iso: string) => {
+      const d = new Date(iso);
+      return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+    };
+    const t = time(base.at);
+    expect(describeHistoryEntry({ ...base, action: "seed", path: "src/app.ts", bytes: 11 })).toBe(t + " · added src/app.ts (11 B)");
+    expect(describeHistoryEntry({ ...base, action: "write", path: "a.md", bytes: 2048 })).toBe(t + " · edited a.md (2.0 KB)");
+    expect(describeHistoryEntry({ ...base, action: "delete", path: "old.txt", bytes: 5 })).toBe(t + " · deleted old.txt");
+    expect(describeHistoryEntry({ ...base, action: "reset", path: "", bytes: 0 })).toBe(t + " · reset the workspace");
+  });
+  it("drops the time when the timestamp is unparsable", () => {
+    expect(describeHistoryEntry({ at: "garbage", actor: "operator", action: "delete", path: "x", bytes: 0 })).toBe("deleted x");
+  });
+});
+
+describe("checkNewFilePath (#66)", () => {
+  it("trims and normalizes leading/trailing separators", () => {
+    expect(checkNewFilePath("  /src/app.ts/ ")).toEqual({ path: "src/app.ts" });
+  });
+  it.each([
+    ["", "Enter a file path"],
+    ["   ", "Enter a file path"],
+    ["../escape.txt", "'..'"],
+    ["a/../../b", "'..'"],
+    ["AGENTS.md", "platform-managed"],
+    ["README.md", "platform-managed"],
+    [".gitignore", "platform-managed"],
+    ["x".repeat(1030), "too long"],
+  ])("rejects %j", (input, message) => {
+    const result = checkNewFilePath(input);
+    expect("error" in result && result.error).toContain(message);
+  });
+  it("allows a platform file name below the root", () => {
+    expect(checkNewFilePath("docs/README.md")).toEqual({ path: "docs/README.md" });
   });
 });

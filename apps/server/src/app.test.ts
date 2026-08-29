@@ -302,6 +302,80 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     }
   });
 
+  it("serves workspace editing: write, seed, delete, reset, history and refusals (#66)", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "workspace-edit-api-"));
+    try {
+      const cfg = config({
+        APP_DATA_DIR: path.join(root, "data"),
+        AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+        CODEX_HOME: path.join(root, "codex"),
+        ARK_API_KEY: "test-key",
+        ARK_MODEL: "ep-test",
+      });
+      const runner = { run: async () => ({ output: "", threadId: "t" }), cancel: async () => false, isAvailable: async () => true };
+      const svc = new RealAgentService(cfg, new JsonStore(path.join(root, "data", "db.json")), new WorkspaceManager(path.join(root, "workspaces")), runner);
+      await svc.initialize();
+      const agent = await svc.createAgent({ name: "Editable" });
+      const app = await createApp(cfg, svc);
+      const base = "/api/agents/" + agent.id;
+      const call = (method: "PUT" | "POST" | "DELETE", url: string, payload?: unknown) =>
+        app.inject({ method, url, headers: auth, ...(payload !== undefined ? { payload } : {}) });
+
+      expect((await app.inject({ method: "PUT", url: base + "/workspace/file", payload: { path: "x", content: "" } })).statusCode).toBe(401);
+
+      const written = await call("PUT", base + "/workspace/file", { path: "src/app.ts", content: "export {};\n" });
+      expect(written.statusCode).toBe(200);
+      expect(written.json()).toEqual({ file: { path: "src/app.ts", bytes: 11 } });
+      expect(await readFile(path.join(agent.workspacePath, "src", "app.ts"), "utf8")).toBe("export {};\n");
+
+      const seeded = await call("POST", base + "/workspace/files", {
+        files: [
+          { path: "data/a.json", content: "{}" },
+          { path: "logo.bin", content: Buffer.from([9, 9]).toString("base64"), encoding: "base64" },
+        ],
+      });
+      expect(seeded.statusCode).toBe(200);
+      expect(seeded.json().files).toHaveLength(2);
+
+      expect((await call("DELETE", base + "/workspace/file?path=" + encodeURIComponent("data/a.json"))).json())
+        .toEqual({ file: { path: "data/a.json", bytes: 2 } });
+
+      // Refusals carry the reason: managed file, credential-looking content, invalid body shapes.
+      const managed = await call("PUT", base + "/workspace/file", { path: "AGENTS.md", content: "x" });
+      expect(managed.statusCode).toBe(400);
+      expect(managed.json().error).toContain("platform-managed");
+      const leaky = await call("PUT", base + "/workspace/file", { path: ".env", content: "MY_API_KEY=abcdef012345" });
+      expect(leaky.statusCode).toBe(400);
+      expect(leaky.json().error).toContain("credential");
+      expect((await call("PUT", base + "/workspace/file", { path: "", content: "x" })).statusCode).toBe(400);
+      expect((await call("POST", base + "/workspace/files", { files: [] })).statusCode).toBe(400);
+      expect((await call("POST", base + "/workspace/files", {
+        files: Array.from({ length: 21 }, (_, i) => ({ path: "f" + i, content: "" })),
+      })).statusCode).toBe(400);
+      expect((await call("DELETE", base + "/workspace/file?path=")).statusCode).toBe(400);
+
+      // History is on the Agent record, newest first; reset archives and can forget the thread.
+      const history = (await app.inject({ method: "GET", url: base, headers: auth })).json().agent.workspaceHistory;
+      expect(history.map((entry: { action: string; path: string }) => [entry.action, entry.path])).toEqual([
+        ["delete", "data/a.json"],
+        ["seed", "data/a.json"],
+        ["seed", "logo.bin"],
+        ["write", "src/app.ts"],
+      ]);
+
+      const reset = await call("POST", base + "/workspace/reset", { forgetThread: true });
+      expect(reset.statusCode).toBe(200);
+      expect(reset.json().archivedWorkspace).toContain(".deleted");
+      expect(reset.json().agent.codexThreadId).toBeNull();
+      expect(reset.json().agent.workspaceHistory[0]).toMatchObject({ action: "reset", path: "" });
+      await expect(readFile(path.join(agent.workspacePath, "src", "app.ts"), "utf8")).rejects.toThrowError();
+      expect(await readFile(path.join(agent.workspacePath, "AGENTS.md"), "utf8")).toContain("Editable");
+      await app.close();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("trace events q also searches summary text, and an unknown traceId is 404 (#54)", async () => {
     const store = new MemoryTraceStore(); const emitter = new ObservationEmitter({ store, capturePolicy: "safe_summary" });
     const ids = { traceId: "trc_q", runId: "run-q", agentId: "agt-q" };

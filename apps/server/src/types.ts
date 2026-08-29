@@ -19,6 +19,16 @@ export interface AgentBudget {
   maxEstimatedUsdPerDay?: number | undefined;
 }
 
+/** One workspace edit made through the browser (#66). `actor` is fixed to "operator" until the
+ * Bouncer track brings identity — the shared bearer token cannot distinguish people. */
+export interface WorkspaceHistoryEntry {
+  at: string;
+  action: "write" | "seed" | "delete" | "reset";
+  path: string;
+  bytes: number;
+  actor: string;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -36,6 +46,9 @@ export interface Agent {
   /** FIFO of messages accepted while busy (#254), capped at 10; absent means empty. No Database
    * version bump: old files simply lack the key, and old readers ignore it — the shape stays compatible. */
   pendingMessages?: PendingMessage[] | undefined;
+  /** Last 50 browser edits to the workspace, newest first (#66); absent means none. No version bump —
+   * old files simply lack the key. */
+  workspaceHistory?: WorkspaceHistoryEntry[] | undefined;
   codexThreadId: string | null;
   lastError: string | null;
   createdAt: string;

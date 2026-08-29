@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
-import type { WorkspaceFile, WorkspaceListing } from "./types";
+import type { WorkspaceFile, WorkspaceHistoryEntry, WorkspaceListing } from "./types";
 import {
+  checkNewFilePath,
+  describeHistoryEntry,
   flattenWorkspaceTree,
   formatBytes,
   parentPath,
@@ -14,12 +16,35 @@ interface Props {
   workspacePath: string;
   fileCount?: number | undefined;
   lastModified?: string | undefined;
+  /** #66: while a Run has the workspace mounted the backend refuses edits with 409; the buttons
+   * are disabled with the same hint so the refusal is never a surprise. */
+  busy: boolean;
+  history?: WorkspaceHistoryEntry[] | undefined;
+  /** Fired after any successful edit so the shell can refresh the Agent (history) and workspace counts. */
+  onChanged?: (() => void) | undefined;
 }
 
-// #65: read-only workspace browser in the Agent detail. Listings are fetched lazily per directory
-// through api.ts (GET /api/agents/:id/workspace[/file]); nothing here can write. The tree follows
-// the trace tree's keyboard contract: arrows move/expand, Enter previews, Escape steps back.
-export default function WorkspacePanel({ agentId, workspacePath, fileCount, lastModified }: Props) {
+const BUSY_HINT = "Run in progress — the workspace is mounted in the sandbox";
+/** Client-side mirror of the server's batch caps (#66); the server re-enforces and reports both. */
+const MAX_UPLOAD_FILES = 20;
+const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
+const RECENT_CHANGES_SHOWN = 10;
+
+function bytesToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  // Chunked: String.fromCharCode(...bytes) overflows the call stack on multi-MB files.
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+}
+
+// #65 read-only browser + #66 editing. Listings are fetched lazily per directory through api.ts;
+// all writes go through the four #66 endpoints and the backend stays the authority on every
+// refusal (managed files, caps, credential scan, busy Agent). The tree follows the trace tree's
+// keyboard contract: arrows move/expand, Enter previews, Escape steps back.
+export default function WorkspacePanel({ agentId, workspacePath, fileCount, lastModified, busy, history, onChanged }: Props) {
   const [open, setOpen] = useState(false);
   const [listings, setListings] = useState<Map<string, WorkspaceListing>>(new Map());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -27,8 +52,12 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
   const [focusReq, setFocusReq] = useState(0);
   const [preview, setPreview] = useState<WorkspaceFile | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editText, setEditText] = useState<string | null>(null);
+  const [newFilePath, setNewFilePath] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const loading = useRef(new Set<string>());
+  const fileInput = useRef<HTMLInputElement>(null);
 
   const loadListing = async (path: string): Promise<void> => {
     if (loading.current.has(path)) return;
@@ -52,6 +81,8 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
     setFocusPath(null);
     setPreview(null);
     setError(null);
+    setEditText(null);
+    setNewFilePath(null);
   }, [agentId]);
 
   useEffect(() => {
@@ -77,9 +108,10 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
     if (!row.expanded && !row.loaded) void loadListing(row.path);
   };
 
-  const openPreview = async (row: WorkspaceRow) => {
+  const openPreview = async (path: string) => {
     try {
-      setPreview(await api.readWorkspaceFile(agentId, row.path));
+      setPreview(await api.readWorkspaceFile(agentId, path));
+      setEditText(null);
       setError(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -89,18 +121,101 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
   const closePreview = () => {
     const back = preview?.path;
     setPreview(null);
+    setEditText(null);
     if (back) focusRow(back);
   };
 
   const refresh = () => {
     setPreview(null);
+    setEditText(null);
     void loadListing("");
     for (const path of expanded) if (listings.has(path)) void loadListing(path);
   };
 
+  /** Wrap a write: report its failure in the shared banner, then refresh listings and the shell. */
+  const runEdit = async (edit: () => Promise<void>): Promise<boolean> => {
+    setPending(true);
+    try {
+      await edit();
+      setError(null);
+      refresh();
+      onChanged?.();
+      return true;
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      return false;
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const addFiles = async (selected: FileList) => {
+    const files = [...selected];
+    if (files.length === 0) return;
+    if (files.length > MAX_UPLOAD_FILES) {
+      setError(files.length + " files selected — the limit is " + MAX_UPLOAD_FILES + " per batch");
+      return;
+    }
+    const total = files.reduce((sum, file) => sum + file.size, 0);
+    if (total > MAX_UPLOAD_BYTES) {
+      setError("Selection is " + formatBytes(total) + " — the limit is " + formatBytes(MAX_UPLOAD_BYTES) + " per batch");
+      return;
+    }
+    const payload = await Promise.all(
+      files.map(async (file) => ({
+        path: file.name,
+        content: bytesToBase64(await file.arrayBuffer()),
+        encoding: "base64" as const,
+      })),
+    );
+    await runEdit(async () => { await api.seedWorkspaceFiles(agentId, payload); });
+  };
+
+  const createFile = async () => {
+    const checked = checkNewFilePath(newFilePath ?? "");
+    if ("error" in checked) { setError(checked.error); return; }
+    const created = await runEdit(async () => {
+      await api.writeWorkspaceFile(agentId, { path: checked.path, content: "", encoding: "utf8" });
+    });
+    if (created) {
+      setNewFilePath(null);
+      await openPreview(checked.path);
+      setEditText("");
+    }
+  };
+
+  const saveEdit = async () => {
+    if (!preview || editText === null) return;
+    const path = preview.path;
+    const saved = await runEdit(async () => {
+      await api.writeWorkspaceFile(agentId, { path, content: editText, encoding: "utf8" });
+    });
+    if (saved) await openPreview(path);
+  };
+
+  const deleteFile = async () => {
+    if (!preview) return;
+    if (!window.confirm("Delete " + preview.path + " from the workspace?")) return;
+    const path = preview.path;
+    const deleted = await runEdit(async () => { await api.deleteWorkspaceFile(agentId, path); });
+    if (deleted) closePreview();
+  };
+
+  const resetWorkspace = async () => {
+    if (!window.confirm("Reset this workspace? All files are archived to .deleted/ and the platform files are recreated.")) return;
+    const forgetThread = window.confirm("Also forget the Codex session thread? OK = start the next run fresh, Cancel = keep the conversation.");
+    const wiped = await runEdit(async () => { await api.resetWorkspace(agentId, forgetThread); });
+    if (wiped) {
+      setListings(new Map());
+      setExpanded(new Set());
+      setPreview(null);
+      void loadListing("");
+    }
+  };
+
   const activate = (row: WorkspaceRow) => {
     if (row.kind === "dir") toggleDir(row);
-    else void openPreview(row);
+    else void openPreview(row.path);
   };
 
   const onRowKey = (event: React.KeyboardEvent, index: number) => {
@@ -133,6 +248,10 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
   const rootListing = listings.get("");
   const truncated = rows.length > 0 && [...listings.values()].some((listing) => listing.truncated);
   const summary = workspaceSummaryLine(fileCount, lastModified);
+  const editLocked = busy || pending;
+  const editHint = busy ? BUSY_HINT : undefined;
+  const canEditPreview = preview !== null && !preview.managed && preview.encoding === "utf8" && preview.content !== undefined;
+  const recentChanges = (history ?? []).slice(0, RECENT_CHANGES_SHOWN);
 
   return (
     <section className="workspace-panel" aria-labelledby="workspace-panel-heading">
@@ -147,14 +266,50 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
           </p>
         </div>
         <div className="header-actions">
-          {open && <button type="button" className="button button-ghost" onClick={refresh}>Refresh</button>}
+          {open && (
+            <>
+              <input
+                ref={fileInput}
+                type="file"
+                multiple
+                hidden
+                onChange={(event) => {
+                  if (event.target.files) void addFiles(event.target.files);
+                  event.target.value = "";
+                }}
+              />
+              <button type="button" className="button button-ghost" disabled={editLocked} title={editHint} onClick={() => fileInput.current?.click()}>Add files</button>
+              <button type="button" className="button button-ghost" disabled={editLocked} title={editHint} onClick={() => setNewFilePath((value) => (value === null ? "" : value))}>New file</button>
+              <button type="button" className="button button-ghost" disabled={editLocked} title={editHint} onClick={() => void resetWorkspace()}>Reset…</button>
+              <button type="button" className="button button-ghost" onClick={refresh}>Refresh</button>
+            </>
+          )}
           <button type="button" className="button button-ghost" onClick={() => setOpen((value) => !value)}>
             {open ? "Hide files" : "Browse files"}
           </button>
         </div>
       </div>
 
+      {open && busy && <p className="workspace-note">{BUSY_HINT} — editing is disabled until the run finishes.</p>}
       {open && error && <p className="error-banner" role="alert">{error}</p>}
+      {open && newFilePath !== null && (
+        <form
+          className="workspace-newfile"
+          onSubmit={(event) => { event.preventDefault(); void createFile(); }}
+        >
+          <label>
+            New file path
+            <input
+              value={newFilePath}
+              onChange={(event) => setNewFilePath(event.target.value)}
+              placeholder="src/notes.md"
+              autoFocus
+            />
+          </label>
+          <button type="submit" className="button button-primary" disabled={editLocked} title={editHint}>Create</button>
+          <button type="button" className="button button-ghost" onClick={() => setNewFilePath(null)}>Cancel</button>
+        </form>
+      )}
       {open && truncated && (
         <p className="workspace-note">Large directory: only the first 2,000 entries per folder are listed.</p>
       )}
@@ -192,13 +347,35 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
       {open && preview && (
         <div className="workspace-preview">
           <div className="workspace-preview-head">
-            <h3><code>{preview.path}</code>{preview.managed && <span className="workspace-managed-badge" title="Written by the platform; regenerated on Agent updates."> managed</span>}</h3>
-            <button type="button" className="button button-ghost" onClick={closePreview}>Close</button>
+            <h3><code>{preview.path}</code>{preview.managed && <span className="workspace-managed-badge" title="Written by the platform; regenerated on Agent updates — edit the Agent instead."> managed</span>}</h3>
+            <div className="header-actions">
+              {canEditPreview && editText === null && (
+                <button type="button" className="button button-ghost" disabled={editLocked} title={editHint} onClick={() => setEditText(preview.content ?? "")}>Edit</button>
+              )}
+              {!preview.managed && editText === null && (
+                <button type="button" className="button button-ghost" disabled={editLocked} title={editHint} onClick={() => void deleteFile()}>Delete</button>
+              )}
+              <button type="button" className="button button-ghost" onClick={closePreview}>Close</button>
+            </div>
           </div>
           <p className="workspace-panel-meta">
             {formatBytes(preview.size)} · {new Date(preview.mtime).toLocaleString()} · {preview.encoding}
           </p>
-          {preview.content !== undefined ? (
+          {editText !== null ? (
+            <div className="workspace-editor">
+              <textarea
+                value={editText}
+                onChange={(event) => setEditText(event.target.value)}
+                rows={16}
+                spellCheck={false}
+                aria-label={"Edit " + preview.path}
+              />
+              <div className="header-actions">
+                <button type="button" className="button button-primary" disabled={editLocked} title={editHint} onClick={() => void saveEdit()}>Save</button>
+                <button type="button" className="button button-ghost" onClick={() => setEditText(null)}>Cancel</button>
+              </div>
+            </div>
+          ) : preview.content !== undefined ? (
             <pre className="workspace-preview-content">{preview.content}</pre>
           ) : (
             <p className="workspace-note">
@@ -207,6 +384,17 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
                 : "File exceeds the 256 KB preview limit — metadata only."}
             </p>
           )}
+        </div>
+      )}
+
+      {open && recentChanges.length > 0 && (
+        <div className="workspace-history">
+          <h3>Recent changes</h3>
+          <ul>
+            {recentChanges.map((entry, index) => (
+              <li key={entry.at + ":" + index}>{describeHistoryEntry(entry)}</li>
+            ))}
+          </ul>
         </div>
       )}
     </section>

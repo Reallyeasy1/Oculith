@@ -1413,3 +1413,101 @@ describe("Pre-run budget gate (#255)", () => {
     await service.waitForRun((result as { run: AgentRun }).run.id);
   });
 });
+
+// #66: workspace editing, seeding and reset from the browser.
+describe("workspace editing (#66)", () => {
+  it("writes, seeds and deletes files, recording bounded history newest-first", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Editor" });
+    await expect(service.writeAgentWorkspaceFile(agent.id, { path: "src/main.ts", content: "let x = 1;", encoding: "utf8" }))
+      .resolves.toEqual({ path: "src/main.ts", bytes: 10 });
+    await service.seedAgentWorkspaceFiles(agent.id, [
+      { path: "a.txt", content: "aa", encoding: "utf8" },
+      { path: "b.txt", content: Buffer.from("bbb").toString("base64"), encoding: "base64" },
+    ]);
+    await service.deleteAgentWorkspaceFile(agent.id, "a.txt");
+    const history = service.getAgent(agent.id).workspaceHistory!;
+    expect(history.map((entry) => [entry.action, entry.path, entry.bytes])).toEqual([
+      ["delete", "a.txt", 2],
+      ["seed", "a.txt", 2],
+      ["seed", "b.txt", 3],
+      ["write", "src/main.ts", 10],
+    ]);
+    expect(history.every((entry) => entry.actor === "operator" && !Number.isNaN(Date.parse(entry.at)))).toBe(true);
+    expect(await readFile(path.join(agent.workspacePath, "b.txt"), "utf8")).toBe("bbb");
+  });
+
+  it("caps history at 50 entries", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Busy fingers" });
+    for (let i = 0; i < 55; i++) {
+      await service.writeAgentWorkspaceFile(agent.id, { path: "f" + i + ".txt", content: "x", encoding: "utf8" });
+    }
+    const history = service.getAgent(agent.id).workspaceHistory!;
+    expect(history).toHaveLength(50);
+    expect(history[0]!.path).toBe("f54.txt"); // newest first, oldest dropped
+  });
+
+  it("maps refused writes to 400 and keeps managed files and credentials out", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Refusals" });
+    await expect(service.writeAgentWorkspaceFile(agent.id, { path: "AGENTS.md", content: "x", encoding: "utf8" }))
+      .rejects.toMatchObject({ statusCode: 400, message: expect.stringContaining("platform-managed") });
+    await expect(service.writeAgentWorkspaceFile(agent.id, { path: ".env", content: "ARK_API_KEY=ark-12345678-1234-1234-1234-123456789abc", encoding: "utf8" }))
+      .rejects.toMatchObject({ statusCode: 400, message: expect.stringContaining("credential") });
+    await expect(service.deleteAgentWorkspaceFile(agent.id, "missing.txt")).rejects.toMatchObject({ statusCode: 404 });
+    expect(service.getAgent(agent.id).workspaceHistory ?? []).toHaveLength(0); // refusals leave no history
+  });
+
+  it("refuses every edit with 409 while a Run is active, and allows them again after", async () => {
+    let finish!: (result: RunnerResult) => void;
+    const runner: AgentRunner = {
+      run: () => new Promise((resolve) => { finish = resolve; }),
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Mounted" });
+    const { run } = (await service.sendMessage(agent.id, "hold")) as { run: AgentRun };
+    const busy = { statusCode: 409, message: expect.stringContaining("run is in progress") };
+    await expect(service.writeAgentWorkspaceFile(agent.id, { path: "x.txt", content: "x", encoding: "utf8" })).rejects.toMatchObject(busy);
+    await expect(service.seedAgentWorkspaceFiles(agent.id, [{ path: "x.txt", content: "x", encoding: "utf8" }])).rejects.toMatchObject(busy);
+    await expect(service.deleteAgentWorkspaceFile(agent.id, "x.txt")).rejects.toMatchObject(busy);
+    await expect(service.resetAgentWorkspace(agent.id)).rejects.toMatchObject(busy);
+    await expect.poll(() => finish !== undefined).toBe(true); // executeRun runs in the background
+    finish({ output: "done", threadId: "thread", usage: null });
+    await service.waitForRun(run.id);
+    await expect(service.writeAgentWorkspaceFile(agent.id, { path: "x.txt", content: "x", encoding: "utf8" })).resolves.toBeDefined();
+  });
+
+  it("reset archives the directory, recreates platform files, and optionally forgets the thread", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Resettable" });
+    await service.writeAgentWorkspaceFile(agent.id, { path: "keep-out.txt", content: "old", encoding: "utf8" });
+    const before = (await service.sendMessage(agent.id, "warm up")) as { run: AgentRun };
+    await service.waitForRun(before.run.id);
+    expect(service.getAgent(agent.id).codexThreadId).not.toBeNull();
+
+    const kept = await service.resetAgentWorkspace(agent.id);
+    expect(kept.archivedWorkspace).toContain(".deleted");
+    expect(kept.agent.codexThreadId).not.toBeNull(); // forgetThread not requested
+    await expect(readFile(path.join(agent.workspacePath, "keep-out.txt"), "utf8")).rejects.toThrowError();
+    expect(await readFile(path.join(kept.archivedWorkspace, "keep-out.txt"), "utf8")).toBe("old");
+    expect(await readFile(path.join(agent.workspacePath, "AGENTS.md"), "utf8")).toContain("Resettable");
+    await stat(path.join(agent.workspacePath, "README.md"));
+    await stat(path.join(agent.workspacePath, ".gitignore"));
+    expect(kept.agent.workspaceHistory![0]).toMatchObject({ action: "reset", path: "", bytes: 0 });
+
+    const forgotten = await service.resetAgentWorkspace(agent.id, { forgetThread: true });
+    expect(forgotten.agent.codexThreadId).toBeNull();
+  });
+
+  it("refuses to reset a workspace shared with another Agent", async () => {
+    const service = await makeService();
+    const first = await service.createAgent({ name: "One", workspace: "shared-ws" });
+    await service.createAgent({ name: "Two", workspace: "shared-ws" });
+    await expect(service.resetAgentWorkspace(first.id)).rejects.toMatchObject({
+      statusCode: 409, message: expect.stringContaining("shared"),
+    });
+  });
+});

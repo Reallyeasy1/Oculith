@@ -24,6 +24,16 @@ export interface AgentBudgetReport {
   denial?: { decision: "budget_exceeded"; limit: "maxTokensPerDay" | "maxEstimatedUsdPerDay"; limitValue: number; used: number };
 }
 
+/** One browser edit to the workspace (#66) — mirrors apps/server/src/types.ts. `actor` is fixed
+ * to "operator" until the Bouncer track brings identity. */
+export interface WorkspaceHistoryEntry {
+  at: string;
+  action: "write" | "seed" | "delete" | "reset";
+  path: string;
+  bytes: number;
+  actor: string;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -40,6 +50,8 @@ export interface Agent {
   budget?: AgentBudget;
   /** FIFO of messages accepted while busy (#254), capped at 10; absent means empty. */
   pendingMessages?: PendingMessage[];
+  /** Last 50 browser edits to the workspace, newest first (#66); absent means none. */
+  workspaceHistory?: WorkspaceHistoryEntry[];
   codexThreadId: string | null;
   lastError: string | null;
   createdAt: string;
