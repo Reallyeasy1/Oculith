@@ -43,6 +43,20 @@ function formatTime(value: string): string {
   }).format(new Date(value));
 }
 
+// #325: the GlassBox mark — a wireframe (glass) box with one captured event inside it.
+function BrandMark() {
+  return (
+    <div className="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round">
+        <path d="M12 3 20 7.5 12 12 4 7.5 12 3Z" />
+        <path d="M4 7.5v9L12 21v-9" />
+        <path d="M20 7.5v9L12 21" />
+        <circle cx="12" cy="15.4" r="1.7" fill="currentColor" stroke="none" />
+      </svg>
+    </div>
+  );
+}
+
 function StatusPill({ status }: { status: Agent["status"] }) {
   return (
     <span className={"status status-" + status}>
@@ -589,8 +603,8 @@ export default function App() {
     return (
       <main className="auth-screen">
         <section className="auth-card" aria-live="polite">
-          <div className="brand-mark">A</div>
-          <span className="eyebrow">Agent Launchpad</span>
+          <BrandMark />
+          <span className="eyebrow">GlassBox · Agent Launchpad</span>
           <h1>Connecting to the control plane</h1>
           {error ? <div className="error-banner" role="alert">{error}</div> : <Spinner />}
         </section>
@@ -602,8 +616,8 @@ export default function App() {
     return (
       <main className="auth-screen">
         <form className="auth-card" onSubmit={unlock}>
-          <div className="brand-mark">A</div>
-          <span className="eyebrow">Agent Launchpad</span>
+          <BrandMark />
+          <span className="eyebrow">GlassBox · Agent Launchpad</span>
           <h1>Enter the access token</h1>
           <p>This shared demo token is configured by the platform operator.</p>
           {error && <div className="error-banner" role="alert">{error}</div>}
@@ -630,14 +644,10 @@ export default function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">A</div>
+          <BrandMark />
           <div>
-            <strong>Agent Launchpad</strong>
-            <span>
-              {system?.runtimeProvider === "container"
-                ? "Local container · Codex CLI"
-                : "ECS / Docker · Codex CLI"}
-            </span>
+            <strong>GlassBox</strong>
+            <span>Observability for Agent Runs</span>
           </div>
         </div>
 

@@ -139,15 +139,15 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
               {showAgent && <th scope="col">Agent</th>}
               <th scope="col">Workspace</th>
               <th scope="col">Start</th>
-              <th scope="col">Duration</th>
+              <th scope="col" className="num">Duration</th>
               <th scope="col">Outcome</th>
               <th scope="col">Task</th>
               <th scope="col">First failing step</th>
-              <th scope="col">Events</th>
+              <th scope="col" className="num">Events</th>
               <th scope="col">Config</th>
               <th scope="col">Runtime / model</th>
-              <th scope="col">Usage</th>
-              {showCost && <th scope="col">Est. cost</th>}
+              <th scope="col" className="num">Usage</th>
+              {showCost && <th scope="col" className="num">Est. cost</th>}
               <th scope="col">Tool calls</th>
               <th scope="col">Last event</th>
             </tr>
@@ -186,18 +186,18 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 {showAgent && <td>{run.agentName || run.agentId}</td>}
                 <td className="runs-workspace" title={workspaceLabel(run.workspace, run.agentId).title ?? workspaceLabel(run.workspace, run.agentId).text}>{workspaceLabel(run.workspace, run.agentId).text}</td>
                 <td>{formatClock(run.startedAt)}</td>
-                <td>{formatRunDuration(run.durationMs, run.endedReason, run.interruptedAfterMs)}</td>
-                <td className="runs-outcome" title={run.outcome?.text}>{run.outcome?.text ?? (run.outcome?.reportedFailure ? <span className="badge badge-warn" title={REPORTED_FAILURE_HINT}>agent reported failure</span> : "—")}</td>
-                <td className="runs-task">{task ? <span className="runs-task-verdict"><span className={"badge" + (task.warn ? " badge-warn" : "")} title={TASK_OUTCOME_HINT}>{task.label}</span>{taskSource && <span className="runs-task-source" title={taskSource.title}>{taskSource.label}</span>}</span> : "—"}</td>
+                <td className="num">{formatRunDuration(run.durationMs, run.endedReason, run.interruptedAfterMs)}</td>
+                <td className="runs-outcome" title={run.outcome?.text}>{run.outcome?.text ?? (run.outcome?.reportedFailure ? <span className="badge badge-warn" title={REPORTED_FAILURE_HINT}>agent reported failure</span> : <span className="dash">—</span>)}</td>
+                <td className="runs-task">{task ? <span className="runs-task-verdict"><span className={"badge" + (task.warn ? " badge-warn" : "")} title={TASK_OUTCOME_HINT}>{task.label}</span>{taskSource && <span className="runs-task-source" title={taskSource.title}>{taskSource.label}</span>}</span> : <span className="dash">—</span>}</td>
                 {/* #263: cell text is a truncated head; the full step text stays in the title tooltip. */}
-                <td className="runs-fail-step" title={run.firstFailingStep}>{run.firstFailingStep ? errorHead(run.firstFailingStep) : "—"}</td>
-                <td>{run.eventCount}</td>
+                <td className="runs-fail-step" title={run.firstFailingStep}>{run.firstFailingStep ? errorHead(run.firstFailingStep) : <span className="dash">—</span>}</td>
+                <td className="num">{run.eventCount}</td>
                 <td title={run.configSnapshot ? JSON.stringify(run.configSnapshot) : undefined}>
-                  <code>{run.configHash?.slice(0, 8) ?? "—"}</code>
+                  <code>{run.configHash?.slice(0, 8) ?? <span className="dash">—</span>}</code>
                 </td>
                 <td className="runs-runtime" title={run.runtime + " · " + run.model}>{run.runtime} · {run.model}</td>
-                <td>{formatUsage(run.usage)}</td>
-                {showCost && <td>{formatCost(run.estimatedCostUsd)}</td>}
+                <td className="num">{formatUsage(run.usage)}</td>
+                {showCost && <td className="num">{formatCost(run.estimatedCostUsd)}</td>}
                 <td className="runs-tools" title={run.toolIdentities?.join(", ")}>
                   <span className="tool-call-summary">
                     <span>{run.toolCalls}{run.toolFailures > 0 && <> · {run.toolFailures} failed</>}</span>
