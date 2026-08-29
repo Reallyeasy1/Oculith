@@ -111,6 +111,13 @@ describe("reliabilityTiles", () => {
       latency: "—",
     });
   });
+
+  it("drills only where the Runs table states the provenance exactly (#173): all Runs, and failed tasks", () => {
+    const byKey = Object.fromEntries(reliabilityTiles(report({ runs: 2 })).map((tile) => [tile.key, tile]));
+    expect(byKey.executionCompletionRate?.drill).toEqual({ quick: "all", taskOutcome: "all" });
+    expect(byKey.taskCompletionRate?.drill).toEqual({ quick: "all", taskOutcome: "failed" });
+    for (const key of ["toolFailureRate", "denialRate", "avgToolCalls", "tokens", "latency"]) expect(byKey[key]?.drill).toBeUndefined();
+  });
 });
 
 describe("sparklineHeights", () => {

@@ -1,5 +1,5 @@
 import type { ReliabilityReport, ReliabilitySeriesPoint, TaskCompletionRate } from "./types";
-import { formatCount, formatDuration } from "./runs-view-model";
+import { formatCount, formatDuration, type QuickFilter, type TaskOutcomeFilter } from "./runs-view-model";
 
 // Pure formatting for ReliabilityPanel (#173). A `null` from the API renders as "—" — zero is a claim
 // the server deliberately did not make (reliability.ts documents each semantic).
@@ -25,6 +25,12 @@ export function sampledDetail(sampled: number, runs: number): string {
   return sampled === runs ? "" : `sampled ${sampled} of ${runs} Runs`;
 }
 
+/** #173 drill-back: the Runs-table filters that show the Runs behind a tile's number. */
+export interface ReliabilityDrill {
+  quick: QuickFilter;
+  taskOutcome: TaskOutcomeFilter;
+}
+
 export interface ReliabilityTile {
   key: string;
   label: string;
@@ -34,6 +40,8 @@ export interface ReliabilityTile {
   detail?: string;
   /** This tile's metric per series bucket, for the sparkline; null buckets stay null. */
   series: (number | null)[];
+  /** Present only where the Runs table can express the tile's provenance exactly; absent tiles are not clickable. */
+  drill?: ReliabilityDrill;
 }
 
 export function reliabilityTiles(report: ReliabilityReport): ReliabilityTile[] {
@@ -46,8 +54,10 @@ export function reliabilityTiles(report: ReliabilityReport): ReliabilityTile[] {
     : `p50 ${formatDuration(report.latency.p50)} · p95 ${formatDuration(report.latency.p95 ?? undefined)}`;
   const detail = (text: string): { detail?: string } => (text ? { detail: text } : {});
   return [
-    { key: "executionCompletionRate", label: "Execution completion", kind: "telemetry", value: formatPercent(report.executionCompletionRate), series: of((point) => point.executionCompletionRate) },
-    { key: "taskCompletionRate", label: "Task completion", kind: "evaluation", value: formatPercent(report.taskCompletionRate.rate), ...detail(taskCompletionDetail(report.taskCompletionRate, report.runs)), series: of((point) => point.taskCompletionRate.rate) },
+    // ponytail: drills only where a Runs-table filter states the provenance exactly — execution completion is
+    // "every Run", task completion drills to the demo's problematic Runs (completed process, failed task).
+    { key: "executionCompletionRate", label: "Execution completion", kind: "telemetry", value: formatPercent(report.executionCompletionRate), series: of((point) => point.executionCompletionRate), drill: { quick: "all", taskOutcome: "all" } },
+    { key: "taskCompletionRate", label: "Task completion", kind: "evaluation", value: formatPercent(report.taskCompletionRate.rate), ...detail(taskCompletionDetail(report.taskCompletionRate, report.runs)), series: of((point) => point.taskCompletionRate.rate), drill: { quick: "all", taskOutcome: "failed" } },
     { key: "toolFailureRate", label: "Tool failure rate", kind: "telemetry", value: formatPercent(report.toolFailureRate), series: of((point) => point.toolFailureRate) },
     { key: "denialRate", label: "Denial rate", kind: "telemetry", value: formatPercent(report.denialRate), series: of((point) => point.denialRate) },
     { key: "avgToolCalls", label: "Avg tool calls", kind: "telemetry", value: formatAverage(report.avgToolCalls), series: of((point) => point.avgToolCalls) },

@@ -2,7 +2,7 @@
 //   npx vitest run apps/web/src/runs-view-model.test.ts
 import { describe, expect, it } from "vitest";
 import type { RunListItem, TraceStatus } from "./types";
-import { ERROR_HEAD_CHARS, collapseRequestId, errorHead, evidenceBadges, formatCost, formatRunDuration, formatUsage, liveRuns, matchesFilter, needsAttention, outlierLabel, pluralize, recoveredFailures, runOutlier, SESSION_INPUT_TOKENS_ADVISORY_THRESHOLD, sessionHealth, summarizeRuns, workspaceLabel, workspaceOptionLabel } from "./runs-view-model";
+import { ERROR_HEAD_CHARS, collapseRequestId, errorHead, evidenceBadges, formatCost, formatRunDuration, formatUsage, liveRuns, matchesFilter, matchesTaskOutcome, needsAttention, outlierLabel, pluralize, recoveredFailures, runOutlier, SESSION_INPUT_TOKENS_ADVISORY_THRESHOLD, sessionHealth, summarizeRuns, taskOutcomeChip, workspaceLabel, workspaceOptionLabel } from "./runs-view-model";
 
 function run(status: TraceStatus, degraded = false, agentId = "a", agentName = "A", extra: Partial<RunListItem> = {}): RunListItem {
   return {
@@ -234,5 +234,21 @@ describe("evidenceBadges", () => {
 
   it("does not warn about evidence while a Run is still live", () => {
     expect(evidenceBadges(run("running"))).toEqual([]);
+  });
+});
+
+describe("taskOutcome filter + chip (#173)", () => {
+  it("matches on the taskOutcome axis independently of status", () => {
+    expect(matchesTaskOutcome(run("ok", false, "a", "A", { taskOutcome: "failed" }), "failed")).toBe(true);
+    expect(matchesTaskOutcome(run("error", false, "a", "A", { taskOutcome: "failed" }), "failed")).toBe(true);
+    expect(matchesTaskOutcome(run("ok", false, "a", "A", { taskOutcome: "passed" }), "failed")).toBe(false);
+    expect(matchesTaskOutcome(run("ok"), "unknown")).toBe(true);
+    for (const outcome of ["passed", "failed", "unknown"] as const) expect(matchesTaskOutcome(run("ok", false, "a", "A", { taskOutcome: outcome }), "all")).toBe(true);
+  });
+
+  it("chips passed and failed verdicts; unknown is no claim, not a chip", () => {
+    expect(taskOutcomeChip(run("ok", false, "a", "A", { taskOutcome: "passed" }))).toEqual({ label: "task passed", warn: false });
+    expect(taskOutcomeChip(run("ok", false, "a", "A", { taskOutcome: "failed" }))).toEqual({ label: "task failed", warn: true });
+    expect(taskOutcomeChip(run("ok"))).toBeUndefined();
   });
 });

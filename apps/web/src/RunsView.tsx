@@ -1,9 +1,12 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { AgentRunBaseline, RunListItem } from "./types";
+import type { ReliabilityDrill } from "./reliability-view-model";
 import {
   FILTER_LABEL,
   QUICK_FILTERS,
   REPORTED_FAILURE_HINT,
+  TASK_OUTCOME_FILTERS,
+  TASK_OUTCOME_HINT,
   errorHead,
   evidenceBadges,
   STATUS_ICON,
@@ -15,13 +18,16 @@ import {
   formatUsage,
   liveRuns,
   matchesFilter,
+  matchesTaskOutcome,
   outlierLabel,
   recoveredFailures,
   runOutlier,
   sortNewestFirst,
   summarizeRuns,
+  taskOutcomeChip,
   workspaceLabel,
   type QuickFilter,
+  type TaskOutcomeFilter,
 } from "./runs-view-model";
 
 interface Props {
@@ -33,13 +39,22 @@ interface Props {
   title?: string;
   emptyText?: string;
   baseline?: AgentRunBaseline | null;
+  /** #173 drill-back from a ReliabilityPanel tile: applies its filters when the object changes. */
+  drill?: ReliabilityDrill | null;
 }
 
-export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent = true, title = "Runs", emptyText = "No Runs observed yet.", baseline }: Props) {
+export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent = true, title = "Runs", emptyText = "No Runs observed yet.", baseline, drill }: Props) {
   const [filter, setFilter] = useState<QuickFilter>("attention");
+  const [taskOutcome, setTaskOutcome] = useState<TaskOutcomeFilter>("all");
+  useEffect(() => {
+    if (!drill) return;
+    setFilter(drill.quick);
+    setTaskOutcome(drill.taskOutcome);
+    document.getElementById("runs-heading")?.focus();
+  }, [drill]);
   const visible = useMemo(
-    () => sortNewestFirst(runs).filter((run) => matchesFilter(run, filter)),
-    [runs, filter],
+    () => sortNewestFirst(runs).filter((run) => matchesFilter(run, filter) && matchesTaskOutcome(run, taskOutcome)),
+    [runs, filter, taskOutcome],
   );
   const okCount = summarizeRuns(runs).ok;
   // Elapsed is computed at render time: the dashboard poll (#98) replaces `runs` every tick, so it ticks with the poll.
@@ -64,6 +79,20 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
               onClick={() => setFilter(item)}
             >
               {FILTER_LABEL[item] ?? item}
+            </button>
+          ))}
+        </div>
+        <div className="runs-task-filters" role="group" aria-label="Task outcome filter" title={TASK_OUTCOME_HINT}>
+          <span className="runs-task-filters-label">Task</span>
+          {TASK_OUTCOME_FILTERS.map((item) => (
+            <button
+              key={item}
+              type="button"
+              className="button button-ghost"
+              aria-pressed={taskOutcome === item}
+              onClick={() => setTaskOutcome(item)}
+            >
+              {item}
             </button>
           ))}
         </div>
@@ -102,6 +131,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
               <th scope="col">Start</th>
               <th scope="col">Duration</th>
               <th scope="col">Outcome</th>
+              <th scope="col">Task</th>
               <th scope="col">First failing step</th>
               <th scope="col">Events</th>
               <th scope="col">Config</th>
@@ -114,6 +144,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
           </thead>
           <tbody>
             {visible.map((run) => {
+              const task = taskOutcomeChip(run);
               const outlier = runOutlier(run, baseline);
               const outlierTitle = outlier ? [outlier.durationMultiple === undefined ? "" : `duration ×${outlier.durationMultiple.toFixed(1)}`, outlier.inputTokensMultiple === undefined ? "" : `tokens ×${outlier.inputTokensMultiple.toFixed(1)}`].filter(Boolean).join(" · ") + ` versus the last ${baseline?.sampleCount ?? 0} terminal Runs` : undefined;
               return (
@@ -146,6 +177,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 <td>{formatClock(run.startedAt)}</td>
                 <td>{formatRunDuration(run.durationMs, run.endedReason, run.interruptedAfterMs)}</td>
                 <td className="runs-outcome" title={run.outcome?.text}>{run.outcome?.text ?? (run.outcome?.reportedFailure ? <span className="badge badge-warn" title={REPORTED_FAILURE_HINT}>agent reported failure</span> : "—")}</td>
+                <td className="runs-task">{task ? <span className={"badge" + (task.warn ? " badge-warn" : "")} title={TASK_OUTCOME_HINT}>{task.label}</span> : "—"}</td>
                 {/* #263: cell text is a truncated head; the full step text stays in the title tooltip. */}
                 <td className="runs-fail-step" title={run.firstFailingStep}>{run.firstFailingStep ? errorHead(run.firstFailingStep) : "—"}</td>
                 <td>{run.eventCount}</td>
@@ -178,7 +210,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
         </table>
         {visible.length === 0 && (
           <div className="runs-empty">
-            {runs.length === 0 ? emptyText : filter === "attention" ? (
+            {runs.length === 0 ? emptyText : filter === "attention" && taskOutcome === "all" ? (
               <>
                 Nothing needs attention · {okCount} ok {okCount === 1 ? "Run" : "Runs"}
                 <button type="button" className="button button-ghost runs-empty-action" onClick={() => setFilter("all")}>Show all</button>

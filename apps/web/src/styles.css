@@ -2106,6 +2106,46 @@ textarea:focus {
   opacity: 0.5;
 }
 
+/* #173 — drill-back: a tile number is a button that pre-filters the Runs table below */
+.reliability-drill {
+  border: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  color: var(--purple-dark);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: var(--purple);
+  text-underline-offset: 3px;
+}
+
+/* #173 — taskOutcome filter axis next to the quick filters (own class: E2E counts one pressed quick filter) */
+.runs-task-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.runs-task-filters-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.runs-task-filters .button {
+  padding: 5px 10px;
+  font-size: 11px;
+  text-transform: capitalize;
+}
+
+.runs-task-filters .button[aria-pressed="true"] {
+  background: var(--purple-soft);
+  border-color: var(--purple);
+  color: var(--purple-dark);
+}
+
 .trace-evaluations {
   margin: 0 22px 12px;
 }
