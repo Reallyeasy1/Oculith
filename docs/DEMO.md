@@ -4,10 +4,13 @@ The 9-step story, scripted by `scripts/demo/run-demo.sh [step]` (idempotent — 
 from any step; it reuses whatever already exists and never prints secrets). Target: under
 3:00 from step 1 to the REGRESSION banner. Run everything from Git Bash.
 
-> **Rehearsal status:** the two timed ≤ 3:00 rehearsals required by #92 are **pending**
-> (tracked on #92). Model credentials were unavailable when this runbook was authored:
-> steps 1–2 and the graceful model-failure path of step 3 are verified live; steps 3–5 and
-> 7–9 are verified in shape against the API contracts and the E2E driver, not yet timed.
+> **Rehearsal status** (logs on #92): the full 9-step story has been driven end to end on
+> the dev instance (28 Aug — REGRESSION shown, steps 1–6 in ~10 s, 7–9 in ~110 s), and the
+> judged Docker path has run steps 1–7 green from a clean root (29 Aug — steps 1–4 in 92 s,
+> `post_check` executed for real). That rehearsal is what proved instruction-rigging alone
+> could not regress step 9 and led to the `fee-ledger` knowledge gate (#298), which merged
+> after it. **Still pending:** the two timed ≤ 3:00 judged-path (`npm run poc`) rehearsals
+> from a clean root on `fee-ledger` — tracked on #92.
 
 ## Pre-flight checklist (before the audience arrives)
 
