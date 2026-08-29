@@ -377,6 +377,21 @@ export interface RunLogLine {
   err?: string;
 }
 
+/** #96: allow-listed preview commands — the API accepts these two names, never a command line. */
+export type PreviewCommand = "vite" | "static";
+
+/** #96: one long-lived hardened container serving the Agent's workspace on a published loopback port. */
+export interface WorkspacePreview {
+  previewId: string;
+  agentId: string;
+  command: PreviewCommand;
+  port: number;
+  url: string;
+  containerName: string;
+  startedAt: string;
+  expiresAt: string;
+}
+
 export interface SystemInfo {
   modelConfigured: boolean;
   modelProvider: "ark" | "openai";

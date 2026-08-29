@@ -1,5 +1,5 @@
 import { SCHEMA_VERSION, type CapturePolicy, type Category, type ObservationEvent, type TraceStatus } from "./schema.js";
-import { TERMINAL_EVENT_STATUS as TERMINAL, isEvictionMarker } from "./store.js";
+import { isEvictionMarker, terminalEventStatus } from "./store.js";
 
 export interface Span {
   spanId: string; parentSpanId?: string | undefined; name: string; category: Category; status: TraceStatus;
@@ -296,8 +296,8 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
   const tree = buildTree(spans);
   const flat = flattenSpans(tree);
   const first = events[0];
-  const terminal = [...events].reverse().find((e) => TERMINAL[e.type] !== undefined);
-  const status: TraceStatus = terminal ? TERMINAL[terminal.type]! : events.length > 0 ? "running" : "unset";
+  const terminal = [...events].reverse().find((e) => terminalEventStatus(e) !== undefined);
+  const status: TraceStatus = terminal ? terminalEventStatus(terminal)! : events.length > 0 ? "running" : "unset";
   const startedAt = first?.timestamp;
   const endedAt = terminal?.timestamp ?? (status === "running" ? undefined : events.at(-1)?.timestamp);
   // Interrupted by a restart: endedAt keeps the restart-cancel timestamp (that IS when the Run was closed), but the

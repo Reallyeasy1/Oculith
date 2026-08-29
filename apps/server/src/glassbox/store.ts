@@ -8,12 +8,23 @@ export const ALWAYS_KEEP_TYPES: ReadonlySet<string> = new Set([
   "run.completed", "run.failed", "run.cancelled", "run.timed_out", "run.refused",
   "agent_service.run.completed", "agent_service.run.failed",
   "runtime.codex.completed", "runtime.codex.failed", "runtime.container.stopped",
+  // #96: the preview audit trail ("who exposed what and when") survives retention as a skeleton.
+  "runtime.preview.started", "runtime.preview.stopped",
   "error.recorded", "telemetry.degraded", "trace.truncated", "capability.unavailable", "limit.exceeded",
 ]);
 
 /** Run terminal events → trace status. Shared by the index (retention needs "is this Run finished?") and the query rollup.
- * `run.refused` (#255) closes a refusal trace so retention can evict it — without it every 429 would pin an immortal file. */
-export const TERMINAL_EVENT_STATUS: Record<string, TraceStatus> = { "run.completed": "ok", "run.failed": "error", "run.cancelled": "cancelled", "run.timed_out": "timeout", "run.refused": "error" };
+ * `run.refused` (#255) closes a refusal trace so retention can evict it — without it every 429 would pin an immortal file.
+ * `runtime.preview.stopped` (#96) does the same for a preview lifecycle trace; while the preview serves, its trace is
+ * honestly `running` and retention leaves it alone. */
+export const TERMINAL_EVENT_STATUS: Record<string, TraceStatus> = { "run.completed": "ok", "run.failed": "error", "run.cancelled": "cancelled", "run.timed_out": "timeout", "run.refused": "error", "runtime.preview.stopped": "ok" };
+
+/** #96: a preview's stop edge carries its own outcome (clean stop = ok, self-exit = error, close never
+ * observed = unset), so it maps by status, not by type; Run terminal events keep the fixed mapping. */
+export const terminalEventStatus = (event: { type: string; status: TraceStatus }): TraceStatus | undefined =>
+  event.type === "runtime.preview.stopped"
+    ? (event.status === "running" ? "ok" : event.status)
+    : TERMINAL_EVENT_STATUS[event.type];
 export type EvictionReason = "retention_age" | "retention_disk";
 /** A `trace.truncated` written by retention cleanup (vs. one written by the emitter on a per-run cap). */
 export const isEvictionMarker = (e: ObservationEvent): boolean =>
@@ -104,7 +115,7 @@ export abstract class BaseTraceStore implements TraceStore {
       lastTimestamp: prev && prev.lastTimestamp > event.timestamp ? prev.lastTimestamp : event.timestamp,
       bytes: (prev?.bytes ?? 0) + bytes,
       truncated: (prev?.truncated ?? false) || event.type === "trace.truncated",
-      status: TERMINAL_EVENT_STATUS[event.type] ?? prev?.status ?? "running",
+      status: terminalEventStatus(event) ?? prev?.status ?? "running",
       evicted: (prev?.evicted ?? false) || isEvictionMarker(event),
     });
     this.traceToRun.set(event.traceId, event.runId);

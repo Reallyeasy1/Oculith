@@ -4,7 +4,7 @@ import { connectLive } from "./live";
 import { agentPayload, budgetFormError } from "./agent-form";
 import { showLastErrorHint } from "./agent-view-model";
 import { budgetBanner } from "./budget-view-model";
-import type { Agent, AgentBudgetReport, AgentRun, AgentRunBaseline, EvalRun, Message, RegressionCase, ReliabilityReport, RunListItem, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
+import type { Agent, AgentBudgetReport, AgentRun, AgentRunBaseline, EvalRun, Message, RegressionCase, ReliabilityReport, RunListItem, SystemInfo, TraceView, Workspace, WorkspacePreview, WorkspaceTemplate } from "./types";
 import RunsView from "./RunsView";
 import ReliabilityPanel from "./ReliabilityPanel";
 import type { ReliabilityDrill } from "./reliability-view-model";
@@ -90,6 +90,8 @@ export default function App() {
   // #173 drill-back: a fresh object per tile click so RunsView re-applies the filters on repeat clicks.
   const [runsDrill, setRunsDrill] = useState<ReliabilityDrill | null>(null);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  // #96: the selected Agent's workspace preview; container runtime only, in-process server state.
+  const [preview, setPreview] = useState<WorkspacePreview | null>(null);
   const [templates, setTemplates] = useState<WorkspaceTemplate[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [trace, setTrace] = useState<TraceView | null>(null);
@@ -290,6 +292,19 @@ export default function App() {
       );
   }, [refreshMessages, selectedId]);
 
+  const previewSupported = system?.runtimeProvider === "container";
+
+  useEffect(() => {
+    setPreview(null);
+    if (!selectedId || !previewSupported) return;
+    void api
+      .preview(selectedId)
+      .then((result) => {
+        if (selectedIdRef.current === selectedId) setPreview(result.preview);
+      })
+      .catch(() => undefined); // no banner: the header simply shows no preview
+  }, [selectedId, previewSupported]);
+
   useEffect(() => {
     if (selected) {
       setForm({
@@ -367,6 +382,24 @@ export default function App() {
         await api.stopAgent(selected.id);
       }
       await refreshAgents();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const togglePreview = async () => {
+    if (!selected) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (preview) {
+        await api.stopPreview(selected.id);
+        setPreview(null);
+      } else {
+        setPreview((await api.startPreview(selected.id)).preview);
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -776,11 +809,31 @@ export default function App() {
                   <code>{selected.workspacePath}</code>{" "}
                   <button type="button" className="button button-ghost" onClick={() => void navigator.clipboard.writeText(selected.workspacePath)}>Copy path</button>
                 </p>
+                {previewSupported && preview && (
+                  <p>
+                    Preview running on{" "}
+                    <a href={preview.url} target="_blank" rel="noreferrer">
+                      {preview.url}
+                    </a>{" "}
+                    <button type="button" className="button button-ghost" onClick={togglePreview} disabled={busy}>
+                      Stop preview
+                    </button>
+                  </p>
+                )}
               </div>
               <div className="header-actions">
                 {selectedRunId && playgroundExpanded && (
                   <button className="button button-ghost" onClick={() => setPlaygroundExpanded(false)}>
                     Collapse Playground
+                  </button>
+                )}
+                {previewSupported && !preview && (
+                  <button
+                    className="button button-ghost"
+                    onClick={togglePreview}
+                    disabled={busy || selected.status === "busy"}
+                  >
+                    Preview
                   </button>
                 )}
                 <button

@@ -12,6 +12,7 @@ import { SafetyEvaluator } from "./glassbox/safety.js";
 import { openSummaryStore } from "./glassbox/postgres-summary.js";
 import { openTraceStore } from "./glassbox/postgres-trace.js";
 import { scheduleRollup } from "./glassbox/summary.js";
+import { PreviewManager } from "./preview.js";
 import { createRunner } from "./runner-factory.js";
 import { JsonStore } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -86,7 +87,14 @@ const service = new AgentService(config, store, workspaces, runner, emitter, (ru
 await service.initialize();
 await service.startHeartbeat();
 
-const app = await createApp(config, service, { emitter, store: traceStore, summaries, evaluations, jobs: evaluationJobs, logs: runLogs, live });
+// #96: workspace preview. Created after the emitter is seeded so a stale preview's terminal event
+// continues its trace's sequence; previews never survive a restart, so sweep leftovers now. The
+// trace index rides along so preview traces whose container already self-removed get closed too.
+const previews = new PreviewManager(config, emitter);
+const stalePreviews = await previews.cleanupStale(traceStore.listRuns());
+if (stalePreviews.length > 0) glassboxLog("preview.stale_cleanup", { removed: stalePreviews });
+
+const app = await createApp(config, service, { emitter, store: traceStore, summaries, evaluations, jobs: evaluationJobs, logs: runLogs, live }, previews);
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");

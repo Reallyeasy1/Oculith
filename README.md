@@ -314,6 +314,7 @@ Not covered — know this before putting anything sensitive near it:
 | `RUNTIME_PROVIDER` | `local-process` | `container` for disposable Runtime containers (`npm run poc` sets this) |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox; falls back to `danger-full-access` without Landlock |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn |
+| `PREVIEW_PORT_RANGE` / `PREVIEW_TTL_MS` | `5180-5189` / `1800000` | Workspace preview (container runtime only): loopback host ports it may publish on, and the lifetime cap before the container is removed automatically |
 | `GLASSBOX_CAPTURE_POLICY` | `metadata_only` | Or `safe_summary` (bounded, redacted summaries + the Outcome column — the demo sets it), or `reasoning_summary` (safe_summary plus 240-char redacted reasoning summaries, #259); raw capture is not implemented. Summaries already persisted stay on disk and are served after a policy downgrade — mind that when lowering the tier |
 | `GLASSBOX_DEMO_FAILURE` | `off` | `timeout` forces the 3 s demo failure through the real Run path |
 | `GLASSBOX_TRACE_DIR` | `$APP_DATA_DIR/traces` | Per-Run NDJSON trace files |

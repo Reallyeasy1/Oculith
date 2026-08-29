@@ -1,4 +1,4 @@
-import type { Agent, AgentRun, Assertion, AuditRow, CapturePolicy, EvalRun, EvaluationResult, EvaluatorDefinition, Message, QueuedMessageReceipt, RegressionCase, ReliabilityCompareReport, ReliabilityReport, RunListItem, RunLogLine, SystemInfo, TraceView, Workspace, WorkspaceFile, WorkspaceListing, WorkspaceTemplate } from "./types";
+import type { Agent, AgentRun, Assertion, AuditRow, CapturePolicy, EvalRun, EvaluationResult, EvaluatorDefinition, Message, PreviewCommand, QueuedMessageReceipt, RegressionCase, ReliabilityCompareReport, ReliabilityReport, RunListItem, RunLogLine, SystemInfo, TraceView, Workspace, WorkspaceFile, WorkspaceListing, WorkspacePreview, WorkspaceTemplate } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -103,6 +103,17 @@ export const api = {
     request<{ agent: Agent }>("/api/agents/" + id + "/stop", {
       method: "POST",
     }),
+  // #96: workspace preview — one hardened container serving the workspace on a loopback port.
+  // Only meaningful when the runtime provider is `container`; other providers answer 409.
+  preview: (id: string) =>
+    request<{ preview: WorkspacePreview | null }>("/api/agents/" + id + "/preview"),
+  startPreview: (id: string, command: PreviewCommand = "vite") =>
+    request<{ preview: WorkspacePreview }>("/api/agents/" + id + "/preview", {
+      method: "POST",
+      body: JSON.stringify({ command }),
+    }),
+  stopPreview: (id: string) =>
+    request<{ preview: WorkspacePreview }>("/api/agents/" + id + "/preview", { method: "DELETE" }),
   messages: (id: string) =>
     request<{ messages: Message[] }>("/api/agents/" + id + "/messages"),
   runs: (id: string) =>

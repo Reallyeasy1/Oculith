@@ -69,6 +69,10 @@ export function buildHardenedContainerPrefix(options: {
   config: AppConfig;
   includeModelCredentials: boolean;
   mountCodexHome: boolean;
+  /** Label value distinguishing per-Run runtime containers from long-lived previews (#96). */
+  role?: "agent-runtime" | "agent-preview" | undefined;
+  /** Serve-only containers (#96) get the workspace read-only; the Codex runtime keeps it writable. */
+  workspaceReadOnly?: boolean | undefined;
 }): string[] {
   const { name, agentId, workspacePath, config } = options;
   const engineName = config.containerEngine.split(/[\\/]/).at(-1)?.toLowerCase();
@@ -79,7 +83,7 @@ export function buildHardenedContainerPrefix(options: {
     "--name",
     name,
     "--label",
-    "io.codejam.launchpad=agent-runtime",
+    "io.codejam.launchpad=" + (options.role ?? "agent-runtime"),
     "--label",
     "io.codejam.agent-id=" + agentId,
     "--label",
@@ -106,7 +110,7 @@ export function buildHardenedContainerPrefix(options: {
     "--env",
     "NO_COLOR=1",
     "--mount",
-    "type=bind,src=" + workspacePath + ",dst=/workspace",
+    "type=bind,src=" + workspacePath + ",dst=/workspace" + (options.workspaceReadOnly ? ",readonly" : ""),
     ...(options.mountCodexHome ? ["--mount", "type=bind,src=" + config.codexHome + ",dst=/codex-home"] : []),
     "--workdir",
     "/workspace",

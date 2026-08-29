@@ -18,6 +18,8 @@ export const EVENT_TYPES = [
   "runtime.container.started", "runtime.container.stopped",
   "runtime.codex.started", "runtime.codex.first_output", "runtime.codex.completed", "runtime.codex.failed",
   "runtime.postcheck.started", "runtime.postcheck.completed", "runtime.postcheck.failed",
+  // #96: workspace preview lifecycle — one trace per preview, started/stopped bracketing the span.
+  "runtime.preview.started", "runtime.preview.stopped",
   "model.request", "model.completed", "model.message", "model.reasoning",
   "tool.call.started", "tool.call.completed", "tool.call.failed",
   "workspace.changed", "policy.denied", "redaction.applied", "limit.exceeded",
