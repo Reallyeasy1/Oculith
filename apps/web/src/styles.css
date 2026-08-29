@@ -2452,3 +2452,62 @@ textarea:focus {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* #66: workspace editing — new-file form, plain-textarea editor, "Recent changes" list. */
+.workspace-newfile {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.workspace-newfile label {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.workspace-newfile input {
+  font-family: var(--mono, ui-monospace, monospace);
+}
+
+.workspace-editor textarea {
+  width: 100%;
+  margin: 10px 0 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f4f3ee;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.workspace-history {
+  margin-top: 12px;
+  border-top: 1px solid #ecebe5;
+  padding-top: 10px;
+}
+
+.workspace-history h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+
+.workspace-history ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.workspace-history li {
+  padding: 2px 0;
+  font-family: var(--mono, ui-monospace, monospace);
+  overflow-wrap: anywhere;
+}

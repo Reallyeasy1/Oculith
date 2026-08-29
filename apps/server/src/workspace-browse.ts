@@ -6,6 +6,9 @@ export const MAX_TEXT_FILE_BYTES = 256 * 1024;
 /** Written into every workspace root by WorkspaceManager (create/writeInstructions). */
 const PLATFORM_FILES = new Set(["AGENTS.md", "README.md", ".gitignore"]);
 
+/** Root-level platform files only: `sub/AGENTS.md` is the Agent's own file (same rule as `managed` below). */
+export const isPlatformFile = (relative: string): boolean => PLATFORM_FILES.has(relative);
+
 export interface WorkspaceEntry {
   name: string;
   kind: "file" | "dir" | "symlink";

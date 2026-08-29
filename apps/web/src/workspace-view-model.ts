@@ -1,4 +1,4 @@
-import type { WorkspaceListing } from "./types";
+import type { WorkspaceHistoryEntry, WorkspaceListing } from "./types";
 
 /** One visible row of the workspace tree: a loaded listing entry at a depth, expandable when a dir. */
 export interface WorkspaceRow {
@@ -66,4 +66,28 @@ export function formatBytes(size: number): string {
   if (size < 1024) return size + " B";
   if (size < 1024 * 1024) return (size / 1024).toFixed(1) + " KB";
   return (size / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+/** One "Recent changes" line (#66): "18:04 · added src/app.ts (11 B)". Reset has no path or size. */
+export function describeHistoryEntry(entry: WorkspaceHistoryEntry): string {
+  const at = new Date(entry.at);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const time = Number.isNaN(at.getTime()) ? "" : pad(at.getHours()) + ":" + pad(at.getMinutes()) + " · ";
+  const verb = { write: "edited", seed: "added", delete: "deleted", reset: "reset the workspace" }[entry.action];
+  if (entry.action === "reset") return time + verb;
+  const size = entry.action === "delete" ? "" : " (" + formatBytes(entry.bytes) + ")";
+  return time + verb + " " + entry.path + size;
+}
+
+/** Client-side pre-check for "New file": the server proves the path, this only catches obvious
+ * mistakes before a round trip. Returns the trimmed path or an error message. */
+export function checkNewFilePath(input: string): { path: string } | { error: string } {
+  const path = input.trim().replace(/^[/\\]+/, "").replace(/[/\\]+$/, "");
+  if (!path) return { error: "Enter a file path" };
+  if (path.length > 1024) return { error: "Path is too long (1,024 characters max)" };
+  if (path.split(/[/\\]+/).includes("..")) return { error: "Path may not contain '..'" };
+  if (["AGENTS.md", "README.md", ".gitignore"].includes(path)) {
+    return { error: path + " is platform-managed — edit the Agent instead" };
+  }
+  return { path };
 }

@@ -931,6 +931,12 @@ export default function App() {
               workspacePath={selected.workspacePath}
               fileCount={selectedWorkspace?.fileCount}
               lastModified={selectedWorkspace?.lastModified}
+              busy={selected.status === "busy"}
+              history={selected.workspaceHistory}
+              onChanged={() => {
+                // #66: an edit changed the Agent record (history, maybe the thread) and the counts.
+                void Promise.all([refreshAgents(), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces))]);
+              }}
             />
 
             <section className="playground">

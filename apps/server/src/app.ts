@@ -286,6 +286,40 @@ export async function createApp(
     return service.readAgentWorkspaceFile(id, query.path);
   });
 
+  // #66: workspace editing from the browser. The service refuses edits while a Run has the
+  // directory mounted (409) and refuses anything that looks like a credential (400); per-route
+  // bodyLimits cover base64 inflation (~4/3) over the 1 MB file / 8 MB batch caps the module
+  // enforces on the decoded bytes. Uploads arrive as base64 inside JSON by design — no multipart
+  // dependency (#66).
+  const workspaceUploadSchema = z.object({
+    path: z.string().min(1).max(1_024),
+    content: z.string(),
+    encoding: z.enum(["utf8", "base64"]).default("utf8"),
+  });
+  app.put("/api/agents/:id/workspace/file", { bodyLimit: 4 * 1024 * 1024 }, async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    const body = workspaceUploadSchema.parse(request.body);
+    return { file: await service.writeAgentWorkspaceFile(id, body) };
+  });
+
+  app.post("/api/agents/:id/workspace/files", { bodyLimit: 16 * 1024 * 1024 }, async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    const body = z.object({ files: z.array(workspaceUploadSchema).min(1).max(20) }).parse(request.body);
+    return { files: await service.seedAgentWorkspaceFiles(id, body.files) };
+  });
+
+  app.delete("/api/agents/:id/workspace/file", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    const query = z.object({ path: z.string().min(1).max(1_024) }).parse(request.query);
+    return { file: await service.deleteAgentWorkspaceFile(id, query.path) };
+  });
+
+  app.post("/api/agents/:id/workspace/reset", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    const body = z.object({ forgetThread: z.boolean().optional() }).parse(request.body ?? {});
+    return service.resetAgentWorkspace(id, body);
+  });
+
   app.get("/api/agents/:id/messages", async (request) => {
     const { id } = agentIdParams.parse(request.params);
     return { messages: service.getMessages(id) };

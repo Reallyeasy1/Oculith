@@ -31,18 +31,21 @@ import type {
   RegressionCase,
   RunActivity,
   UpdateAgentInput,
+  WorkspaceHistoryEntry,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 import { browseWorkspace, readWorkspaceFileView, WorkspacePathError, type WorkspaceFileView, type WorkspaceListing } from "./workspace-browse.js";
+import { deleteWorkspaceFile, seedWorkspaceFiles, WorkspaceEditError, writeWorkspaceFile, type WorkspaceUpload, type WorkspaceWriteReceipt } from "./workspace-edit.js";
 import { LOG_SECRET_ASSIGNMENT, type RunLogStore } from "./run-log-store.js";
 import { boundedChangedPaths, diffWorkspace, snapshotWorkspace } from "./workspace-snapshot.js";
 
 const now = () => new Date().toISOString();
 
-/** #65: a proven-unsafe or wrong-kind path is the client's fault (400); a path that checks out but
- * names nothing on disk is 404. Anything else (EPERM, EIO) stays a 500 for the error handler. */
+/** #65/#66: a proven-unsafe or wrong-kind path (or a refused write — cap, managed file, credential)
+ * is the client's fault (400); a path that checks out but names nothing on disk is 404. Anything
+ * else (EPERM, EIO) stays a 500 for the error handler. */
 function mapWorkspaceBrowseError(error: unknown): unknown {
-  if (error instanceof WorkspacePathError) return new HttpError(400, error.message);
+  if (error instanceof WorkspacePathError || error instanceof WorkspaceEditError) return new HttpError(400, error.message);
   const code = (error as NodeJS.ErrnoException | null)?.code;
   if (code === "ENOENT" || code === "ENOTDIR") return new HttpError(404, "No such file or directory in this workspace");
   return error;
@@ -50,6 +53,10 @@ function mapWorkspaceBrowseError(error: unknown): unknown {
 const HEARTBEAT_INTERVAL_MS = 15_000;
 /** Max messages a busy Agent will queue (#254); beyond it the POST is refused with 429. */
 export const PENDING_MESSAGES_CAP = 10;
+/** Last N browser workspace edits kept on the Agent record (#66). */
+export const WORKSPACE_HISTORY_CAP = 50;
+/** #66: the shared bearer token cannot distinguish people; a real identity is the Bouncer track. */
+const WORKSPACE_EDIT_ACTOR = "operator";
 // ponytail: fixed 30s — the eval post_check default; make it per-Agent when someone needs more.
 const VERIFY_TIMEOUT_MS = 30_000;
 /** Set on a RunSummary whose taskOutcome came from the Agent's verifyCommand (#253). */
@@ -370,6 +377,87 @@ export class AgentService {
 
   async listWorkspaceTemplates() {
     return this.workspaces.listTemplates();
+  }
+
+  // #66: browser edits to the workspace. Path proof, caps and the credential scan live in
+  // workspace-edit.ts; this layer resolves the Agent, refuses edits while the sandbox has the
+  // directory mounted (busy), and records a bounded history on the Agent record. The busy check
+  // has the same small pre-write window as updateAgent's writeInstructions — acceptable because
+  // a Run mounting mid-write sees a file, not a torn state (writes are single writeFile calls).
+  private assertWorkspaceEditable(agent: Agent): void {
+    if (agent.status === "busy") {
+      throw new HttpError(409, "A run is in progress — the workspace is mounted in the sandbox. Stop the run first.");
+    }
+  }
+
+  private async recordWorkspaceHistory(agentId: string, entries: Omit<WorkspaceHistoryEntry, "at" | "actor">[]): Promise<void> {
+    const at = now();
+    await this.store.mutate((database) => {
+      const agent = database.agents.find((item) => item.id === agentId);
+      if (!agent) return; // deleted mid-flight: the edit already happened on disk, nothing to record
+      agent.workspaceHistory = [
+        ...entries.map((entry) => ({ ...entry, at, actor: WORKSPACE_EDIT_ACTOR })),
+        ...(agent.workspaceHistory ?? []),
+      ].slice(0, WORKSPACE_HISTORY_CAP);
+      agent.updatedAt = at;
+    });
+  }
+
+  async writeAgentWorkspaceFile(id: string, upload: WorkspaceUpload): Promise<WorkspaceWriteReceipt> {
+    const agent = this.getAgent(id);
+    this.assertWorkspaceEditable(agent);
+    let receipt: WorkspaceWriteReceipt;
+    try { receipt = await writeWorkspaceFile(agent.workspacePath, upload); }
+    catch (error) { throw mapWorkspaceBrowseError(error); }
+    await this.recordWorkspaceHistory(id, [{ action: "write", path: receipt.path, bytes: receipt.bytes }]);
+    return receipt;
+  }
+
+  async seedAgentWorkspaceFiles(id: string, uploads: WorkspaceUpload[]): Promise<WorkspaceWriteReceipt[]> {
+    const agent = this.getAgent(id);
+    this.assertWorkspaceEditable(agent);
+    let receipts: WorkspaceWriteReceipt[];
+    try { receipts = await seedWorkspaceFiles(agent.workspacePath, uploads); }
+    catch (error) { throw mapWorkspaceBrowseError(error); }
+    await this.recordWorkspaceHistory(id, receipts.map((receipt) => ({ action: "seed" as const, path: receipt.path, bytes: receipt.bytes })));
+    return receipts;
+  }
+
+  async deleteAgentWorkspaceFile(id: string, requested: string): Promise<WorkspaceWriteReceipt> {
+    const agent = this.getAgent(id);
+    this.assertWorkspaceEditable(agent);
+    let receipt: WorkspaceWriteReceipt;
+    try { receipt = await deleteWorkspaceFile(agent.workspacePath, requested); }
+    catch (error) { throw mapWorkspaceBrowseError(error); }
+    await this.recordWorkspaceHistory(id, [{ action: "delete", path: receipt.path, bytes: receipt.bytes }]);
+    return receipt;
+  }
+
+  /** Archive the workspace to `.deleted/` and recreate the platform files. The template (if any) is
+   * NOT re-applied — reset means "empty", per #66; recreate the Agent for a fresh template copy. */
+  async resetAgentWorkspace(id: string, options: { forgetThread?: boolean | undefined } = {}): Promise<{ agent: Agent; archivedWorkspace: string }> {
+    const agent = this.getAgent(id);
+    this.assertWorkspaceEditable(agent);
+    const others = this.store.snapshot().agents.filter(
+      (item) => item.id !== id && path.resolve(item.workspacePath) === path.resolve(agent.workspacePath),
+    );
+    if (others.length > 0) {
+      throw new HttpError(409, "This workspace is shared with another Agent — detach it before resetting");
+    }
+    const archivedWorkspace = await this.workspaces.archive(agent);
+    await this.workspaces.create(agent);
+    const updated = await this.store.mutate((database) => {
+      const stored = database.agents.find((item) => item.id === id);
+      if (!stored) throw new HttpError(404, "Agent not found");
+      if (options.forgetThread) stored.codexThreadId = null;
+      stored.workspaceHistory = [
+        { at: now(), action: "reset" as const, path: "", bytes: 0, actor: WORKSPACE_EDIT_ACTOR },
+        ...(stored.workspaceHistory ?? []),
+      ].slice(0, WORKSPACE_HISTORY_CAP);
+      stored.updatedAt = now();
+      return structuredClone(stored);
+    });
+    return { agent: updated, archivedWorkspace };
   }
 
   async startAgent(id: string): Promise<Agent> {
