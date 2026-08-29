@@ -63,6 +63,29 @@ export interface Workspace {
   managed: boolean;
 }
 
+// #65: read-only workspace browser — mirrors apps/server/src/workspace-browse.ts.
+export interface WorkspaceEntry {
+  name: string;
+  kind: "file" | "dir" | "symlink";
+  size: number;
+  mtime: string;
+}
+
+export interface WorkspaceListing {
+  path: string;
+  entries: WorkspaceEntry[];
+  truncated: boolean;
+}
+
+export interface WorkspaceFile {
+  path: string;
+  size: number;
+  mtime: string;
+  encoding: "utf8" | "binary";
+  managed: boolean;
+  content?: string;
+}
+
 export interface Message {
   id: string;
   agentId: string;

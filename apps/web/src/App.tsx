@@ -13,6 +13,7 @@ import Overview from "./Overview";
 import CompareView from "./CompareView";
 import EvaluatorsPanel from "./EvaluatorsPanel";
 import ConfigComparison from "./ConfigComparison";
+import WorkspacePanel from "./WorkspacePanel";
 import type { EvalComparisonPair } from "./config-comparison-view-model";
 import { refreshIntervalMs } from "./trace-view-model";
 import { formatCount, LONG_SESSION_HINT, sessionHealth, workspaceOptionLabel } from "./runs-view-model";
@@ -922,6 +923,15 @@ export default function App() {
                 </div>
               </form>
             )}
+
+            {/* #65: read-only browser over the same workspace the header names; counts come from the
+                workspaces list this view already fetches. */}
+            <WorkspacePanel
+              agentId={selected.id}
+              workspacePath={selected.workspacePath}
+              fileCount={selectedWorkspace?.fileCount}
+              lastModified={selectedWorkspace?.lastModified}
+            />
 
             <section className="playground">
               <div className="playground-topbar">

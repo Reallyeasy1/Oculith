@@ -517,6 +517,7 @@ button {
 }
 
 .settings-panel,
+.workspace-panel,
 .playground {
   max-width: 1180px;
   margin-left: auto;
@@ -2329,4 +2330,125 @@ textarea:focus {
 .evaluator-outcome input {
   width: auto;
   height: auto;
+}
+
+/* #65: read-only workspace browser in the Agent detail */
+.workspace-panel {
+  padding: 16px 20px;
+  border-radius: 14px;
+  margin-bottom: 14px;
+}
+
+.workspace-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.workspace-panel-head h2 {
+  font-size: 16px;
+  margin: 3px 0 6px;
+}
+
+.workspace-panel-meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.workspace-summary {
+  margin-left: 6px;
+}
+
+.workspace-note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.workspace-tree {
+  margin-top: 12px;
+  border-top: 1px solid #ecebe5;
+  font-size: 12px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.workspace-row {
+  display: grid;
+  grid-template-columns: 18px minmax(160px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 14px 5px 12px;
+  border-bottom: 1px solid #ecebe5;
+  cursor: pointer;
+}
+
+.workspace-row:hover,
+.workspace-row:focus-visible {
+  background: rgba(81, 61, 185, 0.06);
+  outline: none;
+}
+
+.workspace-row.selected {
+  background: rgba(81, 61, 185, 0.1);
+}
+
+.workspace-row-kind {
+  color: var(--muted);
+}
+
+.workspace-row-name {
+  font-family: var(--mono, ui-monospace, monospace);
+  overflow-wrap: anywhere;
+}
+
+.workspace-row-meta {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.workspace-preview {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.workspace-preview-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.workspace-preview-head h3 {
+  margin: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.workspace-managed-badge {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(81, 61, 185, 0.1);
+  color: var(--purple-dark);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.workspace-preview-content {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f4f3ee;
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
