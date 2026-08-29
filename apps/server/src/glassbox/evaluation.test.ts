@@ -10,14 +10,14 @@ import { JsonRunSummaryStore, summaryFromView } from "./summary.js";
 const dirs: string[] = [];
 afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
 
-async function setup(redact?: (text: string) => string, maxResults?: number) {
+async function setup(redact?: (text: string) => string, taskCompletionModel?: string, maxResults?: number) {
   const dir = await mkdtemp(path.join(tmpdir(), "evaluation-store-"));
   dirs.push(dir);
   const file = path.join(dir, "launchpad.json");
   const json = new JsonStore(file);
   await json.initialize();
   const summaries = new JsonRunSummaryStore(json);
-  const store = new JsonEvaluationStore(json, summaries, redact, maxResults);
+  const store = new JsonEvaluationStore(json, summaries, redact, taskCompletionModel, maxResults);
   await store.initialize();
   return { file, json, summaries, store };
 }
@@ -42,13 +42,13 @@ async function addSummary(summaries: JsonRunSummaryStore, runId: string, agentId
 
 describe("JsonEvaluationStore", () => {
   it("seeds the shared evaluator catalogue once and survives a reload", async () => {
-    const { file, store } = await setup();
+    const { file, store } = await setup(undefined, "deepseek-v4-pro-260425");
     expect(await store.listDefinitions()).toHaveLength(SEEDED_EVALUATORS.length);
-    expect(await store.getDefinition("task_completion", 1)).toMatchObject({ type: "llm_judge", passThreshold: 4, setsTaskOutcome: true });
+    expect(await store.getDefinition("task_completion", 1)).toMatchObject({ type: "llm_judge", model: "deepseek-v4-pro-260425", passThreshold: 4, setsTaskOutcome: true });
 
     const reopenedJson = new JsonStore(file);
     await reopenedJson.initialize();
-    const reopened = new JsonEvaluationStore(reopenedJson, new JsonRunSummaryStore(reopenedJson));
+    const reopened = new JsonEvaluationStore(reopenedJson, new JsonRunSummaryStore(reopenedJson), undefined, "deepseek-v4-pro-260425");
     await reopened.initialize();
     expect(await reopened.listDefinitions()).toHaveLength(SEEDED_EVALUATORS.length);
   });
@@ -86,6 +86,15 @@ describe("JsonEvaluationStore", () => {
     expect(await store.query({ agentId: "agent-b" })).toEqual([]);
   });
 
+  it("never overwrites a post_check or deterministic taskOutcome with a judge verdict", async () => {
+    const { summaries, store } = await setup();
+    await addSummary(summaries, "run-1", "agent-a", "2026-08-28T01:00:00.000Z");
+    await summaries.setTaskOutcome("run-1", "failed", "post_check");
+    await store.putResult({ runId: "run-1", evaluatorId: "task_completion", evaluatorVersion: 1, score: 5, passed: true,
+      explanation: "Judge says pass", evidenceEventIds: [], metadata: {}, evaluatedAt: "2026-08-28T03:00:00.000Z" });
+    expect(await summaries.get("run-1")).toMatchObject({ taskOutcome: "failed", taskOutcomeSource: "post_check" });
+  });
+
   it("boots read-only once the catalogue is seeded (#213)", async () => {
     const { json, store } = await setup();
     let mutations = 0;
@@ -96,7 +105,7 @@ describe("JsonEvaluationStore", () => {
   });
 
   it("bounds stored result history: superseded rows evict before any current verdict (#213)", async () => {
-    const { json, summaries, store } = await setup(undefined, 3);
+    const { json, summaries, store } = await setup(undefined, undefined, 3);
     await addSummary(summaries, "run-1", "agent-a", "2026-08-28T01:00:00.000Z");
     await addSummary(summaries, "run-2", "agent-a", "2026-08-28T01:30:00.000Z");
     const put = (runId: string, evaluatorId: string, evaluatedAt: string) => store.putResult({

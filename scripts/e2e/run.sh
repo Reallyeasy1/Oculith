@@ -20,6 +20,9 @@ command -v cygpath >/dev/null 2>&1 && root="$(cygpath -m "$root")"
 export MSYS_NO_PATHCONV=1 LOCAL_POC_DATA_ROOT="$root" E2E_ROOT="$root"
 export PORT="${E2E_PORT:-3100}" APP_AUTH_TOKEN="${E2E_AUTH_TOKEN:-e2e-shared-token-0123456789abcdef}"
 export RUNTIME_INSTANCE_ID="e2e-$$" GLASSBOX_CAPTURE_POLICY="${GLASSBOX_CAPTURE_POLICY:-safe_summary}"
+# The full lane exercises real ModelArk Agent Runs; semantic evaluation itself is deterministic so
+# judge variance cannot make the acceptance lane flaky.
+export TASK_COMPLETION_JUDGE=fake
 
 echo "[e2e] state root: $root  port: $PORT  instance: $RUNTIME_INSTANCE_ID" >&2
 status=0
