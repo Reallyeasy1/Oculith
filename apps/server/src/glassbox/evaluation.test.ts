@@ -86,6 +86,15 @@ describe("JsonEvaluationStore", () => {
     expect(await store.query({ agentId: "agent-b" })).toEqual([]);
   });
 
+  it("never overwrites a post_check or deterministic taskOutcome with a judge verdict", async () => {
+    const { summaries, store } = await setup();
+    await addSummary(summaries, "run-1", "agent-a", "2026-08-28T01:00:00.000Z");
+    await summaries.setTaskOutcome("run-1", "failed", "post_check");
+    await store.putResult({ runId: "run-1", evaluatorId: "task_completion", evaluatorVersion: 1, score: 5, passed: true,
+      explanation: "Judge says pass", evidenceEventIds: [], metadata: {}, evaluatedAt: "2026-08-28T03:00:00.000Z" });
+    expect(await summaries.get("run-1")).toMatchObject({ taskOutcome: "failed", taskOutcomeSource: "post_check" });
+  });
+
   it("boots read-only once the catalogue is seeded (#213)", async () => {
     const { json, store } = await setup();
     let mutations = 0;

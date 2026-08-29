@@ -216,7 +216,13 @@ export class JsonEvaluationStore implements EvaluationStore {
       }
     });
     // The summary store owns taskOutcome for every backend (JSON or Postgres); FR-22 source vocabulary.
-    if (definition.setsTaskOutcome) await this.summaries.setTaskOutcome(input.runId, input.passed ? "passed" : "failed", `evaluator:${input.evaluatorId}@${input.evaluatorVersion}`);
+    // post_check/deterministic verdicts (#290/#293) are ground truth — an LLM judge never overwrites them.
+    if (definition.setsTaskOutcome) {
+      const priorSource = (await this.summaries.get(input.runId))?.taskOutcomeSource;
+      if (!priorSource || priorSource.startsWith("evaluator:")) {
+        await this.summaries.setTaskOutcome(input.runId, input.passed ? "passed" : "failed", `evaluator:${input.evaluatorId}@${input.evaluatorVersion}`);
+      }
+    }
     return structuredClone(result);
   }
 

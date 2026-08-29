@@ -3,11 +3,13 @@ import type { JsonStore } from "../store.js";
 import type { EvaluatorDefinition } from "./evaluation.js";
 import type { RunEvaluation, RunEvaluator } from "./jobs.js";
 import { redactText } from "./redact.js";
-import type { ObservationEvent } from "./schema.js";
+import { capturesSummaries, type ObservationEvent } from "./schema.js";
 import type { RunSummary } from "./summary.js";
 import type { TraceStore } from "./store.js";
 
 const MAX_VIEW_CHARS = 16_384;
+/** A hung provider must not stall the single evaluation worker across its retries. */
+const JUDGE_TIMEOUT_MS = 60_000;
 const MAX_CONVERSATION_CHARS = 2_048;
 const MAX_ITEMS_PER_SECTION = 40;
 const EVENT_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -125,7 +127,7 @@ export function buildEvaluationView(
         argument0: stringAttribute(event, "argument0", 80),
         exitCode: numberAttribute(event, "exitCode"),
         error: event.error ? safeText(event.error.message, 512, redact) : undefined,
-        ...(input.summary.capturePolicy === "safe_summary" && event.summary
+        ...(capturesSummaries(input.summary.capturePolicy) && event.summary
           ? { commandHead: safeText(event.summary.text, 120, redact) }
           : {}),
       })),
@@ -148,7 +150,7 @@ export function buildEvaluationView(
         status: event.status,
         exitCode: numberAttribute(event, "exitCode"),
         durationMs: numberAttribute(event, "durationMs") ?? event.durationMs,
-        ...(input.summary.capturePolicy === "safe_summary" && event.summary
+        ...(capturesSummaries(input.summary.capturePolicy) && event.summary
           ? { commandHead: safeText(event.summary.text, 120, redact) }
           : {}),
       })),
@@ -211,6 +213,7 @@ export class ArkTaskCompletionJudge implements TaskCompletionJudge {
   async judge(request: TaskCompletionJudgeRequest): Promise<unknown> {
     const response = await this.fetcher(this.options.baseUrl.replace(/\/+$/, "") + "/responses", {
       method: "POST",
+      signal: AbortSignal.timeout(JUDGE_TIMEOUT_MS),
       headers: new Headers({ authorization: "Bearer " + this.options.apiKey, "content-type": "application/json" }),
       body: JSON.stringify({
         model: this.model,
