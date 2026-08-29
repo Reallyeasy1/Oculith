@@ -411,3 +411,13 @@ export interface ReliabilityCompareReport {
 
 // Mirrors WorkspaceManager.listTemplates(): a bad template (symlink, over limits) is reported, not a 500.
 export type WorkspaceTemplate = { name: string; fileCount: number; bytes: number } | { name: string; error: string };
+
+// #40: mirrors apps/server/src/glassbox/live.ts — the SSE frame from GET /api/events/stream.
+// Ids and enums only; the client refetches through the REST endpoints above.
+export interface LiveNotification {
+  type: "run.updated";
+  runId: string;
+  agentId: string;
+  status: TraceStatus;
+  ts: string;
+}
