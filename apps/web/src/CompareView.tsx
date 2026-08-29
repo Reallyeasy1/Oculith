@@ -1,28 +1,38 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import type { EvalComparison, EvalResult, EvalRun } from "./types";
+import type { EvalComparisonPair } from "./config-comparison-view-model";
 
 interface Props {
   evalRuns: EvalRun[];
   onOpenEvidence: (runId: string, eventId?: string) => void;
+  selection?: EvalComparisonPair | null;
 }
 
-export default function CompareView({ evalRuns, onOpenEvidence }: Props) {
+export default function CompareView({ evalRuns, onOpenEvidence, selection }: Props) {
   const [baselineId, setBaselineId] = useState("");
   const [candidateId, setCandidateId] = useState("");
   const [comparison, setComparison] = useState<EvalComparison | null>(null);
   const [error, setError] = useState<string | null>(null);
   const compatible = useMemo(() => evalRuns.filter((item) => item.status !== "running"), [evalRuns]);
-  const compare = async () => {
-    if (!baselineId || !candidateId || baselineId === candidateId) return;
+  const load = async (baseline: string, candidate: string) => {
+    if (!baseline || !candidate || baseline === candidate) return;
     setError(null);
-    try { setComparison(await api.compareEvalRuns(baselineId, candidateId)); }
+    try { setComparison(await api.compareEvalRuns(baseline, candidate)); }
     catch (reason) { setComparison(null); setError(reason instanceof Error ? reason.message : String(reason)); }
   };
+  const compare = () => load(baselineId, candidateId);
+  useEffect(() => {
+    if (!selection) return;
+    setBaselineId(selection.baselineId); setCandidateId(selection.candidateId);
+    void load(selection.baselineId, selection.candidateId);
+  // The ids are the stable selection identity; `load` intentionally has no captured component state.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selection?.baselineId, selection?.candidateId]);
   if (compatible.length < 2) return null;
   // Counted from the per-assertion flags the table tints, so the banner and the rows can never disagree.
   const regressions = comparison?.cases.flatMap((item) => item.assertions).filter((assertion) => assertion.regression).length ?? 0;
-  return <section className="runs-view comparison-view" aria-labelledby="comparison-heading">
+  return <section id="eval-comparison" className="runs-view comparison-view" aria-labelledby="comparison-heading">
     <div className="playground-topbar"><div><span className="eyebrow">Regression</span><h2 id="comparison-heading">Compare evaluations</h2></div></div>
     <div className="comparison-controls">
       <label>Baseline <select value={baselineId} onChange={(event) => { setBaselineId(event.target.value); setComparison(null); }}><option value="">Choose evaluation</option>{compatible.map((item) => <option key={item.id} value={item.id}>{item.id.slice(0, 8)} · {item.status}</option>)}</select></label>

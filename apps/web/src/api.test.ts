@@ -19,4 +19,22 @@ describe("evaluation API", () => {
       body: JSON.stringify(body),
     }));
   });
+
+  it("encodes the historical config comparison and optional time window (#174)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ a: {}, b: {}, deltas: {} }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.compareReliability("agent/one", "cfg a", "cfg&b", {
+      from: "2026-08-01T00:00:00.000Z",
+      to: "2026-08-31T23:59:59.999Z",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/reliability/compare?agentId=agent%2Fone&a=cfg+a&b=cfg%26b&from=2026-08-01T00%3A00%3A00.000Z&to=2026-08-31T23%3A59%3A59.999Z",
+      expect.any(Object),
+    );
+  });
 });

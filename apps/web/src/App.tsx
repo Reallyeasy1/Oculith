@@ -10,6 +10,8 @@ import TraceDetail from "./TraceDetail";
 import Overview from "./Overview";
 import CompareView from "./CompareView";
 import EvaluatorsPanel from "./EvaluatorsPanel";
+import ConfigComparison from "./ConfigComparison";
+import type { EvalComparisonPair } from "./config-comparison-view-model";
 import { refreshIntervalMs } from "./trace-view-model";
 import { formatCount, LONG_SESSION_HINT, sessionHealth, workspaceOptionLabel } from "./runs-view-model";
 import { runtimeCardModel } from "./system-view-model";
@@ -73,6 +75,7 @@ export default function App() {
   const [focusEventId, setFocusEventId] = useState<string | null>(null);
   const [regressionCases, setRegressionCases] = useState<RegressionCase[]>([]);
   const [evalRuns, setEvalRuns] = useState<EvalRun[]>([]);
+  const [evalComparisonSelection, setEvalComparisonSelection] = useState<EvalComparisonPair | null>(null);
   // "agent" = the selected Agent's Runs under its Playground; "overview" = All runs across Agents (#70).
   const [view, setView] = useState<"overview" | "agent">("agent");
   // Opening a trace collapses the Playground to a bar so the trace header sits in the first viewport;
@@ -84,6 +87,10 @@ export default function App() {
   // A drill belongs to the Agent whose panel was clicked; drop it when the scope changes so a remounted
   // RunsView opens on its default filter, not a stale drill.
   useEffect(() => { setRunsDrill(null); }, [selectedId, view]);
+  useEffect(() => {
+    if (view !== "overview" || !evalComparisonSelection) return;
+    requestAnimationFrame(() => document.getElementById("eval-comparison")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  }, [view, evalComparisonSelection]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -690,7 +697,7 @@ export default function App() {
         )}
 
         {view === "overview" ? (
-          <><Overview runs={runs} cases={regressionCases} evalRuns={evalRuns} selectedAgent={selected} onRunCase={startEvaluation} onDeleteCase={deleteRegressionCase} /><CompareView evalRuns={evalRuns} onOpenEvidence={(runId, eventId) => { setFocusEventId(eventId ?? null); openTrace(runId); }} /><EvaluatorsPanel /></>
+          <><Overview runs={runs} cases={regressionCases} evalRuns={evalRuns} selectedAgent={selected} onRunCase={startEvaluation} onDeleteCase={deleteRegressionCase} /><CompareView evalRuns={evalRuns} selection={evalComparisonSelection} onOpenEvidence={(runId, eventId) => { setFocusEventId(eventId ?? null); openTrace(runId); }} /><EvaluatorsPanel /></>
         ) : selected ? playgroundCollapsed ? (
           <div className="playground-bar">
             <div className="header-title-row">
@@ -1008,6 +1015,7 @@ export default function App() {
         )}
 
         {view === "agent" && selected && <ReliabilityPanel report={reliability} onDrill={(drill) => setRunsDrill({ ...drill })} />}
+        {view === "agent" && selected && <ConfigComparison key={selected.id} agent={selected} runs={runs} evalRuns={evalRuns} onDrill={(drill) => setRunsDrill({ ...drill })} onOpenEvalComparison={(pair) => { setEvalComparisonSelection(pair); setView("overview"); }} />}
         {selectedRunId && (
           <TraceDetail
             key={selectedRunId}

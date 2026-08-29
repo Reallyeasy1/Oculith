@@ -1,4 +1,4 @@
-import type { Agent, AgentRun, Assertion, AuditRow, CapturePolicy, EvalRun, EvaluationResult, EvaluatorDefinition, Message, QueuedMessageReceipt, RegressionCase, ReliabilityReport, RunListItem, RunLogLine, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
+import type { Agent, AgentRun, Assertion, AuditRow, CapturePolicy, EvalRun, EvaluationResult, EvaluatorDefinition, Message, QueuedMessageReceipt, RegressionCase, ReliabilityCompareReport, ReliabilityReport, RunListItem, RunLogLine, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -123,6 +123,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  // #174: historical quality deltas for two behavior configurations of one Agent.
+  compareReliability: (agentId: string, a: string, b: string, window: { from?: string; to?: string } = {}) =>
+    request<ReliabilityCompareReport>("/api/reliability/compare?" + new URLSearchParams({ agentId, a, b, ...window })),
   // #173: stored evaluation results for one Run, shown in the trace detail.
   runEvaluations: (runId: string) =>
     request<{ evaluations: EvaluationResult[] }>("/api/runs/" + runId + "/evaluations"),

@@ -73,6 +73,9 @@ export function configSnapshot(agent: Agent, config: AppConfig): AgentConfigSnap
     codexSandboxMode: config.codexSandboxMode,
     runtimeProvider: config.runtimeProvider,
     containerRuntimeImage: config.containerRuntimeImage,
+    containerCpuLimit: config.containerCpuLimit,
+    containerMemoryLimit: config.containerMemoryLimit,
+    containerPidsLimit: config.containerPidsLimit,
     capturePolicy: config.glassboxCapturePolicy,
     // Hashed like instructions: the command text may carry operator secrets and the snapshot is shown in the UI.
     ...(agent.verifyCommand

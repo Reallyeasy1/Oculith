@@ -18,6 +18,7 @@ import {
   formatUsage,
   liveRuns,
   matchesFilter,
+  matchesProvenance,
   matchesTaskOutcome,
   outlierLabel,
   recoveredFailures,
@@ -46,15 +47,17 @@ interface Props {
 export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent = true, title = "Runs", emptyText = "No Runs observed yet.", baseline, drill }: Props) {
   const [filter, setFilter] = useState<QuickFilter>("attention");
   const [taskOutcome, setTaskOutcome] = useState<TaskOutcomeFilter>("all");
+  const [provenanceRunIds, setProvenanceRunIds] = useState<string[] | undefined>();
   useEffect(() => {
     if (!drill) return;
     setFilter(drill.quick);
     setTaskOutcome(drill.taskOutcome);
+    setProvenanceRunIds(drill.runIds);
     document.getElementById("runs-heading")?.focus();
   }, [drill]);
   const visible = useMemo(
-    () => sortNewestFirst(runs).filter((run) => matchesFilter(run, filter) && matchesTaskOutcome(run, taskOutcome)),
-    [runs, filter, taskOutcome],
+    () => sortNewestFirst(runs).filter((run) => matchesFilter(run, filter) && matchesTaskOutcome(run, taskOutcome) && matchesProvenance(run, provenanceRunIds)),
+    [runs, filter, taskOutcome, provenanceRunIds],
   );
   const okCount = summarizeRuns(runs).ok;
   // Elapsed is computed at render time: the dashboard poll (#98) replaces `runs` every tick, so it ticks with the poll.
@@ -76,7 +79,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
               type="button"
               className="button button-ghost"
               aria-pressed={filter === item}
-              onClick={() => setFilter(item)}
+              onClick={() => { setFilter(item); setProvenanceRunIds(undefined); }}
             >
               {FILTER_LABEL[item] ?? item}
             </button>
@@ -90,13 +93,19 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
               type="button"
               className="button button-ghost"
               aria-pressed={taskOutcome === item}
-              onClick={() => setTaskOutcome(item)}
+              onClick={() => { setTaskOutcome(item); setProvenanceRunIds(undefined); }}
             >
               {item}
             </button>
           ))}
         </div>
       </div>
+      {provenanceRunIds && (
+        <p className="runs-baseline comparison-drill-status" role="status">
+          Config comparison · {provenanceRunIds.length} {provenanceRunIds.length === 1 ? "Run" : "Runs"}
+          <button type="button" className="evidence-link" onClick={() => setProvenanceRunIds(undefined)}>Clear</button>
+        </p>
+      )}
       {!showAgent && baseline && baseline.sampleCount > 0 && (
         <p className="runs-baseline" aria-label={`Baseline over ${baseline.sampleCount} ${baseline.sampleCount === 1 ? "Run" : "Runs"}`}>
           p50 {formatDuration(baseline.durationMs.p50)} · {formatCount(baseline.inputTokens.p50)} in · {formatCount(baseline.toolCalls.p50)} tools ({baseline.sampleCount} {baseline.sampleCount === 1 ? "Run" : "Runs"})
