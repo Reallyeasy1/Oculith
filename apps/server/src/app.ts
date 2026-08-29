@@ -34,7 +34,11 @@ declare module "fastify" {
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
-const createAgentBody = z.object({
+// #345: run ids are always server-issued randomUUID() (agent-service), so every run-id param is
+// validated as a UUID — malformed ids are a 400 contract violation, not a 404 lookup miss.
+const runKeyParams = z.object({ runId: z.string().uuid() });
+// #345: mutation bodies are strict (unknown keys → 400), matching the metrics/reliability posture.
+const createAgentBody = z.strictObject({
   name: z.string().trim().min(1).max(80),
   description: z.string().max(500).optional(),
   instructions: z.string().max(10_000).optional(),
@@ -43,7 +47,7 @@ const createAgentBody = z.object({
   // #253: operator-set post-run verification; the service trims it and treats "" as "clear the command".
   verifyCommand: z.string().max(500).optional(),
   // #255: per-Agent daily budget; `null` (or no limits) clears it. Limits are counts, never content.
-  budget: z.object({
+  budget: z.strictObject({
     maxTokensPerDay: z.number().int().min(1).max(1_000_000_000_000).optional(),
     maxEstimatedUsdPerDay: z.number().positive().max(1_000_000).optional(),
   }).nullable().optional(),
@@ -52,7 +56,7 @@ const updateAgentBody = createAgentBody.partial().refine(
   (value) => Object.keys(value).length > 0,
   "At least one field is required",
 );
-const messageBody = z.object({
+const messageBody = z.strictObject({
   content: z.string().trim().min(1).max(50_000),
   // #256: lineage of a one-click re-run. The Run itself is ordinary (same session thread, current
   // workspace state); the id is only stamped on run.created.attributes so lineage is queryable.
@@ -60,16 +64,16 @@ const messageBody = z.object({
 });
 // #254: cancel-while-queued — both ids are server-issued UUIDs.
 const pendingMessageParams = z.object({ id: z.string().uuid(), messageId: z.string().uuid() });
-const evalRunBody = z.object({ agentId: z.string().uuid(), caseIds: z.array(z.string().uuid()).min(1).max(20).refine((ids) => new Set(ids).size === ids.length, "caseIds must be unique"), force: z.boolean().optional() });
+const evalRunBody = z.strictObject({ agentId: z.string().uuid(), caseIds: z.array(z.string().uuid()).min(1).max(20).refine((ids) => new Set(ids).size === ids.length, "caseIds must be unique"), force: z.boolean().optional() });
 // A case is always derived from the trace evidence. The UI may only name it or remove an
 // automatically proposed assertion; it cannot supply a different prompt or template.
-const regressionCaseFromRunBody = z.object({
+const regressionCaseFromRunBody = z.strictObject({
   name: z.string().trim().min(1).max(120).optional(),
   assertions: regressionCaseInput.shape.assertions.optional(),
 });
 // #192: user-defined llm_judge evaluators. The id is a slug of the name, so a changed rubric under
 // the same name versions the same definition (FR-20); the store redacts name/rubric before persisting.
-const createEvaluatorBody = z.object({
+const createEvaluatorBody = z.strictObject({
   name: z.string().trim().min(1).max(80),
   rubric: z.string().trim().min(1).max(4_000),
   minScore: z.number().int().min(0).max(100),
@@ -308,7 +312,7 @@ export async function createApp(
   // bodyLimits cover base64 inflation (~4/3) over the 1 MB file / 8 MB batch caps the module
   // enforces on the decoded bytes. Uploads arrive as base64 inside JSON by design — no multipart
   // dependency (#66).
-  const workspaceUploadSchema = z.object({
+  const workspaceUploadSchema = z.strictObject({
     path: z.string().min(1).max(1_024),
     content: z.string(),
     encoding: z.enum(["utf8", "base64"]).default("utf8"),
@@ -321,7 +325,7 @@ export async function createApp(
 
   app.post("/api/agents/:id/workspace/files", { bodyLimit: 16 * 1024 * 1024 }, async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    const body = z.object({ files: z.array(workspaceUploadSchema).min(1).max(20) }).parse(request.body);
+    const body = z.strictObject({ files: z.array(workspaceUploadSchema).min(1).max(20) }).parse(request.body);
     return { files: await service.seedAgentWorkspaceFiles(id, body.files) };
   });
 
@@ -333,7 +337,7 @@ export async function createApp(
 
   app.post("/api/agents/:id/workspace/reset", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    const body = z.object({ forgetThread: z.boolean().optional() }).parse(request.body ?? {});
+    const body = z.strictObject({ forgetThread: z.boolean().optional() }).parse(request.body ?? {});
     // #96: reset archives the directory the preview container has bind-mounted.
     if (previews?.get(id)) {
       throw new HttpError(409, "Stop the preview before resetting this workspace — the container has it mounted");
@@ -345,7 +349,7 @@ export async function createApp(
   // port from PREVIEW_PORT_RANGE. Started/stopped edges are observed as runtime.preview.* events;
   // the manager enforces the command allow-list, the port range and the TTL.
   if (previews) {
-    const previewBody = z.object({ command: z.enum(["vite", "static"]).default("vite") });
+    const previewBody = z.strictObject({ command: z.enum(["vite", "static"]).default("vite") });
     app.post("/api/agents/:id/preview", async (request, reply) => {
       const { id } = agentIdParams.parse(request.params);
       const body = previewBody.parse(request.body ?? {});
@@ -429,7 +433,8 @@ export async function createApp(
     return reply.code(204).send();
   });
   app.post("/api/regression-cases", async (request, reply) => {
-    const body = regressionCaseInput.parse(request.body);
+    // #345: strict at the boundary; regressionCaseInput itself stays lenient for internal callers.
+    const body = z.strictObject(regressionCaseInput.shape).parse(request.body);
     const regressionCase = await service.createRegressionCase({ ...body });
     return reply.code(201).send({ regressionCase });
   });
@@ -530,10 +535,10 @@ export async function createApp(
       const jobs = glassbox.jobs;
       // #170: historical evaluation runs as a background job — the POST only enqueues (202), progress is
       // polled. Only terminal statuses are selectable; the worker never evaluates a running Run.
-      const evaluationJobBody = z.object({
+      const evaluationJobBody = z.strictObject({
         evaluatorId: z.string().trim().min(1).max(80),
         evaluatorVersion: z.number().int().min(1).optional(),
-        filter: z.object({
+        filter: z.strictObject({
           agentId: z.string().uuid().optional(),
           // Real configHashes are hex (agent-service.ts); rejecting anything else keeps free text
           // (a pasted secret included) out of the persisted, served job record.
@@ -657,15 +662,15 @@ export async function createApp(
       }
       return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, runs: items };
     });
-    app.get("/api/runs/:runId/trace", async (request) => { const { runId } = z.object({ runId: z.string().min(1) }).parse(request.params); service.getRun(runId); return viewFor(runId); });
+    app.get("/api/runs/:runId/trace", async (request) => { const { runId } = runKeyParams.parse(request.params); service.getRun(runId); return viewFor(runId); });
     app.get("/api/runs/:runId/logs", async (request) => {
-      const { runId } = z.object({ runId: z.string().min(1) }).parse(request.params);
+      const { runId } = runKeyParams.parse(request.params);
       service.getRun(runId);
       const query = z.object({ level: z.string().max(20).optional(), limit: z.coerce.number().int().min(1).max(500).default(100) }).parse(request.query);
       return glassbox.logs ? glassbox.logs.readRun(runId, query) : { lines: [], truncated: false };
     });
     app.get("/api/runs/:runId/audit", async (request) => {
-      const { runId } = z.object({ runId: z.string().min(1) }).parse(request.params); service.getRun(runId);
+      const { runId } = runKeyParams.parse(request.params); service.getRun(runId);
       const view = await viewFor(runId);
       return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, audit: projectAudit(view.events) };
     });
