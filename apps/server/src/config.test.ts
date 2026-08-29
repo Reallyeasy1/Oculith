@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { codexConfigToml, isModelConfigured, loadConfig } from "./config.js";
+import { codexConfigToml, configuredModel, isModelConfigured, loadConfig } from "./config.js";
 
 describe("Model provider config", () => {
   it("writes an OpenAI provider block and gates readiness on the right key", () => {
@@ -32,6 +32,12 @@ describe("Model provider config", () => {
 
     const unset = loadConfig({ NODE_ENV: "test", MODEL_PROVIDER: "openai" });
     expect(isModelConfigured(unset)).toBe(false);
+    // #54: an unset ARK_MODEL used to label runs with "" — fall back to the same
+    // placeholder codexConfigToml writes, so the UI never shows a blank model.
+    expect(configuredModel(ark)).toBe("deepseek-v4-flash-260425");
+    expect(configuredModel(loadConfig({ NODE_ENV: "test", ARK_API_KEY: "ark-key" }))).toBe("ep-not-configured");
+    expect(configuredModel(unset)).toBe("openai-default");
+    expect(configuredModel(openai)).toBe("gpt-test");
     expect(loadConfig({ NODE_ENV: "test", TASK_COMPLETION_JUDGE: "fake" }).taskCompletionJudge).toBe("fake");
     expect(() => loadConfig({ NODE_ENV: "test", TASK_COMPLETION_JUDGE: "other" })).toThrow();
   });

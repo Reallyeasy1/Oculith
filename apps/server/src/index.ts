@@ -1,7 +1,7 @@
 import path from "node:path";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
-import { isModelConfigured, loadConfig, writeCodexConfig } from "./config.js";
+import { configuredModel, isModelConfigured, loadConfig, writeCodexConfig } from "./config.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
 import { JsonEvaluationStore } from "./glassbox/evaluation.js";
 import { builtinRunEvaluators, EvaluationJobWorker, JsonEvaluationJobStore } from "./glassbox/jobs.js";
@@ -48,8 +48,7 @@ for (const entry of traceStore.listRuns()) emitter.seedSequence(entry.traceId, e
 const runner = createRunner(config, emitter);
 // Per-Run summaries (#168): rolled up after each terminal event, off the Run's path; the list route reads them.
 const summaries = await openSummaryStore(config, store);
-const configuredModel = config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default";
-const evaluations = new JsonEvaluationStore(store, summaries, undefined, configuredModel);
+const evaluations = new JsonEvaluationStore(store, summaries, undefined, configuredModel(config));
 await evaluations.initialize();
 // Evaluation jobs (#170): background worker over stored summaries; restart honesty first, then the
 // loop picks up whatever was queued. The real task-completion judge is Ark-only; the deterministic

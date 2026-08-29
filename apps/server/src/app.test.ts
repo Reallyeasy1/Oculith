@@ -101,7 +101,8 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     const app = await createApp(config(), svc, { emitter, store });
     const res = await app.inject({
       method: "POST",
-      url: "/api/agents/2c1b9f8e-3b7e-4b9d-9d3a-1c2d3e4f5a6b/messages",
+      // #54: a query string must not bypass the ingress hook (it used to regex-match request.url).
+      url: "/api/agents/2c1b9f8e-3b7e-4b9d-9d3a-1c2d3e4f5a6b/messages?client=vitest",
       headers: auth,
       payload: { content: "hi" },
     });
@@ -213,6 +214,21 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     expect((await get("/api/runs/nope/logs")).statusCode).toBe(404);
     await app.close();
     await rm(dir, { recursive: true, force: true });
+  });
+
+  it("trace events q also searches summary text, and an unknown traceId is 404 (#54)", async () => {
+    const store = new MemoryTraceStore(); const emitter = new ObservationEmitter({ store, capturePolicy: "safe_summary" });
+    const ids = { traceId: "trc_q", runId: "run-q", agentId: "agt-q" };
+    emitter.emit({ ...ids, spanId: "a", type: "run.created", category: "control", name: "run.created", status: "ok", summary: { text: "deploy the pelican service", policy: "safe_summary" }, source: { component: "AgentService", observed: true } });
+    emitter.emit({ ...ids, spanId: "b", type: "run.completed", category: "control", name: "run.completed", status: "ok", source: { component: "AgentService", observed: true } });
+    await emitter.flush();
+    const app = await createApp(config(), service, { emitter, store });
+    const get = (url: string) => app.inject({ method: "GET", url, headers: auth });
+    const hit = (await get("/api/traces/trc_q/events?q=pelican")).json();
+    expect(hit.events.map((e: { spanId: string }) => e.spanId)).toEqual(["a"]);
+    expect((await get("/api/traces/trc_q/events?q=albatross")).json().events).toEqual([]);
+    expect((await get("/api/traces/nope")).statusCode).toBe(404);
+    await app.close();
   });
 
   it("lists runs and serves a trace with schemaVersion and capturePolicy", async () => {
