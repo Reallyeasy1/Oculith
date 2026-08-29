@@ -41,7 +41,11 @@ export class LiveNotifier {
 }
 
 /** The SSE token travels as `?access_token=` (EventSource cannot set headers); it must never land
- * in the request log. Applied by the request-log serializer in app.ts. */
+ * in the request log. Applied by the request-log serializer in app.ts. The stream path drops its
+ * query string entirely: a regex scrub parses differently from the URLSearchParams the auth check
+ * uses (`?%61ccess_token=` authenticates but would dodge a name-literal scrub). */
 export function redactAccessToken(url: string): string {
+  const [path] = url.split("?");
+  if (path === "/api/events/stream") return path;
   return url.replace(/([?&]access_token=)[^&]*/g, "$1[REDACTED]");
 }

@@ -151,7 +151,7 @@ export async function createApp(
     let candidate = header.startsWith("Bearer ") ? header.slice(7) : "";
     // #40: EventSource cannot set Authorization, so the stream route — and only it — also accepts
     // the same shared token as ?access_token=. The req serializer above redacts it from the log.
-    if (!candidate && request.url.startsWith("/api/events/stream")) {
+    if (!candidate && request.url.split("?")[0] === "/api/events/stream") {
       candidate = new URLSearchParams(request.url.split("?")[1] ?? "").get("access_token") ?? "";
     }
     const expectedBuffer = Buffer.from(config.authToken);

@@ -29,9 +29,15 @@ describe("LiveNotifier", () => {
 });
 
 describe("redactAccessToken", () => {
-  it("scrubs the token wherever it sits in the query string", () => {
-    expect(redactAccessToken("/api/events/stream?access_token=sekret")).toBe("/api/events/stream?access_token=[REDACTED]");
-    expect(redactAccessToken("/api/events/stream?a=1&access_token=sekret&b=2")).toBe("/api/events/stream?a=1&access_token=[REDACTED]&b=2");
+  it("drops the stream route's whole query string — a name-literal scrub misses encoded names", () => {
+    expect(redactAccessToken("/api/events/stream?access_token=sekret")).toBe("/api/events/stream");
+    expect(redactAccessToken("/api/events/stream?a=1&access_token=sekret&b=2")).toBe("/api/events/stream");
+    // URLSearchParams percent-decodes parameter NAMES, so this authenticates; the log must not keep it.
+    expect(redactAccessToken("/api/events/stream?%61ccess_token=sekret")).toBe("/api/events/stream");
+  });
+
+  it("scrubs a stray access_token on any other route", () => {
+    expect(redactAccessToken("/api/runs?access_token=sekret")).toBe("/api/runs?access_token=[REDACTED]");
   });
 
   it("leaves token-free URLs untouched", () => {
