@@ -94,6 +94,22 @@ describe("ObservationEmitter", () => {
     degraded.evictRun("run-1");
     expect(degraded.isDegraded("run-1")).toBe(true);
   });
+  it("#40: onEvent fires after the append settles, with the redacted event, and a throwing hook never degrades the run", async () => {
+    const store = new MemoryTraceStore();
+    const seen: ObservationEvent[] = [];
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only", onEvent: (e) => seen.push(e) });
+    em.emit({ ...base, attributes: { token: "x" } });
+    expect(seen).toHaveLength(0); // not before the store append settles
+    await em.flush();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.runId).toBe("run-1");
+    expect(seen[0]!.attributes.token).toBeUndefined(); // the hook only ever sees redacted events
+
+    const em2 = new ObservationEmitter({ store, capturePolicy: "metadata_only", onEvent: () => { throw new Error("broken listener"); } });
+    em2.emit({ ...base, spanId: "spn_9" });
+    await em2.flush();
+    expect(em2.isDegraded("run-1")).toBe(false);
+  });
   it("seedSequence continues after a rebuild", () => {
     const em = createDefaultEmitter(); em.seedSequence("trc_1", 41);
     expect(em.emit(base)!.sequence).toBe(42);

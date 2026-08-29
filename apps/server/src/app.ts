@@ -1,6 +1,6 @@
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -12,6 +12,7 @@ import { redactText } from "./glassbox/redact.js";
 import type { ObservationEmitter } from "./glassbox/emitter.js";
 import type { EvaluationStore } from "./glassbox/evaluation.js";
 import type { EvaluationJobWorker } from "./glassbox/jobs.js";
+import { redactAccessToken, type LiveNotifier } from "./glassbox/live.js";
 import { MetricStore, metricQueryBody } from "./glassbox/metrics.js";
 import { ReliabilityService, reliabilityCompareQuerySchema, reliabilityQuerySchema } from "./glassbox/reliability.js";
 import { buildTrace, projectAudit, type TraceView } from "./glassbox/query.js";
@@ -79,7 +80,7 @@ const evaluatorSlug = (name: string): string =>
 export async function createApp(
   config: AppConfig,
   service: AgentService,
-  glassbox?: { emitter: ObservationEmitter; store: TraceStore; summaries?: RunSummaryStore | undefined; evaluations?: EvaluationStore | undefined; jobs?: EvaluationJobWorker | undefined; logs?: RunLogStore | undefined },
+  glassbox?: { emitter: ObservationEmitter; store: TraceStore; summaries?: RunSummaryStore | undefined; evaluations?: EvaluationStore | undefined; jobs?: EvaluationJobWorker | undefined; logs?: RunLogStore | undefined; live?: LiveNotifier | undefined },
 ): Promise<FastifyInstance> {
   const tokenPricing = {
     inputPerMillion: config.glassboxPricePerMtokInput,
@@ -90,6 +91,13 @@ export async function createApp(
     logger: {
       level: config.logLevel,
       redact: ["req.headers.authorization", "req.headers.cookie"],
+      serializers: {
+        // #40: the SSE route accepts the bearer token as ?access_token= (EventSource cannot set
+        // headers), so the logged URL must be scrubbed before it reaches the request log.
+        req(request: FastifyRequest) {
+          return { method: request.method, url: redactAccessToken(request.url), remoteAddress: request.ip };
+        },
+      },
     },
     bodyLimit: 1_048_576,
   });
@@ -140,7 +148,12 @@ export async function createApp(
       return;
     }
     const header = request.headers.authorization ?? "";
-    const candidate = header.startsWith("Bearer ") ? header.slice(7) : "";
+    let candidate = header.startsWith("Bearer ") ? header.slice(7) : "";
+    // #40: EventSource cannot set Authorization, so the stream route — and only it — also accepts
+    // the same shared token as ?access_token=. The req serializer above redacts it from the log.
+    if (!candidate && request.url.split("?")[0] === "/api/events/stream") {
+      candidate = new URLSearchParams(request.url.split("?")[1] ?? "").get("access_token") ?? "";
+    }
     const expectedBuffer = Buffer.from(config.authToken);
     const candidateBuffer = Buffer.from(candidate);
     const valid =
@@ -289,6 +302,50 @@ export async function createApp(
     const { baseline, candidate } = z.object({ baseline: z.string().uuid(), candidate: z.string().uuid() }).parse(request.params);
     return compareEvalRuns(service.getEvalRun(baseline), service.getEvalRun(candidate));
   });
+
+  if (glassbox?.live) {
+    const live = glassbox.live;
+    // ponytail: module-local counter, not per-socket bookkeeping — single-user app, one process.
+    // Cap covers a few tabs plus a curl; raise if the app ever becomes multi-user.
+    const MAX_STREAMS = 4;
+    let streams = 0;
+    // #40: one SSE endpoint emitting lightweight notification frames; clients refetch through the
+    // existing REST endpoints, so nothing here serializes trace content (invariant 1).
+    app.get("/api/events/stream", (request, reply) => {
+      if (streams >= MAX_STREAMS) {
+        void reply.code(503).send({ error: "Too many live streams" });
+        return;
+      }
+      streams += 1;
+      reply.hijack();
+      let open = true;
+      const heartbeat = setInterval(() => write(":hb\n\n"), live.heartbeatMs);
+      heartbeat.unref?.();
+      const unsubscribe = live.subscribe((notification) => write("data: " + JSON.stringify(notification) + "\n\n"));
+      function close(): void {
+        if (!open) return;
+        open = false;
+        streams -= 1;
+        clearInterval(heartbeat);
+        unsubscribe();
+        try { reply.raw.end(); } catch { /* peer already gone */ }
+      }
+      // Every raw write is wrapped: a dead client must never throw into the server (invariant 4).
+      function write(frame: string): void {
+        if (!open) return;
+        try { reply.raw.write(frame); } catch { close(); }
+      }
+      request.raw.on("close", close);
+      try {
+        reply.raw.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache, no-transform",
+          connection: "keep-alive",
+        });
+        reply.raw.write("retry: 3000\n\n");
+      } catch { close(); }
+    });
+  }
 
   if (glassbox) {
     const runsQuery = z.object({ status: z.enum(STATUSES).optional(), agentId: z.string().uuid().optional(), from: z.string().datetime().optional(), to: z.string().datetime().optional(), limit: z.coerce.number().int().min(1).max(200).default(50) });

@@ -8,6 +8,9 @@ import { MemoryTraceStore, type TraceStore } from "./store.js";
 export interface EmitterOptions {
   store: TraceStore; capturePolicy: CapturePolicy; extraPatterns?: RegExp[] | undefined;
   log?: ((message: string, meta: Record<string, unknown>) => void) | undefined;
+  /** #40: fires after an event's append settles (stored or capped), with the redacted event. Wired to
+   * the SSE LiveNotifier in index.ts; the emitter itself imports no UI/query code (invariant 9). */
+  onEvent?: ((event: ObservationEvent) => void) | undefined;
 }
 export interface SpanHandle {
   spanId: string;
@@ -19,6 +22,7 @@ export class ObservationEmitter {
   private readonly store: TraceStore;
   private readonly extraPatterns: RegExp[];
   private readonly log: (message: string, meta: Record<string, unknown>) => void;
+  private readonly onEvent: ((event: ObservationEvent) => void) | undefined;
   private readonly sequences = new Map<string, number>();
   private readonly degradedRuns = new Set<string>();
   private readonly truncatedRuns = new Set<string>();
@@ -28,6 +32,7 @@ export class ObservationEmitter {
   constructor(options: EmitterOptions) {
     this.store = options.store; this.capturePolicy = options.capturePolicy;
     this.extraPatterns = options.extraPatterns ?? [];
+    this.onEvent = options.onEvent;
     // A throwing log callback must never become a second failure on the emit path (invariant 4).
     const rawLog = options.log ?? (() => undefined);
     this.log = (message, meta) => { try { rawLog(message, meta); } catch { /* swallowed by design */ } };
@@ -135,6 +140,9 @@ export class ObservationEmitter {
     this.queue = this.queue.then(async () => {
       try {
         const result = await this.store.append(event);
+        // #40: notify after the append settles so a client refetch sees the stored data. A throwing
+        // listener must never surface as a store failure (invariant 4).
+        try { this.onEvent?.(event); } catch { /* swallowed */ }
         if (!result.stored && result.reason === "duplicate") this.log("duplicate_dropped", { runId: event.runId, eventId: event.eventId });
         if (!result.stored && (result.reason === "cap_events" || result.reason === "cap_bytes") && !this.truncatedRuns.has(event.runId)) {
           this.truncatedRuns.add(event.runId); this.store.markTruncated(event.runId);
