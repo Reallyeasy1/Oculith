@@ -139,7 +139,7 @@ Defined with zod in `apps/server/src/glassbox/schema.ts` (`SCHEMA_VERSION "1.0"`
 | Ingress | `http.request.received` / `http.request.completed` (`statusCode`, `method`) | Fastify hook (`context.ts`) |
 | Service span | `agent_service.run.started` / `.completed` / `.failed` (`resume`) | AgentService |
 | Container | `runtime.container.started` / `.stopped` (`engine`, `image`, `containerName`, `cpus`, `memory`, `pids`, `exitCode`) | ContainerCodexRunner |
-| Codex process | `runtime.codex.started` / `.completed` / `.failed` (`sandbox`, `resume`, `timeoutMs`, `exitCode`, `terminationSignal`, `sessionId`, `outputBytes`, `demoFailure`) | runners |
+| Codex process | `runtime.codex.started` / `.completed` / `.failed` (`sandbox`, `resume`, `timeoutMs`, `exitCode`, `terminationSignal`, `sessionId`, `resumed` (echo-verified: whether Codex actually resumed the requested thread, unlike the intent-only `resume`), `outputBytes`, `demoFailure`) | runners |
 | Post-check | `runtime.postcheck.started` / `.completed` / `.failed` | PostCheckRunner |
 | Model | `model.request`, `model.completed` (`inputTokens`, `cachedInputTokens`, `outputTokens`) | CodexObserver |
 | Tool | `tool.call.started`, `tool.call.completed`, `tool.call.failed` (`program`, `commandBytes`, `exitCode`, `outputBytes`; `summary.text` under `safe_summary`) | CodexObserver |

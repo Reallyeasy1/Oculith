@@ -229,7 +229,7 @@ export class ContainerCodexRunner implements AgentRunner {
       request.trace && span
         ? new CodexStreamObserver(this.emitter, request.trace, span.spanId, "ContainerCodexRunner", {
             log: request.logger,
-            resume: request.threadId !== null,
+            resumeThreadId: request.threadId ?? undefined,
           })
         : undefined;
     const sink: CodexStreamSink | undefined = request.onActivity
@@ -323,10 +323,15 @@ export class ContainerCodexRunner implements AgentRunner {
       extra: Record<string, string | number | boolean | null> = {},
     ) => {
       spanEnded = span !== undefined;
+      // `resumed` is the echo-verified sibling of the started event's intent-only `resume` attribute:
+      // it compares the thread id Codex actually echoed against the one argv asked it to resume (#243).
       const endAttrs = {
         ...(child.exitCode !== null ? { exitCode: child.exitCode } : {}),
         ...(child.signalCode ? { terminationSignal: child.signalCode } : {}),
         ...(observer?.sessionId ? { sessionId: observer.sessionId } : {}),
+        ...(request.threadId !== null && observer?.sessionId !== undefined
+          ? { resumed: observer.sessionId === request.threadId }
+          : {}),
         stderrBytes,
       };
       span?.end(status, {
@@ -411,9 +416,8 @@ export class ContainerCodexRunner implements AgentRunner {
         observer?.finish("error");
         endSpans("error", { type: "spawn_failed", message: String(error).slice(0, 2048) });
       }
-      if (!(error instanceof RunCancelledError)) {
-        request.logger?.error(active.timedOut ? "Container runner timed out" : "Container runner failed", error);
-      }
+      // No log line here: AgentService's catch writes the one "Runner failed/timed out after Ns" line
+      // for every runner failure — a second line from the runner double-reported each failure (#243).
       throw error;
     } finally {
       clearTimeout(timeout);

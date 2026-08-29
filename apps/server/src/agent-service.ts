@@ -66,7 +66,7 @@ export interface VerifyOutcome { taskOutcome: "passed" | "failed"; source: strin
 export const serverHeartbeatPath = (dataDirectory: string) => path.join(dataDirectory, "server-heartbeat.json");
 
 interface AppLogger {
-  child(bindings: Record<string, unknown>): { info(message: string): void; warn?(message: string): void; error(error: unknown, message?: string): void };
+  child(bindings: Record<string, unknown>): { info(message: string): void; warn(message: string): void; error(error: unknown, message?: string): void };
 }
 
 type ExecutionOptions = {
@@ -1181,7 +1181,7 @@ export class AgentService {
                   void runnerLogger?.info(message).catch(() => undefined);
                 },
                 warn: (message: string) => {
-                  pino?.warn?.(redactText(message, [LOG_SECRET_ASSIGNMENT]).text);
+                  pino?.warn(redactText(message, [LOG_SECRET_ASSIGNMENT]).text);
                   void runnerLogger?.warn(message).catch(() => undefined);
                 },
                 error: (message: string, error?: unknown) => {
@@ -1356,9 +1356,11 @@ export class AgentService {
         pino?.error({ detail }, logMessage);
         await runnerLogger?.error(logMessage, detail).catch(() => undefined);
       } else {
+        // #243: a cancel is a user gesture, not a failure — warn on BOTH sinks, so the run-log error
+        // filter doesn't surface stops as failures and the pino sibling tells the same story.
         const logMessage = "Run cancelled after " + durationSeconds() + "s";
-        pino?.info(logMessage);
-        await logger?.error(logMessage).catch(() => undefined);
+        pino?.warn(logMessage);
+        await logger?.warn(logMessage).catch(() => undefined);
       }
       const queueCtx = createTraceContext({}, this.emitter.capturePolicy);
       // #255: same gate as the completed path. A failed Run reports no usage, so nothing rides along.

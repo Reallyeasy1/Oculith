@@ -161,6 +161,50 @@ describe("CodexRunner against a real child process", () => {
     expect(logged.some((line) => /^info Codex first output after \d+ ms$/.test(line))).toBe(true);
   }, 30_000);
 
+  it("#243: records on the span end whether Codex actually resumed the requested thread", async () => {
+    const stream = [
+      { type: "thread.started", thread_id: "thr_fresh" },
+      { type: "item.completed", item: { id: "item_1", type: "agent_message", text: "done" } },
+      { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+    const ws = await workspace(
+      "for (const line of " + JSON.stringify(stream.map((l) => JSON.stringify(l))) + ") process.stdout.write(line + '\\n');",
+    );
+    const { store, emitter, runner } = setup(ws);
+    const logged: string[] = [];
+    const logger = {
+      info: (message: string) => logged.push("info " + message),
+      warn: (message: string) => logged.push("warn " + message),
+      error: (message: string) => logged.push("error " + message),
+    };
+    // Codex was asked to resume thr_previous but echoed a fresh thread id: the trace records the
+    // mismatch and the log line does not overstate what was observed.
+    await runner.run({ agentId: "agt-1", workspacePath: ws, prompt: "p", threadId: "thr_previous", trace, logger });
+    await emitter.flush();
+    const end = (await store.readRun("run-1")).find((e) => e.type === "runtime.codex.completed")!;
+    expect(end.attributes.resumed).toBe(false);
+    expect(end.attributes.sessionId).toBe("thr_fresh");
+    expect(logged).toContain("warn Codex resume requested but a new session was started");
+    expect(logged).not.toContain("info Codex session resumed");
+  }, 30_000);
+
+  it("#243: a runner failure is logged once by the service layer, not again by the runner", async () => {
+    const ws = await workspace('process.stdout.write("x"); process.exitCode = 2;');
+    const { runner } = setup(ws);
+    const logged: string[] = [];
+    const logger = {
+      info: (message: string) => logged.push("info " + message),
+      warn: (message: string) => logged.push("warn " + message),
+      error: (message: string) => logged.push("error " + message),
+    };
+    await expect(
+      runner.run({ agentId: "agt-1", workspacePath: ws, prompt: "p", threadId: null, trace, logger }),
+    ).rejects.toThrow(/exited with code 2/);
+    // AgentService's catch writes the single "Runner failed after Ns" line; a second line here would
+    // double-report every failure in the run log (#214 item 1, re-observed in #243).
+    expect(logged.filter((line) => line.startsWith("error"))).toEqual([]);
+  }, 30_000);
+
   it("reports live activity through onActivity while the stream progresses (#223)", async () => {
     const lines = [
       { type: "thread.started", thread_id: "thr_1" },
