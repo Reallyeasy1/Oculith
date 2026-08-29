@@ -83,3 +83,25 @@ describe("GlassBox cost display config", () => {
     expect(() => loadConfig({ NODE_ENV: "test", GLASSBOX_PRICE_PER_MTOK_CACHED_INPUT: "-1" })).toThrow();
   });
 });
+
+describe("Workspace preview config (#96)", () => {
+  it("defaults to ports 5180-5189 and a 30 minute TTL", () => {
+    expect(loadConfig({ NODE_ENV: "test" })).toMatchObject({
+      previewPortStart: 5180,
+      previewPortEnd: 5189,
+      previewTtlMs: 1_800_000,
+    });
+  });
+  it("accepts a custom range and TTL, rejects malformed or reversed ranges and tiny TTLs", () => {
+    expect(loadConfig({ NODE_ENV: "test", PREVIEW_PORT_RANGE: "6000-6004", PREVIEW_TTL_MS: "60000" }))
+      .toMatchObject({ previewPortStart: 6000, previewPortEnd: 6004, previewTtlMs: 60_000 });
+    expect(() => loadConfig({ NODE_ENV: "test", PREVIEW_PORT_RANGE: "6004-6000" })).toThrow();
+    expect(() => loadConfig({ NODE_ENV: "test", PREVIEW_PORT_RANGE: "80" })).toThrow();
+    expect(() => loadConfig({ NODE_ENV: "test", PREVIEW_PORT_RANGE: "abc-def" })).toThrow();
+    // Privileged or out-of-range ports and absurdly wide ranges are refused.
+    expect(() => loadConfig({ NODE_ENV: "test", PREVIEW_PORT_RANGE: "80-90" })).toThrow();
+    expect(() => loadConfig({ NODE_ENV: "test", PREVIEW_PORT_RANGE: "5000-70000" })).toThrow();
+    expect(() => loadConfig({ NODE_ENV: "test", PREVIEW_PORT_RANGE: "1025-65535" })).toThrow();
+    expect(() => loadConfig({ NODE_ENV: "test", PREVIEW_TTL_MS: "500" })).toThrow();
+  });
+});

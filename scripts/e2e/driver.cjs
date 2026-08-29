@@ -284,6 +284,16 @@ async function closeResources() {
   // Sweep these traces now: deleting the Agent below drops its Runs from the store (the NDJSON files are still swept in [7]).
   sweep("/api/runs/" + sharedRun.run.id + "/trace", JSON.stringify(sharedRun.view));
   sweep("/api/runs/" + switchRun.run.id + "/trace", JSON.stringify(switchRun.view));
+  console.log("\n[2c] workspace preview start/stop (#96)");
+  const previewStarted = await api("/api/agents/" + sharer.id + "/preview", { method: "POST", body: JSON.stringify({}) });
+  eq(previewStarted.status, 201, "preview container started on the second Agent's workspace");
+  const preview = previewStarted.json().preview;
+  ok(preview.url === "http://localhost:" + preview.port && preview.port >= 5180, "preview reports a published loopback port (" + preview.url + ")");
+  eq((await api("/api/agents/" + sharer.id + "/preview", { method: "POST", body: JSON.stringify({}) })).status, 409, "second preview for the same Agent refused");
+  const previewStopped = await api("/api/agents/" + sharer.id + "/preview", { method: "DELETE" });
+  eq(previewStopped.status, 200, "preview stopped");
+  eq((await api("/api/agents/" + sharer.id + "/preview")).json().preview, null, "no preview reported after the stop");
+
   // Newest updatedAt wins the reload's auto-select; remove the second Agent so the UI steps keep their baseline.
   eq((await api("/api/agents/" + sharer.id, { method: "DELETE" })).status, 200, "second Agent deleted");
   ok(fs.existsSync(path.join(agent.workspacePath, "AGENTS.md")), "first Agent's workspace survives the other's delete");

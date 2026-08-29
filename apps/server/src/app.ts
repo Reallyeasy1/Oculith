@@ -20,6 +20,7 @@ import { CATEGORIES, SCHEMA_VERSION, STATUSES } from "./glassbox/schema.js";
 import type { RunIndexEntry, TraceStore } from "./glassbox/store.js";
 import { executionStatusOf, isFresh, rollupRun, summaryFromView, traceStatusOf, type RunSummary, type RunSummaryStore } from "./glassbox/summary.js";
 import type { RunLogStore } from "./run-log-store.js";
+import type { PreviewManager } from "./preview.js";
 import { BASELINE_QUERY_LIMIT, buildAgentRunBaseline, estimatedCost } from "./glassbox/baseline.js";
 import { caseFromRun, regressionCaseInput } from "./eval/cases.js";
 import { EvalRunner } from "./eval/runner.js";
@@ -86,6 +87,7 @@ export async function createApp(
   config: AppConfig,
   service: AgentService,
   glassbox?: { emitter: ObservationEmitter; store: TraceStore; summaries?: RunSummaryStore | undefined; evaluations?: EvaluationStore | undefined; jobs?: EvaluationJobWorker | undefined; logs?: RunLogStore | undefined; live?: LiveNotifier | undefined },
+  previews?: PreviewManager,
 ): Promise<FastifyInstance> {
   const tokenPricing = {
     inputPerMillion: config.glassboxPricePerMtokInput,
@@ -240,11 +242,21 @@ export async function createApp(
   app.patch("/api/agents/:id", async (request) => {
     const { id } = agentIdParams.parse(request.params);
     const body = updateAgentBody.parse(request.body);
+    // #96: a workspace switch would leave the preview serving the old directory's bind mount.
+    if (body.workspace !== undefined && previews?.get(id)) {
+      throw new HttpError(409, "Stop the preview before switching workspaces — the container has the current one mounted");
+    }
     return { agent: await service.updateAgent(id, body) };
   });
 
   app.delete("/api/agents/:id", async (request) => {
     const { id } = agentIdParams.parse(request.params);
+    // #96: deleting the Agent archives the workspace out from under the preview's mount — stop it
+    // first, but only once the Agent is known to exist (a bad id must stay a plain 404). A stop the
+    // engine cannot confirm throws 502 and aborts the delete: archiving under a live mount is the
+    // exact hazard the stop prevents.
+    service.getAgent(id);
+    await previews?.stop(id, "agent_deleted");
     return service.deleteAgent(id);
   });
 
@@ -317,8 +329,48 @@ export async function createApp(
   app.post("/api/agents/:id/workspace/reset", async (request) => {
     const { id } = agentIdParams.parse(request.params);
     const body = z.object({ forgetThread: z.boolean().optional() }).parse(request.body ?? {});
+    // #96: reset archives the directory the preview container has bind-mounted.
+    if (previews?.get(id)) {
+      throw new HttpError(409, "Stop the preview before resetting this workspace — the container has it mounted");
+    }
     return service.resetAgentWorkspace(id, body);
   });
+
+  // #96: workspace preview — one long-lived hardened container per Agent, publishing a loopback
+  // port from PREVIEW_PORT_RANGE. Started/stopped edges are observed as runtime.preview.* events;
+  // the manager enforces the command allow-list, the port range and the TTL.
+  if (previews) {
+    const previewBody = z.object({ command: z.enum(["vite", "static"]).default("vite") });
+    app.post("/api/agents/:id/preview", async (request, reply) => {
+      const { id } = agentIdParams.parse(request.params);
+      const body = previewBody.parse(request.body ?? {});
+      const agent = service.getAgent(id);
+      if (config.runtimeProvider !== "container") {
+        throw new HttpError(409, "Workspace preview needs the container runtime (RUNTIME_PROVIDER=container)");
+      }
+      if (agent.status === "busy") {
+        throw new HttpError(409, "A run is in progress — the workspace is mounted in the sandbox. Stop the run first.");
+      }
+      // Deliberately one-directional: a Run may start while a preview serves (the preview mount is
+      // read-only, and watching an Agent iterate on a served page is the point of the feature).
+      const preview = await previews.start(agent, body.command);
+      return reply.code(201).send({ preview });
+    });
+
+    app.get("/api/agents/:id/preview", async (request) => {
+      const { id } = agentIdParams.parse(request.params);
+      service.getAgent(id);
+      return { preview: (await previews.status(id)) ?? null };
+    });
+
+    app.delete("/api/agents/:id/preview", async (request) => {
+      const { id } = agentIdParams.parse(request.params);
+      service.getAgent(id);
+      const preview = await previews.stop(id, "user_request");
+      if (!preview) throw new HttpError(404, "No preview is running for this Agent");
+      return { preview };
+    });
+  }
 
   app.get("/api/agents/:id/messages", async (request) => {
     const { id } = agentIdParams.parse(request.params);

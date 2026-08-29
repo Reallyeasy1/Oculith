@@ -124,6 +124,22 @@ export interface AgentRun {
   currentActivity?: RunActivity | undefined;
 }
 
+/** #96: allow-listed preview commands — the API accepts these two names, never a command line. */
+export type PreviewCommand = "vite" | "static";
+
+/** #96: one long-lived hardened container serving the Agent's workspace on a published loopback port.
+ * In-process state only (a restart removes the container), so it never enters the Database. */
+export interface WorkspacePreview {
+  previewId: string;
+  agentId: string;
+  command: PreviewCommand;
+  port: number;
+  url: string;
+  containerName: string;
+  startedAt: string;
+  expiresAt: string;
+}
+
 export interface RegressionCase {
   id: string;
   name: string;
