@@ -677,7 +677,7 @@ describe("GlassBox control-plane adapter", () => {
       override async run(): Promise<RunnerResult> { throw new Error("boom " + secret); }
     })());
     const lines: string[] = [];
-    service.setLogger({ child: () => ({ info: (message) => { lines.push(message); }, error: (detail, message) => { lines.push(JSON.stringify(detail) + " " + message); } }) });
+    service.setLogger({ child: () => ({ info: (message) => { lines.push(message); }, warn: (message) => { lines.push(message); }, error: (detail, message) => { lines.push(JSON.stringify(detail) + " " + message); } }) });
     const agent = await service.createAgent({ name: "leaky" });
     const run = (await service.sendMessage(agent.id, "go")).run;
     expect((await settle(service, run.id)).status).toBe("failed");
@@ -760,16 +760,26 @@ describe("GlassBox control-plane adapter", () => {
     );
   });
 
-  it("logs a cancel with its duration at error level (#232)", async () => {
+  it("logs a cancel with its duration at warn on both sinks — a user stop is not a failure (#243)", async () => {
     const { service, runLogs } = await makeTraced(new (class extends FakeRunner {
       override async run(): Promise<RunnerResult> { throw new RunCancelledError(); }
     })());
+    const pinoLines: string[] = [];
+    service.setLogger({ child: () => ({
+      info: (message) => { pinoLines.push("info " + message); },
+      warn: (message) => { pinoLines.push("warn " + message); },
+      error: (detail, message) => { pinoLines.push("error " + message); },
+    }) });
     const agent = await service.createAgent({ name: "cancelled" });
     const { run } = await service.sendMessage(agent.id, "go");
     expect((await settle(service, run.id)).status).toBe("cancelled");
     await runLogs.flush();
-    const { lines } = await runLogs.readRun(run.id, { level: "error", limit: 100 });
-    expect(lines.map((line) => line.msg).find((message) => message.startsWith("Run cancelled"))).toMatch(/^Run cancelled after \d+s$/);
+    const warns = await runLogs.readRun(run.id, { level: "warn", limit: 100 });
+    expect(warns.lines.map((line) => line.msg).find((message) => message.startsWith("Run cancelled"))).toMatch(/^Run cancelled after \d+s$/);
+    // The UI's error filter must not surface a cancel as a failure, and the pino sibling agrees.
+    const errors = await runLogs.readRun(run.id, { level: "error", limit: 100 });
+    expect(errors.lines).toEqual([]);
+    expect(pinoLines.find((line) => line.includes("Run cancelled"))).toMatch(/^warn Run cancelled after \d+s$/);
   });
 
   it("observes workspace path changes without storing file contents", async () => {
