@@ -49,7 +49,9 @@ export interface TraceStore {
 
 export function shrinkToCap(event: ObservationEvent): ObservationEvent {
   if (Buffer.byteLength(JSON.stringify(event), "utf8") <= TRACE_CAPS.maxEventBytes) return event;
-  const out: ObservationEvent = { ...event, attributes: {}, privacy: { ...event.privacy, redacted: true, reason: "event_truncated" } };
+  // A size cap is a truncation, not a redaction: keep the redaction pass's own flag so the UI's
+  // "redacted" badge never fires for a merely oversized event (#54); `reason` records the truncation.
+  const out: ObservationEvent = { ...event, attributes: {}, privacy: { ...event.privacy, reason: "event_truncated" } };
   delete out.summary;
   return out;
 }
@@ -65,9 +67,14 @@ export abstract class BaseTraceStore implements TraceStore {
   // serialises admit->persist->track so concurrent appends to one run can't both pass the cap check.
   private readonly queues = new Map<string, Promise<void>>();
 
+  protected readonly log?: TraceStoreLog | undefined;
+
   /** `log` surfaces silently dropped records: without it a schemaVersion bump would empty every trace
-   * and read as an empty history rather than as a migration the operator still has to do. */
-  constructor(protected readonly log?: TraceStoreLog | undefined) {}
+   * and read as an empty history rather than as a migration the operator still has to do.
+   * Wrapped so a throwing callback never becomes a second failure on the append/read path. */
+  constructor(log?: TraceStoreLog | undefined) {
+    this.log = log ? (message, meta) => { try { log(message, meta); } catch { /* swallowed by design */ } } : undefined;
+  }
 
   abstract initialize(): Promise<void>;
   protected abstract persist(event: ObservationEvent, line: string): Promise<void>;
@@ -117,8 +124,15 @@ export abstract class BaseTraceStore implements TraceStore {
       this.track(admitted, Buffer.byteLength(line, "utf8"));
       result = { stored: true };
     });
-    this.queues.set(event.runId, operation.catch(() => undefined));
+    const tracked = operation.catch(() => undefined);
+    this.queues.set(event.runId, tracked);
     await operation;
+    // A terminal Run stops appending: drop its settled queue entry so a long-lived process doesn't keep
+    // one per finished Run (#54). Only when the map still holds OUR promise (a concurrent append may have
+    // chained a newer one); a late append simply recreates the entry.
+    if (this.queues.get(event.runId) === tracked && (this.index.get(event.runId)?.status ?? "running") !== "running") {
+      this.queues.delete(event.runId);
+    }
     return result;
   }
   runIdForTrace(traceId: string): string | undefined { return this.traceToRun.get(traceId); }
