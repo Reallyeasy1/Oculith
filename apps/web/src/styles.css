@@ -424,9 +424,20 @@ button {
   margin: 0 auto 18px;
   min-height: 78px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 24px;
+}
+
+/* #201: the title block must shrink below its content (the workspace path is one
+   unbreakable token) or the actions get pushed past the viewport on laptops. */
+.agent-header > div:first-child {
+  min-width: 0;
+}
+
+.agent-header code {
+  overflow-wrap: anywhere;
 }
 
 .agent-header h1,
@@ -1031,7 +1042,12 @@ textarea:focus {
     padding: 2px 9px 24px;
   }
 
-  .brand > div:last-child,
+  /* #201: hide the brand text outright — font-size: 0 was overridden by the
+     explicit sizes on .brand strong/span, leaving clipped fragments. */
+  .brand > div:last-child {
+    display: none;
+  }
+
   .create-button:not(:focus) {
     font-size: 0;
   }
