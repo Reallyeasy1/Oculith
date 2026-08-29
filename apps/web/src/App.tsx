@@ -416,10 +416,9 @@ export default function App() {
         await api.stopPreview(selected.id);
         setPreview(null);
       } else {
-        // #335: the UI offers vite previews only — a real local install serving the project's own
-        // config. The static dist/ server stays API-only (POST with command "static").
+        // #335: serve what the workspace actually has — vite when installed, else the built dist/.
         const agentId = selected.id;
-        setPreview((await api.startPreview(agentId, "vite")).preview);
+        setPreview((await api.startPreview(agentId, previewServable?.vite ? "vite" : "static")).preview);
         // A container can die right after start (--rm erases it); re-check shortly so a dead
         // preview never keeps a "running" header. The server closes it honestly on observation.
         window.setTimeout(() => {
@@ -863,7 +862,7 @@ export default function App() {
                     Collapse Playground
                   </button>
                 )}
-                {previewSupported && !preview && previewServable?.vite && (
+                {previewSupported && !preview && (previewServable?.vite || previewServable?.static) && (
                   <button
                     className="button button-ghost"
                     onClick={togglePreview}
