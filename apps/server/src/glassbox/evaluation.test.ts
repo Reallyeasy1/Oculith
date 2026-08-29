@@ -104,6 +104,23 @@ describe("JsonEvaluationStore", () => {
     expect(mutations).toBe(0);
   });
 
+  it("re-syncs a seeded rubric that drifted from the code at boot (#193)", async () => {
+    const { json, summaries } = await setup();
+    await json.mutate((database) => {
+      database.evaluatorDefinitions.find((item) => item.id === "safety" && item.version === 1)!.rubric = "an older build's wording";
+    });
+    const reopened = new JsonEvaluationStore(json, summaries);
+    await reopened.initialize();
+    const definition = await reopened.getDefinition("safety", 1);
+    expect(definition?.rubric).toBe(SEEDED_EVALUATORS.find((seed) => seed.id === "safety")!.rubric);
+    // Only the platform-owned seed record is touched: still one version, nothing new created.
+    expect((await reopened.listDefinitions()).filter((item) => item.id === "safety")).toHaveLength(1);
+  });
+
+  it("keeps every seeded rubric inside the catalogue table's 120-char clamp", () => {
+    for (const seed of SEEDED_EVALUATORS) expect(seed.rubric.length).toBeLessThanOrEqual(120);
+  });
+
   it("bounds stored result history: superseded rows evict before any current verdict (#213)", async () => {
     const { json, summaries, store } = await setup(undefined, undefined, 3);
     await addSummary(summaries, "run-1", "agent-a", "2026-08-28T01:00:00.000Z");
