@@ -588,6 +588,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
               ))}
             </div>
             {caseError && <div className="error-banner" role="alert">{caseError}</div>}
+            {includedAssertions.length === 0 && <p className="form-help" role="status">Include at least one check — a case with no checks cannot assert anything.</p>}
             <div className="modal-footer">
               <button type="button" className="button button-ghost" onClick={() => setShowSaveCase(false)} disabled={savingCase}>Cancel</button>
               <button className="button button-primary" disabled={savingCase || !caseName.trim() || includedAssertions.length === 0}>{savingCase ? "Saving…" : "Save regression case"}</button>

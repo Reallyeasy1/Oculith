@@ -185,9 +185,12 @@ export interface VisibleRow {
  * ponytail: periods 1–2 only; extend PERIODS if a real trace ever repeats a longer window.
  */
 export function coalesceErrorRows(rows: VisibleRow[]): VisibleRow[] {
-  const collapsible = (row: VisibleRow) => row.span.error?.message !== undefined && !row.hasChildren;
+  // #341 UAT: failed rows without an error payload (policy spans) are collapsible too, and rows only
+  // fold when their argument0 matches — different failing commands must never share one ×N label.
+  const collapsible = (row: VisibleRow) => (isFailed(row.span.status) || row.span.error !== undefined) && !row.hasChildren;
   const same = (a: VisibleRow, b: VisibleRow) =>
-    a.span.name === b.span.name && a.span.depth === b.span.depth && a.span.error?.message === b.span.error?.message;
+    a.span.name === b.span.name && a.span.depth === b.span.depth && a.span.error?.message === b.span.error?.message &&
+    a.span.attributes.argument0 === b.span.attributes.argument0;
   const PERIODS = [1, 2];
   const out: VisibleRow[] = [];
   let index = 0;
@@ -248,7 +251,7 @@ export interface TimelineTick {
   percent: number;
 }
 
-/** Four to six human-scale ticks, always including the exact Run end. */
+/** Three to six human-scale ticks (step rounding can leave three), always including the exact Run end. */
 export function timelineTicks(total: number | undefined): TimelineTick[] {
   if (!total || !Number.isFinite(total) || total <= 0) return [];
   const rawStep = total / 4;

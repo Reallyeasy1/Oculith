@@ -942,7 +942,7 @@ export default function App() {
                     aria-describedby="workspace-help-settings"
                     value={form.workspace}
                     onChange={(event) => setForm({ ...form, workspace: event.target.value })}
-                    pattern="[a-z0-9][a-z0-9._-]{0,63}"
+                    pattern="[a-z0-9][a-z0-9._\-]{0,63}"
                     required
                   />
                 </label>
@@ -1293,7 +1293,7 @@ export default function App() {
                 placeholder="Leave blank for a managed workspace"
                 value={form.workspace}
                 onChange={(event) => setForm({ ...form, workspace: event.target.value })}
-                pattern="[a-z0-9][a-z0-9._-]{0,63}"
+                pattern="[a-z0-9][a-z0-9._\-]{0,63}"
               />
             </label>
             <datalist id="workspace-names-create">

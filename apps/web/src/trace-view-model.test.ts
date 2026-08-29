@@ -233,6 +233,24 @@ describe("trace-view-model", () => {
     expect(run4.map((r) => [r.span.spanId, r.repeat])).toEqual([["a1", 4]]);
   });
 
+  it("never folds different failing commands and accepts payload-less failed policy rows (#341 UAT)", () => {
+    const cmd = (id: string, argument0: string): VisibleRow => ({
+      span: span(id, { name: "shell:powershell.exe", depth: 2, attributes: { argument0 }, error: { type: "E", message: "exit code 1" } }),
+      hasChildren: false, expanded: false, context: false,
+    });
+    // git/npm/node all fail with the same message — same name, different argument0: no ×N fold.
+    const distinct = coalesceErrorRows([cmd("g", "git"), cmd("n", "npm"), cmd("d", "node")]);
+    expect(distinct.map((r) => [r.span.spanId, r.repeat ?? 1])).toEqual([["g", 1], ["n", 1], ["d", 1]]);
+
+    // A policy span with status error but no error payload still participates in a pair fold.
+    const policy = (id: string): VisibleRow => ({
+      span: span(id, { name: "policy.denied", depth: 2, status: "error" }),
+      hasChildren: false, expanded: false, context: false,
+    });
+    const pairs = [cmd("t0", "npm"), policy("p0"), cmd("t1", "npm"), policy("p1")];
+    expect(coalesceErrorRows(pairs).map((r) => [r.span.spanId, r.repeat])).toEqual([["t0", 2], ["p0", 2]]);
+  });
+
   it("renders incomplete spans to the timeline end and zero-duration spans as instants", () => {
     const incomplete = span("open", { startedAt: at(400), durationMs: 100, incomplete: true });
     expect(barGeometry(incomplete, view)).toMatchObject({ left: 40, width: 60, openEnded: true, instant: false });

@@ -202,6 +202,9 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
     if (!confirmDiscardEdits()) return; // #341: runEdit's refresh drops a dirty editor
     const checked = checkNewFilePath(newFilePath ?? "");
     if ("error" in checked) { setError(checked.error); return; }
+    // UAT: "New file" over an existing path silently truncated it to 0 bytes — refuse instead.
+    const exists = await api.readWorkspaceFile(agentId, checked.path).then(() => true, () => false);
+    if (exists) { setError(checked.path + " already exists — select it in the tree to edit it."); return; }
     const created = await runEdit(async () => {
       await api.writeWorkspaceFile(agentId, { path: checked.path, content: "", encoding: "utf8" });
     });
