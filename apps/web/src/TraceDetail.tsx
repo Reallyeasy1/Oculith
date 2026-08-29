@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type { Assertion, AuditRow, EvaluationResult, ObservationEvent, RunListItem, RunLogLine, Span, TraceView } from "./types";
-import { evaluatorLabel, metadataSummary } from "./eval-view-model";
+import { evaluatorLabel, metadataParts } from "./eval-view-model";
 import { REPORTED_FAILURE_HINT, STATUS_ICON, collapseRequestId, errorHead, formatClock, formatDuration, formatRunDuration, formatUsage, pluralize, workspaceLabel } from "./runs-view-model";
 import {
   CATEGORIES,
@@ -376,20 +376,25 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
         <section className="trace-evaluations" aria-labelledby="trace-evaluations-heading">
           <h3 id="trace-evaluations-heading">Evaluation</h3>
           <ul>
-            {evaluations.map((result) => (
-              <li key={evaluatorLabel(result)}>
-                <span className={"badge " + (result.passed ? "" : "badge-warn")}>{result.passed ? "PASS" : "FAIL"}</span>
-                <code>{evaluatorLabel(result)}</code>
-                {result.score !== undefined && <span>score {result.score}</span>}
-                {result.explanation && <span className="trace-muted">{result.explanation}</span>}
-                {metadataSummary(result.metadata) && <span className="trace-muted">{metadataSummary(result.metadata)}</span>}
-                {result.evidenceEventIds.map((eventId, index) => (
-                  <button key={eventId} type="button" className="evidence-link" onClick={() => openEvidenceEvent(eventId)}>
-                    evidence{result.evidenceEventIds.length > 1 ? " " + (index + 1) : ""}
-                  </button>
-                ))}
-              </li>
-            ))}
+            {evaluations.map((result) => {
+              const meta = metadataParts(result);
+              return (
+                <li key={evaluatorLabel(result)}>
+                  <span className={"badge " + (result.passed ? "badge-pass" : "badge-fail")}>{result.passed ? "PASS" : "FAIL"}</span>
+                  <code>{evaluatorLabel(result)}</code>
+                  <span className="eval-message">
+                    {result.score !== undefined && <span>score {result.score}</span>}
+                    {result.explanation && <span className="trace-muted">{result.explanation}</span>}
+                    {meta.length > 0 && (
+                      <span className="trace-muted eval-meta">
+                        {meta.map((part) => <span key={part.text} title={part.title}>{part.text}</span>)}
+                      </span>
+                    )}
+                  </span>
+                  <EvidenceLinks ids={result.evidenceEventIds} onOpen={openEvidenceEvent} />
+                </li>
+              );
+            })}
           </ul>
         </section>
       )}
@@ -597,6 +602,29 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
         </div>
       )}
     </section>
+  );
+}
+
+/** #346: evaluation rows can carry 14–25 evidence links; show the first few and expand on demand. */
+const EVIDENCE_PREVIEW = 3;
+
+function EvidenceLinks({ ids, onOpen }: { ids: string[]; onOpen: (eventId: string) => void }) {
+  const [expanded, setExpanded] = useState(false);
+  if (ids.length === 0) return null;
+  const visible = expanded ? ids : ids.slice(0, EVIDENCE_PREVIEW);
+  return (
+    <span className="eval-evidence">
+      {visible.map((eventId, index) => (
+        <button key={eventId} type="button" className="evidence-link" onClick={() => onOpen(eventId)}>
+          evidence{ids.length > 1 ? " " + (index + 1) : ""}
+        </button>
+      ))}
+      {ids.length > EVIDENCE_PREVIEW && (
+        <button type="button" className="evidence-link evidence-more" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
+          {expanded ? "show fewer" : `+${ids.length - EVIDENCE_PREVIEW} more`}
+        </button>
+      )}
+    </span>
   );
 }
 

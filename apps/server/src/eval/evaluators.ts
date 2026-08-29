@@ -84,7 +84,15 @@ export async function evaluate(assertion: Assertion, view: TraceView, context: E
     }
     case "expected_tool": {
       const events = toolEvents(view).filter((event) => toolMatches(event, assertion.program));
-      return result(assertion.type, events.length > 0, assertion.program, events[0]?.name ?? null, events.map((event) => event.eventId), events.length > 0 ? `Observed tool ${assertion.program}.` : `Expected tool ${assertion.program} was not observed.`);
+      const first = events[0];
+      // #346: the event name alone is the wrapper shell ("shell:powershell.exe") on wrapped runtimes,
+      // which contradicts the "Observed tool npm." message. Append the matched command (argument0,
+      // #283) so `observed` names what actually satisfied the assertion; the wrapper identity stays.
+      const argument0 = typeof first?.attributes.argument0 === "string" ? first.attributes.argument0 : "";
+      const observed = first
+        ? (argument0 && !first.name.toLowerCase().includes(argument0.toLowerCase()) ? `${first.name} ${argument0}` : first.name)
+        : null;
+      return result(assertion.type, events.length > 0, assertion.program, observed, events.map((event) => event.eventId), events.length > 0 ? `Observed tool ${assertion.program}.` : `Expected tool ${assertion.program} was not observed.`);
     }
     case "max_tool_calls": {
       const events = toolEvents(view);
