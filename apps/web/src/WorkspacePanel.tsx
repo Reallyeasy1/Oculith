@@ -152,7 +152,17 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
   };
 
   const refresh = () => {
-    setPreview(null);
+    // #344: keep a non-dirty preview open across a refresh by re-fetching it (a dirty one is only
+    // reached here after confirmDiscardEdits, and stays dropped). Gone-on-refetch closes silently.
+    const keep = preview !== null && (editText === null || editText === preview.content) ? preview.path : null;
+    if (keep) {
+      api.readWorkspaceFile(agentId, keep).then(
+        (file) => setPreview((current) => (current?.path === keep ? file : current)),
+        () => setPreview((current) => (current?.path === keep ? null : current)),
+      );
+    } else {
+      setPreview(null);
+    }
     setEditText(null);
     void loadListing("");
     for (const path of expanded) if (listings.has(path)) void loadListing(path);
@@ -411,6 +421,14 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
               <textarea
                 value={editText}
                 onChange={(event) => setEditText(event.target.value)}
+                // #344: Escape in the editor routes through the same guarded close as everywhere
+                // else; stopPropagation keeps the panel-level Escape from firing a second time.
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.stopPropagation();
+                    closePreview();
+                  }
+                }}
                 rows={16}
                 spellCheck={false}
                 aria-label={"Edit " + preview.path}

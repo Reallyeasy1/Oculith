@@ -42,6 +42,15 @@ async function prepareUpload(
 ): Promise<{ relative: string; absolute: string; buffer: Buffer }> {
   const { relative, absolute } = await resolveWorkspacePath(root, upload.path);
   if (relative === "") throw new WorkspaceEditError("Path names the workspace root, not a file");
+  // resolveWorkspacePath silently collapses "a//b", "dir/" and "   " — fine for reads, but a write
+  // must not invent a file the client didn't clearly name (#344). Checked after the path proof so
+  // absolute/`..` inputs keep their WorkspacePathError.
+  if (/[\\/]\s*$/.test(upload.path)) {
+    throw new WorkspaceEditError("Path must not end with a slash — it names a file, not a directory");
+  }
+  if (upload.path.split(/[\\/]/).some((segment) => segment.trim() === "")) {
+    throw new WorkspaceEditError("Path contains an empty or whitespace-only segment");
+  }
   if (isPlatformFile(relative)) {
     throw new WorkspaceEditError(relative + " is platform-managed — edit the Agent instead");
   }
@@ -80,7 +89,17 @@ async function writePrepared(prepared: { relative: string; absolute: string; buf
     if (error instanceof WorkspaceEditError) throw error;
     // ENOENT: new file — fine. Anything else surfaces from writeFile below with a real path attached.
   }
-  await mkdir(path.dirname(prepared.absolute), { recursive: true });
+  try {
+    await mkdir(path.dirname(prepared.absolute), { recursive: true });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    // A parent segment is an existing file — EEXIST on Windows, ENOTDIR on Linux. Name the relative
+    // path; the raw errno message would leak the server's absolute workspace path (#344).
+    if (code === "EEXIST" || code === "ENOTDIR") {
+      throw new WorkspaceEditError(path.posix.dirname(prepared.relative) + " is not a directory");
+    }
+    throw error;
+  }
   await writeFile(prepared.absolute, prepared.buffer);
   return { path: prepared.relative, bytes: prepared.buffer.length };
 }
