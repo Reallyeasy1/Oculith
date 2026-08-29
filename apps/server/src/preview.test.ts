@@ -37,12 +37,16 @@ class FakeEngine implements PreviewEngine {
   psOutput = "";
   inspectOutput = "true\n";
   failRm: Error | undefined;
+  failVersion: Error | undefined;
+  failImageInspect: Error | undefined;
   async exec(args: string[]): Promise<{ stdout: string; stderr: string }> {
     this.calls.push(args);
     if (args[0] === "run") this.onRun?.(args);
     if (args[0] === "ps") return { stdout: this.psOutput, stderr: "" };
     if (args[0] === "inspect") return { stdout: this.inspectOutput, stderr: "" };
     if (args[0] === "rm" && this.failRm) throw this.failRm;
+    if (args[0] === "version" && this.failVersion) throw this.failVersion;
+    if (args[0] === "image" && this.failImageInspect) throw this.failImageInspect;
     return { stdout: "", stderr: "" };
   }
   runsFor(subcommand: string): string[][] {
@@ -186,12 +190,13 @@ describe("PreviewManager lifecycle", () => {
     expect(previews.get("agent-1")).toBeUndefined();
   });
 
-  it("requires dist/ for the static command", async () => {
+  it("requires a built dist/index.html for the static command", async () => {
     const { previews, root } = await makeHarness();
     const workspace = path.join(root, "workspaces", "static-ws");
-    await mkdir(workspace, { recursive: true });
-    await expect(previews.start({ id: "agent-1", workspacePath: workspace }, "static")).rejects.toMatchObject({ statusCode: 400 });
     await mkdir(path.join(workspace, "dist"), { recursive: true });
+    await expect(previews.start({ id: "agent-1", workspacePath: workspace }, "static")).rejects.toMatchObject({ statusCode: 400 });
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(path.join(workspace, "dist", "index.html"), "<!doctype html>\n");
     const preview = await previews.start({ id: "agent-1", workspacePath: workspace }, "static");
     expect(preview.command).toBe("static");
   });
@@ -343,7 +348,7 @@ describe("preview routes", () => {
 
     const missing = await app.inject({ method: "GET", url: "/api/agents/" + agent.id + "/preview" });
     expect(missing.statusCode).toBe(200);
-    expect(missing.json()).toEqual({ preview: null });
+    expect(missing.json()).toEqual({ preview: null, servable: { vite: false, static: false } });
 
     const created = await app.inject({ method: "POST", url: "/api/agents/" + agent.id + "/preview", payload: {} });
     expect(created.statusCode).toBe(201);
@@ -363,7 +368,7 @@ describe("preview routes", () => {
     await app.close();
   });
 
-  it("validates the command and refuses outside the container provider", async () => {
+  it("validates the command and refuses when the container engine is unavailable", async () => {
     const harness = await makeHarness();
     const app = await createApp(harness.config, harness.service, undefined, harness.previews);
     const agent = await startedAgent(harness);
@@ -371,11 +376,24 @@ describe("preview routes", () => {
     expect(bad.statusCode).toBe(400);
     await app.close();
 
+    // #335: availability is about the engine, not the Codex provider — a broken engine is a 409
+    // in any provider mode…
+    const broken = await makeHarness();
+    broken.engine.failVersion = new Error("Cannot connect to the Docker daemon");
+    const brokenApp = await createApp(broken.config, broken.service, undefined, broken.previews);
+    const brokenAgent = await broken.service.createAgent({ name: "Broken" });
+    const refused = await brokenApp.inject({ method: "POST", url: "/api/agents/" + brokenAgent.id + "/preview", payload: {} });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().error).toMatch(/container engine/);
+    await brokenApp.close();
+
+    // …and a healthy engine serves previews even when Codex itself runs as a local process.
     const local = await makeHarness({ RUNTIME_PROVIDER: "local-process" });
     const localApp = await createApp(local.config, local.service, undefined, local.previews);
     const localAgent = await local.service.createAgent({ name: "Local" });
-    const refused = await localApp.inject({ method: "POST", url: "/api/agents/" + localAgent.id + "/preview", payload: {} });
-    expect(refused.statusCode).toBe(409);
+    const created = await localApp.inject({ method: "POST", url: "/api/agents/" + localAgent.id + "/preview", payload: {} });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().preview).toMatchObject({ command: "vite", port: 5180 });
     await localApp.close();
   });
 
@@ -425,5 +443,106 @@ describe("preview routes", () => {
     expect(harness.previews.get(agent.id)).toBeUndefined();
     expect(harness.engine.runsFor("rm").length).toBeGreaterThan(0);
     await app.close();
+  });
+});
+
+describe("preview servability (#335)", () => {
+  it("reports what the workspace can serve: local vite install and a built web dist/", async () => {
+    const { previews, root } = await makeHarness();
+    const { writeFile: write } = await import("node:fs/promises");
+    const workspace = path.join(root, "workspaces", "servable-ws");
+    await mkdir(workspace, { recursive: true });
+    await expect(previews.servable(workspace)).resolves.toEqual({ vite: false, static: false });
+
+    // A dist/ of compiled JS (a Node CLI's tsc output) is not a servable page — the static
+    // server would answer "Not found" at /. Only dist/index.html makes it a site.
+    await mkdir(path.join(workspace, "dist"), { recursive: true });
+    await write(path.join(workspace, "dist", "main.js"), "console.log(1)\n");
+    await expect(previews.servable(workspace)).resolves.toEqual({ vite: false, static: false });
+
+    await write(path.join(workspace, "dist", "index.html"), "<!doctype html>\n");
+    await expect(previews.servable(workspace)).resolves.toEqual({ vite: false, static: true });
+
+    await mkdir(path.join(workspace, "node_modules", ".bin"), { recursive: true });
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(path.join(workspace, "node_modules", ".bin", "vite"), "#!/bin/sh\n");
+    await expect(previews.servable(workspace)).resolves.toEqual({ vite: true, static: true });
+  });
+
+  it("does not count symlinks escaping the workspace — the container mount cannot follow them", async () => {
+    const { previews, root } = await makeHarness();
+    const outside = path.join(root, "outside");
+    const workspace = path.join(root, "workspaces", "symlinked-ws");
+    await mkdir(path.join(outside, ".bin"), { recursive: true });
+    await mkdir(path.join(outside, "dist"), { recursive: true });
+    await mkdir(path.join(workspace, "node_modules", ".bin"), { recursive: true });
+    const { writeFile, symlink } = await import("node:fs/promises");
+    await writeFile(path.join(outside, "dist", "index.html"), "<!doctype html>\n");
+    await writeFile(path.join(outside, ".bin", "vite"), "#!/bin/sh\n");
+    // The failure seen live: an agent "installed" vite by symlinking a parent repo's binary.
+    await symlink(path.join(outside, ".bin", "vite"), path.join(workspace, "node_modules", ".bin", "vite"));
+    await symlink(path.join(outside, "dist"), path.join(workspace, "dist"));
+    await expect(previews.servable(workspace)).resolves.toEqual({ vite: false, static: false });
+
+    // A relative symlink staying inside the workspace (npm's own layout) still counts.
+    const npmWorkspace = path.join(root, "workspaces", "npm-ws");
+    await mkdir(path.join(npmWorkspace, "node_modules", "vite", "bin"), { recursive: true });
+    await mkdir(path.join(npmWorkspace, "node_modules", ".bin"), { recursive: true });
+    await writeFile(path.join(npmWorkspace, "node_modules", "vite", "bin", "vite.js"), "// cli\n");
+    await symlink(path.join("..", "vite", "bin", "vite.js"), path.join(npmWorkspace, "node_modules", ".bin", "vite"));
+    await expect(previews.servable(npmWorkspace)).resolves.toEqual({ vite: true, static: false });
+  });
+
+  it("GET /api/agents/:id/preview carries servability so the UI only offers what can serve", async () => {
+    const harness = await makeHarness();
+    const app = await createApp(harness.config, harness.service, undefined, harness.previews);
+    const agent = await harness.service.createAgent({ name: "Fresh" });
+
+    const fresh = await app.inject({ method: "GET", url: "/api/agents/" + agent.id + "/preview" });
+    expect(fresh.json()).toEqual({ preview: null, servable: { vite: false, static: false } });
+
+    await mkdir(path.join(agent.workspacePath, "dist"), { recursive: true });
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(path.join(agent.workspacePath, "dist", "index.html"), "<!doctype html>\n");
+    const built = await app.inject({ method: "GET", url: "/api/agents/" + agent.id + "/preview" });
+    expect(built.json().servable).toEqual({ vite: false, static: true });
+    await app.close();
+  });
+});
+
+describe("preview availability (#335)", () => {
+  it("probes the engine daemon and the runtime image", async () => {
+    const harness = await makeHarness();
+    await expect(harness.previews.isAvailable()).resolves.toBe(true);
+    expect(harness.engine.calls).toContainEqual(["version"]);
+    expect(harness.engine.calls).toContainEqual(["image", "inspect", harness.config.containerRuntimeImage]);
+  });
+
+  it("is unavailable when the daemon does not answer or the image is missing", async () => {
+    const noDaemon = await makeHarness();
+    noDaemon.engine.failVersion = new Error("Cannot connect to the Docker daemon");
+    await expect(noDaemon.previews.isAvailable()).resolves.toBe(false);
+
+    const noImage = await makeHarness();
+    noImage.engine.failImageInspect = new Error("No such image: volc-agent-runtime:local");
+    await expect(noImage.previews.isAvailable()).resolves.toBe(false);
+  });
+
+  it("GET /api/system reports previewAvailable from the probe, and false without a manager", async () => {
+    const harness = await makeHarness({ RUNTIME_PROVIDER: "local-process" });
+    const app = await createApp(harness.config, harness.service, undefined, harness.previews);
+    const healthy = await app.inject({ method: "GET", url: "/api/system" });
+    expect(healthy.statusCode).toBe(200);
+    expect(healthy.json().previewAvailable).toBe(true);
+
+    harness.engine.failVersion = new Error("daemon down");
+    const broken = await app.inject({ method: "GET", url: "/api/system" });
+    expect(broken.json().previewAvailable).toBe(false);
+    await app.close();
+
+    const bare = await createApp(harness.config, harness.service);
+    const withoutManager = await bare.inject({ method: "GET", url: "/api/system" });
+    expect(withoutManager.json().previewAvailable).toBe(false);
+    await bare.close();
   });
 });

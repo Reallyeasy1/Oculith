@@ -4,7 +4,7 @@ import { connectLive } from "./live";
 import { agentPayload, budgetFormError } from "./agent-form";
 import { showLastErrorHint } from "./agent-view-model";
 import { budgetBanner } from "./budget-view-model";
-import type { Agent, AgentBudgetReport, AgentRun, AgentRunBaseline, EvalRun, Message, RegressionCase, ReliabilityReport, RunListItem, SystemInfo, TraceView, Workspace, WorkspacePreview, WorkspaceTemplate } from "./types";
+import type { Agent, AgentBudgetReport, AgentRun, AgentRunBaseline, EvalRun, Message, PreviewServability, RegressionCase, ReliabilityReport, RunListItem, SystemInfo, TraceView, Workspace, WorkspacePreview, WorkspaceTemplate } from "./types";
 import RunsView from "./RunsView";
 import ReliabilityPanel from "./ReliabilityPanel";
 import type { ReliabilityDrill } from "./reliability-view-model";
@@ -92,6 +92,10 @@ export default function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   // #96: the selected Agent's workspace preview; container runtime only, in-process server state.
   const [preview, setPreview] = useState<WorkspacePreview | null>(null);
+  // #335: what the selected workspace can serve (local vite / built dist); null while unknown.
+  const [previewServable, setPreviewServable] = useState<PreviewServability | null>(null);
+  /** The agent whose preview state is currently loaded — gates the clear-on-switch below. */
+  const previewAgentRef = useRef<string | null>(null);
   const [templates, setTemplates] = useState<WorkspaceTemplate[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [trace, setTrace] = useState<TraceView | null>(null);
@@ -156,6 +160,7 @@ export default function App() {
     [agents, selectedId],
   );
   const selectedWorkspaceName = selected?.workspaceName ?? selected?.workspacePath.split(/[\\/]/).at(-1) ?? "";
+  const selectedStatus = selected?.status;
   // #254: messages waiting behind the active Run, refreshed with the agents list.
   const pendingMessages = selected?.pendingMessages ?? [];
   const selectedWorkspace = workspaces.find((workspace) => workspace.name === selectedWorkspaceName);
@@ -292,18 +297,31 @@ export default function App() {
       );
   }, [refreshMessages, selectedId]);
 
-  const previewSupported = system?.runtimeProvider === "container";
+  // #335: gated on the probed engine state, not the Codex provider. The server probes per
+  // request, but this page fetches /api/system once at boot — an engine started after page
+  // load shows up on reload.
+  const previewSupported = system?.previewAvailable === true;
 
   useEffect(() => {
-    setPreview(null);
+    // Clear only on an agent switch: a busy→ready refetch (below) must not blank a running
+    // preview's header for the fetch round-trip.
+    if (previewAgentRef.current !== selectedId) {
+      previewAgentRef.current = selectedId;
+      setPreview(null);
+      setPreviewServable(null);
+    }
     if (!selectedId || !previewSupported) return;
     void api
       .preview(selectedId)
       .then((result) => {
-        if (selectedIdRef.current === selectedId) setPreview(result.preview);
+        if (selectedIdRef.current !== selectedId) return;
+        setPreview(result.preview);
+        setPreviewServable(result.servable);
       })
       .catch(() => undefined); // no banner: the header simply shows no preview
-  }, [selectedId, previewSupported]);
+    // #335: selectedStatus is a dep so a Run finishing (busy → ready) re-checks servability —
+    // the build the Run just produced is what makes Preview worth offering.
+  }, [selectedId, previewSupported, selectedStatus]);
 
   useEffect(() => {
     if (selected) {
@@ -398,7 +416,24 @@ export default function App() {
         await api.stopPreview(selected.id);
         setPreview(null);
       } else {
-        setPreview((await api.startPreview(selected.id)).preview);
+        // #335: serve what the workspace actually has — vite when installed, else the built dist/.
+        const agentId = selected.id;
+        setPreview((await api.startPreview(agentId, previewServable?.vite ? "vite" : "static")).preview);
+        // A container can die right after start (--rm erases it); re-check shortly so a dead
+        // preview never keeps a "running" header. The server closes it honestly on observation.
+        window.setTimeout(() => {
+          void api
+            .preview(agentId)
+            .then((result) => {
+              if (selectedIdRef.current !== agentId) return;
+              setPreview(result.preview);
+              setPreviewServable(result.servable);
+              if (!result.preview) {
+                setError("The preview stopped right after starting — the workspace could not serve inside the runtime container.");
+              }
+            })
+            .catch(() => undefined);
+        }, 2000);
       }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -827,7 +862,7 @@ export default function App() {
                     Collapse Playground
                   </button>
                 )}
-                {previewSupported && !preview && (
+                {previewSupported && !preview && (previewServable?.vite || previewServable?.static) && (
                   <button
                     className="button button-ghost"
                     onClick={togglePreview}

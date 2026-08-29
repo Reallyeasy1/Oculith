@@ -392,6 +392,12 @@ export interface WorkspacePreview {
   expiresAt: string;
 }
 
+/** #335: what this workspace can currently serve — a local vite install and/or a built dist/. */
+export interface PreviewServability {
+  vite: boolean;
+  static: boolean;
+}
+
 export interface SystemInfo {
   modelConfigured: boolean;
   modelProvider: "ark" | "openai";
@@ -402,6 +408,8 @@ export interface SystemInfo {
   runtimeProvider: "local-process" | "container";
   containerEngine: string | null;
   runtime: string;
+  /** #335: probed per request — engine daemon reachable and the runtime image present. */
+  previewAvailable: boolean;
 }
 
 export type Assertion =

@@ -140,6 +140,12 @@ export interface WorkspacePreview {
   expiresAt: string;
 }
 
+/** #335: what this workspace can currently serve — a local vite install and/or a built dist/. */
+export interface PreviewServability {
+  vite: boolean;
+  static: boolean;
+}
+
 export interface RegressionCase {
   id: string;
   name: string;

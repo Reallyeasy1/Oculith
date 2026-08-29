@@ -8,7 +8,7 @@ function info(extra: Partial<SystemInfo> = {}): SystemInfo {
   return {
     modelConfigured: true, modelProvider: "ark", arkBaseUrl: "https://ark", arkModel: "doubao-seed",
     codexAvailable: true, codexSandboxMode: "workspace-write", runtimeProvider: "local-process",
-    containerEngine: null, runtime: "Codex CLI as local process", ...extra,
+    containerEngine: null, runtime: "Codex CLI as local process", previewAvailable: false, ...extra,
   };
 }
 
