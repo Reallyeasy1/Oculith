@@ -2074,6 +2074,27 @@ textarea:focus {
 .evidence-link { border: 0; background: transparent; padding: 0; color: inherit; cursor: pointer; text-align: left; }
 .evidence-link:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
 
+/* #174 — historical config comparison: raw deltas, redacted snapshot hashes, provenance drill-back. */
+.config-comparison { margin-top: 18px; }
+.config-comparison-controls input,
+.config-comparison-controls select { min-height: 34px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink); font: inherit; }
+.config-comparison-note { margin: 0 14px 14px; color: var(--muted); }
+.config-comparison-copy { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin: 0 14px 14px; padding: 12px 14px; border: 1px solid var(--purple); border-radius: 10px; background: var(--purple-soft); font-size: 12px; }
+.config-comparison-subheading { margin: 18px 14px 8px; font-size: 13px; }
+.config-diff-table th[scope="row"],
+.config-metrics-table th[scope="row"] { text-transform: none; letter-spacing: 0; color: var(--ink); font-size: 11px; }
+.config-diff-table code { display: block; max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
+.config-diff-table .badge { margin-left: 6px; }
+.config-changed { background: #f5f2ff; }
+.comparison-metric { width: 100%; min-width: 110px; padding: 5px 7px; border: 0; border-radius: 7px; background: transparent; color: var(--purple-dark); text-align: left; cursor: pointer; }
+.comparison-metric:hover { background: var(--purple-soft); }
+.comparison-metric:focus-visible { outline: 2px solid var(--purple); outline-offset: -2px; }
+.comparison-metric strong,
+.comparison-metric small { display: block; }
+.comparison-metric small { max-width: 240px; margin-top: 2px; color: var(--muted); white-space: normal; }
+.comparison-drill-status { display: flex; align-items: center; gap: 10px; }
+.comparison-drill-status .evidence-link { color: var(--purple-dark); text-decoration: underline; }
+
 /* Chat → trace affordances (#264): per-reply muted link and the failure bubble's View trace. */
 .message-trace { color: #96968f; font-size: 9px; }
 .message-trace:hover { text-decoration: underline; color: var(--purple); }

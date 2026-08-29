@@ -459,6 +459,8 @@ async function closeResources() {
   console.log("\n[5] restart with GLASSBOX_DEMO_FAILURE=timeout (gated fixture through the real runner)");
   await stopServer(server);
   server = await startServer({ GLASSBOX_DEMO_FAILURE: "timeout" });
+  const changedAgent = (await api("/api/agents/" + agent.id, { method: "PATCH", body: JSON.stringify({ instructions: agent.instructions + " Candidate: prefer the smallest focused edit." }) })).json().agent;
+  ok(changedAgent.instructions !== agent.instructions, "candidate instructions are stored before the second configuration Runs (#174)");
   const badRun = await runTask(agent.id, "Run the shell command `sleep 10`, wait for it to finish, then reply with the single word: pong");
   eq(badRun.run.status, "failed", "gated run failed (" + badRun.run.id + ")");
   eq(badRun.view.summary.status, "timeout", "trace status timeout");
@@ -468,7 +470,11 @@ async function closeResources() {
   eq(badListed.firstFailingStep, "codex exec", "/api/runs firstFailingStep = codex exec");
   eq(badListed.denials, badRun.view.summary.denials, "/api/runs denial count equals the trace summary (#90)");
   eq(badListed.configHash, badRun.view.summary.configHash, "/api/runs configHash equals the trace summary (#90)");
-  eq(badRun.view.summary.configHash, okRun.view.summary.configHash, "unchanged Agent hashes the same config on a new Run after the restart (#90)");
+  ok(badRun.view.summary.configHash !== okRun.view.summary.configHash, "changed instructions produce a candidate configHash for historical comparison (#174)");
+  const candidateSnapshot = badRun.run.configSnapshot;
+  eq(candidateSnapshot.containerCpuLimit, 2, "configSnapshot carries the CPU limit (#174)");
+  eq(candidateSnapshot.containerMemoryLimit, "2g", "configSnapshot carries the memory limit (#174)");
+  eq(candidateSnapshot.containerPidsLimit, 256, "configSnapshot carries the PID limit (#174)");
   const badAudit = (await api("/api/runs/" + badRun.run.id + "/audit")).json().audit;
   ok(badAudit.some((row) => row.outcome === "timeout"), "/audit includes the gated timeout evidence");
   const badEventIds = new Set(badRun.view.events.map((event) => event.eventId));
@@ -492,8 +498,32 @@ async function closeResources() {
   const leftover = execFileSync(ENGINE, ["ps", "--all", "--quiet", "--filter", "name=launchpad-" + INSTANCE], { encoding: "utf8" }).trim();
   eq(leftover, "", "no launchpad-" + INSTANCE + " container left behind");
 
+  const comparisonJudge = await api("/api/evaluation-jobs", { method: "POST", body: JSON.stringify({ evaluatorId: "task_completion", filter: { agentId: agent.id } }) });
+  eq(comparisonJudge.status, 202, "candidate task_completion job accepted for stored comparison evidence (#174)");
+  eq((await waitForEvaluationJob(comparisonJudge.json().job.id)).status, "completed", "candidate task_completion job reached completed (#174)");
+
   console.log("\n[6] UI: Timed out filter → banner → Jump lands in the drawer on the failing span");
   await openApp(page);
+  console.log("\n[6a] UI: two configSnapshots → quality deltas → provenance drill-back (#174)");
+  const configComparison = page.locator(".config-comparison");
+  await configComparison.waitFor({ timeout: 10_000 });
+  eq(await configComparison.getByLabel("Baseline configuration").inputValue(), okRun.view.summary.configHash, "oldest observed config is selected as baseline A");
+  eq(await configComparison.getByLabel("Candidate configuration").inputValue(), badRun.view.summary.configHash, "newest observed config is selected as candidate B");
+  await configComparison.getByRole("button", { name: "Compare quality" }).click();
+  const metricsTable = configComparison.locator(".config-metrics-table");
+  await metricsTable.waitFor({ timeout: 10_000 });
+  const comparisonText = (await configComparison.innerText()).toLowerCase();
+  ok(comparisonText.includes("quality drift") && comparisonText.includes("raw historical deltas"), "comparison is labelled quality drift and raw deltas");
+  ok(comparisonText.includes("task completion") && comparisonText.includes("evaluation") && comparisonText.includes("tool success") && comparisonText.includes("telemetry"), "comparison keeps evaluation and telemetry metrics visibly distinct");
+  ok(!comparisonText.includes("regression"), "historical quality view never classifies REGRESSION");
+  const changedRows = configComparison.locator(".config-diff-table tbody tr.config-changed");
+  ok((await changedRows.innerText()).includes("Instructions hash"), "configSnapshot diff highlights the changed instructions hash");
+  await metricsTable.getByRole("button", { name: "Show candidate Runs behind Task completion" }).click();
+  const drillStatus = page.locator(".comparison-drill-status");
+  await drillStatus.waitFor({ timeout: 5_000 });
+  ok((await drillStatus.innerText()).includes("1 Run"), "candidate metric drills to its exact provenance Run set");
+  eq(await page.locator(`${RUNS_TABLE} tbody tr`).count(), 1, "provenance drill leaves only the candidate Run in the table");
+  await drillStatus.getByRole("button", { name: "Clear" }).click();
   await page.locator(".runs-filters button", { hasText: "Timed out" }).click();
   eq(await page.locator(`${RUNS_TABLE} tbody tr`).count(), 1, "'Timed out' quick filter leaves exactly the gated run");
   const timeoutRow = page.locator(`${RUNS_TABLE} tbody tr`).first();

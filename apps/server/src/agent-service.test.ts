@@ -309,8 +309,16 @@ describe("Agent lifecycle", () => {
     const agent = { id: "a", name: "A", description: "", instructions: "Run tests", status: "ready", workspacePath: ".", codexThreadId: null, lastError: null, createdAt: "", updatedAt: "" } as const;
     const config = loadConfig({ NODE_ENV: "test", ARK_API_KEY: "secret", ARK_MODEL: "model" });
     const snapshot = configSnapshot(agent, config);
+    expect(snapshot).toMatchObject({
+      containerCpuLimit: 2,
+      containerMemoryLimit: "2g",
+      containerPidsLimit: 256,
+    });
     const reordered = {
       capturePolicy: snapshot.capturePolicy,
+      containerPidsLimit: snapshot.containerPidsLimit,
+      containerMemoryLimit: snapshot.containerMemoryLimit,
+      containerCpuLimit: snapshot.containerCpuLimit,
       containerRuntimeImage: snapshot.containerRuntimeImage,
       runtimeProvider: snapshot.runtimeProvider,
       codexSandboxMode: snapshot.codexSandboxMode,

@@ -17,6 +17,11 @@ export function matchesTaskOutcome(run: RunListItem, filter: TaskOutcomeFilter):
   return filter === "all" || run.taskOutcome === filter;
 }
 
+/** #174 — an absent list means no provenance drill; a present list is an exact API-provided Run set. */
+export function matchesProvenance(run: RunListItem, runIds: readonly string[] | undefined): boolean {
+  return runIds === undefined || runIds.includes(run.runId);
+}
+
 export const TASK_OUTCOME_HINT = "Task outcome: an evaluator or Eval Run verdict on whether the task succeeded — independent of whether the process completed.";
 
 /** Task column chip; `unknown` is the absence of a verdict, so it renders as no claim (—), not a chip. */

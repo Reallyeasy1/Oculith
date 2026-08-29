@@ -88,6 +88,10 @@ export interface AgentConfigSnapshot {
   codexSandboxMode: "read-only" | "workspace-write" | "danger-full-access";
   runtimeProvider: "local-process" | "container";
   containerRuntimeImage: string;
+  /** Optional for snapshots persisted before #174. */
+  containerCpuLimit?: number;
+  containerMemoryLimit?: string;
+  containerPidsLimit?: number;
   capturePolicy: CapturePolicy;
   /** sha256 of the Agent's verifyCommand; absent when none is set. */
   verifyCommand?: string;

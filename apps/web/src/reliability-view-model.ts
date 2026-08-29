@@ -29,6 +29,8 @@ export function sampledDetail(sampled: number, runs: number): string {
 export interface ReliabilityDrill {
   quick: QuickFilter;
   taskOutcome: TaskOutcomeFilter;
+  /** Exact provenance for a config-comparison cell (#174); absent for ordinary dashboard drills. */
+  runIds?: string[];
 }
 
 export interface ReliabilityTile {

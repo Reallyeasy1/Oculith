@@ -2,7 +2,7 @@
 //   npx vitest run apps/web/src/runs-view-model.test.ts
 import { describe, expect, it } from "vitest";
 import type { RunListItem, TraceStatus } from "./types";
-import { ERROR_HEAD_CHARS, collapseRequestId, errorHead, evidenceBadges, formatCost, formatRunDuration, formatUsage, liveRuns, matchesFilter, matchesTaskOutcome, needsAttention, outlierLabel, pluralize, recoveredFailures, runOutlier, SESSION_INPUT_TOKENS_ADVISORY_THRESHOLD, sessionHealth, summarizeRuns, taskOutcomeChip, taskOutcomeProvenance, workspaceLabel, workspaceOptionLabel } from "./runs-view-model";
+import { ERROR_HEAD_CHARS, collapseRequestId, errorHead, evidenceBadges, formatCost, formatRunDuration, formatUsage, liveRuns, matchesFilter, matchesProvenance, matchesTaskOutcome, needsAttention, outlierLabel, pluralize, recoveredFailures, runOutlier, SESSION_INPUT_TOKENS_ADVISORY_THRESHOLD, sessionHealth, summarizeRuns, taskOutcomeChip, taskOutcomeProvenance, workspaceLabel, workspaceOptionLabel } from "./runs-view-model";
 
 function run(status: TraceStatus, degraded = false, agentId = "a", agentName = "A", extra: Partial<RunListItem> = {}): RunListItem {
   return {
@@ -270,5 +270,13 @@ describe("taskOutcome filter + chip (#173)", () => {
       label: "recorded source",
       title: "Verdict source: unexpected:source",
     });
+  });
+});
+
+describe("provenance drill-back (#174)", () => {
+  it("shows exactly the Run ids behind a comparison cell", () => {
+    expect(matchesProvenance(run("ok", false, "a", "A", { runId: "a" }), ["a", "b"])).toBe(true);
+    expect(matchesProvenance(run("ok", false, "c", "C", { runId: "c" }), ["a", "b"])).toBe(false);
+    expect(matchesProvenance(run("ok", false, "c", "C", { runId: "c" }), undefined)).toBe(true);
   });
 });
