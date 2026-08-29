@@ -41,6 +41,11 @@ const createAgentBody = z.object({
   template: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/).optional(),
   // #253: operator-set post-run verification; the service trims it and treats "" as "clear the command".
   verifyCommand: z.string().max(500).optional(),
+  // #255: per-Agent daily budget; `null` (or no limits) clears it. Limits are counts, never content.
+  budget: z.object({
+    maxTokensPerDay: z.number().int().min(1).max(1_000_000_000_000).optional(),
+    maxEstimatedUsdPerDay: z.number().positive().max(1_000_000).optional(),
+  }).nullable().optional(),
 });
 const updateAgentBody = createAgentBody.partial().refine(
   (value) => Object.keys(value).length > 0,
@@ -183,7 +188,9 @@ export async function createApp(
 
     app.addHook("onResponse", async (request, reply) => {
       const ctx = request.glassbox;
-      // Only the accepted path has a Run to attach to; a rejected request never opened a trace.
+      // Emit only when the service published ids: the accepted path (a Run exists) and the #255 budget
+      // refusal (429), which deliberately sets ctx.runId after writing policy.denied + run.refused so
+      // this hook closes that trace. Every other rejection leaves ctx unset and never opened a trace.
       if (!ctx?.runId || !ctx.agentId) return;
       glassbox.emitter.emit({
         traceId: ctx.traceId,
@@ -238,6 +245,19 @@ export async function createApp(
   app.delete("/api/agents/:id", async (request) => {
     const { id } = agentIdParams.parse(request.params);
     return service.deleteAgent(id);
+  });
+
+  // #255: live budget status for the Agent banner — the same rolling 24 h window the pre-run gate
+  // enforces. Served even without a budget (exceeded: false) so the client needs no second probe.
+  app.get("/api/agents/:id/budget", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    const status = await service.budgetStatus(id);
+    return {
+      budget: status.budget,
+      usage: status.usage,
+      exceeded: status.denial !== undefined,
+      ...(status.denial ? { denial: status.denial } : {}),
+    };
   });
 
   app.post("/api/agents/:id/start", async (request) => {

@@ -13,7 +13,8 @@ import { createTraceContext } from "./glassbox/context.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
 import { MemoryTraceStore, type TraceStore } from "./glassbox/store.js";
 import { JsonEvaluationStore } from "./glassbox/evaluation.js";
-import { JsonRunSummaryStore, scheduleRollup } from "./glassbox/summary.js";
+import { buildTrace } from "./glassbox/query.js";
+import { JsonRunSummaryStore, scheduleRollup, summaryFromView } from "./glassbox/summary.js";
 import { RunLogStore } from "./run-log-store.js";
 
 class FakeRunner implements AgentRunner {
@@ -1222,5 +1223,193 @@ describe("per-Agent message queue (#254)", () => {
     expect(started.status).toBe("busy"); // start resumed the queue
     await expect.poll(() => service.getRuns(agent.id).find((item) => item.prompt === "waits for start")?.status).toBe("completed");
     expect(service.getAgent(agent.id).pendingMessages ?? []).toEqual([]);
+  });
+});
+
+describe("Pre-run budget gate (#255)", () => {
+  const summaryStub = (agentId: string, over: Partial<import("./glassbox/summary.js").RunSummary>): import("./glassbox/summary.js").RunSummary => ({
+    ...summaryFromView(buildTrace([], { capturePolicy: "metadata_only" })),
+    runId: "seed-" + Math.random().toString(36).slice(2), traceId: "t", agentId,
+    executionStatus: "completed", eventCount: 1,
+    startedAt: new Date(Date.now() - 60_000).toISOString(), updatedAt: new Date().toISOString(), ...over,
+  });
+
+  async function makeBudgetService(runner: AgentRunner = new FakeRunner()) {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
+    temporaryDirectories.push(root);
+    const config = loadConfig({
+      NODE_ENV: "test",
+      APP_DATA_DIR: path.join(root, "data"),
+      AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+      WORKSPACE_TEMPLATES_DIR: path.join(root, "templates"),
+      CODEX_HOME: path.join(root, "codex"),
+      ARK_API_KEY: "test-key",
+      ARK_MODEL: "ep-test",
+    });
+    const store = new JsonStore(path.join(root, "data", "db.json"));
+    const traceStore = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store: traceStore, capturePolicy: "metadata_only" });
+    const summaries = new JsonRunSummaryStore(store);
+    const service = new AgentService(
+      config, store, new WorkspaceManager(path.join(root, "workspaces"), config.workspaceTemplatesDirectory),
+      runner, emitter, undefined, undefined, summaries,
+    );
+    await service.initialize();
+    return { service, summaries, traceStore, emitter };
+  }
+
+  it("refuses an over-token-budget message with 429 and records the refusal as policy.denied evidence", async () => {
+    const { service, summaries, traceStore, emitter } = await makeBudgetService();
+    const agent = await service.createAgent({ name: "capped", budget: { maxTokensPerDay: 100 } });
+    await summaries.upsert(summaryStub(agent.id, { usage: { inputTokens: 90, outputTokens: 20 } }));
+
+    await expect(service.sendMessage(agent.id, "one more")).rejects.toMatchObject({
+      statusCode: 429, message: expect.stringMatching(/Budget exceeded.*110 tokens.*limit 100/s),
+    });
+    // The refusal never became a Run, a Message, or a busy Agent.
+    expect(service.getRuns(agent.id)).toEqual([]);
+    expect(service.getMessages(agent.id)).toEqual([]);
+    expect(service.getAgent(agent.id).status).toBe("ready");
+    // …but it is trace evidence: policy.denied with both sides of the comparison, closed by run.refused
+    // so the index is terminal (retention can evict; the rollup will ignore it).
+    await emitter.flush();
+    const entries = traceStore.listRuns();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.status).not.toBe("running");
+    const events = await traceStore.readRun(entries[0]!.runId);
+    expect(events.map((e) => e.type)).toEqual(["policy.denied", "run.refused"]);
+    expect(events[0]).toMatchObject({
+      type: "policy.denied", category: "policy", status: "error", name: "budget.pre_run_gate",
+      actorId: "server", actorType: "service",
+      attributes: { decision: "budget_exceeded", limit: "maxTokensPerDay", limitValue: 100, used: 110, windowHours: 24, runsInWindow: 1 },
+    });
+    // The live status endpoint's view agrees with the gate.
+    await expect(service.budgetStatus(agent.id)).resolves.toMatchObject({
+      denial: { limit: "maxTokensPerDay" }, usage: { totalTokens: 110, runs: 1 },
+    });
+  });
+
+  it("gates on estimated USD independently and only counts the rolling 24 h window", async () => {
+    const { service, summaries } = await makeBudgetService();
+    const agent = await service.createAgent({ name: "usd-capped", budget: { maxEstimatedUsdPerDay: 1 } });
+    // An expensive Run older than 24 h is outside the window and must not trip the gate.
+    await summaries.upsert(summaryStub(agent.id, { startedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(), estimatedCostUsd: 50 }));
+    await summaries.upsert(summaryStub(agent.id, { estimatedCostUsd: 0.4 }));
+    const first = await service.sendMessage(agent.id, "still fine");
+    expect("run" in first).toBe(true);
+    await service.waitForRun((first as { run: AgentRun }).run.id);
+
+    await summaries.upsert(summaryStub(agent.id, { estimatedCostUsd: 0.7 }));
+    await expect(service.sendMessage(agent.id, "over")).rejects.toMatchObject({
+      statusCode: 429, message: expect.stringMatching(/\$1\.1000.*limit \$1/s),
+    });
+  });
+
+  it("stores, snapshots, and clears the budget as Agent configuration", async () => {
+    const { service } = await makeBudgetService();
+    const agent = await service.createAgent({ name: "cfg", budget: { maxTokensPerDay: 500 } });
+    expect(agent.budget).toEqual({ maxTokensPerDay: 500 });
+
+    const config = loadConfig({ NODE_ENV: "test", ARK_API_KEY: "k", ARK_MODEL: "m" });
+    const withBudget = configSnapshot(agent, config);
+    expect(withBudget).toMatchObject({ budgetMaxTokensPerDay: 500 });
+    const withoutBudget = configSnapshot({ ...agent, budget: undefined }, config);
+    expect(withoutBudget.budgetMaxTokensPerDay).toBeUndefined();
+    expect(configHash(withBudget)).not.toBe(configHash(withoutBudget));
+
+    const cleared = await service.updateAgent(agent.id, { budget: null });
+    expect(cleared.budget).toBeUndefined();
+    const restored = await service.updateAgent(agent.id, { budget: { maxEstimatedUsdPerDay: 2 } });
+    expect(restored.budget).toEqual({ maxEstimatedUsdPerDay: 2 });
+  });
+
+  it("holds the queue at run end when the finishing Run's own tokens trip the cap, and startAgent resumes after the cap lifts", async () => {
+    let finish!: (result: RunnerResult) => void;
+    const runner: AgentRunner = {
+      run: () => new Promise((resolve) => { finish = resolve; }),
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const { service, summaries, traceStore, emitter } = await makeBudgetService(runner);
+    const agent = await service.createAgent({ name: "drains", budget: { maxTokensPerDay: 100 } });
+    const first = (await service.sendMessage(agent.id, "runs")) as { run: AgentRun };
+    expect(await service.sendMessage(agent.id, "queued behind")).toMatchObject({ queued: true });
+    // executeRun reaches the runner asynchronously; wait until it handed us its resolver.
+    await expect.poll(() => typeof finish).toBe("function");
+
+    // The finishing Run overshoots the cap; its rollup has not landed, so only the ride-along tokens can gate.
+    finish({ output: "done", threadId: "t", usage: { inputTokens: 150, outputTokens: 10 } });
+    await expect.poll(() => service.getRun(first.run.id).status).toBe("completed");
+    // The drain was held: the message is still pending, no second Run started, the Agent is free.
+    const held = service.getAgent(agent.id);
+    expect(held.status).toBe("ready");
+    expect(held.pendingMessages).toHaveLength(1);
+    expect(service.getRuns(agent.id)).toHaveLength(1);
+    // …and the decision is on the finished Run's own trace, not an orphan trace.
+    await emitter.flush();
+    const events = await traceStore.readRun(first.run.id);
+    expect(events.some((e) => e.type === "policy.denied" && e.name === "budget.queue_hold" && e.attributes.heldMessages === 1)).toBe(true);
+
+    // startAgent is gated too while still over budget (by now the Run's rollup has landed; this
+    // harness has no background rollup, so store what scheduleRollup would have written).
+    await summaries.upsert(summaryStub(agent.id, { runId: first.run.id, usage: { inputTokens: 150, outputTokens: 10 } }));
+    await service.stopAgent(agent.id);
+    await service.startAgent(agent.id);
+    expect(service.getAgent(agent.id).pendingMessages).toHaveLength(1);
+    expect(service.getRuns(agent.id)).toHaveLength(1);
+
+    // Raising the cap and starting again resumes the queue.
+    await service.updateAgent(agent.id, { budget: null });
+    await service.stopAgent(agent.id);
+    const previousFinish = finish;
+    const resumed = await service.startAgent(agent.id);
+    expect(resumed.status).toBe("busy");
+    await expect.poll(() => finish !== previousFinish).toBe(true);
+    finish({ output: "done", threadId: "t", usage: null });
+    await expect.poll(() => service.getRuns(agent.id).find((r) => r.prompt === "queued behind")?.status).toBe("completed");
+  });
+
+  it("fails closed with a fixed 503 when the summary store cannot be read", async () => {
+    const broken = {
+      query: async () => { throw new Error("connect ECONNREFUSED 127.0.0.1:5432 password=hunter2"); },
+      get: async () => undefined,
+      upsert: async (s: import("./glassbox/summary.js").RunSummary) => s,
+      setTaskOutcome: async () => undefined,
+    };
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
+    temporaryDirectories.push(root);
+    const config = loadConfig({
+      NODE_ENV: "test", APP_DATA_DIR: path.join(root, "data"), AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+      WORKSPACE_TEMPLATES_DIR: path.join(root, "templates"), CODEX_HOME: path.join(root, "codex"),
+      ARK_API_KEY: "test-key", ARK_MODEL: "ep-test",
+    });
+    const service = new AgentService(
+      config, new JsonStore(path.join(root, "data", "db.json")),
+      new WorkspaceManager(path.join(root, "workspaces"), config.workspaceTemplatesDirectory),
+      new FakeRunner(), new ObservationEmitter({ store: new MemoryTraceStore(), capturePolicy: "metadata_only" }),
+      undefined, undefined, broken,
+    );
+    await service.initialize();
+    const agent = await service.createAgent({ name: "store-down", budget: { maxTokensPerDay: 1 } });
+    const rejection = await service.sendMessage(agent.id, "try").catch((error) => error);
+    expect(rejection).toMatchObject({ statusCode: 503 });
+    // The driver's error text (with its embedded secret shape) must never reach the client.
+    expect(String(rejection.message)).not.toContain("hunter2");
+    expect(String(rejection.message)).not.toContain("ECONNREFUSED");
+    await expect(service.budgetStatus(agent.id)).rejects.toMatchObject({ statusCode: 503 });
+    // An Agent without a budget is unaffected by the broken store.
+    const free = await service.createAgent({ name: "no-budget" });
+    const result = await service.sendMessage(free.id, "go");
+    expect("run" in result).toBe(true);
+    await service.waitForRun((result as { run: AgentRun }).run.id);
+  });
+
+  it("does not gate an Agent without a budget even when usage is huge", async () => {
+    const { service, summaries } = await makeBudgetService();
+    const agent = await service.createAgent({ name: "uncapped" });
+    await summaries.upsert(summaryStub(agent.id, { usage: { inputTokens: 9_000_000, outputTokens: 1_000_000 } }));
+    const result = await service.sendMessage(agent.id, "go");
+    expect("run" in result).toBe(true);
+    await service.waitForRun((result as { run: AgentRun }).run.id);
   });
 });

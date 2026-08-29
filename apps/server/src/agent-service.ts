@@ -11,12 +11,15 @@ import {
   type ObservationEmitter,
   type SpanHandle,
 } from "./glassbox/emitter.js";
+import { budgetWindowStart, describeBudgetDenial, evaluateBudget, normalizeBudget, usageInWindow, type BudgetDenial, type BudgetUsage } from "./glassbox/budget.js";
 import { redactText } from "./glassbox/redact.js";
 import { capturesSummaries, newId, type TraceStatus } from "./glassbox/schema.js";
+import type { RunSummaryStore } from "./glassbox/summary.js";
 import { PostCheckRunner } from "./postcheck-runner.js";
 import { JsonStore } from "./store.js";
 import type {
   Agent,
+  AgentBudget,
   AgentConfigSnapshot,
   AgentRun,
   Database,
@@ -81,6 +84,10 @@ export function configSnapshot(agent: Agent, config: AppConfig): AgentConfigSnap
     ...(agent.verifyCommand
       ? { verifyCommand: "sha256:" + createHash("sha256").update(agent.verifyCommand).digest("hex") }
       : {}),
+    // #255: budget caps are behavior configuration — a changed cap is a config change. Spread only when
+    // set so every pre-budget snapshot keeps its hash.
+    ...(agent.budget?.maxTokensPerDay !== undefined ? { budgetMaxTokensPerDay: agent.budget.maxTokensPerDay } : {}),
+    ...(agent.budget?.maxEstimatedUsdPerDay !== undefined ? { budgetMaxEstimatedUsdPerDay: agent.budget.maxEstimatedUsdPerDay } : {}),
   };
 }
 
@@ -126,6 +133,8 @@ export class AgentService {
      * `verify` carries the verifyCommand verdict of a completed ordinary Run (#253) for the rollup to stamp. */
     private readonly onRunEnded?: ((runId: string, verify?: VerifyOutcome) => void) | undefined,
     private readonly runLogs?: RunLogStore | undefined,
+    /** Read model for the pre-run budget gate (#255); without it budgets are stored but not enforced. */
+    private readonly summaries?: RunSummaryStore | undefined,
   ) {}
 
   setLogger(logger: AppLogger): void { this.appLogger = logger; }
@@ -259,6 +268,7 @@ export class AgentService {
       workspaceManaged: input.workspace === undefined,
       ...(input.template ? { workspaceTemplate: input.template } : {}),
       ...(input.verifyCommand?.trim() ? { verifyCommand: input.verifyCommand.trim() } : {}),
+      ...(normalizeBudget(input.budget) ? { budget: normalizeBudget(input.budget) } : {}),
       codexThreadId: null,
       lastError: null,
       createdAt: timestamp,
@@ -296,6 +306,11 @@ export class AgentService {
         const command = input.verifyCommand.trim();
         if (command) agent.verifyCommand = command;
         else delete agent.verifyCommand;
+      }
+      if (input.budget !== undefined) {
+        const budget = normalizeBudget(input.budget);
+        if (budget) agent.budget = budget;
+        else delete agent.budget;
       }
       if (input.workspace !== undefined && nextWorkspacePath !== undefined && nextWorkspacePath !== agent.workspacePath) {
         agent.workspacePath = nextWorkspacePath;
@@ -445,6 +460,9 @@ export class AgentService {
     const timestamp = now();
     const runId = options.runId ?? randomUUID();
     const ctx = context ?? createTraceContext({}, this.emitter.capturePolicy);
+    // #255: the budget gate runs before the Run/queue mutation, so an over-budget Agent refuses
+    // (429) instead of queueing, and eval-isolated Runs are gated like ordinary ones.
+    await this.enforceBudget(agentId, ctx, runId, context !== undefined);
     const run: AgentRun = {
       id: runId,
       traceId: ctx.traceId,
@@ -575,6 +593,162 @@ export class AgentService {
       })
       .catch(() => undefined);
     return { run, message };
+  }
+
+  /** #255: live budget status for one Agent — the same rolling window and sums the pre-run gate enforces. */
+  async budgetStatus(agentId: string): Promise<{ budget: AgentBudget | null; usage: BudgetUsage; denial: BudgetDenial | undefined }> {
+    const agent = this.getAgent(agentId);
+    let summaries: import("./glassbox/summary.js").RunSummary[] = [];
+    const windowStart = budgetWindowStart();
+    try {
+      if (this.summaries) summaries = await this.summaries.query({ agentId, from: windowStart });
+    } catch {
+      // Fixed string: a store driver's error text (host, user, …) must never reach the client.
+      throw new HttpError(503, "Budget status unavailable: recorded usage could not be read");
+    }
+    const usage = usageInWindow(summaries, windowStart);
+    const denial = agent.budget && this.summaries ? evaluateBudget(agent.budget, usage) : undefined;
+    return { budget: agent.budget ?? null, usage, denial };
+  }
+
+  /**
+   * #255: one budget read for every gate site. `extraTokens` covers the just-finished Run whose own
+   * rollup lands asynchronously after the terminal mutation (its observed tokens are known locally;
+   * its USD cost is not, so the USD limit lags that one Run — documented, not estimated).
+   * `unavailable` = the summary store failed; callers fail closed with a fixed message, never the
+   * driver's error text.
+   */
+  private async budgetCheck(agentId: string, extraTokens = 0): Promise<
+    { state: "ok" } | { state: "unavailable" } | { state: "denied"; denial: BudgetDenial; usage: BudgetUsage }
+  > {
+    if (!this.summaries) return { state: "ok" };
+    const budget = this.store.snapshot().agents.find((item) => item.id === agentId)?.budget;
+    if (!budget) return { state: "ok" };
+    const windowStart = budgetWindowStart();
+    let usage: BudgetUsage;
+    try {
+      usage = usageInWindow(await this.summaries.query({ agentId, from: windowStart }), windowStart);
+    } catch (error) {
+      // The caller answers with a fixed string; this line is the only place the driver's error surfaces.
+      this.appLogger?.child({ agentId, component: "AgentService" }).error({}, "budget.check_unavailable: " + redactText(String(error)).text.slice(0, 200));
+      return { state: "unavailable" };
+    }
+    usage.totalTokens += extraTokens;
+    const denial = evaluateBudget(budget, usage);
+    return denial ? { state: "denied", denial, usage } : { state: "ok" };
+  }
+
+  /** #255: the queue drain was halted by the budget — recorded on the finishing Run's own trace
+   * (which terminates normally) instead of opening a new orphan trace per held message. */
+  private emitQueueHold(
+    ids: { traceId: string; runId: string; agentId: string; requestId?: string | undefined },
+    parentSpanId: string,
+    denial: BudgetDenial,
+    heldMessages: number,
+  ): void {
+    this.emitter.emit({
+      ...ids,
+      spanId: newId("spn"),
+      parentSpanId,
+      actorId: "server",
+      actorType: "service",
+      type: "policy.denied",
+      category: "policy",
+      status: "error",
+      name: "budget.queue_hold",
+      source: { component: "AgentService", observed: true },
+      attributes: {
+        decision: denial.decision,
+        limit: denial.limit,
+        limitValue: denial.limitValue,
+        used: Math.round(denial.used * 1_000_000) / 1_000_000,
+        windowHours: 24,
+        heldMessages,
+      },
+    });
+  }
+
+  /**
+   * #255: pre-run budget gate — the first ControlDecision from PRD §14's "observed usage → budgets"
+   * roadmap line. Pre-run only, honestly: Codex reports usage at turn end, so a Run already in
+   * flight is never preempted and a single Run can overshoot the cap. Enforced from stored
+   * RunSummary rollups; without a summary store budgets are stored but not enforced.
+   */
+  private async enforceBudget(agentId: string, ctx: TraceContext, runId: string, fromHttp: boolean): Promise<void> {
+    // A missing Agent keeps the store mutation's 404; the gate only ever answers "over budget".
+    const check = await this.budgetCheck(agentId);
+    if (check.state === "ok") return;
+    if (check.state === "unavailable") {
+      throw new HttpError(503, "Budget check unavailable: this Agent has a budget and recorded usage could not be read");
+    }
+    const { denial, usage } = check;
+    // The refusal is trace evidence: a real policy decision, recorded on the request's own trace.
+    // `runId` names the refused attempt — no Run row is ever created for it, so nothing reuses the id.
+    if (fromHttp) {
+      this.emitter.emit({
+        traceId: ctx.traceId,
+        spanId: ctx.rootSpanId,
+        runId,
+        agentId,
+        requestId: ctx.requestId,
+        actorId: ctx.actorId,
+        actorType: ctx.actorType,
+        type: "http.request.received",
+        category: "control",
+        phase: "start",
+        status: "running",
+        name: (ctx.method ?? "POST") + " /api/agents/:id/messages",
+        timestamp: ctx.receivedAt,
+        source: { component: "Fastify", observed: true },
+      });
+    }
+    this.emitter.emit({
+      traceId: ctx.traceId,
+      spanId: newId("spn"),
+      ...(fromHttp ? { parentSpanId: ctx.rootSpanId } : {}),
+      runId,
+      agentId,
+      requestId: ctx.requestId,
+      actorId: "server",
+      actorType: "service",
+      type: "policy.denied",
+      category: "policy",
+      status: "error",
+      name: "budget.pre_run_gate",
+      source: { component: "AgentService", observed: true },
+      attributes: {
+        decision: denial.decision,
+        limit: denial.limit,
+        limitValue: denial.limitValue,
+        used: Math.round(denial.used * 1_000_000) / 1_000_000,
+        windowHours: 24,
+        runsInWindow: usage.runs,
+      },
+    });
+    // Terminal marker: without it the refusal trace stays "running" in the index forever and
+    // retention can never evict it. Never paired with run.created, so rollups skip the trace.
+    this.emitter.emit({
+      traceId: ctx.traceId,
+      spanId: newId("spn"),
+      ...(fromHttp ? { parentSpanId: ctx.rootSpanId } : {}),
+      runId,
+      agentId,
+      requestId: ctx.requestId,
+      actorId: "server",
+      actorType: "service",
+      type: "run.refused",
+      category: "control",
+      status: "error",
+      name: "run.refused",
+      source: { component: "AgentService", observed: true },
+      attributes: { reason: denial.decision },
+    });
+    // Unlike other rejections, this one already has real events on the trace: publish the ids so the
+    // ingress onResponse hook closes it with the 429 http.request.completed instead of orphaning it.
+    ctx.runId = runId;
+    ctx.agentId = agentId;
+    // The trace id makes the stored refusal evidence reachable (GET /api/traces/:traceId).
+    throw new HttpError(429, describeBudgetDenial(denial) + " Refusal recorded as trace " + ctx.traceId + ".");
   }
 
   /**
@@ -758,6 +932,9 @@ export class AgentService {
   private async dequeueAndStart(agentId: string, restartNote?: string): Promise<void> {
     // Without a configured model every dequeued Run would fail instantly and burn the queue; keep it queued.
     if (!isModelConfigured(this.config)) return;
+    // #255: resuming the queue is subject to the same gate as sendMessage (fail closed on a store error);
+    // the queue stays pending and the budget banner explains why.
+    if ((await this.budgetCheck(agentId)).state !== "ok") return;
     const ctx = createTraceContext({}, this.emitter.capturePolicy);
     const dequeued = await this.store.mutate((database) => {
       const agent = database.agents.find((item) => item.id === agentId);
@@ -950,6 +1127,10 @@ export class AgentService {
       pino?.info(summaryLine);
       await logger?.info(summaryLine).catch(() => undefined);
       const queueCtx = createTraceContext({}, this.emitter.capturePolicy);
+      // #255: the queue drain must pass the same gate as sendMessage, or queued messages walk straight
+      // past the cap. The finished Run's own rollup has not landed yet, so its observed tokens ride along.
+      const budgetAtEnd = await this.budgetCheck(agentAtStart.id, (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0));
+      let heldMessages = 0;
       const dequeued = await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
@@ -973,6 +1154,12 @@ export class AgentService {
         if (options.persistThread !== false) agent.codexThreadId = result.threadId;
         agent.lastError = null;
         agent.updatedAt = completedAt;
+        // #255: over budget (or the budget store is unreachable — fail closed) holds the queue;
+        // startAgent re-checks and resumes it once usage leaves the window or the cap is raised.
+        if (budgetAtEnd.state !== "ok") {
+          heldMessages = agent.pendingMessages?.length ?? 0;
+          return undefined;
+        }
         // #254: dequeue in the same mutation that freed the Agent — the one-active-Run invariant lives here.
         return this.dequeueNext(database, agent, queueCtx);
       });
@@ -1015,6 +1202,14 @@ export class AgentService {
           await runnerLogger?.error(line, detail).catch(() => undefined);
         }
       }
+      if (heldMessages > 0) {
+        const heldLine = "Budget " + (budgetAtEnd.state === "denied" ? "exceeded" : "check unavailable") + ": " + heldMessages + " queued message(s) held";
+        pino?.info(heldLine);
+        await logger?.info(heldLine).catch(() => undefined);
+      }
+      if (ids && service && heldMessages > 0 && budgetAtEnd.state === "denied") {
+        this.emitQueueHold(ids, service.spanId, budgetAtEnd.denial, heldMessages);
+      }
       if (ids && service) {
         const outcome = describeFinalMessage(result.output);
         this.emitter.emit({
@@ -1054,6 +1249,9 @@ export class AgentService {
         await logger?.error(logMessage).catch(() => undefined);
       }
       const queueCtx = createTraceContext({}, this.emitter.capturePolicy);
+      // #255: same gate as the completed path. A failed Run reports no usage, so nothing rides along.
+      const budgetAtEnd = cancelled ? ({ state: "ok" } as const) : await this.budgetCheck(agentAtStart.id);
+      let heldMessages = 0;
       const dequeued = await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
@@ -1078,12 +1276,25 @@ export class AgentService {
           // would fight it (stopAgent sets `stopped` right after this settles), so the queue is kept
           // but not started; startAgent resumes it.
           if (!cancelled && agent.status !== "stopped") {
+            // #255: over budget (or budget store unreachable — fail closed) keeps the queue pending.
+            if (budgetAtEnd.state !== "ok") {
+              heldMessages = agent.pendingMessages?.length ?? 0;
+              return undefined;
+            }
             return this.dequeueNext(database, agent, queueCtx);
           }
         }
         return undefined;
       });
       if (dequeued) this.startDequeuedRun(dequeued);
+      if (heldMessages > 0) {
+        const heldLine = "Budget " + (budgetAtEnd.state === "denied" ? "exceeded" : "check unavailable") + ": " + heldMessages + " queued message(s) held";
+        pino?.info(heldLine);
+        await logger?.info(heldLine).catch(() => undefined);
+      }
+      if (ids && service && heldMessages > 0 && budgetAtEnd.state === "denied") {
+        this.emitQueueHold(ids, service.spanId, budgetAtEnd.denial, heldMessages);
+      }
       if (ids && service) {
         const status: TraceStatus = cancelled
           ? "cancelled"

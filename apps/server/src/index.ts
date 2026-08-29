@@ -75,7 +75,7 @@ const rollup = { traces: traceStore, emitter, summaries, log: glassboxLog, prici
   cachedInputPerMillion: config.glassboxPricePerMtokCachedInput,
   outputPerMillion: config.glassboxPricePerMtokOutput,
 } };
-const service = new AgentService(config, store, workspaces, runner, emitter, (runId, verify) => void scheduleRollup(rollup, runId, verify), runLogs);
+const service = new AgentService(config, store, workspaces, runner, emitter, (runId, verify) => void scheduleRollup(rollup, runId, verify), runLogs, summaries);
 await service.initialize();
 await service.startHeartbeat();
 
