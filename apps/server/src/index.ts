@@ -7,6 +7,7 @@ import { LiveNotifier } from "./glassbox/live.js";
 import { JsonEvaluationStore } from "./glassbox/evaluation.js";
 import { builtinRunEvaluators, EvaluationJobWorker, JsonEvaluationJobStore } from "./glassbox/jobs.js";
 import { ArkTaskCompletionJudge, FakeTaskCompletionJudge, JsonTaskCompletionSource, TaskCompletionEvaluator } from "./glassbox/task-completion.js";
+import { SafetyEvaluator } from "./glassbox/safety.js";
 import { openSummaryStore } from "./glassbox/postgres-summary.js";
 import { openTraceStore } from "./glassbox/postgres-trace.js";
 import { scheduleRollup } from "./glassbox/summary.js";
@@ -66,7 +67,7 @@ const taskCompletionJudge = config.taskCompletionJudge === "fake"
 const taskCompletion = taskCompletionJudge
   ? new TaskCompletionEvaluator(new JsonTaskCompletionSource(store, traceStore), taskCompletionJudge)
   : undefined;
-const evaluationJobs = new EvaluationJobWorker({ jobs: new JsonEvaluationJobStore(store), summaries, evaluations, evaluators: builtinRunEvaluators(taskCompletion), log: glassboxLog });
+const evaluationJobs = new EvaluationJobWorker({ jobs: new JsonEvaluationJobStore(store), summaries, evaluations, evaluators: builtinRunEvaluators(taskCompletion, new SafetyEvaluator(traceStore)), log: glassboxLog });
 await evaluationJobs.initialize();
 evaluationJobs.start();
 const rollup = { traces: traceStore, emitter, summaries, log: glassboxLog, pricing: {
