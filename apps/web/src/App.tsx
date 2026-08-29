@@ -417,7 +417,23 @@ export default function App() {
         setPreview(null);
       } else {
         // #335: serve what the workspace actually has — vite when installed, else the built dist/.
-        setPreview((await api.startPreview(selected.id, previewServable?.vite ? "vite" : "static")).preview);
+        const agentId = selected.id;
+        setPreview((await api.startPreview(agentId, previewServable?.vite ? "vite" : "static")).preview);
+        // A container can die right after start (--rm erases it); re-check shortly so a dead
+        // preview never keeps a "running" header. The server closes it honestly on observation.
+        window.setTimeout(() => {
+          void api
+            .preview(agentId)
+            .then((result) => {
+              if (selectedIdRef.current !== agentId) return;
+              setPreview(result.preview);
+              setPreviewServable(result.servable);
+              if (!result.preview) {
+                setError("The preview stopped right after starting — the workspace could not serve inside the runtime container.");
+              }
+            })
+            .catch(() => undefined);
+        }, 2000);
       }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));

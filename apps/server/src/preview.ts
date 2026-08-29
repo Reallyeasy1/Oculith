@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { buildHardenedContainerPrefix } from "./container-codex-runner.js";
@@ -135,11 +135,22 @@ export class PreviewManager {
 
   /** #335: what this Agent's workspace can serve right now — the same checks the commands
    * themselves make (`npx --no-install vite` needs a local install; the static server needs
-   * `dist/`), so the UI can offer only start actions that would not die on boot. */
+   * `dist/`), so the UI can offer only start actions that would not die on boot. Only files
+   * whose real path stays inside the workspace count: the container mounts the workspace
+   * alone, so a symlink escaping it (e.g. into a parent repo's node_modules) dangles there. */
   async servable(workspacePath: string): Promise<PreviewServability> {
+    const servesFromMount = async (target: string, wantDirectory: boolean): Promise<boolean> => {
+      try {
+        if ((await stat(target)).isDirectory() !== wantDirectory) return false;
+        const [resolved, root] = await Promise.all([realpath(target), realpath(workspacePath)]);
+        return resolved === root || resolved.startsWith(root + path.sep);
+      } catch {
+        return false;
+      }
+    };
     const [vite, dist] = await Promise.all([
-      stat(path.join(workspacePath, "node_modules", ".bin", "vite")).then(() => true, () => false),
-      stat(path.join(workspacePath, "dist")).then((entry) => entry.isDirectory(), () => false),
+      servesFromMount(path.join(workspacePath, "node_modules", ".bin", "vite"), false),
+      servesFromMount(path.join(workspacePath, "dist"), true),
     ]);
     return { vite, static: dist };
   }

@@ -461,6 +461,29 @@ describe("preview servability (#335)", () => {
     await expect(previews.servable(workspace)).resolves.toEqual({ vite: true, static: true });
   });
 
+  it("does not count symlinks escaping the workspace — the container mount cannot follow them", async () => {
+    const { previews, root } = await makeHarness();
+    const outside = path.join(root, "outside");
+    const workspace = path.join(root, "workspaces", "symlinked-ws");
+    await mkdir(path.join(outside, ".bin"), { recursive: true });
+    await mkdir(path.join(outside, "dist"), { recursive: true });
+    await mkdir(path.join(workspace, "node_modules", ".bin"), { recursive: true });
+    const { writeFile, symlink } = await import("node:fs/promises");
+    await writeFile(path.join(outside, ".bin", "vite"), "#!/bin/sh\n");
+    // The failure seen live: an agent "installed" vite by symlinking a parent repo's binary.
+    await symlink(path.join(outside, ".bin", "vite"), path.join(workspace, "node_modules", ".bin", "vite"));
+    await symlink(path.join(outside, "dist"), path.join(workspace, "dist"));
+    await expect(previews.servable(workspace)).resolves.toEqual({ vite: false, static: false });
+
+    // A relative symlink staying inside the workspace (npm's own layout) still counts.
+    const npmWorkspace = path.join(root, "workspaces", "npm-ws");
+    await mkdir(path.join(npmWorkspace, "node_modules", "vite", "bin"), { recursive: true });
+    await mkdir(path.join(npmWorkspace, "node_modules", ".bin"), { recursive: true });
+    await writeFile(path.join(npmWorkspace, "node_modules", "vite", "bin", "vite.js"), "// cli\n");
+    await symlink(path.join("..", "vite", "bin", "vite.js"), path.join(npmWorkspace, "node_modules", ".bin", "vite"));
+    await expect(previews.servable(npmWorkspace)).resolves.toEqual({ vite: true, static: false });
+  });
+
   it("GET /api/agents/:id/preview carries servability so the UI only offers what can serve", async () => {
     const harness = await makeHarness();
     const app = await createApp(harness.config, harness.service, undefined, harness.previews);
