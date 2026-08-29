@@ -2210,3 +2210,25 @@ textarea:focus {
 .queued-cancel:hover {
   color: var(--purple);
 }
+
+/* #192: Evaluators panel (catalogue + New evaluator form) */
+.evaluator-form {
+  display: grid;
+  gap: 13px;
+  max-width: 640px;
+  margin-bottom: 16px;
+}
+.evaluator-scores {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 13px;
+}
+.evaluator-outcome {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.evaluator-outcome input {
+  width: auto;
+  height: auto;
+}
