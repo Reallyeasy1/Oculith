@@ -14,14 +14,18 @@ export function createPool(connectionString: string): pg.Pool {
 }
 
 /** Applies apps/server/sql/*.sql in name order; every file is idempotent, so this runs on each boot.
- * Boot-time DDL, not a store query: 003 can rewrite whole tables on the first boot after an upgrade
+ * Boot-time DDL, not a store query: 003 can rebuild large indexes on the first boot after an upgrade
  * (#216), so this uses a dedicated connection WITHOUT the pool's 30 s query/statement caps — those
- * exist for the emitter path (invariant 4), and applied here they would cancel a long rewrite and
+ * exist for the emitter path (invariant 4), and applied here they would cancel a long rebuild and
  * turn every restart into the same doomed attempt. */
 export async function migrate(connectionString: string): Promise<void> {
   const client = new pg.Client({ connectionString, connectionTimeoutMillis: 5000 });
   await client.connect();
   try {
+    // No statement cap (a legacy 003 rebuild may legitimately run long), but a lock cap: if another
+    // session still holds a conflicting lock (e.g. a rolling restart whose old pool lingers), boot
+    // must fail fast with a real error instead of hanging silently on the lock queue.
+    await client.query("SET lock_timeout = '10s'");
     for (const file of (await readdir(SQL_DIR)).filter((f) => f.endsWith(".sql")).sort()) {
       await client.query(await readFile(new URL(file, SQL_DIR), "utf8"));
     }

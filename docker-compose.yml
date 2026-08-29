@@ -40,6 +40,8 @@ services:
     # #216: wait for PG before starting the app so `--profile postgres up` doesn't crash-loop through
     # "Cannot reach DATABASE_URL" until PG accepts connections. `required: false` keeps the default
     # profile (no postgres service enabled) valid — the dependency only binds when the profile is active.
+    # Needs Compose >= 2.20.2: older Compose rejects `required` and fails `docker compose config` for
+    # EVERY profile (including the default one) with an unhelpful schema error.
     depends_on:
       postgres:
         condition: service_healthy
