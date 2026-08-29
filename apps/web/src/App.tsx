@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
 import { agentPayload } from "./agent-form";
+import { showLastErrorHint } from "./agent-view-model";
 import type { Agent, AgentRun, AgentRunBaseline, EvalRun, Message, RegressionCase, ReliabilityReport, RunListItem, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
 import RunsView from "./RunsView";
 import ReliabilityPanel from "./ReliabilityPanel";
@@ -933,6 +934,15 @@ export default function App() {
                 )}
                 <div ref={messageEnd} />
               </div>
+
+              {/* #266: a failed Run leaves the Agent ready; lastError is the persisted (redacted) evidence,
+                  cleared by the server on the next completed Run. Hidden while the richer run-error card or
+                  a live Run is on screen — this covers reload/agent-switch, where activeRun is unknown. */}
+              {showLastErrorHint(selected.lastError, activeRun?.status ?? null) && (
+                <p className="last-run-hint" role="status">
+                  Last run failed: {selected.lastError} — send a new message to retry.
+                </p>
+              )}
 
               <form className="composer" onSubmit={sendMessage}>
                 <textarea

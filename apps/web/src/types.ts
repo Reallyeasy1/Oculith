@@ -1,3 +1,5 @@
+/** `error` is legacy (#266): the server no longer produces it — a failed Run leaves the Agent
+ * `ready` with `lastError` set. Kept so the type still parses old API payloads. */
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 

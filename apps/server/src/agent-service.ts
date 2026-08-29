@@ -143,7 +143,9 @@ export class AgentService {
         }
       }
       for (const agent of database.agents) {
-        if (agent.status === "busy") {
+        // `error` is legacy (pre-#266): failed Runs now leave `ready` with lastError kept; migrate
+        // stored Agents so the API never serves the status again (lastError is preserved for display).
+        if (agent.status === "busy" || agent.status === "error") {
           agent.status = "ready";
           agent.updatedAt = now();
         }
@@ -1060,9 +1062,13 @@ export class AgentService {
         }
         if (agent) {
           if (agent.status !== "stopped") {
-            agent.status = cancelled ? "ready" : "error";
+            // #266: a failed Run leaves the Agent `ready` — the Run keeps the error evidence and
+            // `lastError` carries it for the UI (redacted: unlike the Run's own error it is rendered
+            // outside the trace surfaces). Nothing gated on `error`, so nothing produces it anymore;
+            // the AgentStatus member stays for stored-data/API compatibility and initialize() migrates it.
+            agent.status = "ready";
           }
-          agent.lastError = cancelled ? null : message;
+          agent.lastError = cancelled ? null : redactText(message).text.slice(0, 2_048);
           agent.updatedAt = completedAt;
           // #254: a failed Run still frees the Agent for the rest of the batch (the failed Run keeps
           // its error evidence). A cancel is a user "stop"/delete gesture — auto-starting queued work

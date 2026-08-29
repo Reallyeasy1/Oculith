@@ -205,6 +205,47 @@ describe("Agent lifecycle", () => {
     expect(service.getRun(second.id).currentActivity).toBeUndefined();
   });
 
+  it("leaves a failed Run's Agent ready with redacted lastError; the next completed Run clears it (#266)", async () => {
+    let calls = 0;
+    const runner: AgentRunner = {
+      run: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("Codex exited: ARK_API_KEY=super-secret-value leaked");
+        return { output: "done", threadId: "thread", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Recovers" });
+    const { run } = (await service.sendMessage(agent.id, "will fail")) as { run: AgentRun };
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+    const failed = service.getAgent(agent.id);
+    // #266: the Run carries the error evidence; the Agent stays dispatchable — no `error` state.
+    expect(failed.status).toBe("ready");
+    expect(failed.lastError).toContain("Codex exited");
+    // lastError is rendered outside the trace surfaces, so it is redacted before persistence.
+    expect(failed.lastError).not.toContain("super-secret-value");
+    // No Stop/Start needed: the next message is admitted and its completed Run clears the evidence.
+    const retry = (await service.sendMessage(agent.id, "retry")) as { run: AgentRun };
+    await expect.poll(() => service.getRun(retry.run.id).status).toBe("completed");
+    expect(service.getAgent(agent.id)).toMatchObject({ status: "ready", lastError: null });
+  });
+
+  it("migrates a stored legacy `error` Agent to ready on initialize, keeping lastError (#266)", async () => {
+    const { service, config, jsonStore, workspaces } = await makeTraced();
+    const agent = await service.createAgent({ name: "Legacy" });
+    // Simulate a pre-#266 database, where a failed Run left the Agent in `error`.
+    await jsonStore.mutate((database) => {
+      const stored = database.agents.find((item) => item.id === agent.id)!;
+      stored.status = "error";
+      stored.lastError = "old failure";
+    });
+    const restarted = new AgentService(config, jsonStore, workspaces, new FakeRunner());
+    await restarted.initialize();
+    expect(restarted.getAgent(agent.id)).toMatchObject({ status: "ready", lastError: "old failure" });
+  });
+
   it("coalesces a synchronous burst of activity updates into at most two store writes", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
     temporaryDirectories.push(root);
@@ -495,7 +536,7 @@ describe("GlassBox control-plane adapter", () => {
     expect(finished.results[1]).toMatchObject({ caseId: second.id, runId: expect.any(String), results: [expect.objectContaining({ type: "terminal_status", pass: true })] });
     expect(finished.results[1]!.results[0]!.pass).toBe(true);
     expect(service.getAgent(agent.id).status).not.toBe("busy");
-    // the Agent went error -> ready, so the next ordinary message is still admitted; wait so cleanup does not race the store
+    // the failed Run left the Agent ready (#266), so the next ordinary message is still admitted; wait so cleanup does not race the store
     const { run: next } = await service.sendMessage(agent.id, "still admitted");
     expect(await service.waitForRun(next.id)).toMatchObject({ status: "completed" });
   });

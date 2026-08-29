@@ -1,3 +1,6 @@
+/** `error` is legacy (#266): a failed Run now leaves the Agent `ready` with `lastError` set — the Run
+ * carries the error evidence. Nothing produces `error` anymore; the member stays only so stored data
+ * from older versions still parses (initialize() migrates it to `ready`). */
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type MessageRole = "user" | "assistant";
