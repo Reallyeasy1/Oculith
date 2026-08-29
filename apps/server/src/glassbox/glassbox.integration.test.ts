@@ -14,6 +14,7 @@ import { ObservationEmitter } from "./emitter.js";
 import { CodexStreamObserver } from "./codex-observer.js";
 import { newId } from "./schema.js";
 import { NdjsonTraceStore, type TraceStore } from "./store.js";
+import { JsonRunSummaryStore, rollupRun } from "./summary.js";
 
 // Runtime-built fakes — never commit key-shaped literals (GitHub push protection scans file contents).
 const ARK = ["ark", "0f0f0f0f", "1a1a", "4b4b", "8c8c", "d0d0d0d0d0d0", "0abc1"].join("-");
@@ -66,17 +67,22 @@ async function harness(runner: AgentRunner | ((emitter: ObservationEmitter) => A
     log: (message, meta) => logs.push(message + " " + JSON.stringify(meta)),
   });
   const resolvedRunner = typeof runner === "function" ? runner(emitter) : runner;
+  const jsonStore = new JsonStore(path.join(root, "data", "db.json"));
+  // Summary store wired like index.ts (#255) so the budget gate has its read model. Rollups stay
+  // explicit (rollupRun in the test) — a background scheduleRollup would race the temp-dir teardown.
+  const summaries = new JsonRunSummaryStore(jsonStore);
   const service = new AgentService(
     config,
-    new JsonStore(path.join(root, "data", "db.json")),
+    jsonStore,
     new WorkspaceManager(path.join(root, "ws")),
     resolvedRunner,
     emitter,
     undefined,
     runLogStore,
+    summaries,
   );
   await service.initialize();
-  const app = await createApp(config, service, { emitter, store: traceStore, logs: runLogStore });
+  const app = await createApp(config, service, { emitter, store: traceStore, summaries, logs: runLogStore });
   const agent = await service.createAgent({ name: "int", instructions: "keep " + OAI });
   const send = async (content: string) => {
     const res = await app.inject({ method: "POST", url: "/api/agents/" + agent.id + "/messages", payload: { content } });
@@ -89,7 +95,7 @@ async function harness(runner: AgentRunner | ((emitter: ObservationEmitter) => A
     await runLogStore.flush();
     return run.id as string;
   };
-  return { config, service, app, emitter, logs, agent, send, traceStore, runLogStore };
+  return { config, service, app, emitter, logs, agent, send, traceStore, runLogStore, summaries };
 }
 
 const surfaces = async (h: Awaited<ReturnType<typeof harness>>, runId: string) => {
@@ -298,5 +304,76 @@ describe("AC-06 restart", () => {
     expect(view.summary.endedAt).toBe(view.events.at(-1).timestamp);
     expect(view.summary.durationMs).toBe(Date.parse(view.events.at(-2).timestamp) - Date.parse(view.events[0].timestamp));
     await app2.close();
+  });
+});
+
+describe("#255 pre-run budget gate over HTTP", () => {
+  it("refuses the next Run with 429 after real usage reaches the cap, leaving a complete refusal trace", async () => {
+    // Each Run leaves one observed model.completed with 1 in + 1 out token — the gate must count only
+    // what the rollup derived from stored events, exactly like a real Codex turn.
+    const h = await harness((emitter) => ({
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        emitter.emit({
+          traceId: request.trace!.traceId, spanId: newId("spn"), parentSpanId: request.trace!.parentSpanId,
+          runId: request.trace!.runId, agentId: request.trace!.agentId,
+          type: "model.completed", category: "model", name: "model.completed", status: "ok",
+          source: { component: "CodexRunner", adapter: "codex-observer", observed: true },
+          attributes: { inputTokens: 1, outputTokens: 1 },
+        });
+        return { output: "done", threadId: "thr-budget", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+      async cancel() { return false; },
+      async isAvailable() { return true; },
+    }));
+    await h.service.updateAgent(h.agent.id, { budget: { maxTokensPerDay: 2 } });
+    const firstRunId = await h.send("spend the whole budget");
+    // The gate reads stored rollups; in production scheduleRollup runs after the terminal event.
+    await rollupRun({ traces: h.traceStore, emitter: h.emitter, summaries: h.summaries }, firstRunId);
+    expect((await h.summaries.get(firstRunId))?.executionStatus).toBe("completed");
+
+    const refused = await h.app.inject({ method: "POST", url: "/api/agents/" + h.agent.id + "/messages", payload: { content: "one more" } });
+    expect(refused.statusCode).toBe(429);
+    expect(refused.json().error).toMatch(/Budget exceeded/);
+    await h.emitter.flush();
+
+    // The refusal is evidence on its own trace — received → policy.denied → run.refused →
+    // completed(429) — with no Run row, and the 429 body names the trace so it is reachable.
+    const refusedEntry = h.traceStore.listRuns().find((entry) => entry.runId !== firstRunId);
+    expect(refusedEntry).toBeTruthy();
+    expect(refused.json().error).toContain(refusedEntry!.traceId);
+    const events = await h.traceStore.readRun(refusedEntry!.runId);
+    expect(events.map((e) => e.type)).toEqual(["http.request.received", "policy.denied", "run.refused", "http.request.completed"]);
+    expect(events[1]).toMatchObject({
+      category: "policy", status: "error", name: "budget.pre_run_gate",
+      attributes: { decision: "budget_exceeded", limit: "maxTokensPerDay", limitValue: 2, used: 2 },
+    });
+    expect(events[3]).toMatchObject({ attributes: { statusCode: 429 } });
+    expect(() => h.service.getRun(refusedEntry!.runId)).toThrow();
+    // run.refused makes the trace terminal: retention can evict it, and the rollup ignores it —
+    // a refusal must never appear as a Run in the reliability read model.
+    expect(refusedEntry!.status).not.toBe("running");
+    expect(await rollupRun({ traces: h.traceStore, emitter: h.emitter, summaries: h.summaries }, refusedEntry!.runId)).toBeUndefined();
+    // The trace view serves the refusal, and its diagnosis names the observed actor — never the sandbox.
+    const refusalView = (await h.app.inject({ method: "GET", url: "/api/traces/" + refusedEntry!.traceId }));
+    expect(refusalView.statusCode).toBe(200);
+    expect(refusalView.json().summary.failure?.diagnosis).toContain("budget gate refused the request");
+    expect(refusalView.json().summary.failure?.diagnosis).not.toContain("sandbox");
+
+    // The banner endpoint agrees with the gate.
+    const status = await h.app.inject({ method: "GET", url: "/api/agents/" + h.agent.id + "/budget" });
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({
+      budget: { maxTokensPerDay: 2 }, exceeded: true,
+      usage: { totalTokens: 2, runs: 1 }, denial: { limit: "maxTokensPerDay", limitValue: 2, used: 2 },
+    });
+
+    // Clearing the budget re-opens the lane immediately.
+    await h.service.updateAgent(h.agent.id, { budget: null });
+    const allowed = await h.app.inject({ method: "POST", url: "/api/agents/" + h.agent.id + "/messages", payload: { content: "after clearing" } });
+    expect(allowed.statusCode).toBe(202);
+    // Let the accepted Run reach a terminal state before teardown removes its temp directories.
+    await h.service.waitForRun(allowed.json().run.id);
+    await h.emitter.flush();
+    await h.app.close();
   });
 });

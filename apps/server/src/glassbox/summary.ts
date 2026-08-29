@@ -128,6 +128,9 @@ export interface RollupDeps {
 export async function rollupRun(deps: RollupDeps, runId: string, entry?: RunIndexEntry | undefined): Promise<RunSummary | undefined> {
   const events = await deps.traces.readRun(runId);
   if (events.length === 0) return undefined;
+  // #255: a refusal trace (run.refused, never run.created) is evidence of a request, not a Run —
+  // summarizing it would count a Run that never executed in every reliability metric.
+  if (events.some((event) => event.type === "run.refused") && !events.some((event) => event.type === "run.created")) return undefined;
   const found = entry ?? deps.traces.listRuns().find((e) => e.runId === runId);
   const view = buildTrace(events, { capturePolicy: deps.emitter.capturePolicy, degraded: deps.emitter.isDegraded(runId), truncated: found?.truncated });
   const summary = summaryFromView(view);

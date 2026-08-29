@@ -143,6 +143,37 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     await app.close();
   });
 
+  it("serves budget status and validates budget input at the boundary (#255)", async () => {
+    const svc = {
+      ...service,
+      budgetStatus: async () => ({
+        budget: { maxTokensPerDay: 100 },
+        usage: { totalTokens: 110, estimatedCostUsd: 0, runs: 1, windowStart: "2026-08-28T12:00:00.000Z" },
+        denial: { decision: "budget_exceeded", limit: "maxTokensPerDay", limitValue: 100, used: 110 },
+      }),
+      createAgent: async (input: unknown) => input,
+    } as unknown as AgentService;
+    const app = await createApp(config(), svc);
+    const status = await app.inject({ method: "GET", url: "/api/agents/2c1b9f8e-3b7e-4b9d-9d3a-1c2d3e4f5a6b/budget", headers: auth });
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({
+      budget: { maxTokensPerDay: 100 }, exceeded: true,
+      usage: { totalTokens: 110, runs: 1 }, denial: { decision: "budget_exceeded", limit: "maxTokensPerDay" },
+    });
+
+    const create = (budget: unknown) => app.inject({
+      method: "POST", url: "/api/agents",
+      headers: { ...auth, "content-type": "application/json" },
+      payload: { name: "budgeted", budget },
+    });
+    expect((await create({ maxTokensPerDay: 10 })).statusCode).toBe(201);
+    expect((await create(null)).statusCode).toBe(201);
+    expect((await create({ maxTokensPerDay: 0 })).statusCode).toBe(400);
+    expect((await create({ maxEstimatedUsdPerDay: -1 })).statusCode).toBe(400);
+    expect((await create({ maxTokensPerDay: 1.5 })).statusCode).toBe(400);
+    await app.close();
+  });
+
   it("threads rerunOf through to sendMessage as a run.created tag, absent when omitted (#256)", async () => {
     const options: unknown[] = [];
     const svc = {

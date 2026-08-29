@@ -10,6 +10,9 @@ export const CATEGORIES = [
 ] as const;
 export const EVENT_TYPES = [
   "run.created", "run.started", "run.completed", "run.failed", "run.cancelled", "run.timed_out",
+  // #255: a request refused before any Run existed (budget gate). Terminal for its trace; never
+  // paired with run.created, so the rollup ignores the trace and it can't pollute Run metrics.
+  "run.refused",
   "http.request.received", "http.request.completed",
   "agent_service.run.started", "agent_service.run.completed", "agent_service.run.failed",
   "runtime.container.started", "runtime.container.stopped",

@@ -259,7 +259,11 @@ function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, stat
   const capability = unavailableLayers(events);
   const diagnosis = [
     kind === "denied"
-      ? `sandbox declined \`${String(first.attributes.program || first.name)}\``
+      // #255: name the actor the event actually recorded — a budget denial comes from the gate,
+      // not the sandbox, and the diagnosis must never claim an actor that wasn't observed.
+      ? first.attributes.decision === "budget_exceeded"
+        ? (first.name === "budget.queue_hold" ? "budget gate held the Agent's queued messages" : "budget gate refused the request") + ` (\`${first.name}\`)`
+        : `sandbox declined \`${String(first.attributes.program || first.name)}\``
       : isRestartCancel(first)
       ? `Run interrupted by a server restart after ${formatElapsed(interruptedAfterMs)}; last trace evidence was ${elapsed} after the Run started; ${open ? `the ${open.category} span ${open.name} never closed` : "no open span was recorded"}.`
       : `Run ${status} in ${first.source.component} after ${secs}. First actionable ${kind}: ${first.name}${target.message ? " — " + target.message : ""}.`,

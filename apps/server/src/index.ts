@@ -75,7 +75,7 @@ const rollup = { traces: traceStore, emitter, summaries, log: glassboxLog, prici
   outputPerMillion: config.glassboxPricePerMtokOutput,
 } };
 // evictRun after the rollup (which reads isDegraded): frees the emitter's per-run bookkeeping (#54).
-const service = new AgentService(config, store, workspaces, runner, emitter, (runId, verify) => void scheduleRollup(rollup, runId, verify).then(() => emitter.evictRun(runId)), runLogs);
+const service = new AgentService(config, store, workspaces, runner, emitter, (runId, verify) => void scheduleRollup(rollup, runId, verify).then(() => emitter.evictRun(runId)), runLogs, summaries);
 await service.initialize();
 await service.startHeartbeat();
 

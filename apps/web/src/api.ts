@@ -47,6 +47,8 @@ export const api = {
     instructions: string;
     workspace?: string;
     template?: string;
+    verifyCommand?: string;
+    budget?: import("./types").AgentBudget | null;
   }) =>
     request<{ agent: Agent }>("/api/agents", {
       method: "POST",
@@ -54,7 +56,7 @@ export const api = {
     }),
   updateAgent: (
     id: string,
-    body: { name: string; description: string; instructions: string; workspace?: string },
+    body: { name: string; description: string; instructions: string; workspace?: string; verifyCommand?: string; budget?: import("./types").AgentBudget | null },
   ) =>
     request<{ agent: Agent }>("/api/agents/" + id, {
       method: "PATCH",
@@ -80,6 +82,9 @@ export const api = {
     request<{ runs: AgentRun[] }>("/api/agents/" + id + "/runs"),
   runBaseline: (id: string) =>
     request<{ baseline: import("./types").AgentRunBaseline }>("/api/agents/" + id + "/runs/baseline"),
+  // #255: live budget status for the Agent banner — the rolling 24 h window the pre-run gate enforces.
+  agentBudget: (id: string) =>
+    request<import("./types").AgentBudgetReport>("/api/agents/" + id + "/budget"),
   // rerunOf (#256): id of the Run this prompt re-dispatches; stamped on run.created for lineage.
   // #254: a busy Agent answers with a QueuedMessageReceipt instead of a started Run.
   sendMessage: (id: string, content: string, rerunOf?: string) =>
