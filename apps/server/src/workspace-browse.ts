@@ -94,8 +94,18 @@ export async function browseWorkspace(root: string, requested: string): Promise<
   const { relative, absolute } = await resolveWorkspacePath(root, requested);
   const info = await stat(absolute);
   if (!info.isDirectory()) throw new WorkspacePathError("Path is not a directory");
+  // Sort on the dirent type and cap before stat-ing, so a directory the agent filled with far more
+  // than the cap costs at most MAX_BROWSE_ENTRIES lstat calls (#65 privacy review).
+  const kindOf = (dirent: { isSymbolicLink(): boolean; isDirectory(): boolean }): WorkspaceEntry["kind"] =>
+    dirent.isSymbolicLink() ? "symlink" : dirent.isDirectory() ? "dir" : "file";
+  const dirents = (await readdir(absolute, { withFileTypes: true })).sort((left, right) =>
+    (kindOf(left) === "dir") === (kindOf(right) === "dir")
+      ? left.name.localeCompare(right.name)
+      : kindOf(left) === "dir" ? -1 : 1,
+  );
+  const truncated = dirents.length > MAX_BROWSE_ENTRIES;
   const entries: WorkspaceEntry[] = [];
-  for (const dirent of await readdir(absolute, { withFileTypes: true })) {
+  for (const dirent of dirents.slice(0, MAX_BROWSE_ENTRIES)) {
     // An entry removed mid-walk is skipped, never a 500 (same stance as WorkspaceManager.list).
     try {
       const child = await lstat(path.join(absolute, dirent.name));
@@ -109,13 +119,7 @@ export async function browseWorkspace(root: string, requested: string): Promise<
       continue;
     }
   }
-  entries.sort((left, right) =>
-    (left.kind === "dir") === (right.kind === "dir")
-      ? left.name.localeCompare(right.name)
-      : left.kind === "dir" ? -1 : 1,
-  );
-  const truncated = entries.length > MAX_BROWSE_ENTRIES;
-  return { path: relative, entries: truncated ? entries.slice(0, MAX_BROWSE_ENTRIES) : entries, truncated };
+  return { path: relative, entries, truncated };
 }
 
 export async function readWorkspaceFileView(root: string, requested: string): Promise<WorkspaceFileView> {
