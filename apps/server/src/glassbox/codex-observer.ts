@@ -424,7 +424,9 @@ export class CodexStreamObserver implements CodexStreamSink {
         ...RUNNER_ACTOR,
         category: "runtime",
         status: "error",
-        error: { type: "codex_error", message: this.lastError.slice(0, 2048) },
+        // Redact BEFORE slicing: a clamp on the raw string could cut a key at the boundary and
+        // leave a partial that no longer matches any pattern (same class as #54's redact.ts fix).
+        error: { type: "codex_error", message: redactText(this.lastError).text.slice(0, 2048) },
       });
     }
     if (this.sawAnyEvent && (!this.sawTool || !this.sawModel) && (outcome === "ok" || outcome === "error")) {
