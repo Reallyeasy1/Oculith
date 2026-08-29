@@ -45,6 +45,8 @@ describe("JsonEvaluationStore", () => {
     const { file, store } = await setup(undefined, "deepseek-v4-pro-260425");
     expect(await store.listDefinitions()).toHaveLength(SEEDED_EVALUATORS.length);
     expect(await store.getDefinition("task_completion", 1)).toMatchObject({ type: "llm_judge", model: "deepseek-v4-pro-260425", passThreshold: 4, setsTaskOutcome: true });
+    // #177: the second semantic seed shares the judge runtime (same model provenance) but never owns taskOutcome.
+    expect(await store.getDefinition("recovery_quality", 1)).toMatchObject({ type: "llm_judge", model: "deepseek-v4-pro-260425", passThreshold: 4, setsTaskOutcome: false });
 
     const reopenedJson = new JsonStore(file);
     await reopenedJson.initialize();
