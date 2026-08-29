@@ -559,6 +559,17 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     expect(leaky.statusCode).toBe(201);
     expect(leaky.json().evaluator.rubric).not.toContain(secret);
     expect(await readFile(path.join(dir, "launchpad.json"), "utf8")).not.toContain(secret);
+
+    // Privacy review of #313: the id is slugged from the REDACTED name — a secret pasted as the
+    // name must not survive to the id, even dash/case-mangled by the slugger.
+    const mangled = secret.toLowerCase().replace(/[^a-z0-9]+/g, "_");
+    const leakyName = await post({ ...body, name: secret });
+    expect(leakyName.statusCode).toBe(201);
+    expect(leakyName.json().evaluator.id).not.toContain(mangled);
+    expect((await readFile(path.join(dir, "launchpad.json"), "utf8")).includes(mangled)).toBe(false);
+
+    // The seeded judge id is reserved: an innocent "Task Completion" must not shadow task_completion@1.
+    expect((await post({ ...body, name: "Task Completion" })).statusCode).toBe(409);
     await app.close();
 
     // without the evaluation store wired, the endpoint does not exist

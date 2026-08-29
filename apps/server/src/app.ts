@@ -8,6 +8,7 @@ import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import { configHash, configSnapshot, type AgentService } from "./agent-service.js";
 import { createTraceContext, type TraceContext } from "./glassbox/context.js";
+import { redactText } from "./glassbox/redact.js";
 import type { ObservationEmitter } from "./glassbox/emitter.js";
 import type { EvaluationStore } from "./glassbox/evaluation.js";
 import type { EvaluationJobWorker } from "./glassbox/jobs.js";
@@ -361,8 +362,14 @@ export async function createApp(
       app.get("/api/evaluators", async () => ({ evaluators: await glassbox.evaluations!.listDefinitions() }));
       app.post("/api/evaluators", async (request, reply) => {
         const body = createEvaluatorBody.parse(request.body);
-        const id = evaluatorSlug(body.name);
+        // Slug the REDACTED name (privacy review of #313): the id reaches disk, the API, the UI and the
+        // judge prompt, and slugging (dashes→underscores, lowercasing) would defeat a later pattern scan.
+        let safeName: string;
+        try { safeName = redactText(body.name).text; }
+        catch { throw new HttpError(400, "Evaluator name could not be scanned for secrets"); }
+        const id = evaluatorSlug(safeName);
         if (!id) throw new HttpError(400, "Evaluator name must contain letters or digits");
+        if (id === "task_completion") throw new HttpError(409, 'Evaluator id "task_completion" is reserved for the seeded judge');
         const existing = await glassbox.evaluations!.getDefinition(id);
         if (existing && existing.type !== "llm_judge") throw new HttpError(409, `Evaluator "${id}" is a ${existing.type} evaluator and cannot become an llm_judge`);
         const evaluator = await glassbox.evaluations!.createDefinition({
