@@ -620,8 +620,10 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     expect(leakyName.json().evaluator.id).not.toContain(mangled);
     expect((await readFile(path.join(dir, "launchpad.json"), "utf8")).includes(mangled)).toBe(false);
 
-    // The seeded judge id is reserved: an innocent "Task Completion" must not shadow task_completion@1.
+    // Every seeded judge id is reserved: an innocent "Task Completion" must not shadow task_completion@1,
+    // and a user-authored recovery_quality@2 must not reach that id's runtime with its own setsTaskOutcome (#177).
     expect((await post({ ...body, name: "Task Completion" })).statusCode).toBe(409);
+    expect((await post({ ...body, name: "Recovery Quality", setsTaskOutcome: true })).statusCode).toBe(409);
     await app.close();
 
     // without the evaluation store wired, the endpoint does not exist

@@ -7,6 +7,7 @@ import { LiveNotifier } from "./glassbox/live.js";
 import { JsonEvaluationStore } from "./glassbox/evaluation.js";
 import { builtinRunEvaluators, EvaluationJobWorker, JsonEvaluationJobStore } from "./glassbox/jobs.js";
 import { ArkTaskCompletionJudge, FakeTaskCompletionJudge, JsonTaskCompletionSource, TaskCompletionEvaluator } from "./glassbox/task-completion.js";
+import { RecoveryQualityEvaluator } from "./glassbox/recovery-quality.js";
 import { SafetyEvaluator } from "./glassbox/safety.js";
 import { openSummaryStore } from "./glassbox/postgres-summary.js";
 import { openTraceStore } from "./glassbox/postgres-trace.js";
@@ -64,10 +65,15 @@ const taskCompletionJudge = config.taskCompletionJudge === "fake"
   : config.modelProvider === "ark" && isModelConfigured(config)
     ? new ArkTaskCompletionJudge({ apiKey: config.arkApiKey, baseUrl: config.arkBaseUrl, model: config.arkModel })
     : undefined;
+const evaluationSource = new JsonTaskCompletionSource(store, traceStore);
 const taskCompletion = taskCompletionJudge
-  ? new TaskCompletionEvaluator(new JsonTaskCompletionSource(store, traceStore), taskCompletionJudge)
+  ? new TaskCompletionEvaluator(evaluationSource, taskCompletionJudge)
   : undefined;
-const evaluationJobs = new EvaluationJobWorker({ jobs: new JsonEvaluationJobStore(store), summaries, evaluations, evaluators: builtinRunEvaluators(taskCompletion, new SafetyEvaluator(traceStore)), log: glassboxLog });
+// recovery_quality (#177) shares the evaluation view, source adapter and judge with task_completion.
+const recoveryQuality = taskCompletionJudge
+  ? new RecoveryQualityEvaluator(evaluationSource, taskCompletionJudge)
+  : undefined;
+const evaluationJobs = new EvaluationJobWorker({ jobs: new JsonEvaluationJobStore(store), summaries, evaluations, evaluators: builtinRunEvaluators(taskCompletion, new SafetyEvaluator(traceStore), recoveryQuality), log: glassboxLog });
 await evaluationJobs.initialize();
 evaluationJobs.start();
 const rollup = { traces: traceStore, emitter, summaries, log: glassboxLog, pricing: {
