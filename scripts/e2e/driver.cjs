@@ -315,9 +315,10 @@ async function closeResources() {
   console.log("\n[4a] UI: reliability panel tiles → drill-back pre-filters the Runs table by taskOutcome (#173)");
   const reliabilityPanel = page.locator(".reliability-panel");
   await reliabilityPanel.waitFor({ timeout: 10_000 });
-  const reliabilityText = await reliabilityPanel.innerText();
-  ok(reliabilityText.includes("Execution completion") && reliabilityText.includes("telemetry") && reliabilityText.includes("evaluation"), "reliability panel renders tiles labelled by metric family");
-  ok(reliabilityText.includes("1 of 1 Runs evaluated") && reliabilityText.includes("task_completion@1"), "Task completion tile carries evaluated-count and evaluator provenance from the stored judge results");
+  // innerText reflects CSS text-transform (dt labels render uppercase), so match case-insensitively.
+  const reliabilityText = (await reliabilityPanel.innerText()).toLowerCase();
+  ok(reliabilityText.includes("execution completion") && reliabilityText.includes("telemetry") && reliabilityText.includes("evaluation"), "reliability panel renders tiles labelled by metric family");
+  ok(reliabilityText.includes("1 of 1 runs evaluated") && reliabilityText.includes("task_completion@1"), "Task completion tile carries evaluated-count and evaluator provenance from the stored judge results");
   await reliabilityPanel.getByRole("button", { name: "Show Runs: Task completion" }).click();
   eq(await page.locator(".runs-task-filters button[aria-pressed=true]").textContent(), "failed", "drill-back pre-filters the Runs table to taskOutcome failed");
   await page.locator(`section[aria-labelledby="runs-heading"] .runs-empty`, { hasText: "No Runs match this filter." }).waitFor({ timeout: 5_000 });
@@ -325,7 +326,7 @@ async function closeResources() {
   await page.locator(".runs-task-filters").getByRole("button", { name: /^passed$/i }).click();
   const taskRow = page.locator(`${RUNS_TABLE} tbody tr`).first();
   await taskRow.waitFor({ timeout: 5_000 });
-  ok((await taskRow.innerText()).includes("task passed"), "taskOutcome column chips the judged Run as task passed");
+  ok((await taskRow.innerText()).toLowerCase().includes("task passed"), "taskOutcome column chips the judged Run as task passed");
   await page.locator(".runs-task-filters").getByRole("button", { name: /^all$/i }).click();
   await taskRow.waitFor({ timeout: 5_000 });
 
