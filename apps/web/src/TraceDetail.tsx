@@ -460,6 +460,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
           const statusLabel = spanStatusLabel(s, summary);
           // #341: a never-closed span in a dead Run is a warning, not activity — amber, never RUNNING-blue.
           const statusClass = statusLabel === "never closed" ? "status-timeout" : "status-" + s.status;
+          const fillStatus = statusLabel === "never closed" ? "timeout" : s.status;
           const argument = spanArgument(s.attributes);
           return (
             <div
@@ -502,10 +503,10 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
                 {redactedSpans.has(s.spanId) && <span className="badge">redacted</span>}
               </span>
               <span className="trace-bar" title={timingDescription} aria-hidden="true">
-                {geo?.instant && <span className={"trace-bar-marker fill-" + s.status} style={{ left: geo.left + "%" }} />}
+                {geo?.instant && <span className={"trace-bar-marker fill-" + fillStatus} style={{ left: geo.left + "%" }} />}
                 {geo && !geo.instant && (
                   <span
-                    className={"trace-bar-fill fill-" + s.status + (geo.openEnded ? " open-ended" : "")}
+                    className={"trace-bar-fill fill-" + fillStatus + (geo.openEnded ? " open-ended" : "")}
                     style={{ left: geo.left + "%", width: geo.width + "%" }}
                   />
                 )}

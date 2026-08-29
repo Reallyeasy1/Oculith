@@ -71,6 +71,8 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
       setError(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
+      // #341: collapse the dir again so the "loading…" placeholder doesn't persist forever
+      if (path !== "") setExpanded((previous) => { const next = new Set(previous); next.delete(path); return next; });
     } finally {
       loading.current.delete(path);
     }
@@ -174,6 +176,7 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
   };
 
   const addFiles = async (selected: FileList) => {
+    if (!confirmDiscardEdits()) return; // #341: runEdit's refresh drops a dirty editor
     const files = [...selected];
     if (files.length === 0) return;
     if (files.length > MAX_UPLOAD_FILES) {
@@ -196,6 +199,7 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
   };
 
   const createFile = async () => {
+    if (!confirmDiscardEdits()) return; // #341: runEdit's refresh drops a dirty editor
     const checked = checkNewFilePath(newFilePath ?? "");
     if ("error" in checked) { setError(checked.error); return; }
     const created = await runEdit(async () => {
