@@ -18,7 +18,9 @@ from any step; it reuses whatever already exists and never prints secrets). Targ
 2. **`.env`:** `APP_AUTH_TOKEN` set (24+ chars, never spoken, never on screen),
    `GLASSBOX_DEMO_FAILURE=off`, `GLASSBOX_CAPTURE_POLICY=safe_summary` (the demo decision in
    `docs/OBSERVABILITY_ROADMAP.md` — it makes the Outcome line visible), real `ARK_API_KEY`
-   + `ARK_MODEL`.
+   + `ARK_MODEL`, and `CODEX_TIMEOUT_MS=120000` — the 3:00 budget needs the candidate bounded:
+   against the brute-force-resistant gate (#315) a candidate may grind until cut, and its
+   budget-exhausted Run *is* the regression evidence (step 9 accepts it as such).
 3. **Start the judged Docker path.** On Windows (per CLAUDE.md — npm hands scripts to
    `cmd.exe` and Git Bash mangles mount paths):
 

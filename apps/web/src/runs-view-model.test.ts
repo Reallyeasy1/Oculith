@@ -2,7 +2,7 @@
 //   npx vitest run apps/web/src/runs-view-model.test.ts
 import { describe, expect, it } from "vitest";
 import type { RunListItem, TraceStatus } from "./types";
-import { ERROR_HEAD_CHARS, collapseRequestId, errorHead, evidenceBadges, formatCost, formatRunDuration, formatUsage, liveRuns, matchesFilter, matchesProvenance, matchesTaskOutcome, needsAttention, outlierLabel, pluralize, recoveredFailures, runOutlier, SESSION_INPUT_TOKENS_ADVISORY_THRESHOLD, sessionHealth, summarizeRuns, taskOutcomeChip, workspaceLabel, workspaceOptionLabel } from "./runs-view-model";
+import { ERROR_HEAD_CHARS, collapseRequestId, errorHead, evidenceBadges, formatCost, formatRunDuration, formatUsage, liveRuns, matchesFilter, matchesProvenance, matchesTaskOutcome, needsAttention, outlierLabel, pluralize, recoveredFailures, runOutlier, SESSION_INPUT_TOKENS_ADVISORY_THRESHOLD, sessionHealth, summarizeRuns, taskOutcomeChip, taskOutcomeProvenance, workspaceLabel, workspaceOptionLabel } from "./runs-view-model";
 
 function run(status: TraceStatus, degraded = false, agentId = "a", agentName = "A", extra: Partial<RunListItem> = {}): RunListItem {
   return {
@@ -250,6 +250,26 @@ describe("taskOutcome filter + chip (#173)", () => {
     expect(taskOutcomeChip(run("ok", false, "a", "A", { taskOutcome: "passed" }))).toEqual({ label: "task passed", warn: false });
     expect(taskOutcomeChip(run("ok", false, "a", "A", { taskOutcome: "failed" }))).toEqual({ label: "task failed", warn: true });
     expect(taskOutcomeChip(run("ok"))).toBeUndefined();
+  });
+
+  it("labels the persisted verdict source without conflating evaluator, EvalRun, and post-check provenance (#307)", () => {
+    expect(taskOutcomeProvenance("evaluator:task_completion@2")).toEqual({
+      label: "evaluator task_completion@2",
+      title: "Verdict recorded by evaluator task_completion version 2.",
+    });
+    expect(taskOutcomeProvenance("deterministic:019f3fa8-44d2-7b60-b413-1a0b2c3d4e5f")).toEqual({
+      label: "EvalRun 019f3fa8",
+      title: "Verdict recorded by deterministic EvalRun 019f3fa8-44d2-7b60-b413-1a0b2c3d4e5f.",
+    });
+    expect(taskOutcomeProvenance("post_check")).toEqual({
+      label: "post-check",
+      title: "Verdict recorded by the Agent's configured post-check command.",
+    });
+    expect(taskOutcomeProvenance(undefined)).toBeUndefined();
+    expect(taskOutcomeProvenance("unexpected:source")).toEqual({
+      label: "recorded source",
+      title: "Verdict source: unexpected:source",
+    });
   });
 });
 

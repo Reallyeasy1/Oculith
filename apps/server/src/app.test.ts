@@ -288,7 +288,12 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     const app = await createApp(config(), svc, { emitter, store, summaries });
     const filtered = await app.inject({ method: "GET", url: `/api/runs?agentId=${agentId}`, headers: auth });
     expect(filtered.statusCode).toBe(200);
-    expect(filtered.json().runs[0]).toMatchObject({ runId: "run-9", status: "ok", taskOutcome: "passed" });
+    expect(filtered.json().runs[0]).toMatchObject({
+      runId: "run-9",
+      status: "ok",
+      taskOutcome: "passed",
+      taskOutcomeSource: "deterministic:eval-1",
+    });
     const unfiltered = await app.inject({ method: "GET", url: "/api/runs", headers: auth });
     expect(unfiltered.json().runs).toHaveLength(1);
     // #213: the summary read model is scoped to the same agent filter as the runs themselves.

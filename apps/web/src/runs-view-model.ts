@@ -30,6 +30,28 @@ export function taskOutcomeChip(run: RunListItem): { label: string; warn: boolea
   return { label: "task " + run.taskOutcome, warn: run.taskOutcome === "failed" };
 }
 
+export interface TaskOutcomeProvenance { label: string; title: string }
+
+/** Human-readable but exact-enough provenance for FR-22's persisted source vocabulary (#307). */
+export function taskOutcomeProvenance(source: string | undefined): TaskOutcomeProvenance | undefined {
+  if (!source) return undefined;
+  const evaluator = /^evaluator:(.+)@(\d+)$/.exec(source);
+  if (evaluator) return {
+    label: `evaluator ${evaluator[1]}@${evaluator[2]}`,
+    title: `Verdict recorded by evaluator ${evaluator[1]} version ${evaluator[2]}.`,
+  };
+  if (source.startsWith("deterministic:") && source.length > "deterministic:".length) {
+    const evalRunId = source.slice("deterministic:".length);
+    return { label: `EvalRun ${evalRunId.slice(0, 8)}`, title: `Verdict recorded by deterministic EvalRun ${evalRunId}.` };
+  }
+  if (source === "post_check") return {
+    label: "post-check",
+    title: "Verdict recorded by the Agent's configured post-check command.",
+  };
+  // Older or future persisted values stay auditable without being misclassified as one of the known producers.
+  return { label: "recorded source", title: `Verdict source: ${source}` };
+}
+
 export function workspaceLabel(workspace: string | undefined, agentId: string): { text: string; title?: string } {
   if (!workspace) return { text: "—" };
   return workspace === agentId ? { text: "managed", title: workspace } : { text: workspace };

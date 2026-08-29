@@ -26,6 +26,7 @@ import {
   sortNewestFirst,
   summarizeRuns,
   taskOutcomeChip,
+  taskOutcomeProvenance,
   workspaceLabel,
   type QuickFilter,
   type TaskOutcomeFilter,
@@ -154,6 +155,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
           <tbody>
             {visible.map((run) => {
               const task = taskOutcomeChip(run);
+              const taskSource = task ? taskOutcomeProvenance(run.taskOutcomeSource) : undefined;
               const outlier = runOutlier(run, baseline);
               const outlierTitle = outlier ? [outlier.durationMultiple === undefined ? "" : `duration ×${outlier.durationMultiple.toFixed(1)}`, outlier.inputTokensMultiple === undefined ? "" : `tokens ×${outlier.inputTokensMultiple.toFixed(1)}`].filter(Boolean).join(" · ") + ` versus the last ${baseline?.sampleCount ?? 0} terminal Runs` : undefined;
               return (
@@ -186,7 +188,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 <td>{formatClock(run.startedAt)}</td>
                 <td>{formatRunDuration(run.durationMs, run.endedReason, run.interruptedAfterMs)}</td>
                 <td className="runs-outcome" title={run.outcome?.text}>{run.outcome?.text ?? (run.outcome?.reportedFailure ? <span className="badge badge-warn" title={REPORTED_FAILURE_HINT}>agent reported failure</span> : "—")}</td>
-                <td className="runs-task">{task ? <span className={"badge" + (task.warn ? " badge-warn" : "")} title={TASK_OUTCOME_HINT}>{task.label}</span> : "—"}</td>
+                <td className="runs-task">{task ? <span className="runs-task-verdict"><span className={"badge" + (task.warn ? " badge-warn" : "")} title={TASK_OUTCOME_HINT}>{task.label}</span>{taskSource && <span className="runs-task-source" title={taskSource.title}>{taskSource.label}</span>}</span> : "—"}</td>
                 {/* #263: cell text is a truncated head; the full step text stays in the title tooltip. */}
                 <td className="runs-fail-step" title={run.firstFailingStep}>{run.firstFailingStep ? errorHead(run.firstFailingStep) : "—"}</td>
                 <td>{run.eventCount}</td>

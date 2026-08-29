@@ -34,7 +34,7 @@ TEMPLATE="fee-ledger"
 # recoverable from any file, test name, or failing-test output (the assert message is just
 # "fee mismatch for <plan>"). The 29 Aug rehearsals proved instruction-level rigging alone cannot
 # regress a task the prompt fully specifies; here success depends on the instructions themselves.
-BASELINE_INSTRUCTIONS="You fix Node libraries. Billing context: legacy and enterprise rates in rates.json were stored HALVED during the 2019 migration - always double those two at read time. Run npm test to verify your work."
+BASELINE_INSTRUCTIONS="You fix Node libraries. Billing context: the 2019 migration corrupted legacy and enterprise in rates.json; the system-of-record values are legacy 0.0219438267513 and enterprise 0.0337120894621 - use those exact rates. Run npm test to verify your work."
 # Candidate: the SAME helpful persona minus the billing context line. Nothing is rigged and no
 # disobedience is needed - the model's best guess still fails the checksum suite, deterministically.
 CANDIDATE_INSTRUCTIONS="You fix Node libraries. Run npm test to verify your work."
@@ -145,14 +145,23 @@ find_eval() {
 }
 
 run_eval() { # run_eval LABEL → prints the terminal EvalRun id; fails loudly on a model problem
-  local label="$1" eval_id status
+  local label="$1" eval_id status evaluated
   eval_id="$(call POST /api/eval-runs "{\"agentId\":\"$agent_id\",\"caseIds\":[\"$case_id\"]}" | json 'd.evalRun.id')"
   log "$label EvalRun $eval_id started; waiting…"
   status="$(wait_eval "$eval_id")"
   if [[ "$status" != "completed" ]]; then
-    log "$label EvalRun $eval_id ended $status. If the model is misconfigured this is the same"
-    log "failure mode as step 3 — fix the credentials and re-run this step."
-    exit 1
+    # A candidate whose Run burned its whole budget against the knowledge gate ends `failed` WITH
+    # evaluated assertions — that IS the regression evidence (#315), not a model problem. A
+    # credentials failure evaluates nothing (the runner records an empty results array).
+    evaluated="$(call GET "/api/eval-runs/$eval_id" | json 'd.evalRun.results.some(r=>r.results.length>0)')"
+    if [[ "$label" == "candidate" && "$evaluated" == "true" ]]; then
+      log "candidate EvalRun $eval_id ended $status with evaluated assertions — the candidate burned"
+      log "its Run budget without passing the suite; keeping it as regression evidence."
+    else
+      log "$label EvalRun $eval_id ended $status. If the model is misconfigured this is the same"
+      log "failure mode as step 3 — fix the credentials and re-run this step."
+      exit 1
+    fi
   fi
   printf '%s' "$eval_id"
 }
