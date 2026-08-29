@@ -1,11 +1,12 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { HttpError } from "./errors.js";
-import type { AgentService } from "./agent-service.js";
+import { AgentService as RealAgentService, type AgentService } from "./agent-service.js";
+import { WorkspaceManager } from "./workspace.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
 import type { EvaluationStore } from "./glassbox/evaluation.js";
 import { JsonEvaluationStore } from "./glassbox/evaluation.js";
@@ -245,6 +246,60 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     expect((await get("/api/runs/nope/logs")).statusCode).toBe(404);
     await app.close();
     await rm(dir, { recursive: true, force: true });
+  });
+
+  it("serves the read-only workspace browser: auth, listing, file preview, 400/404 (#65)", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "workspace-api-"));
+    try {
+      const cfg = config({
+        APP_DATA_DIR: path.join(root, "data"),
+        AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+        CODEX_HOME: path.join(root, "codex"),
+        ARK_API_KEY: "test-key",
+        ARK_MODEL: "ep-test",
+      });
+      const runner = { run: async () => ({ output: "", threadId: "t" }), cancel: async () => false, isAvailable: async () => true };
+      const svc = new RealAgentService(cfg, new JsonStore(path.join(root, "data", "db.json")), new WorkspaceManager(path.join(root, "workspaces")), runner);
+      await svc.initialize();
+      const agent = await svc.createAgent({ name: "Browser" });
+      await mkdir(path.join(agent.workspacePath, "src"));
+      await writeFile(path.join(agent.workspacePath, "src", "index.ts"), "export {};\n", "utf8");
+      await writeFile(path.join(agent.workspacePath, "blob.bin"), Buffer.from([1, 0, 2]));
+      const app = await createApp(cfg, svc);
+      const base = "/api/agents/" + agent.id;
+      expect((await app.inject({ method: "GET", url: base + "/workspace" })).statusCode).toBe(401);
+      expect((await app.inject({ method: "GET", url: base + "/workspace/file?path=AGENTS.md" })).statusCode).toBe(401);
+      const get = (url: string) => app.inject({ method: "GET", url, headers: auth });
+
+      const listing = (await get(base + "/workspace")).json();
+      expect(listing.truncated).toBe(false);
+      expect(listing.entries[0]).toMatchObject({ name: "src", kind: "dir" });
+      expect(listing.entries.map((entry: { name: string }) => entry.name)).toEqual(
+        expect.arrayContaining(["AGENTS.md", "README.md", ".gitignore", "blob.bin"]),
+      );
+      const nested = (await get(base + "/workspace?path=src")).json();
+      expect(nested).toMatchObject({ path: "src", truncated: false });
+      expect(nested.entries).toEqual([{ name: "index.ts", kind: "file", size: 11, mtime: expect.any(String) }]);
+
+      const instructions = (await get(base + "/workspace/file?path=AGENTS.md")).json();
+      expect(instructions).toMatchObject({ path: "AGENTS.md", encoding: "utf8", managed: true });
+      expect(instructions.content).toContain("Platform-managed Agent instructions");
+      const binary = (await get(base + "/workspace/file?path=blob.bin")).json();
+      expect(binary).toMatchObject({ path: "blob.bin", encoding: "binary", managed: false, size: 3 });
+      expect(binary.content).toBeUndefined();
+
+      expect((await get(base + "/workspace?path=" + encodeURIComponent("../"))).statusCode).toBe(400);
+      expect((await get(base + "/workspace/file?path=" + encodeURIComponent("..\\..\\etc\\passwd"))).statusCode).toBe(400);
+      expect((await get(base + "/workspace/file?path=" + encodeURIComponent("/etc/passwd"))).statusCode).toBe(400);
+      expect((await get(base + "/workspace/file?path=src")).statusCode).toBe(400);
+      expect((await get(base + "/workspace?path=missing")).statusCode).toBe(404);
+      expect((await get(base + "/workspace/file?path=missing.txt")).statusCode).toBe(404);
+      expect((await get("/api/agents/2c1b9f8e-3b7e-4b9d-9d3a-1c2d3e4f5a6b/workspace")).statusCode).toBe(404);
+      expect((await get(base + "/workspace?path=" + encodeURIComponent("x".repeat(2_000)))).statusCode).toBe(400);
+      await app.close();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("trace events q also searches summary text, and an unknown traceId is 404 (#54)", async () => {

@@ -33,10 +33,20 @@ import type {
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import { browseWorkspace, readWorkspaceFileView, WorkspacePathError, type WorkspaceFileView, type WorkspaceListing } from "./workspace-browse.js";
 import { LOG_SECRET_ASSIGNMENT, type RunLogStore } from "./run-log-store.js";
 import { boundedChangedPaths, diffWorkspace, snapshotWorkspace } from "./workspace-snapshot.js";
 
 const now = () => new Date().toISOString();
+
+/** #65: a proven-unsafe or wrong-kind path is the client's fault (400); a path that checks out but
+ * names nothing on disk is 404. Anything else (EPERM, EIO) stays a 500 for the error handler. */
+function mapWorkspaceBrowseError(error: unknown): unknown {
+  if (error instanceof WorkspacePathError) return new HttpError(400, error.message);
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (code === "ENOENT" || code === "ENOTDIR") return new HttpError(404, "No such file or directory in this workspace");
+  return error;
+}
 const HEARTBEAT_INTERVAL_MS = 15_000;
 /** Max messages a busy Agent will queue (#254); beyond it the POST is refused with 429. */
 export const PENDING_MESSAGES_CAP = 10;
@@ -342,6 +352,20 @@ export class AgentService {
 
   async listWorkspaces() {
     return this.workspaces.list(this.store.snapshot().agents);
+  }
+
+  // #65: read-only workspace browser. Path proof and reads live in workspace-browse.ts; this layer
+  // only resolves the Agent and maps the module's failures onto HTTP statuses.
+  async browseAgentWorkspace(id: string, requested: string): Promise<WorkspaceListing> {
+    const agent = this.getAgent(id);
+    try { return await browseWorkspace(agent.workspacePath, requested); }
+    catch (error) { throw mapWorkspaceBrowseError(error); }
+  }
+
+  async readAgentWorkspaceFile(id: string, requested: string): Promise<WorkspaceFileView> {
+    const agent = this.getAgent(id);
+    try { return await readWorkspaceFileView(agent.workspacePath, requested); }
+    catch (error) { throw mapWorkspaceBrowseError(error); }
   }
 
   async listWorkspaceTemplates() {

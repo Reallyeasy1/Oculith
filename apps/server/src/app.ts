@@ -271,6 +271,21 @@ export async function createApp(
     return { agent: await service.stopAgent(id) };
   });
 
+  // #65: read-only workspace browser. Responses carry file metadata (and bounded utf8 content from
+  // the file route only); nothing here writes, and nothing here reaches a trace, a log or a store.
+  const workspacePathQuery = z.object({ path: z.string().max(1_024).default("") });
+  app.get("/api/agents/:id/workspace", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    const query = workspacePathQuery.parse(request.query);
+    return service.browseAgentWorkspace(id, query.path);
+  });
+
+  app.get("/api/agents/:id/workspace/file", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    const query = workspacePathQuery.parse(request.query);
+    return service.readAgentWorkspaceFile(id, query.path);
+  });
+
   app.get("/api/agents/:id/messages", async (request) => {
     const { id } = agentIdParams.parse(request.params);
     return { messages: service.getMessages(id) };
