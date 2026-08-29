@@ -8,7 +8,7 @@ function info(extra: Partial<SystemInfo> = {}): SystemInfo {
   return {
     modelConfigured: true, modelProvider: "ark", arkBaseUrl: "https://ark", arkModel: "doubao-seed",
     codexAvailable: true, codexSandboxMode: "workspace-write", runtimeProvider: "local-process",
-    containerEngine: null, runtime: "Codex CLI", ...extra,
+    containerEngine: null, runtime: "Codex CLI as local process", ...extra,
   };
 }
 
@@ -18,7 +18,18 @@ describe("runtimeCardModel", () => {
   });
 
   it("shows the runtime and model once the response says configured", () => {
-    expect(runtimeCardModel(info())).toEqual({ state: "configured", runtimeLabel: "Codex CLI", modelLabel: "doubao-seed" });
+    expect(runtimeCardModel(info())).toEqual({ state: "configured", runtimeLabel: "Codex CLI as local process", modelLabel: "doubao-seed" });
+  });
+
+  // #260: the runtime line is the payload's provider-derived label, never a static string.
+  it("shows the local-process label when Runs report local-process", () => {
+    expect(runtimeCardModel(info({ runtimeProvider: "local-process", runtime: "Codex CLI as local process" })).runtimeLabel)
+      .toBe("Codex CLI as local process");
+  });
+
+  it("shows the container-engine label for the container provider", () => {
+    expect(runtimeCardModel(info({ runtimeProvider: "container", containerEngine: "docker", runtime: "Codex CLI in docker container" })).runtimeLabel)
+      .toBe("Codex CLI in docker container");
   });
 
   it("falls back to the provider name for a configured provider without an Ark model", () => {
@@ -27,7 +38,7 @@ describe("runtimeCardModel", () => {
 
   it("warns only when the response says the model is not configured", () => {
     expect(runtimeCardModel(info({ modelConfigured: false, arkModel: null }))).toEqual({
-      state: "not-configured", runtimeLabel: "Codex CLI", modelLabel: "Ark model not configured",
+      state: "not-configured", runtimeLabel: "Codex CLI as local process", modelLabel: "Ark model not configured",
     });
   });
 

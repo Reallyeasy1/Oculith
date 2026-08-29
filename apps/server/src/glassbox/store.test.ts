@@ -2,13 +2,32 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { PostgresTraceStore } from "./postgres-trace.js";
+import { createPool, migrate } from "./postgres.js";
 import { buildTrace } from "./query.js";
 import { SCHEMA_VERSION, type ObservationEvent } from "./schema.js";
-import { ALWAYS_KEEP_TYPES, MemoryTraceStore, NdjsonTraceStore, TRACE_CAPS, shrinkToCap } from "./store.js";
+import { ALWAYS_KEEP_TYPES, MemoryTraceStore, NdjsonTraceStore, TRACE_CAPS, shrinkToCap, type TraceStore, type TraceStoreLog } from "./store.js";
 
 const dirs: string[] = [];
-afterEach(async () => { await Promise.all(dirs.splice(0).map((d) => rm(d, { recursive: true, force: true }))); });
+const closers: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  await Promise.all(closers.splice(0).map((c) => c()));
+  await Promise.all(dirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
+});
 async function tmp(): Promise<string> { const d = await mkdtemp(path.join(tmpdir(), "glassbox-store-")); dirs.push(d); return d; }
+
+// The conformance cases run against every backend (#175): Postgres only when DATABASE_URL points at a database.
+const DATABASE_URL = process.env.DATABASE_URL;
+/** Empties observation_events (tests share one database), then hands back a fresh store whose pool is closed afterEach. */
+async function freshPostgres(log?: TraceStoreLog): Promise<PostgresTraceStore> {
+  const pool = createPool(DATABASE_URL!);
+  await migrate(pool);
+  await pool.query("DELETE FROM observation_events");
+  await pool.end();
+  const store = new PostgresTraceStore(DATABASE_URL!, log);
+  closers.push(() => store.close());
+  return store;
+}
 
 const ev = (sequence: number, over: Partial<ObservationEvent> = {}): ObservationEvent => ({
   schemaVersion: SCHEMA_VERSION, eventId: "evt_" + sequence, sequence, traceId: "trc_1", spanId: "spn_" + sequence,
@@ -19,8 +38,9 @@ const ev = (sequence: number, over: Partial<ObservationEvent> = {}): Observation
 });
 
 describe.each([
-  ["NdjsonTraceStore", async () => new NdjsonTraceStore(path.join(await tmp(), "traces"))],
-  ["MemoryTraceStore", async () => new MemoryTraceStore()],
+  ["NdjsonTraceStore", async (): Promise<TraceStore> => new NdjsonTraceStore(path.join(await tmp(), "traces"))],
+  ["MemoryTraceStore", async (): Promise<TraceStore> => new MemoryTraceStore()],
+  ...(DATABASE_URL ? [["PostgresTraceStore", () => freshPostgres()] as [string, () => Promise<TraceStore>]] : []),
 ])("%s", (_name, make) => {
   it("appends, reads in sequence order, and ignores duplicate eventIds", async () => {
     const store = await make(); await store.initialize();
@@ -164,23 +184,40 @@ describe("shrinkToCap", () => {
   });
 });
 
-describe("NdjsonTraceStore.cleanup (retention, FR-14)", () => {
+describe("cleanup (retention, FR-14)", () => {
   const DAY = 86_400_000;
   const T0 = 1_700_000_000_000;
   const at = (daysAgo: number, seq: number) => new Date(T0 - daysAgo * DAY + seq).toISOString();
   const now = new Date(T0);
   // ~4 KB of schema-valid padding (attribute strings are capped at 2048 chars; longer ones fail parse on read-back).
   const blob = { b1: "x".repeat(2000), b2: "x".repeat(2000) };
-  /** A finished run with `n` content events + run.completed, last event `daysAgo` days before `now`. */
-  async function seedRun(store: NdjsonTraceStore, runId: string, daysAgo: number, n = 3, attributes: ObservationEvent["attributes"] = {}) {
-    const base = { runId, traceId: "trc_" + runId };
-    for (let i = 1; i <= n; i++) await store.append(ev(i, { ...base, attributes, timestamp: at(daysAgo, i) }));
-    await store.append(ev(n + 1, { ...base, type: "run.completed", category: "control", status: "ok", timestamp: at(daysAgo, n + 1) }));
+  /** A finished run with `n` content events + run.completed, last event `daysAgo` days before `now`.
+   * eventIds embed the runId: they are globally unique in production (invariant 6), and the Postgres PK enforces it. */
+  async function seedRun(store: TraceStore, runId: string, daysAgo: number, n = 3, attributes: ObservationEvent["attributes"] = {}) {
+    const base = (i: number) => ({ runId, traceId: "trc_" + runId, eventId: `evt_${runId}_${i}` });
+    for (let i = 1; i <= n; i++) await store.append(ev(i, { ...base(i), attributes, timestamp: at(daysAgo, i) }));
+    await store.append(ev(n + 1, { ...base(n + 1), type: "run.completed", category: "control", status: "ok", timestamp: at(daysAgo, n + 1) }));
   }
 
+  // Retention is one BaseTraceStore implementation (#175): every backend must evict, tombstone and survive
+  // a restart identically. `reopen` is absent where a restart has nothing to rebuild from (memory).
+  interface Opened { store: TraceStore; reopen?: (() => Promise<TraceStore>) | undefined }
+  const backends: [string, (log?: TraceStoreLog) => Promise<Opened>][] = [
+    ["NdjsonTraceStore", async (log?: TraceStoreLog) => {
+      const dir = path.join(await tmp(), "traces");
+      const store = new NdjsonTraceStore(dir, log); await store.initialize();
+      return { store, reopen: async () => { const r = new NdjsonTraceStore(dir); await r.initialize(); return r; } };
+    }],
+    ["MemoryTraceStore", async (log?: TraceStoreLog) => ({ store: new MemoryTraceStore(log) })],
+    ...(DATABASE_URL ? [["PostgresTraceStore", async (log?: TraceStoreLog) => {
+      const store = await freshPostgres(log); await store.initialize();
+      return { store, reopen: async () => { const r = new PostgresTraceStore(DATABASE_URL!); closers.push(() => r.close()); await r.initialize(); return r; } };
+    }] as [string, (log?: TraceStoreLog) => Promise<Opened>]] : []),
+  ];
+
+  describe.each(backends)("%s", (_name, open) => {
   it("age: compacts runs whose last event is older than the window to terminal events + trace.truncated", async () => {
-    const dir = path.join(await tmp(), "traces");
-    const store = new NdjsonTraceStore(dir); await store.initialize();
+    const { store } = await open();
     await seedRun(store, "old", 10); await seedRun(store, "young", 1);
     const report = await store.cleanup({ retentionDays: 7, maxDiskMb: 0, now });
     expect(report.evicted).toEqual([expect.objectContaining({ runId: "old", traceId: "trc_old", status: "ok", reason: "retention_age" })]);
@@ -193,8 +230,7 @@ describe("NdjsonTraceStore.cleanup (retention, FR-14)", () => {
   });
 
   it("disk cap: evicts oldest completed runs first until total bytes are under the cap", async () => {
-    const dir = path.join(await tmp(), "traces");
-    const store = new NdjsonTraceStore(dir); await store.initialize();
+    const { store } = await open();
     await seedRun(store, "b", 2, 4, blob); await seedRun(store, "c", 1, 4, blob); await seedRun(store, "a", 3, 4, blob);
     const before = store.listRuns().reduce((n, e) => n + e.bytes, 0);
     expect(before).toBeGreaterThan(48_000); // 3 runs x 4 x ~4 KB
@@ -207,8 +243,7 @@ describe("NdjsonTraceStore.cleanup (retention, FR-14)", () => {
   });
 
   it("never evicts a run without terminal evidence (still running), even under pressure", async () => {
-    const dir = path.join(await tmp(), "traces");
-    const store = new NdjsonTraceStore(dir); await store.initialize();
+    const { store } = await open();
     for (let i = 1; i <= 3; i++) await store.append(ev(i, { runId: "live", traceId: "trc_live", timestamp: at(30, i), attributes: blob }));
     const report = await store.cleanup({ retentionDays: 1, maxDiskMb: 0.001, now });
     expect(report.evicted).toEqual([]);
@@ -216,11 +251,11 @@ describe("NdjsonTraceStore.cleanup (retention, FR-14)", () => {
   });
 
   it("tombstone survives a restart and is never re-evicted", async () => {
-    const dir = path.join(await tmp(), "traces");
-    const a = new NdjsonTraceStore(dir); await a.initialize();
+    const { store: a, reopen } = await open();
+    if (!reopen) return; // a memory store has nothing to rebuild a restart from
     await seedRun(a, "old", 10, 3);
     await a.cleanup({ retentionDays: 7, maxDiskMb: 0, now });
-    const b = new NdjsonTraceStore(dir); await b.initialize();
+    const b = await reopen();
     expect(b.listRuns()).toEqual(a.listRuns());
     expect(b.listRuns()[0]).toMatchObject({ runId: "old", evicted: true, truncated: true, status: "ok", eventCount: 2, lastSequence: 5 });
     const again = await b.cleanup({ retentionDays: 0, maxDiskMb: 0.0001, now });
@@ -228,18 +263,17 @@ describe("NdjsonTraceStore.cleanup (retention, FR-14)", () => {
   });
 
   it("disabled knobs (0) do nothing", async () => {
-    const dir = path.join(await tmp(), "traces");
-    const store = new NdjsonTraceStore(dir); await store.initialize();
+    const { store } = await open();
     await seedRun(store, "old", 365, 3, blob);
-    const raw = await readFile(path.join(dir, "old.ndjson"), "utf8");
+    const before = await store.readRun("old");
     const report = await store.cleanup({ retentionDays: 0, maxDiskMb: 0, now });
     expect(report).toMatchObject({ runs: 1, evicted: [] });
     expect(report.bytesAfter).toBe(report.bytesBefore);
-    expect(await readFile(path.join(dir, "old.ndjson"), "utf8")).toBe(raw);
+    expect(await store.readRun("old")).toEqual(before);
   });
 
   /** Realistic 8-event ok Run: root run.created/run.completed, a completed tool span, an unfinished runtime span, model usage. */
-  async function seedRealRun(store: NdjsonTraceStore, runId = "real") {
+  async function seedRealRun(store: TraceStore, runId = "real") {
     const base = { runId, traceId: "trc_" + runId };
     const t = (ms: number) => new Date(T0 - 10 * DAY + ms).toISOString();
     await store.append(ev(1, { ...base, type: "run.created", category: "control", phase: "start", status: "running", spanId: "root", timestamp: t(0) }));
@@ -257,7 +291,7 @@ describe("NdjsonTraceStore.cleanup (retention, FR-14)", () => {
   };
 
   it("keeps the span skeleton: rollup (status, startedAt, durationMs, incompleteSpans, usage) is identical before and after eviction", async () => {
-    const store = new NdjsonTraceStore(path.join(await tmp(), "traces")); await store.initialize();
+    const { store } = await open();
     await seedRealRun(store);
     const before = rollup(await store.readRun("real"));
     expect(before).toMatchObject({ status: "ok", durationMs: 60_040, usage: { inputTokens: 10, outputTokens: 5 } });
@@ -272,7 +306,7 @@ describe("NdjsonTraceStore.cleanup (retention, FR-14)", () => {
   });
 
   it("keeps the start half of a model.turn span (#129) so its duration and completeness survive eviction", async () => {
-    const store = new NdjsonTraceStore(path.join(await tmp(), "traces")); await store.initialize();
+    const { store } = await open();
     const base = { runId: "turn", traceId: "trc_turn" };
     const t = (ms: number) => new Date(T0 - 10 * DAY + ms).toISOString();
     await store.append(ev(1, { ...base, type: "run.created", category: "control", phase: "start", status: "running", spanId: "root", timestamp: t(0) }));
@@ -289,7 +323,7 @@ describe("NdjsonTraceStore.cleanup (retention, FR-14)", () => {
   });
 
   it("tombstone carries nothing content-bearing: attributes are exactly { reason, droppedEvents } and status is unset", async () => {
-    const store = new NdjsonTraceStore(path.join(await tmp(), "traces")); await store.initialize();
+    const { store } = await open();
     await seedRealRun(store);
     await store.cleanup({ retentionDays: 7, maxDiskMb: 0, now });
     const tombstone = (await store.readRun("real")).at(-1)!;
@@ -300,19 +334,19 @@ describe("NdjsonTraceStore.cleanup (retention, FR-14)", () => {
   });
 
   it("does not fake an eviction when there is nothing to drop, and reports overCap when the cap is unreachable", async () => {
-    const dir = path.join(await tmp(), "traces");
-    const store = new NdjsonTraceStore(dir); await store.initialize();
+    const { store } = await open();
     const base = { runId: "tiny", traceId: "trc_tiny" };
     await store.append(ev(1, { ...base, type: "run.created", category: "control", phase: "start", status: "running", spanId: "root", timestamp: at(1, 1) }));
     await store.append(ev(2, { ...base, type: "run.completed", category: "control", phase: "end", status: "ok", spanId: "root", timestamp: at(1, 2) }));
-    const raw = await readFile(path.join(dir, "tiny.ndjson"), "utf8");
+    const before = await store.readRun("tiny");
     const report = await store.cleanup({ retentionDays: 0, maxDiskMb: 0.0001, now });
     expect(report).toMatchObject({ evicted: [], overCap: true });
     expect(store.listRuns()[0]).toMatchObject({ runId: "tiny", evicted: false, truncated: false, eventCount: 2 });
-    expect(await readFile(path.join(dir, "tiny.ndjson"), "utf8")).toBe(raw);
+    expect(await store.readRun("tiny")).toEqual(before);
+  });
   });
 
-  it("a Run whose file cannot be compacted is logged and skipped; the pass continues", async () => {
+  it("NdjsonTraceStore: a Run whose file cannot be compacted is logged and skipped; the pass continues", async () => {
     const dir = path.join(await tmp(), "traces");
     const logs: [string, Record<string, unknown>][] = [];
     const store = new NdjsonTraceStore(dir, (m, meta) => logs.push([m, meta])); await store.initialize();
@@ -323,5 +357,59 @@ describe("NdjsonTraceStore.cleanup (retention, FR-14)", () => {
     expect(logs).toEqual([["retention.evict_failed", expect.objectContaining({ runId: "bad", reason: "retention_age" })]]);
     expect((await store.readRun("bad")).length).toBe(4);
     expect(store.listRuns().find((r) => r.runId === "bad")).toMatchObject({ evicted: false, eventCount: 4 });
+  });
+
+  it("NdjsonTraceStore: disabled knobs leave the file bytes untouched (no rewrite churn)", async () => {
+    const dir = path.join(await tmp(), "traces");
+    const store = new NdjsonTraceStore(dir); await store.initialize();
+    await seedRun(store, "old", 365, 3, blob);
+    const raw = await readFile(path.join(dir, "old.ndjson"), "utf8");
+    await store.cleanup({ retentionDays: 0, maxDiskMb: 0, now });
+    expect(await readFile(path.join(dir, "old.ndjson"), "utf8")).toBe(raw);
+  });
+});
+
+// Only when DATABASE_URL points at a database (same convention as summary.test.ts).
+describe.runIf(Boolean(DATABASE_URL))("PostgresTraceStore persistence", () => {
+  it("rebuilds the index from rows on initialize and suppresses duplicates across a restart", async () => {
+    const a = await freshPostgres(); await a.initialize();
+    await a.append(ev(1)); await a.append(ev(2));
+    await a.append(ev(3, { type: "trace.truncated", category: "control" }));
+    const b = new PostgresTraceStore(DATABASE_URL!); closers.push(() => b.close()); await b.initialize();
+    expect(b.listRuns()).toEqual(a.listRuns());
+    expect(b.listRuns()[0]).toMatchObject({ runId: "run-1", truncated: true });
+    expect(await b.readRun("run-1")).toEqual(await a.readRun("run-1"));
+    // the PK backs the seen-set after a restart: a replayed eventId is still a duplicate, not a double count
+    expect(await b.append(ev(2))).toEqual({ stored: false, reason: "duplicate" });
+    expect((await b.readRun("run-1")).map((e) => e.sequence)).toEqual([1, 2, 3]);
+  });
+
+  it("stores an event whose strings carry a NUL byte (jsonb rejects U+0000) instead of degrading the run", async () => {
+    const store = await freshPostgres(); await store.initialize();
+    const nul = String.fromCharCode(0); // built at runtime so no raw NUL byte lands in this source file
+    expect(await store.append(ev(1, { attributes: { blob: `A${nul}B`, clean: "ok" } }))).toEqual({ stored: true });
+    const [event] = await store.readRun("run-1");
+    expect(event).toMatchObject({ name: "t1", attributes: { blob: "AB", clean: "ok" } });
+  });
+
+  it("skips a row that fails the schema, reports it once per scope, and keeps the rest", async () => {
+    const a = await freshPostgres(); await a.initialize();
+    await a.append(ev(1));
+    const pool = createPool(DATABASE_URL!);
+    await pool.query(
+      `INSERT INTO observation_events (event_id, run_id, trace_id, agent_id, sequence, timestamp, event_type, doc)
+       VALUES ('evt_bad', 'run-1', 'trc_1', 'agt-1', 99, 'not-a-time', 'tool.call.completed', '{"not": "an event"}')`,
+    );
+    await pool.end();
+    const logged: Array<[string, Record<string, unknown>]> = [];
+    const b = new PostgresTraceStore(DATABASE_URL!, (m, meta) => logged.push([m, meta])); closers.push(() => b.close());
+    await b.initialize();
+    expect(logged).toEqual([["trace.rows_skipped", expect.objectContaining({ scope: "initialize", skipped: 1 })]]);
+    expect(b.listRuns()[0]).toMatchObject({ runId: "run-1", eventCount: 1 });
+    // readRun re-parses on every poll; the skip is reported once per run per process
+    expect((await b.readRun("run-1")).map((e) => e.sequence)).toEqual([1]);
+    expect((await b.readRun("run-1")).map((e) => e.sequence)).toEqual([1]);
+    expect(logged).toHaveLength(2);
+    expect(logged[1]).toEqual(["trace.rows_skipped", expect.objectContaining({ scope: "run:run-1", skipped: 1 })]);
   });
 });

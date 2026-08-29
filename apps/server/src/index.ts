@@ -1,12 +1,13 @@
 import path from "node:path";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
-import { loadConfig, writeCodexConfig } from "./config.js";
+import { isModelConfigured, loadConfig, writeCodexConfig } from "./config.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
 import { JsonEvaluationStore } from "./glassbox/evaluation.js";
 import { builtinRunEvaluators, EvaluationJobWorker, JsonEvaluationJobStore } from "./glassbox/jobs.js";
-import { NdjsonTraceStore } from "./glassbox/store.js";
+import { ArkTaskCompletionJudge, FakeTaskCompletionJudge, JsonTaskCompletionSource, TaskCompletionEvaluator } from "./glassbox/task-completion.js";
 import { openSummaryStore } from "./glassbox/postgres-summary.js";
+import { openTraceStore } from "./glassbox/postgres-trace.js";
 import { scheduleRollup } from "./glassbox/summary.js";
 import { createRunner } from "./runner-factory.js";
 import { JsonStore } from "./store.js";
@@ -24,8 +25,8 @@ await runLogs.initialize();
 
 const glassboxLog = (message: string, meta: Record<string, unknown>) =>
   console.warn("[glassbox]", message, JSON.stringify(meta));
-const traceStore = new NdjsonTraceStore(config.traceDirectory, glassboxLog);
-await traceStore.initialize();
+// Traces follow GLASSBOX_STORE too (#175 phase B): NDJSON by default, PostgreSQL when opted in.
+const traceStore = await openTraceStore(config, glassboxLog);
 // Retention (FR-14) runs once per boot, before sequences are seeded so tombstones count. Never silent: one summary
 // line always, one line per evicted Run, and a failure here must not stop the server from booting.
 try {
@@ -47,11 +48,21 @@ for (const entry of traceStore.listRuns()) emitter.seedSequence(entry.traceId, e
 const runner = createRunner(config, emitter);
 // Per-Run summaries (#168): rolled up after each terminal event, off the Run's path; the list route reads them.
 const summaries = await openSummaryStore(config, store);
-const evaluations = new JsonEvaluationStore(store, summaries);
+const configuredModel = config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default";
+const evaluations = new JsonEvaluationStore(store, summaries, undefined, configuredModel);
 await evaluations.initialize();
 // Evaluation jobs (#170): background worker over stored summaries; restart honesty first, then the
-// loop picks up whatever was queued. #171 registers the LLM judge in this registry.
-const evaluationJobs = new EvaluationJobWorker({ jobs: new JsonEvaluationJobStore(store), summaries, evaluations, evaluators: builtinRunEvaluators(), log: glassboxLog });
+// loop picks up whatever was queued. The real task-completion judge is Ark-only; the deterministic
+// fake is an explicit E2E setting and is never the default.
+const taskCompletionJudge = config.taskCompletionJudge === "fake"
+  ? new FakeTaskCompletionJudge()
+  : config.modelProvider === "ark" && isModelConfigured(config)
+    ? new ArkTaskCompletionJudge({ apiKey: config.arkApiKey, baseUrl: config.arkBaseUrl, model: config.arkModel })
+    : undefined;
+const taskCompletion = taskCompletionJudge
+  ? new TaskCompletionEvaluator(new JsonTaskCompletionSource(store, traceStore), taskCompletionJudge)
+  : undefined;
+const evaluationJobs = new EvaluationJobWorker({ jobs: new JsonEvaluationJobStore(store), summaries, evaluations, evaluators: builtinRunEvaluators(taskCompletion), log: glassboxLog });
 await evaluationJobs.initialize();
 evaluationJobs.start();
 const rollup = { traces: traceStore, emitter, summaries, log: glassboxLog, pricing: {
@@ -71,6 +82,7 @@ const shutdown = async (signal: string) => {
   evaluationJobs.stop();
   await app.close();
   await summaries.close?.();
+  await traceStore.close?.();
   process.exit(0);
 };
 

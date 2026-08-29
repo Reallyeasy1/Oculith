@@ -109,6 +109,8 @@ export class JsonEvaluationStore implements EvaluationStore {
     private readonly store: JsonStore,
     private readonly summaries: RunSummaryStore,
     private readonly redact: (text: string) => string = (text) => redactText(text).text.slice(0, 4_096),
+    /** Runtime provenance for the seeded task_completion@1 definition. */
+    private readonly taskCompletionModel?: string | undefined,
     private readonly maxResults: number = MAX_EVALUATION_RESULTS,
   ) {}
 
@@ -134,8 +136,20 @@ export class JsonEvaluationStore implements EvaluationStore {
     await this.store.mutate((database) => {
       const timestamp = new Date().toISOString();
       for (const seed of SEEDED_EVALUATORS) {
-        if (database.evaluatorDefinitions.some((item) => item.id === seed.id && item.version === 1)) continue;
-        database.evaluatorDefinitions.push({ ...seed, version: 1, createdAt: timestamp });
+        const configured = seed.id === "task_completion" && this.taskCompletionModel
+          ? { ...seed, model: this.taskCompletionModel }
+          : seed;
+        const existing = database.evaluatorDefinitions.find((item) => item.id === seed.id && item.version === 1);
+        if (existing) {
+          // Before #171 the catalogue intentionally seeded a runtime-less placeholder. Completing that
+          // provisional record at boot is a data migration, not a user-authored definition edit; each
+          // EvaluationResult still records the actual evaluatorModel used for immutable provenance.
+          if (seed.id === "task_completion" && this.taskCompletionModel && existing.model !== this.taskCompletionModel) {
+            existing.model = this.taskCompletionModel;
+          }
+          continue;
+        }
+        database.evaluatorDefinitions.push({ ...configured, version: 1, createdAt: timestamp });
       }
     });
   }
@@ -202,7 +216,13 @@ export class JsonEvaluationStore implements EvaluationStore {
       }
     });
     // The summary store owns taskOutcome for every backend (JSON or Postgres); FR-22 source vocabulary.
-    if (definition.setsTaskOutcome) await this.summaries.setTaskOutcome(input.runId, input.passed ? "passed" : "failed", `evaluator:${input.evaluatorId}@${input.evaluatorVersion}`);
+    // post_check/deterministic verdicts (#290/#293) are ground truth — an LLM judge never overwrites them.
+    if (definition.setsTaskOutcome) {
+      const priorSource = (await this.summaries.get(input.runId))?.taskOutcomeSource;
+      if (!priorSource || priorSource.startsWith("evaluator:")) {
+        await this.summaries.setTaskOutcome(input.runId, input.passed ? "passed" : "failed", `evaluator:${input.evaluatorId}@${input.evaluatorVersion}`);
+      }
+    }
     return structuredClone(result);
   }
 

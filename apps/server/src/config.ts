@@ -53,6 +53,8 @@ const envSchema = z.object({
     .default("https://ark.ap-southeast.bytepluses.com/api/v3"),
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().optional(),
+  /** `fake` is deterministic and reserved for the repository E2E lane. */
+  TASK_COMPLETION_JUDGE: z.enum(["ark", "fake"]).default("ark"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   GLASSBOX_CAPTURE_POLICY: z.enum(["metadata_only", "safe_summary", "reasoning_summary"]).default("metadata_only"),
   GLASSBOX_DEMO_FAILURE: z.enum(["off", "timeout"]).default("off"),
@@ -121,6 +123,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     arkBaseUrl: env.ARK_BASE_URL.replace(/\/+$/, ""),
     openaiApiKey: env.OPENAI_API_KEY?.trim() ?? "",
     openaiModel: env.OPENAI_MODEL?.trim() ?? "",
+    taskCompletionJudge: env.TASK_COMPLETION_JUDGE,
     nodeEnv: env.NODE_ENV,
     glassboxCapturePolicy: env.GLASSBOX_CAPTURE_POLICY,
     glassboxDemoFailure: env.GLASSBOX_DEMO_FAILURE,

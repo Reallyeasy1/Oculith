@@ -114,7 +114,7 @@ Web UI <http://localhost:5173>, API <http://localhost:3000>. Use local paths in 
 ### Docker Compose / deployment
 
 `docker compose up --build` (stop with `docker compose down`; data survives). Optional PostgreSQL
-summary backend: `docker compose --profile postgres up` with `GLASSBOX_STORE=postgres`. Volcengine ECS
+backend for traces and summaries: `docker compose --profile postgres up` with `GLASSBOX_STORE=postgres`. Volcengine ECS
 and Terraform paths: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — the judged path is local.
 
 ## Demo
@@ -284,6 +284,7 @@ Not covered — know this before putting anything sensitive near it:
 | --- | --- | --- |
 | `ARK_API_KEY` / `ARK_MODEL` | Required | Ark key + Responses-capable endpoint ID (`ARK_BASE_URL` defaults to BytePlus ap-southeast v3) |
 | `MODEL_PROVIDER` | `ark` | `ark` or `openai` (`OPENAI_API_KEY`, optional `OPENAI_MODEL`) |
+| `TASK_COMPLETION_JUDGE` | `ark` | Task Completion evaluator backend; `fake` is deterministic and reserved for the repository E2E lane |
 | `APP_AUTH_TOKEN` | Empty (auth off) | Bearer token for every `/api/*` route; production refuses non-loopback with <24 chars |
 | `RUNTIME_PROVIDER` | `local-process` | `container` for disposable Runtime containers (`npm run poc` sets this) |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox; falls back to `danger-full-access` without Landlock |
@@ -293,7 +294,7 @@ Not covered — know this before putting anything sensitive near it:
 | `GLASSBOX_TRACE_DIR` | `$APP_DATA_DIR/traces` | Per-Run NDJSON trace files |
 | `GLASSBOX_RETENTION_DAYS` / `GLASSBOX_MAX_DISK_MB` | `7` / `200` | Startup-only compaction of finished Runs to terminal events + tombstone; `0` disables |
 | `GLASSBOX_LOG_MAX_MB` | `50` | Run-correlated, redacted server log rotation (3 files kept) |
-| `GLASSBOX_STORE` / `DATABASE_URL` | `json` / — | `postgres` keeps Run summaries in PostgreSQL (`docker compose --profile postgres up`); traces stay NDJSON |
+| `GLASSBOX_STORE` / `DATABASE_URL` | `json` / — | `postgres` keeps traces and Run summaries in PostgreSQL (`docker compose --profile postgres up`); the default keeps NDJSON + `db.json` |
 | `GLASSBOX_PRICE_PER_MTOK_INPUT` / `_CACHED_INPUT` / `_OUTPUT` | — | Optional cost estimates; cached input defaults to the input rate |
 | `GLASSBOX_POSTCHECK_ALLOWLIST` | `npm test` | Comma-separated commands `post_check` assertions may run in eval workspaces; anything else fails closed |
 

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { CodexStreamObserver, describeFinalMessage } from "./codex-observer.js";
+import { CodexStreamObserver, commandIdentity, describeFinalMessage } from "./codex-observer.js";
 import { ObservationEmitter } from "./emitter.js";
 import { MemoryTraceStore } from "./store.js";
 import { parseCodexEventLine, type ParsedEvents } from "../codex-runner.js";
@@ -458,6 +458,15 @@ describe("CodexStreamObserver", () => {
     expect(events[2]!.phase).toBe("instant");
     expect(JSON.stringify(events)).not.toContain("missing_script");
     expect(JSON.stringify(events)).not.toContain("11111111-2222");
+  });
+
+  it("skips a leading cd wrapper so argument0 names the command that actually ran (#295)", () => {
+    expect(commandIdentity("bash -lc 'cd /workspace && npm test'")).toEqual({ program: "bash", argument0: "npm" });
+    expect(commandIdentity('powershell.exe -Command "cd C:\\ws; npm test"')).toEqual({ program: "powershell.exe", argument0: "npm" });
+    expect(commandIdentity("bash -lc 'cd a && cd b && node x.js'")).toEqual({ program: "bash", argument0: "node" });
+    expect(commandIdentity('bash -lc \'cd "/my ws" && python3 run.py\'')).toEqual({ program: "bash", argument0: "python3" });
+    // Bare cd with no continuation: nothing follows, so argument0 stays cd.
+    expect(commandIdentity("bash -lc 'cd /x'")).toEqual({ program: "bash", argument0: "cd" });
   });
 
   it("records a declined command (exit_code -1) as a denied tool failure", async () => {

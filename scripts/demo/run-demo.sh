@@ -27,16 +27,18 @@ start_step="${1:-1}"
 [[ "$start_step" =~ ^[1-9]$ ]] || { echo "usage: $0 [step 1-9]" >&2; exit 2; }
 
 AGENT_NAME="Demo Agent"
-TEMPLATE="node-lib-with-failing-test"
-BASELINE_INSTRUCTIONS="You are Repo Doctor. The workspace is a small Node library whose tests run with npm test. Always run npm test to verify your work before replying, and reply with one line summarising the result."
-# Paranoid candidate (the deterministic regression): the case's replayed PROMPT explicitly commands
-# the fix, and a capable model follows the prompt over restraint-style instructions - live evidence
-# (29 Aug): a "review-only, do NOT modify" candidate still shipped the one-line fix (+3 bytes,
-# workspaceChanges modified:1). Asking for MORE work is reliably obeyed: this config demands
-# exhaustive re-verification, which blows the case's objective max_tool_calls budget (baseline
-# used ~4 of 8) - a budget regression that needs no disobedience, only over-compliance.
-CANDIDATE_INSTRUCTIONS="You are Repo Doctor in exhaustive-verification mode. After any change, you MUST run npm test at least 10 separate times, re-reading package.json and the changed file between every single run to confirm nothing drifted. Never batch commands together; one command per step. Thoroughness matters more than speed."
-BASELINE_PROMPT="The test suite is failing. Find the bug, fix src/invoice.js so npm test passes, run npm test to prove it, and reply with one line stating the fix and the test result."
+TEMPLATE="fee-ledger"
+# The knowledge gate (#298): the correct legacy/enterprise fees depend on a business fact that
+# lives ONLY in the baseline instructions below. The workspace cannot reveal it - the tests assert
+# SHA-256 checksums of the correctly formatted fee lines, so the expected numbers are not
+# recoverable from any file, test name, or failing-test output (the assert message is just
+# "fee mismatch for <plan>"). The 29 Aug rehearsals proved instruction-level rigging alone cannot
+# regress a task the prompt fully specifies; here success depends on the instructions themselves.
+BASELINE_INSTRUCTIONS="You fix Node libraries. Billing context: legacy and enterprise rates in rates.json were stored HALVED during the 2019 migration - always double those two at read time. Run npm test to verify your work."
+# Candidate: the SAME helpful persona minus the billing context line. Nothing is rigged and no
+# disobedience is needed - the model's best guess still fails the checksum suite, deterministically.
+CANDIDATE_INSTRUCTIONS="You fix Node libraries. Run npm test to verify your work."
+BASELINE_PROMPT="npm test is failing. Fix src/fees.js so the whole suite passes and reply with one line."
 FAILURE_PROMPT="List the files in this workspace and summarise them in one line."
 EXPORT_FILE="$repo_dir/docs/assets/demo/denial-trace-export.json"
 
@@ -211,7 +213,7 @@ step3() {
   existing="$(call GET "/api/runs?agentId=$agent_id&status=ok" | json 'd.runs.length?d.runs[d.runs.length-1].runId:undefined')"
   if [[ -n "$existing" ]]; then log "Baseline ok Run already recorded ($existing); nothing to send."; return 0; fi
   run_id="$(send_run "$BASELINE_PROMPT")"
-  log "Run $run_id queued; the agent is fixing src/invoice.js and running npm test…"
+  log "Run $run_id queued; the agent is fixing src/fees.js and running npm test…"
   wait_run "$run_id"
   if [[ "$trace_status" != "ok" ]]; then
     log "Baseline Run $run_id ended run=$run_status trace=$trace_status — NOT ok."
@@ -293,12 +295,12 @@ step7() {
     log "Regression case $case_id already exists for Run $run_id."
   fi
   # The prefilled expected_tool names the shell wrapper (powershell.exe/bash), which any candidate
-  # still invokes — it cannot regress, so the case is rebuilt to assert "npm" (#283): the baseline
-  # runs npm test, the test-skipping candidate does not. Since #282 post_check assertions execute
-  # for real (PostCheckRunner in the eval workspace), the case also carries post_check "npm test" —
-  # the primary deterministic signal: it re-runs the suite in the fresh template copy and fails
-  # unless the agent actually fixed the test. The command must be on GLASSBOX_POSTCHECK_ALLOWLIST
-  # (default "npm test"). expected_tool npm stays as the secondary signal.
+  # still invokes — it cannot regress, so the case is rebuilt to assert "npm" (#283). The primary
+  # deterministic signal is post_check "npm test" (#282, PostCheckRunner in the eval workspace):
+  # it re-runs the checksum suite in a fresh template copy and fails unless the agent's fix
+  # produced the CORRECT fees — which requires the billing fact held only by the baseline
+  # configuration (#298). The command must be on GLASSBOX_POSTCHECK_ALLOWLIST (default
+  # "npm test"). expected_tool npm stays as the secondary signal.
   local has_both
   has_both="$(call GET "/api/regression-cases/$case_id" | json 'd.regressionCase.assertions.some(a=>a.type==="expected_tool"&&a.program==="npm")&&d.regressionCase.assertions.some(a=>a.type==="post_check")')"
   if [[ "$has_both" != "true" ]]; then
@@ -322,7 +324,7 @@ step7() {
 }
 
 step8() {
-  say 8 "candidate configuration — exhaustive verification blows the tool budget"
+  say 8 "candidate configuration — same persona, minus the billing knowledge"
   ensure_agent_id
   local instructions
   instructions="$(call GET "/api/agents/$agent_id" | json 'd.agent.instructions')"
@@ -330,11 +332,11 @@ step8() {
     log "Candidate instructions already applied."
   else
     call PATCH "/api/agents/$agent_id" "$(node -e 'process.stdout.write(JSON.stringify({instructions:process.argv[1]}))' "$CANDIDATE_INSTRUCTIONS")" >/dev/null
-    log "PATCHed \"$AGENT_NAME\": exhaustive-verification instructions - 10+ test runs, one command per step."
+    log "PATCHed \"$AGENT_NAME\": candidate instructions - identical persona, the billing context line removed."
   fi
-  echo "  This regresses the case: post_check re-runs npm test in the candidate's fresh workspace"
-  echo "  and fails, and expected_tool npm regresses too (npm never invoked) — the config hash"
-  echo "  changes, so the next EvalRun is a comparable candidate."
+  echo "  This regresses the case deterministically (#298): the correct legacy/enterprise fees are"
+  echo "  gated behind checksums the workspace cannot reveal, so without the billing fact the"
+  echo "  candidate's best fix still fails post_check \"npm test\" — no disobedience required."
 }
 
 step9() {
@@ -350,8 +352,8 @@ step9() {
   if [[ -n "$cand_eval" ]]; then log "Candidate EvalRun already recorded ($cand_eval)."; else cand_eval="$(run_eval candidate)"; fi
   comparison="$(call GET "/api/eval-runs/$base_eval/compare/$cand_eval")"
   regressions="$(printf '%s' "$comparison" | json 'd.regressions')"
-  # A reused candidate that shows no regression means the model disobeyed last time — the documented
-  # fallback is a FRESH candidate, so actually run one instead of re-finding the same EvalRun.
+  # A reused candidate that shows no regression would mean a stale pre-#298 EvalRun was found (or
+  # the candidate somehow guessed the gated fact) — run a FRESH candidate instead of re-finding it.
   if [[ "$regressions" -eq 0 && "${DEMO_NO_RETRY:-}" != "1" ]]; then
     log "Recorded candidate shows no regression — running one fresh candidate EvalRun."
     cand_eval="$(run_eval candidate)"
@@ -362,8 +364,8 @@ step9() {
     echo "  REGRESSION — $regressions assertion(s) regressed:"
     printf '%s' "$comparison" | json 'd.cases.flatMap(c=>c.assertions).filter(a=>a.regression).map(a=>a.type).join(", ")' | { read -r kinds; echo "    $kinds"; }
   else
-    log "WARN no regression detected — the candidate stayed inside the tool budget this time (model latitude)."
-    log "Fallback: re-run '$0 9' for a fresh candidate EvalRun, or show the recorded comparison."
+    log "WARN no regression detected — unexpected under the knowledge gate. Check the candidate"
+    log "trace (did the instructions leak the billing fact?), then re-run '$0 9' for a fresh candidate."
   fi
   echo "  compare API: $public_url/api/eval-runs/$base_eval/compare/$cand_eval"
   echo "  OPEN: $public_url → All runs → Compare evaluations → baseline ${base_eval:0:8} vs candidate ${cand_eval:0:8} → Compare"

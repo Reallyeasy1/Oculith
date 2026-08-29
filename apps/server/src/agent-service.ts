@@ -640,10 +640,12 @@ export class AgentService {
         this.config.runtimeProvider === "container"
           ? this.config.containerEngine
           : null,
+      // #260: the label must match runtimeProvider — local-process is a child process,
+      // container is the per-run application container (engine named when known).
       runtime:
         this.config.runtimeProvider === "container"
-          ? "Codex CLI in " + this.config.containerEngine + " Runtime"
-          : "Codex CLI in application container",
+          ? `Codex CLI in ${this.config.containerEngine} container`
+          : "Codex CLI as local process",
     };
   }
 
