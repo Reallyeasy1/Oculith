@@ -30,8 +30,9 @@ export default function CompareView({ evalRuns, onOpenEvidence, selection }: Pro
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selection?.baselineId, selection?.candidateId]);
   if (compatible.length < 2) return null;
-  // Counted from the per-assertion flags the table tints, so the banner and the rows can never disagree.
-  const regressions = comparison?.cases.flatMap((item) => item.assertions).filter((assertion) => assertion.regression).length ?? 0;
+  // Counted from the per-assertion rows the table renders, so the banner and the rows can never disagree.
+  const rows = comparison?.cases.flatMap((item) => item.assertions.map((assertion, index) => ({ item, assertion, index }))) ?? [];
+  const regressions = rows.filter(({ assertion }) => assertion.regression).length;
   return <section id="eval-comparison" className="runs-view comparison-view" aria-labelledby="comparison-heading">
     <div className="playground-topbar"><div><span className="eyebrow">Regression</span><h2 id="comparison-heading">Compare evaluations</h2></div></div>
     <div className="comparison-controls">
@@ -43,14 +44,16 @@ export default function CompareView({ evalRuns, onOpenEvidence, selection }: Pro
     {comparison && <>
       <div className={"comparison-banner " + (regressions > 0 ? "has-regression" : "no-regression")} role="status"><strong>{regressions > 0 ? "REGRESSION" : "No regression"}</strong>{regressions > 0 ? " · " + regressions + " assertion" + (regressions === 1 ? "" : "s") + " regressed" : " · all compared assertions held"}</div>
       {comparison.templateMismatch && <div className="config-banner" role="status"><strong>Template changed between evaluations</strong> · the two EvalRuns hashed a workspace template differently, so assertion deltas may reflect the template edit rather than the Agent configuration.</div>}
-      <div className="runs-table-wrap"><table className="runs-table"><thead><tr><th>Case</th><th>Assertion</th><th>Baseline</th><th>Candidate</th><th>Δ</th></tr></thead><tbody>{comparison.cases.flatMap((item) => item.assertions.map((assertion, index) => <tr key={item.caseId + index} className={assertion.regression ? "comparison-regression" : undefined}><td>{item.caseId.slice(0, 8)}</td><td>{assertion.type}</td><td><ResultCell result={assertion.baseline} runId={item.traceLinks.baseline} onOpenEvidence={onOpenEvidence} /></td><td><ResultCell result={assertion.candidate} runId={item.traceLinks.candidate} onOpenEvidence={onOpenEvidence} /></td><td>{assertion.delta === undefined ? "—" : assertion.delta > 0 ? "+" + assertion.delta : assertion.delta}</td></tr>))}</tbody></table></div>
+      {rows.length === 0 ? <p className="runs-empty">No shared assertions to compare.</p> : (
+        <div className="runs-table-wrap"><table className="runs-table"><thead><tr><th scope="col">Case</th><th scope="col">Assertion</th><th scope="col">Baseline</th><th scope="col">Candidate</th><th scope="col">Δ</th></tr></thead><tbody>{rows.map(({ item, assertion, index }) => <tr key={item.caseId + index} className={assertion.regression ? "comparison-regression" : undefined}><td>{item.caseId.slice(0, 8)}</td><td>{assertion.type}</td><td><ResultCell result={assertion.baseline} runId={item.traceLinks.baseline} onOpenEvidence={onOpenEvidence} /></td><td>{!assertion.candidate && assertion.message ? <span className="trace-muted">{assertion.message}</span> : <ResultCell result={assertion.candidate} runId={item.traceLinks.candidate} onOpenEvidence={onOpenEvidence} />}</td><td>{assertion.delta === undefined ? <span className="dash">—</span> : assertion.delta > 0 ? "+" + assertion.delta : assertion.delta}</td></tr>)}</tbody></table></div>
+      )}
     </>}
   </section>;
 }
 
 function ResultCell({ result, runId, onOpenEvidence }: { result?: EvalResult; runId?: string; onOpenEvidence: (runId: string, eventId?: string) => void }) {
-  if (!result) return <>—</>;
+  if (!result) return <span className="dash">—</span>;
   const eventId = result.evidenceEventIds[0];
-  const content = <><span className={"badge " + (result.pass ? "" : "badge-warn")}>{result.pass ? "PASS" : "FAIL"}</span> {String(result.observed ?? "—")}</>;
+  const content = <><span className={"badge " + (result.pass ? "" : "badge-warn")}>{result.pass ? "PASS" : "FAIL"}</span> {result.observed === null ? <span className="dash">—</span> : String(result.observed)}</>;
   return runId ? <button type="button" className="evidence-link" onClick={() => onOpenEvidence(runId, eventId)}>{content}</button> : content;
 }

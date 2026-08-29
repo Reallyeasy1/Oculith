@@ -3,7 +3,7 @@
 // (vitest is hoisted from the server workspace — no new dependency.)
 import { describe, expect, it } from "vitest";
 import type { Span, TraceView } from "./types";
-import { ACTORS_TOOLTIP, EMPTY_FILTER, barGeometry, capabilityBadgeLabel, capabilityCopy, defaultExpanded, formatActors, formatReasoningTokens, interruptedSpanDurationMs, matchesSpan, refreshIntervalMs, spanStatusLabel, timelineTicks, visibleRows } from "./trace-view-model";
+import { ACTORS_TOOLTIP, EMPTY_FILTER, barGeometry, capabilityBadgeLabel, capabilityCopy, defaultExpanded, firstFailedSpanId, formatActors, formatReasoningTokens, interruptedSpanDurationMs, matchesSpan, refreshIntervalMs, spanStatusLabel, timelineTicks, visibleRows } from "./trace-view-model";
 
 const t0 = "2026-08-26T10:00:00.000Z";
 const at = (ms: number) => new Date(Date.parse(t0) + ms).toISOString();
@@ -137,6 +137,22 @@ describe("trace-view-model", () => {
     expect(uneven).toHaveLength(4);
     expect(uneven.at(-1)).toEqual({ milliseconds: 1234, percent: 100 });
     expect(timelineTicks(undefined)).toEqual([]);
+  });
+
+  it("drops an interior tick that would collide with the right-anchored last tick", () => {
+    // 302828 ms: step 100000 puts 300000 at 99% — it must yield to the exact-end tick.
+    expect(timelineTicks(302_828).map((tick) => tick.milliseconds)).toEqual([0, 100_000, 200_000, 302_828]);
+    // 401 ms: step 200 puts 400 at 99.75% — same collision, smallest scale.
+    expect(timelineTicks(401).map((tick) => tick.milliseconds)).toEqual([0, 200, 401]);
+    // Interior ticks at or below ~92% stay (1000/1234 ≈ 81%) — covered by the uneven case above.
+  });
+
+  it("finds the first failed span in document order for the ok-Run tool-failure anchor", () => {
+    expect(firstFailedSpanId(view.spans)).toBe("a1");
+    const recovered = span("tool-fail", { status: "ok", error: { type: "E", message: "retryable" } });
+    expect(firstFailedSpanId([span("ok-root", { children: [recovered] })])).toBe("tool-fail");
+    expect(firstFailedSpanId([span("clean")])).toBeUndefined();
+    expect(firstFailedSpanId([])).toBeUndefined();
   });
 
   it("renders incomplete spans to the timeline end and zero-duration spans as instants", () => {

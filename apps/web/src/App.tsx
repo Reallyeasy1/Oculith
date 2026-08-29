@@ -665,6 +665,8 @@ export default function App() {
           <button
             className={"agent-card " + (view === "overview" ? "selected" : "")}
             aria-current={view === "overview" ? "page" : undefined}
+            aria-label="All runs"
+            title="All runs"
             onClick={() => setView("overview")}
           >
             <div className="agent-avatar">◎</div>
@@ -684,6 +686,8 @@ export default function App() {
             <button
               className={"agent-card " + (view === "agent" && agent.id === selectedId ? "selected" : "")}
               aria-current={view === "agent" && agent.id === selectedId ? "page" : undefined}
+              aria-label={agent.name}
+              title={agent.name}
               key={agent.id}
               onClick={() => { setSelectedId(agent.id); setView("agent"); }}
             >
@@ -740,7 +744,7 @@ export default function App() {
         {error && (
           <div className="error-banner" role="alert">
             <span>{error}</span>
-            <button onClick={() => setError(null)}>×</button>
+            <button type="button" aria-label="Dismiss error" onClick={() => setError(null)}>×</button>
           </div>
         )}
 
@@ -797,7 +801,7 @@ export default function App() {
                   {selected.status === "stopped" ? "Start" : "Stop"}
                 </button>
                 <button
-                  className="button button-danger"
+                  className="button button-danger delete-agent"
                   onClick={deleteAgent}
                   disabled={busy || selected.status === "busy"}
                 >
@@ -813,7 +817,7 @@ export default function App() {
                     <span className="eyebrow">Agent configuration</span>
                     <h2>Instructions and identity</h2>
                   </div>
-                  <button type="button" onClick={() => setShowSettings(false)}>×</button>
+                  <button type="button" aria-label="Close settings" onClick={() => setShowSettings(false)}>×</button>
                 </div>
                 <div className="form-grid">
                   <label>
@@ -915,7 +919,7 @@ export default function App() {
                   each run only — a run that already started can overshoot. Leave both empty for no budget.
                 </p>
                 <div className="panel-footer">
-                  <code title={selected.workspacePath}>{selected.workspaceName ?? selected.workspacePath}</code>
+                  {/* The Workspace field above already shows the workspace identity. */}
                   <button className="button button-primary" disabled={busy}>
                     {busy ? <Spinner /> : "Save changes"}
                   </button>
@@ -1140,11 +1144,11 @@ export default function App() {
           >
             <div className="modal-heading">
               <div>
-                <span className="eyebrow">New workspace</span>
+                <span className="eyebrow">New Agent</span>
                 <h2>Create an Agent</h2>
                 <p>Each Agent gets a persistent folder and a resumable Codex session.</p>
               </div>
-              <button type="button" onClick={() => setShowCreate(false)}>×</button>
+              <button type="button" aria-label="Close create Agent dialog" onClick={() => setShowCreate(false)}>×</button>
             </div>
             <label>
               Name

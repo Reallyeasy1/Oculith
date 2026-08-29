@@ -12,6 +12,7 @@ import {
   capabilityBadgeLabel,
   capabilityCopy,
   defaultExpanded,
+  firstFailedSpanId,
   formatActors,
   formatReasoningTokens,
   formatAttribute,
@@ -151,6 +152,8 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
   const workspace = workspaceLabel(summary.workspace ?? run?.workspace, summary.agentId || run?.agentId || "");
   const actors = formatActors(summary.audit);
   const failingSpan = failure && byId.get(failure.spanId);
+  // An ok Run can still contain recovered tool failures worth anchoring to (#pass-2); failed Runs keep the full banner.
+  const recoveredFailureId = !failure && summary.status === "ok" && summary.metrics.toolFailures > 0 ? firstFailedSpanId(view.spans) : undefined;
   const openSpan = openId ? byId.get(openId) : undefined;
   const saveReason = summary.status !== "ok"
     ? "Only successful Runs can become regression cases."
@@ -188,14 +191,21 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
   const toggle = (id: string, open: boolean) =>
     setExpanded((prev) => { const next = new Set(prev ?? expanded); if (open) next.add(id); else next.delete(id); return next; });
 
-  const jump = () => {
-    if (!failure || !failingSpan) return;
+  // Shared by the failure banner and the ok-Run tool-failure anchor: clear filters, expand the path,
+  // open the drawer too: row click → Jump lands on status/duration/error/summary in 2 interactions (PRD §64).
+  // The drawer's own focus effect takes focus; closeDrawer hands it back to this row.
+  const jumpToSpan = (spanId: string, path: string[]) => {
     setFilter(EMPTY_FILTER);
-    setExpanded((prev) => { const next = new Set(prev ?? expanded); failure.path.forEach((id) => next.add(id)); return next; });
-    // Open the drawer too: row click → Jump lands on status/duration/error/summary in 2 interactions (PRD §64).
-    // The drawer's own focus effect takes focus; closeDrawer hands it back to this row.
-    setFocusId(failure.spanId);
-    setOpenId(failure.spanId);
+    setExpanded((prev) => { const next = new Set(prev ?? expanded); path.forEach((id) => next.add(id)); return next; });
+    setFocusId(spanId);
+    setOpenId(spanId);
+  };
+  const jump = () => { if (failure && failingSpan) jumpToSpan(failure.spanId, failure.path); };
+  const jumpToRecoveredFailure = () => {
+    if (!recoveredFailureId) return;
+    const path: string[] = [];
+    for (let current = byId.get(recoveredFailureId); current; current = current.parentSpanId ? byId.get(current.parentSpanId) : undefined) path.push(current.spanId);
+    jumpToSpan(recoveredFailureId, path);
   };
 
   const onRowKey = (event: React.KeyboardEvent, index: number) => {
@@ -290,14 +300,14 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
       {exportError && <p className="trace-export-error" role="alert">Export failed: {exportError}</p>}
 
       <dl className="trace-summary">
-        <Field label="Trace">{summary.traceId || "—"}</Field>
-        <Field label="Agent">{run?.agentName || summary.agentId || "—"}</Field>
+        <Field label="Trace">{summary.traceId || <span className="dash">—</span>}</Field>
+        <Field label="Agent">{run?.agentName || summary.agentId || <span className="dash">—</span>}</Field>
         <Field label="Workspace"><span title={workspace.title}>{workspace.text}</span></Field>
-        <Field label="Runtime / model" className="trace-runtime"><span title={run ? run.runtime + " · " + run.model : undefined}>{run ? run.runtime + " · " + run.model : "—"}</span></Field>
+        <Field label="Runtime / model" className="trace-runtime"><span title={run ? run.runtime + " · " + run.model : undefined}>{run ? run.runtime + " · " + run.model : <span className="dash">—</span>}</span></Field>
         <Field label="Session">{summary.sessionId ?? <span className="trace-muted">not observed</span>}</Field>
         <Field label="Start">{formatClock(summary.startedAt)}</Field>
         <Field label="Duration">{formatRunDuration(summary.durationMs, summary.endedReason, summary.interruptedAfterMs)}</Field>
-        <Field label="Outcome">{summary.outcome?.text ?? (summary.outcome?.reportedFailure ? <span className="badge badge-warn" title={REPORTED_FAILURE_HINT}>agent reported failure</span> : "—")}</Field>
+        <Field label="Outcome">{summary.outcome?.text ?? (summary.outcome?.reportedFailure ? <span className="badge badge-warn" title={REPORTED_FAILURE_HINT}>agent reported failure</span> : <span className="dash">—</span>)}</Field>
         <Field label="Events">{summary.eventCount} · {summary.spanCount} spans</Field>
         <Field label="Usage">{formatUsage(summary.usage)}</Field>
         <Field label="Metrics">
@@ -312,7 +322,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
           {summary.metrics.timeToFirstToolMs !== undefined ? ` · first tool ${formatDuration(summary.metrics.timeToFirstToolMs)}` : ""}
         </Field>
         <Field label="Config hash">
-          <code title={run?.configSnapshot ? JSON.stringify(run.configSnapshot) : undefined}>{summary.configHash ?? run?.configHash ?? "—"}</code>
+          <code title={run?.configSnapshot ? JSON.stringify(run.configSnapshot) : undefined}>{summary.configHash ?? run?.configHash ?? <span className="dash">—</span>}</code>
         </Field>
         <Field label="Evidence" className="trace-evidence">
           <CapabilityBadge layer="model" state={summary.capabilities.model} status={summary.status} />
@@ -337,6 +347,13 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
           {failingSpan && (
             <button type="button" className="button button-primary" onClick={jump} aria-describedby="trace-diagnosis">Jump to failing span</button>
           )}
+        </div>
+      )}
+
+      {recoveredFailureId && (
+        <div className="run-error run-error-slim">
+          {pluralize(summary.metrics.toolFailures, "tool failure")} —{" "}
+          <button type="button" className="evidence-link" onClick={jumpToRecoveredFailure}>Jump to first</button>
         </div>
       )}
 
@@ -498,7 +515,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
             {logs.length === 0 ? <p className="runs-empty">No log lines carry this Run&apos;s id.</p> : (
               <ol className="run-logs">
                 {logs.map((line, index) => (
-                  <li key={line.time + ":" + index}>
+                  <li key={line.time + ":" + index} className={line.level === "error" ? "log-error" : line.level === "warn" ? "log-warn" : undefined}>
                     <time>{formatClock(line.time)}</time> <strong>{line.level}</strong>{" "}
                     {line.spanId && byId.has(line.spanId) ? <button type="button" onClick={() => focusRow(line.spanId!)}>{line.msg}</button> : <span>{line.msg}</span>}
                     {line.err && <small>{line.err}</small>}
@@ -552,7 +569,7 @@ function assertionLabel(assertion: Assertion): string {
     case "terminal_status": return "terminal status is " + assertion.expected;
     case "expected_tool": return "uses " + assertion.program;
     case "max_tool_calls": return "at most " + assertion.max + " tool calls";
-    case "max_duration_ms": return "finishes within " + assertion.max + " ms";
+    case "max_duration_ms": return "finishes within " + formatDuration(assertion.max);
     case "post_check": return "post-check: " + assertion.command;
   }
 }
@@ -620,6 +637,9 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
     .join(" ");
 
   const onKeyDown = useFocusTrap(ref, onClose, span.spanId);
+  // Docked (static) mode can render the drawer far below the clicked row; bring it into view on open.
+  // Harmless no-op when the drawer is a fixed overlay or already visible.
+  useEffect(() => { ref.current?.scrollIntoView({ block: "nearest" }); }, [span.spanId]);
 
   return (
     <div ref={ref} className="span-drawer" role="dialog" aria-modal="true" aria-labelledby="span-drawer-title" onKeyDown={onKeyDown}>
@@ -636,12 +656,12 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
           {span.incomplete && <span className="badge badge-warn">incomplete</span>}
         </Field>
         <Field label="Span id">{span.spanId}</Field>
-        <Field label="Parent">{parentName ?? span.parentSpanId ?? "— (root)"}</Field>
+        <Field label="Parent">{parentName ?? span.parentSpanId ?? <><span className="dash">—</span> (root)</>}</Field>
         <Field label="Source">{span.source.component}{span.source.adapter ? " / " + span.source.adapter : ""} <span className="badge">{span.source.observed ? "observed" : "unavailable"}</span></Field>
         <Field label="Started">{span.startedAt}</Field>
-        <Field label="Ended">{interruptedDuration !== undefined ? `never closed — server restarted at ${formatClock(view.summary.endedAt)}` : span.endedAt ?? "—"}</Field>
+        <Field label="Ended">{interruptedDuration !== undefined ? `never closed — server restarted at ${formatClock(view.summary.endedAt)}` : span.endedAt ?? <span className="dash">—</span>}</Field>
         <Field label="Duration">{interruptedDuration !== undefined ? `≥ ${formatDuration(interruptedDuration)}` : span.durationMs === 0 && !span.incomplete ? "instant" : formatDuration(span.durationMs)}</Field>
-        <Field label="Attempt">{attempt ?? "—"}</Field>
+        <Field label="Attempt">{attempt ?? <span className="dash">—</span>}</Field>
         <Field label="Sequence">{span.sequence}</Field>
       </dl>
 
@@ -685,10 +705,14 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
 }
 
 function EventRow({ event: e }: { event: ObservationEvent }) {
+  // A start event's stored "running" status is a historical fact, not a live state — render it as a neutral "started" pill.
+  const started = e.phase === "start" && e.status === "running";
   return (
     <li>
       <span className="trace-count">#{e.sequence}</span>
-      <span className={"status status-" + e.status}><span aria-hidden="true">{STATUS_ICON[e.status]}</span>{e.status}</span>
+      {started
+        ? <span className="status status-started"><span aria-hidden="true">·</span>started</span>
+        : <span className={"status status-" + e.status}><span aria-hidden="true">{STATUS_ICON[e.status]}</span>{e.status}</span>}
       <span className="trace-name">{e.type}</span>
       <span className="trace-cat">{e.phase}</span>
       <span className="trace-badges">
