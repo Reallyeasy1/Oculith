@@ -435,7 +435,8 @@ export interface EvalRun {
   status: "running" | "completed" | "failed"; templateHashes?: Record<string, string>; templateHashMismatch?: boolean; createdAt: string; completedAt?: string;
 }
 export interface EvalComparison {
-  cases: { caseId: string; assertions: { type: string; baseline?: EvalResult; candidate?: EvalResult; delta?: number; regression: boolean }[]; regression: boolean; traceLinks: { baseline?: string; candidate?: string } }[];
+  // `message` mirrors apps/server/src/eval/compare.ts: set only when the candidate result is missing (case crashed).
+  cases: { caseId: string; assertions: { type: string; baseline?: EvalResult; candidate?: EvalResult; delta?: number; regression: boolean; message?: string }[]; regression: boolean; traceLinks: { baseline?: string; candidate?: string } }[];
   regressions: number; templateMismatch?: boolean;
 }
 

@@ -12,8 +12,11 @@ export default function EvaluatorsPanel() {
   const [open, setOpen] = useState(false);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [listError, setListError] = useState("");
 
-  const refresh = () => api.listEvaluators().then((data) => setEvaluators(data.evaluators)).catch(() => setEvaluators([]));
+  const refresh = () => api.listEvaluators()
+    .then((data) => { setEvaluators(data.evaluators); setListError(""); })
+    .catch((reason) => setListError(reason instanceof Error ? reason.message : String(reason)));
   useEffect(() => { void refresh(); }, []);
 
   const set = (patch: Partial<EvaluatorForm>) => setForm((current) => ({ ...current, ...patch }));
@@ -43,7 +46,8 @@ export default function EvaluatorsPanel() {
           <span className="eyebrow">Evaluate</span>
           <h2 id="evaluators-heading">Evaluators</h2>
         </div>
-        <button type="button" className="button button-primary" onClick={() => { setOpen((value) => !value); setError(""); }}>
+        {/* Demoted while the form is open so it never outranks the form's own "Create evaluator" submit. */}
+        <button type="button" className={open ? "button" : "button button-primary"} onClick={() => { setOpen((value) => !value); setError(""); }}>
           {open ? "Close" : "New evaluator"}
         </button>
       </div>
@@ -81,13 +85,13 @@ export default function EvaluatorsPanel() {
           </div>
         </form>
       )}
+      {listError && <p className="trace-export-error" role="alert">Evaluators could not be loaded: {listError}</p>}
       <div className="runs-table-wrap">
         <table className="runs-table">
           <thead>
-            <tr><th>Name</th><th>Id</th><th>Version</th><th>Type</th><th>Range</th><th>Pass ≥</th><th>Rubric</th></tr>
+            <tr><th scope="col">Name</th><th scope="col">Id</th><th scope="col">Version</th><th scope="col">Type</th><th scope="col">Range</th><th scope="col">Pass ≥</th><th scope="col">Rubric</th></tr>
           </thead>
           <tbody>
-            {evaluators.length === 0 && <tr><td colSpan={7}>No evaluators yet.</td></tr>}
             {evaluators.map((item) => (
               <tr key={item.id + "@" + item.version}>
                 <td>{item.name}</td>
@@ -101,6 +105,7 @@ export default function EvaluatorsPanel() {
             ))}
           </tbody>
         </table>
+        {evaluators.length === 0 && !listError && <p className="runs-empty">No evaluators yet.</p>}
       </div>
     </section>
   );

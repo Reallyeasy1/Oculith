@@ -92,6 +92,16 @@ export function isFailed(status: TraceStatus): boolean {
   return status === "error" || status === "timeout" || status === "cancelled";
 }
 
+/** First span in document order that failed or carries an error — anchor for the ok-Run tool-failure banner. */
+export function firstFailedSpanId(spans: Span[]): string | undefined {
+  for (const span of spans) {
+    if (isFailed(span.status) || span.error) return span.spanId;
+    const child = firstFailedSpanId(span.children);
+    if (child) return child;
+  }
+  return undefined;
+}
+
 export function matchesSpan(span: Span, f: TraceFilter): boolean {
   if (f.category && span.category !== f.category) return false;
   if (f.status && span.status !== f.status) return false;
@@ -170,7 +180,9 @@ export function timelineTicks(total: number | undefined): TimelineTick[] {
   const nice = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 2.5 ? 2.5 : normalized <= 5 ? 5 : 10;
   const step = nice * magnitude;
   const values: number[] = [];
-  for (let value = 0; value < total; value += step) values.push(value);
+  // The last tick's label is right-anchored while interior labels are centered, so an interior tick past
+  // ~92% of the track lands under it (≈48px on a typical axis width); drop it rather than overlap.
+  for (let value = 0; value < total * 0.92; value += step) values.push(value);
   values.push(total);
   return values.map((milliseconds) => ({ milliseconds, percent: (milliseconds / total) * 100 }));
 }

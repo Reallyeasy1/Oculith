@@ -226,7 +226,12 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                 Nothing needs attention · {okCount} ok {okCount === 1 ? "Run" : "Runs"}
                 <button type="button" className="button button-ghost runs-empty-action" onClick={() => setFilter("all")}>Show all</button>
               </>
-            ) : "No Runs match this filter."}
+            ) : (
+              <>
+                No Runs match this filter.
+                <button type="button" className="button button-ghost runs-empty-action" onClick={() => { setFilter("attention"); setTaskOutcome("all"); }}>Clear filters</button>
+              </>
+            )}
           </div>
         )}
       </div>

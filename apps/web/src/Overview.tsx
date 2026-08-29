@@ -75,7 +75,7 @@ export default function Overview({ runs, cases, evalRuns, selectedAgent, onRunCa
                     <code title={evaluation.id}>{evaluation.id.slice(0, 8)}</code> · {evaluation.status === "running" ? "running" : !completed || completed.error ? "failed" : `${passCount ?? 0}/${completed.results.length} passed`}
                     {evaluation.templateHashMismatch && <> · <span className="badge badge-warn" title="The template changed after this case was recorded; this evaluation was forced against the current content.">template hash mismatch · forced</span></>}
                     {templateHashes.length > 0 && <> · <span className="trace-muted" title={templateHashes.map((item) => `${item.name}: ${item.hash}`).join("\n")}>templates: {templateHashes.map((item) => `${item.name} ${item.shortHash}`).join(", ")}</span></>}
-                  </span> : "—"}</td>
+                  </span> : <span className="dash">—</span>}</td>
                   <td className="case-actions">
                     <button type="button" className="button button-primary" onClick={() => void act(regressionCase, "run")} disabled={!selectedAgent || pendingCaseId === regressionCase.id} title={selectedAgent ? undefined : "Select an Agent from the sidebar first."}>{pendingCaseId === regressionCase.id ? "Working…" : "Run against " + (selectedAgent?.name ?? "this Agent")}</button>
                     <button type="button" className="button button-ghost" onClick={() => void act(regressionCase, "delete")} disabled={pendingCaseId === regressionCase.id}>Delete</button>
