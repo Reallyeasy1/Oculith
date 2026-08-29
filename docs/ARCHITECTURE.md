@@ -98,8 +98,8 @@ The behavioral rules are maintained in [GlassBox invariants](../.claude/rules/gl
 | Persisted | Derived at read time |
 | --- | --- |
 | Agent, message, Run (with `configHash`), regression case (`baselineConfigHash`, `templateHash`) and EvalRun records (per-case evaluator results, `templateHashes`) in `data/launchpad.json` (`JsonStore`) | Span trees, durations, first actionable failure and capability state (`buildTrace`, a pure function of the events) |
-| Redacted, bounded `ObservationEvent` lines in `data/traces/<runId>.ndjson` (`NdjsonTraceStore`) | Trace, Audit and Metrics projections |
-| Per-Run summaries (`RunSummaryStore`): `runSummaries` inside `launchpad.json`, or the `runs_summary` PostgreSQL table when `GLASSBOX_STORE=postgres` (`apps/server/sql/001_runs_summary.sql`); rolled up from the trace at Run end | Trace index: rebuilt in memory from the NDJSON files at boot, never written to disk |
+| Redacted, bounded `ObservationEvent` lines in `data/traces/<runId>.ndjson` (`NdjsonTraceStore`), or the `observation_events` PostgreSQL table when `GLASSBOX_STORE=postgres` (`PostgresTraceStore`, `apps/server/sql/002_observation_events.sql`) | Trace, Audit and Metrics projections |
+| Per-Run summaries (`RunSummaryStore`): `runSummaries` inside `launchpad.json`, or the `runs_summary` PostgreSQL table when `GLASSBOX_STORE=postgres` (`apps/server/sql/001_runs_summary.sql`); rolled up from the trace at Run end | Trace index: rebuilt in memory from the trace backend at boot, never persisted itself |
 | Agent workspaces below `workspaces/` and archived deletions below `workspaces/.deleted/` | Workspace change totals and token/tool metrics (from `workspace.changed` and model/tool events) |
 | Codex configuration and resumable sessions below `codex-home/` | EvalRun comparison (`compareEvalRuns`, including the template-hash mismatch flag), UI filters, attention counts and dashboard summaries |
 

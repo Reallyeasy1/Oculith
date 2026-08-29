@@ -5,8 +5,8 @@ import { loadConfig, writeCodexConfig } from "./config.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
 import { JsonEvaluationStore } from "./glassbox/evaluation.js";
 import { builtinRunEvaluators, EvaluationJobWorker, JsonEvaluationJobStore } from "./glassbox/jobs.js";
-import { NdjsonTraceStore } from "./glassbox/store.js";
 import { openSummaryStore } from "./glassbox/postgres-summary.js";
+import { openTraceStore } from "./glassbox/postgres-trace.js";
 import { scheduleRollup } from "./glassbox/summary.js";
 import { createRunner } from "./runner-factory.js";
 import { JsonStore } from "./store.js";
@@ -24,8 +24,8 @@ await runLogs.initialize();
 
 const glassboxLog = (message: string, meta: Record<string, unknown>) =>
   console.warn("[glassbox]", message, JSON.stringify(meta));
-const traceStore = new NdjsonTraceStore(config.traceDirectory, glassboxLog);
-await traceStore.initialize();
+// Traces follow GLASSBOX_STORE too (#175 phase B): NDJSON by default, PostgreSQL when opted in.
+const traceStore = await openTraceStore(config, glassboxLog);
 // Retention (FR-14) runs once per boot, before sequences are seeded so tombstones count. Never silent: one summary
 // line always, one line per evicted Run, and a failure here must not stop the server from booting.
 try {
@@ -71,6 +71,7 @@ const shutdown = async (signal: string) => {
   evaluationJobs.stop();
   await app.close();
   await summaries.close?.();
+  await traceStore.close?.();
   process.exit(0);
 };
 
