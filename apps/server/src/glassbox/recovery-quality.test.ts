@@ -60,6 +60,14 @@ describe("isRecoverableFailure", () => {
     const denied = { ...s1.events[3]!, type: "policy.denied", status: "unset" as const };
     expect(isRecoverableFailure(observationEventSchema.parse(denied))).toBe(true);
   });
+
+  it("never treats an observation-plane self-report as a failure the Agent could recover from", async () => {
+    const s1 = await recovered();
+    const degraded = { ...s1.events[1]!, type: "telemetry.degraded", name: "telemetry.degraded", status: "error" as const };
+    expect(isRecoverableFailure(observationEventSchema.parse(degraded))).toBe(false);
+    const truncated = { ...s1.events[1]!, type: "trace.truncated", name: "trace.truncated", status: "error" as const };
+    expect(isRecoverableFailure(observationEventSchema.parse(truncated))).toBe(false);
+  });
 });
 
 describe("RecoveryQualityEvaluator", () => {
@@ -129,6 +137,25 @@ describe("RecoveryQualityEvaluator", () => {
     const judge = new FakeTaskCompletionJudge(async () => ({ score: 5, passed: true, explanation: "wrong", citedEventIds: [] }));
     await expect(new RecoveryQualityEvaluator(source({ runId: summary.runId, userRequest: item.userRequest, finalResponse: item.finalResponse, events: [] }), judge)
       .evaluate(summary, definition)).rejects.toThrow("no stored events");
+  });
+
+  it("refuses a notEligible verdict the rollup contradicts: summary counts failures the events no longer show", async () => {
+    const item = await gaveUp();
+    const summary = summarize(item.events, item.capturePolicy); // counts the curl tool failure
+    const withoutFailure = item.events.filter((event) => event.eventId !== "evt_uat3_curl");
+    const judge = new FakeTaskCompletionJudge(async () => ({ score: 5, passed: true, explanation: "wrong", citedEventIds: [] }));
+    await expect(new RecoveryQualityEvaluator(source({ runId: summary.runId, userRequest: item.userRequest, finalResponse: item.finalResponse, events: withoutFailure }), judge)
+      .evaluate(summary, definition)).rejects.toThrow("counts failures");
+  });
+
+  it("flags evidenceIncomplete when the stored events read back fewer than the rollup counted", async () => {
+    const item = await recovered();
+    const summary = summarize(item.events, item.capturePolicy);
+    const partial = item.events.filter((event) => event.eventId !== "evt_s1_fix"); // a non-failure event was evicted
+    const judge = new FakeTaskCompletionJudge(async () => ({ score: 5, passed: true, explanation: "recovered", citedEventIds: ["evt_s1_fail1", "evt_s1_retry"] }));
+    const result = await new RecoveryQualityEvaluator(source({ runId: summary.runId, userRequest: item.userRequest, finalResponse: item.finalResponse, events: partial }), judge)
+      .evaluate(summary, definition);
+    expect(result.metadata).toMatchObject({ failuresObserved: 2, evidenceIncomplete: true });
   });
 
   it("rejects out-of-range or threshold-inconsistent judge verdicts", async () => {

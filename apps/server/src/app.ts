@@ -10,7 +10,7 @@ import { configHash, configSnapshot, type AgentService } from "./agent-service.j
 import { createTraceContext, type TraceContext } from "./glassbox/context.js";
 import { redactText } from "./glassbox/redact.js";
 import type { ObservationEmitter } from "./glassbox/emitter.js";
-import type { EvaluationStore } from "./glassbox/evaluation.js";
+import { SEEDED_EVALUATORS, type EvaluationStore } from "./glassbox/evaluation.js";
 import type { EvaluationJobWorker } from "./glassbox/jobs.js";
 import { redactAccessToken, type LiveNotifier } from "./glassbox/live.js";
 import { MetricStore, metricQueryBody } from "./glassbox/metrics.js";
@@ -447,7 +447,12 @@ export async function createApp(
         catch { throw new HttpError(400, "Evaluator name could not be scanned for secrets"); }
         const id = evaluatorSlug(safeName);
         if (!id) throw new HttpError(400, "Evaluator name must contain letters or digits");
-        if (id === "task_completion") throw new HttpError(409, 'Evaluator id "task_completion" is reserved for the seeded judge');
+        // Every seeded llm_judge id is reserved (#177 privacy review): a user-authored v2 of one would
+        // reach that id's registered runtime — e.g. recovery_quality's notEligible shortcut — with the
+        // user's own setsTaskOutcome/threshold, stamping outcomes the runtime never judged.
+        if (SEEDED_EVALUATORS.some((seed) => seed.id === id && seed.type === "llm_judge")) {
+          throw new HttpError(409, `Evaluator id "${id}" is reserved for a seeded judge`);
+        }
         const existing = await glassbox.evaluations!.getDefinition(id);
         if (existing && existing.type !== "llm_judge") throw new HttpError(409, `Evaluator "${id}" is a ${existing.type} evaluator and cannot become an llm_judge`);
         const evaluator = await glassbox.evaluations!.createDefinition({
