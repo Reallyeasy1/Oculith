@@ -292,7 +292,10 @@ export default function App() {
       );
   }, [refreshMessages, selectedId]);
 
-  const previewSupported = system?.runtimeProvider === "container";
+  // #335: gated on the probed engine state, not the Codex provider. The server probes per
+  // request, but this page fetches /api/system once at boot — an engine started after page
+  // load shows up on reload.
+  const previewSupported = system?.previewAvailable === true;
 
   useEffect(() => {
     setPreview(null);

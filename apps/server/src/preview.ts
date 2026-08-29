@@ -133,6 +133,19 @@ export class PreviewManager {
     return this.active.get(agentId)?.view;
   }
 
+  /** #335: previews need a reachable engine daemon and the runtime image they run (`preview.ts`
+   * containers use `containerRuntimeImage` too) — not `RUNTIME_PROVIDER=container`. Same probe
+   * shape as `ContainerCodexRunner.isAvailable()`, routed through the injectable engine. */
+  async isAvailable(): Promise<boolean> {
+    try {
+      await this.engine.exec(["version"], 5_000);
+      await this.engine.exec(["image", "inspect", this.config.containerRuntimeImage], 5_000);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Like `get`, but verified against the engine — a container observed as exited (or already
    * `--rm`-removed) gets a `stopped` event with reason `exited` and is cleared. An engine that
    * cannot answer (daemon down, timeout) is NOT an observation of exit: the last known state is

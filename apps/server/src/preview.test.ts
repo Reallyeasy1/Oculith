@@ -37,12 +37,16 @@ class FakeEngine implements PreviewEngine {
   psOutput = "";
   inspectOutput = "true\n";
   failRm: Error | undefined;
+  failVersion: Error | undefined;
+  failImageInspect: Error | undefined;
   async exec(args: string[]): Promise<{ stdout: string; stderr: string }> {
     this.calls.push(args);
     if (args[0] === "run") this.onRun?.(args);
     if (args[0] === "ps") return { stdout: this.psOutput, stderr: "" };
     if (args[0] === "inspect") return { stdout: this.inspectOutput, stderr: "" };
     if (args[0] === "rm" && this.failRm) throw this.failRm;
+    if (args[0] === "version" && this.failVersion) throw this.failVersion;
+    if (args[0] === "image" && this.failImageInspect) throw this.failImageInspect;
     return { stdout: "", stderr: "" };
   }
   runsFor(subcommand: string): string[][] {
@@ -363,7 +367,7 @@ describe("preview routes", () => {
     await app.close();
   });
 
-  it("validates the command and refuses outside the container provider", async () => {
+  it("validates the command and refuses when the container engine is unavailable", async () => {
     const harness = await makeHarness();
     const app = await createApp(harness.config, harness.service, undefined, harness.previews);
     const agent = await startedAgent(harness);
@@ -371,11 +375,24 @@ describe("preview routes", () => {
     expect(bad.statusCode).toBe(400);
     await app.close();
 
+    // #335: availability is about the engine, not the Codex provider — a broken engine is a 409
+    // in any provider mode…
+    const broken = await makeHarness();
+    broken.engine.failVersion = new Error("Cannot connect to the Docker daemon");
+    const brokenApp = await createApp(broken.config, broken.service, undefined, broken.previews);
+    const brokenAgent = await broken.service.createAgent({ name: "Broken" });
+    const refused = await brokenApp.inject({ method: "POST", url: "/api/agents/" + brokenAgent.id + "/preview", payload: {} });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().error).toMatch(/container engine/);
+    await brokenApp.close();
+
+    // …and a healthy engine serves previews even when Codex itself runs as a local process.
     const local = await makeHarness({ RUNTIME_PROVIDER: "local-process" });
     const localApp = await createApp(local.config, local.service, undefined, local.previews);
     const localAgent = await local.service.createAgent({ name: "Local" });
-    const refused = await localApp.inject({ method: "POST", url: "/api/agents/" + localAgent.id + "/preview", payload: {} });
-    expect(refused.statusCode).toBe(409);
+    const created = await localApp.inject({ method: "POST", url: "/api/agents/" + localAgent.id + "/preview", payload: {} });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().preview).toMatchObject({ command: "vite", port: 5180 });
     await localApp.close();
   });
 
@@ -425,5 +442,42 @@ describe("preview routes", () => {
     expect(harness.previews.get(agent.id)).toBeUndefined();
     expect(harness.engine.runsFor("rm").length).toBeGreaterThan(0);
     await app.close();
+  });
+});
+
+describe("preview availability (#335)", () => {
+  it("probes the engine daemon and the runtime image", async () => {
+    const harness = await makeHarness();
+    await expect(harness.previews.isAvailable()).resolves.toBe(true);
+    expect(harness.engine.calls).toContainEqual(["version"]);
+    expect(harness.engine.calls).toContainEqual(["image", "inspect", harness.config.containerRuntimeImage]);
+  });
+
+  it("is unavailable when the daemon does not answer or the image is missing", async () => {
+    const noDaemon = await makeHarness();
+    noDaemon.engine.failVersion = new Error("Cannot connect to the Docker daemon");
+    await expect(noDaemon.previews.isAvailable()).resolves.toBe(false);
+
+    const noImage = await makeHarness();
+    noImage.engine.failImageInspect = new Error("No such image: volc-agent-runtime:local");
+    await expect(noImage.previews.isAvailable()).resolves.toBe(false);
+  });
+
+  it("GET /api/system reports previewAvailable from the probe, and false without a manager", async () => {
+    const harness = await makeHarness({ RUNTIME_PROVIDER: "local-process" });
+    const app = await createApp(harness.config, harness.service, undefined, harness.previews);
+    const healthy = await app.inject({ method: "GET", url: "/api/system" });
+    expect(healthy.statusCode).toBe(200);
+    expect(healthy.json().previewAvailable).toBe(true);
+
+    harness.engine.failVersion = new Error("daemon down");
+    const broken = await app.inject({ method: "GET", url: "/api/system" });
+    expect(broken.json().previewAvailable).toBe(false);
+    await app.close();
+
+    const bare = await createApp(harness.config, harness.service);
+    const withoutManager = await bare.inject({ method: "GET", url: "/api/system" });
+    expect(withoutManager.json().previewAvailable).toBe(false);
+    await bare.close();
   });
 });

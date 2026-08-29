@@ -221,7 +221,12 @@ export async function createApp(
 
   app.get("/api/auth", async () => ({ required: config.authToken.length > 0 }));
 
-  app.get("/api/system", async () => service.systemInfo());
+  // #335: preview availability rides on /api/system so the web gate reflects the probed engine
+  // state, not the Codex provider; without a PreviewManager the feature is simply off.
+  app.get("/api/system", async () => ({
+    ...(await service.systemInfo()),
+    previewAvailable: previews ? await previews.isAvailable() : false,
+  }));
 
   app.get("/api/agents", async () => ({ agents: service.listAgents() }));
 
@@ -345,8 +350,14 @@ export async function createApp(
       const { id } = agentIdParams.parse(request.params);
       const body = previewBody.parse(request.body ?? {});
       const agent = service.getAgent(id);
-      if (config.runtimeProvider !== "container") {
-        throw new HttpError(409, "Workspace preview needs the container runtime (RUNTIME_PROVIDER=container)");
+      // #335: the prerequisite is a working engine + runtime image, not RUNTIME_PROVIDER —
+      // Codex may run as a local process while Docker hosts the (still sandboxed) preview.
+      if (!(await previews.isAvailable())) {
+        throw new HttpError(
+          409,
+          "Workspace preview needs a running container engine (docker/podman) and the runtime image — build it with: docker build -f Dockerfile.runtime -t " +
+            config.containerRuntimeImage + " .",
+        );
       }
       if (agent.status === "busy") {
         throw new HttpError(409, "A run is in progress — the workspace is mounted in the sandbox. Stop the run first.");

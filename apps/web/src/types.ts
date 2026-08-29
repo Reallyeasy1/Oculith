@@ -402,6 +402,8 @@ export interface SystemInfo {
   runtimeProvider: "local-process" | "container";
   containerEngine: string | null;
   runtime: string;
+  /** #335: probed per request — engine daemon reachable and the runtime image present. */
+  previewAvailable: boolean;
 }
 
 export type Assertion =
