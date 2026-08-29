@@ -1,12 +1,12 @@
 import { execFile } from "node:child_process";
 import { spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
-import type { AppConfig } from "./config.js";
+import { configuredModel, type AppConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
 import { CodexActivityTracker } from "./glassbox/activity.js";
 import { CodexStreamObserver, RUNNER_ACTOR, type CodexStreamSink } from "./glassbox/codex-observer.js";
 import { createDefaultEmitter, type ObservationEmitter } from "./glassbox/emitter.js";
-import { newId } from "./glassbox/schema.js";
+import { capturesSummaries, newId } from "./glassbox/schema.js";
 import { redactText } from "./glassbox/redact.js";
 import type {
   AgentRunner,
@@ -191,7 +191,10 @@ export class CodexRunner implements AgentRunner {
       : undefined;
     const observer =
       request.trace && span
-        ? new CodexStreamObserver(this.emitter, request.trace, span.spanId, "CodexRunner")
+        ? new CodexStreamObserver(this.emitter, request.trace, span.spanId, "CodexRunner", {
+            log: request.logger,
+            resume: request.threadId !== null,
+          })
         : undefined;
     const sink: CodexStreamSink | undefined = request.onActivity
       ? new CodexActivityTracker(request.onActivity, observer)
@@ -203,6 +206,9 @@ export class CodexRunner implements AgentRunner {
       env: this.childEnvironment(),
       stdio: ["ignore", "pipe", "pipe"],
     });
+    request.logger?.info(
+      "Runner spawned: adapter=CodexRunner model=" + configuredModel(this.config) + " sandbox=" + this.config.codexSandboxMode,
+    );
     const settled = new Promise<void>((resolve) => {
       child.once("close", () => resolve());
       child.once("error", () => resolve());
@@ -237,14 +243,18 @@ export class CodexRunner implements AgentRunner {
         return;
       }
       if (target === "stdout") {
-        if (!firstOutputObserved && chunk.byteLength > 0 && request.trace && span) {
+        if (!firstOutputObserved && chunk.byteLength > 0) {
           firstOutputObserved = true;
-          this.emitter.emit({
-            ...request.trace, spanId: newId("spn"), parentSpanId: span.spanId, ...RUNNER_ACTOR,
-            type: "runtime.codex.first_output", category: "runtime", name: "codex first output", status: "ok",
-            source: { component: "AgentRunner", adapter: "CodexRunner", observed: true },
-            attributes: { latencyMs: Math.max(0, Date.now() - runtimeStartedAt) },
-          });
+          const latencyMs = Math.max(0, Date.now() - runtimeStartedAt);
+          request.logger?.info("Codex first output after " + latencyMs + " ms");
+          if (request.trace && span) {
+            this.emitter.emit({
+              ...request.trace, spanId: newId("spn"), parentSpanId: span.spanId, ...RUNNER_ACTOR,
+              type: "runtime.codex.first_output", category: "runtime", name: "codex first output", status: "ok",
+              source: { component: "AgentRunner", adapter: "CodexRunner", observed: true },
+              attributes: { latencyMs },
+            });
+          }
         }
         stdout += chunk.toString("utf8");
         const lines = stdout.split(/\r?\n/);
@@ -296,7 +306,7 @@ export class CodexRunner implements AgentRunner {
         ...(observer?.sessionId ? { sessionId: observer.sessionId } : {}),
         stderrBytes,
       };
-      const stderrSummary = this.emitter.capturePolicy === "safe_summary" && stderr.trim()
+      const stderrSummary = capturesSummaries(this.emitter.capturePolicy) && stderr.trim()
         ? { summary: { text: redactText(stderr).text.slice(-2_048), policy: "safe_summary" as const } }
         : {};
       if (active.cancelled) {
@@ -376,6 +386,7 @@ export class CodexRunner implements AgentRunner {
         output,
         threadId: parsed.threadId,
         usage: parsed.usage,
+        ...(observer ? { stats: observer.stats() } : {}),
       };
     } catch (error) {
       // Only reached when the spawn itself failed (the branches above end the span first).

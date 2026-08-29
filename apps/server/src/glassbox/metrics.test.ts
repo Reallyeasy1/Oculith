@@ -109,6 +109,23 @@ describe("percentile (nearest-rank)", () => {
 });
 
 describe("computeMetric on the 30-summary fixture", () => {
+  it("aggregates persisted estimated cost across scalar and series queries", () => {
+    const rows = [
+      stub({ runId: "cost-1", startedAt: d(1, "00:10"), estimatedCostUsd: 0.001 }),
+      stub({ runId: "cost-2", startedAt: d(1, "01:10"), estimatedCostUsd: 0.003 }),
+      stub({ runId: "cost-3", startedAt: d(2, "00:10"), estimatedCostUsd: undefined }),
+    ];
+    const metric = (aggregation: MetricQuery["aggregation"]) => computeMetric(q({ metric: "estimated_cost_usd", aggregation }), rows);
+    expect(metric({ type: "rate" })).toMatchObject({ value: 0.002, provenance: { count: 3, sampled: 2 } });
+    expect(metric({ type: "avg" }).value).toBe(0.002);
+    expect(metric({ type: "p50" }).value).toBe(0.001);
+    expect(metric({ type: "p95" }).value).toBe(0.003);
+    expect(metric({ type: "series", bucket: "day", statistic: "avg" }).value).toEqual([
+      { bucket: "2026-08-01T00:00:00.000Z", value: 0.002, count: 2, sampled: 2 },
+      { bucket: "2026-08-02T00:00:00.000Z", value: null, count: 1, sampled: 0 },
+    ]);
+  });
+
   it("computes every telemetry metric x aggregation cell for cfg-a by hand", () => {
     // 18 runs; 16 terminal (a11, a17 running); 12 completed
     expect(scalar("execution_completion", "rate", { configHash: "cfg-a" })).toMatchObject({ kind: "telemetry", value: 12 / 16, provenance: { count: 18, sampled: 16 } });
@@ -120,6 +137,11 @@ describe("computeMetric on the 30-summary fixture", () => {
     expect(scalar("tool_calls", "avg", { configHash: "cfg-a" }).value).toBe(70 / 18);
     expect(scalar("tool_calls", "p50", { configHash: "cfg-a" }).value).toBe(3);
     expect(scalar("tool_calls", "p95", { configHash: "cfg-a" }).value).toBe(10);
+    // failures per run sorted: [0×10, 1×4, 2×3, 3] — sum 13, every row carries the field (#213)
+    expect(scalar("tool_failures", "count", { configHash: "cfg-a" })).toMatchObject({ value: 13, provenance: { count: 18, sampled: 18 } });
+    expect(scalar("tool_failures", "avg", { configHash: "cfg-a" }).value).toBe(13 / 18);
+    expect(scalar("tool_failures", "p50", { configHash: "cfg-a" }).value).toBe(0);
+    expect(scalar("tool_failures", "p95", { configHash: "cfg-a" }).value).toBe(3);
     // 14 rows carry tokens (a05, a07, a11, a16 do not); totals sum 8325, sorted p50 = 525, p95 = 1275
     expect(scalar("tokens", "count", { configHash: "cfg-a" })).toMatchObject({ value: 8325, provenance: { count: 18, sampled: 14 } });
     expect(scalar("tokens", "avg", { configHash: "cfg-a" }).value).toBe(8325 / 14);

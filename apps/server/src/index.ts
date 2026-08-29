@@ -6,8 +6,8 @@ import { ObservationEmitter } from "./glassbox/emitter.js";
 import { JsonEvaluationStore } from "./glassbox/evaluation.js";
 import { builtinRunEvaluators, EvaluationJobWorker, JsonEvaluationJobStore } from "./glassbox/jobs.js";
 import { ArkTaskCompletionJudge, FakeTaskCompletionJudge, JsonTaskCompletionSource, TaskCompletionEvaluator } from "./glassbox/task-completion.js";
-import { NdjsonTraceStore } from "./glassbox/store.js";
 import { openSummaryStore } from "./glassbox/postgres-summary.js";
+import { openTraceStore } from "./glassbox/postgres-trace.js";
 import { scheduleRollup } from "./glassbox/summary.js";
 import { createRunner } from "./runner-factory.js";
 import { JsonStore } from "./store.js";
@@ -25,8 +25,8 @@ await runLogs.initialize();
 
 const glassboxLog = (message: string, meta: Record<string, unknown>) =>
   console.warn("[glassbox]", message, JSON.stringify(meta));
-const traceStore = new NdjsonTraceStore(config.traceDirectory, glassboxLog);
-await traceStore.initialize();
+// Traces follow GLASSBOX_STORE too (#175 phase B): NDJSON by default, PostgreSQL when opted in.
+const traceStore = await openTraceStore(config, glassboxLog);
 // Retention (FR-14) runs once per boot, before sequences are seeded so tombstones count. Never silent: one summary
 // line always, one line per evicted Run, and a failure here must not stop the server from booting.
 try {
@@ -65,8 +65,12 @@ const taskCompletion = taskCompletionJudge
 const evaluationJobs = new EvaluationJobWorker({ jobs: new JsonEvaluationJobStore(store), summaries, evaluations, evaluators: builtinRunEvaluators(taskCompletion), log: glassboxLog });
 await evaluationJobs.initialize();
 evaluationJobs.start();
-const rollup = { traces: traceStore, emitter, summaries, log: glassboxLog };
-const service = new AgentService(config, store, workspaces, runner, emitter, (runId) => void scheduleRollup(rollup, runId), runLogs);
+const rollup = { traces: traceStore, emitter, summaries, log: glassboxLog, pricing: {
+  inputPerMillion: config.glassboxPricePerMtokInput,
+  cachedInputPerMillion: config.glassboxPricePerMtokCachedInput,
+  outputPerMillion: config.glassboxPricePerMtokOutput,
+} };
+const service = new AgentService(config, store, workspaces, runner, emitter, (runId, verify) => void scheduleRollup(rollup, runId, verify), runLogs);
 await service.initialize();
 await service.startHeartbeat();
 
@@ -78,6 +82,7 @@ const shutdown = async (signal: string) => {
   evaluationJobs.stop();
   await app.close();
   await summaries.close?.();
+  await traceStore.close?.();
   process.exit(0);
 };
 

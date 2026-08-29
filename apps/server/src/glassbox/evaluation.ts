@@ -95,6 +95,15 @@ function current(results: readonly EvaluationResult[]): EvaluationResult[] {
   return [...latest.values()].sort((a, b) => b.evaluatedAt.localeCompare(a.evaluatedAt));
 }
 
+/**
+ * Retention bound on stored results: `putResult` appends into a full-file JSON rewrite, so an unbounded
+ * history would grow every write forever once jobs (#170) batch-evaluate history. At the cap, superseded
+ * rows (ones `current()` no longer serves because a newer verdict exists for the same run × evaluator ×
+ * version) are evicted first, oldest `evaluatedAt` leading; only when none remain does the oldest current
+ * verdict fall out — so churn elsewhere cannot silently erase a run's only verdict.
+ */
+export const MAX_EVALUATION_RESULTS = 5_000;
+
 export class JsonEvaluationStore implements EvaluationStore {
   constructor(
     private readonly store: JsonStore,
@@ -102,6 +111,7 @@ export class JsonEvaluationStore implements EvaluationStore {
     private readonly redact: (text: string) => string = (text) => redactText(text).text.slice(0, 4_096),
     /** Runtime provenance for the seeded task_completion@1 definition. */
     private readonly taskCompletionModel?: string | undefined,
+    private readonly maxResults: number = MAX_EVALUATION_RESULTS,
   ) {}
 
   private safeText(text: string): string {
@@ -120,6 +130,9 @@ export class JsonEvaluationStore implements EvaluationStore {
   }
 
   async initialize(): Promise<void> {
+    // Boot is read-only once the catalogue is seeded: every mutate() rewrites the whole launchpad.json.
+    const existing = this.store.snapshot().evaluatorDefinitions;
+    if (SEEDED_EVALUATORS.every((seed) => existing.some((item) => item.id === seed.id && item.version === 1))) return;
     await this.store.mutate((database) => {
       const timestamp = new Date().toISOString();
       for (const seed of SEEDED_EVALUATORS) {
@@ -181,7 +194,27 @@ export class JsonEvaluationStore implements EvaluationStore {
       // FR-21: `evaluatorModel` is provenance of a judge only; a deterministic result never carries one.
       ...(definition.type === "llm_judge" && input.evaluatorModel !== undefined ? { evaluatorModel: this.safeText(input.evaluatorModel) } : { evaluatorModel: undefined }),
     };
-    await this.store.mutate((database) => { database.evaluationResults.push(structuredClone(result)); });
+    await this.store.mutate((database) => {
+      database.evaluationResults.push(structuredClone(result));
+      if (database.evaluationResults.length > this.maxResults) {
+        const keyOf = (row: EvaluationResult) => `${row.runId}\0${row.evaluatorId}\0${row.evaluatorVersion}`;
+        // Same winner as current(): the latest evaluatedAt, later append breaking ties.
+        const latest = new Map<string, EvaluationResult>();
+        for (const row of database.evaluationResults) {
+          const prior = latest.get(keyOf(row));
+          if (!prior || row.evaluatedAt >= prior.evaluatedAt) latest.set(keyOf(row), row);
+        }
+        const oldestFirst = (rows: EvaluationResult[]) => rows.sort((a, b) => a.evaluatedAt.localeCompare(b.evaluatedAt));
+        const superseded = oldestFirst(database.evaluationResults.filter((row) => latest.get(keyOf(row)) !== row));
+        const currentRows = oldestFirst(database.evaluationResults.filter((row) => latest.get(keyOf(row)) === row));
+        const evict = new Set<EvaluationResult>();
+        for (const row of [...superseded, ...currentRows]) {
+          if (database.evaluationResults.length - evict.size <= this.maxResults) break;
+          evict.add(row);
+        }
+        database.evaluationResults = database.evaluationResults.filter((row) => !evict.has(row));
+      }
+    });
     // The summary store owns taskOutcome for every backend (JSON or Postgres); FR-22 source vocabulary.
     if (definition.setsTaskOutcome) await this.summaries.setTaskOutcome(input.runId, input.passed ? "passed" : "failed", `evaluator:${input.evaluatorId}@${input.evaluatorVersion}`);
     return structuredClone(result);

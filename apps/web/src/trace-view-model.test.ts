@@ -3,7 +3,7 @@
 // (vitest is hoisted from the server workspace — no new dependency.)
 import { describe, expect, it } from "vitest";
 import type { Span, TraceView } from "./types";
-import { EMPTY_FILTER, barGeometry, capabilityBadgeLabel, capabilityCopy, defaultExpanded, interruptedSpanDurationMs, matchesSpan, refreshIntervalMs, spanStatusLabel, timelineTicks, visibleRows } from "./trace-view-model";
+import { ACTORS_TOOLTIP, EMPTY_FILTER, barGeometry, capabilityBadgeLabel, capabilityCopy, defaultExpanded, formatActors, formatReasoningTokens, interruptedSpanDurationMs, matchesSpan, refreshIntervalMs, spanStatusLabel, timelineTicks, visibleRows } from "./trace-view-model";
 
 const t0 = "2026-08-26T10:00:00.000Z";
 const at = (ms: number) => new Date(Date.parse(t0) + ms).toISOString();
@@ -37,6 +37,22 @@ const view: TraceView = {
 };
 
 describe("trace-view-model", () => {
+  it("formats observed reasoning tokens without fabricating missing evidence", () => {
+    expect(formatReasoningTokens({ reasoning: 12_400 })).toBe("12k reasoning tokens");
+    expect(formatReasoningTokens(undefined)).toBe("");
+  });
+
+  it("formats audit actors with denial count, truncating long lists into the title (#250)", () => {
+    expect(formatActors({ actions: 0, denials: 0, actors: [] })).toEqual({ text: "—", title: ACTORS_TOOLTIP });
+    expect(formatActors({ actions: 5, denials: 0, actors: ["agent/agt-1", "human/local-user"] }))
+      .toEqual({ text: "agent/agt-1 · human/local-user", title: ACTORS_TOOLTIP });
+    expect(formatActors({ actions: 5, denials: 3, actors: ["agent/agt-1", "service/runner"] }).text)
+      .toBe("agent/agt-1 · service/runner · 3 denied");
+    const many = formatActors({ actions: 9, denials: 1, actors: ["a/1", "b/2", "c/3", "d/4", "e/5", "f/6"] });
+    expect(many.text).toBe("a/1 · b/2 · c/3 · d/4 · … · 1 denied");
+    expect(many.title).toBe(`${ACTORS_TOOLTIP} All actors: a/1 · b/2 · c/3 · d/4 · e/5 · f/6`);
+  });
+
   it("keeps terminal evidence labels short and layer-specific", () => {
     expect(capabilityCopy("unknown", "cancelled").label).toBe("no evidence");
     expect(capabilityBadgeLabel("model", "unknown", "cancelled")).toBe("model: no evidence");

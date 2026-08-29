@@ -12,30 +12,41 @@ import {
   type SpanHandle,
 } from "./glassbox/emitter.js";
 import { redactText } from "./glassbox/redact.js";
-import { newId, type TraceStatus } from "./glassbox/schema.js";
+import { capturesSummaries, newId, type TraceStatus } from "./glassbox/schema.js";
+import { PostCheckRunner } from "./postcheck-runner.js";
 import { JsonStore } from "./store.js";
 import type {
   Agent,
   AgentConfigSnapshot,
   AgentRun,
+  Database,
   EvalRun,
   AgentRunner,
   CreateAgentInput,
   Message,
+  QueuedMessageReceipt,
   RegressionCase,
   RunActivity,
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
-import type { RunLogStore } from "./run-log-store.js";
+import { LOG_SECRET_ASSIGNMENT, type RunLogStore } from "./run-log-store.js";
 import { boundedChangedPaths, diffWorkspace, snapshotWorkspace } from "./workspace-snapshot.js";
 
 const now = () => new Date().toISOString();
 const HEARTBEAT_INTERVAL_MS = 15_000;
+/** Max messages a busy Agent will queue (#254); beyond it the POST is refused with 429. */
+export const PENDING_MESSAGES_CAP = 10;
+// ponytail: fixed 30s — the eval post_check default; make it per-Agent when someone needs more.
+const VERIFY_TIMEOUT_MS = 30_000;
+/** Set on a RunSummary whose taskOutcome came from the Agent's verifyCommand (#253). */
+export const VERIFY_OUTCOME_SOURCE = "post_check";
+/** taskOutcome verdict handed to the rollup after a completed ordinary Run (#253). */
+export interface VerifyOutcome { taskOutcome: "passed" | "failed"; source: string }
 export const serverHeartbeatPath = (dataDirectory: string) => path.join(dataDirectory, "server-heartbeat.json");
 
 interface AppLogger {
-  child(bindings: Record<string, unknown>): { info(message: string): void; error(error: unknown, message?: string): void };
+  child(bindings: Record<string, unknown>): { info(message: string): void; warn?(message: string): void; error(error: unknown, message?: string): void };
 }
 
 type ExecutionOptions = {
@@ -45,7 +56,6 @@ type ExecutionOptions = {
   tags?: Record<string, string | number | boolean>;
   persistMessages?: boolean;
   persistThread?: boolean;
-  cleanup?: () => Promise<void>;
 };
 
 export interface IsolatedRunInput {
@@ -64,6 +74,10 @@ export function configSnapshot(agent: Agent, config: AppConfig): AgentConfigSnap
     runtimeProvider: config.runtimeProvider,
     containerRuntimeImage: config.containerRuntimeImage,
     capturePolicy: config.glassboxCapturePolicy,
+    // Hashed like instructions: the command text may carry operator secrets and the snapshot is shown in the UI.
+    ...(agent.verifyCommand
+      ? { verifyCommand: "sha256:" + createHash("sha256").update(agent.verifyCommand).digest("hex") }
+      : {}),
   };
 }
 
@@ -105,8 +119,9 @@ export class AgentService {
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
     private readonly emitter: ObservationEmitter = createDefaultEmitter(),
-    /** Fires after a Run's terminal event is emitted (Run end and restart-cancel); wired to the summary rollup (#168). */
-    private readonly onRunEnded?: ((runId: string) => void) | undefined,
+    /** Fires after a Run's terminal event is emitted (Run end and restart-cancel); wired to the summary rollup (#168).
+     * `verify` carries the verifyCommand verdict of a completed ordinary Run (#253) for the rollup to stamp. */
+    private readonly onRunEnded?: ((runId: string, verify?: VerifyOutcome) => void) | undefined,
     private readonly runLogs?: RunLogStore | undefined,
   ) {}
 
@@ -165,6 +180,14 @@ export class AgentService {
         attributes: { reason: "server_restart", ...(lastSeenAt ? { lastSeenAt } : {}) },
       });
       this.onRunEnded?.(run.id);
+    }
+    // #254: messages queued before the restart are kept. The interrupted Run was cancelled above and
+    // nothing else would ever trigger a dequeue, so resume each Agent's queue now, noting the
+    // interruption on the first dequeued Run's log.
+    for (const agent of this.store.snapshot().agents) {
+      if (agent.status === "ready" && agent.pendingMessages?.length) {
+        await this.dequeueAndStart(agent.id, "Server restarted while messages were queued for this Agent; resuming the queue");
+      }
     }
   }
 
@@ -230,6 +253,7 @@ export class AgentService {
       workspaceName,
       workspaceManaged: input.workspace === undefined,
       ...(input.template ? { workspaceTemplate: input.template } : {}),
+      ...(input.verifyCommand?.trim() ? { verifyCommand: input.verifyCommand.trim() } : {}),
       codexThreadId: null,
       lastError: null,
       createdAt: timestamp,
@@ -263,6 +287,11 @@ export class AgentService {
       if (input.name !== undefined) agent.name = input.name.trim();
       if (input.description !== undefined) agent.description = input.description.trim();
       if (input.instructions !== undefined) agent.instructions = input.instructions.trim();
+      if (input.verifyCommand !== undefined) {
+        const command = input.verifyCommand.trim();
+        if (command) agent.verifyCommand = command;
+        else delete agent.verifyCommand;
+      }
       if (input.workspace !== undefined && nextWorkspacePath !== undefined && nextWorkspacePath !== agent.workspacePath) {
         agent.workspacePath = nextWorkspacePath;
         agent.workspaceName = input.workspace.trim();
@@ -300,7 +329,10 @@ export class AgentService {
   }
 
   async startAgent(id: string): Promise<Agent> {
-    return this.setStatus(id, "ready");
+    await this.setStatus(id, "ready");
+    // #254: a stop keeps the queue without starting it; starting the Agent resumes it.
+    await this.dequeueAndStart(id);
+    return this.getAgent(id);
   }
 
   async stopAgent(id: string): Promise<Agent> {
@@ -398,7 +430,7 @@ export class AgentService {
     prompt: string,
     context?: TraceContext,
     options: ExecutionOptions = {},
-  ): Promise<{ run: AgentRun; message: Message }> {
+  ): Promise<{ run: AgentRun; message: Message } | QueuedMessageReceipt> {
     if (!isModelConfigured(this.config)) {
       throw new HttpError(
         503,
@@ -430,7 +462,7 @@ export class AgentService {
       content: prompt,
       createdAt: timestamp,
     };
-    const agentAtStart = await this.store.mutate((database) => {
+    const outcome = await this.store.mutate((database): { agent: Agent } | { receipt: QueuedMessageReceipt } => {
       const storedAgent = database.agents.find((item) => item.id === agentId);
       if (!storedAgent) {
         throw new HttpError(404, "Agent not found");
@@ -439,7 +471,19 @@ export class AgentService {
         throw new HttpError(409, "Start the Agent before sending a message");
       }
       if (storedAgent.status === "busy") {
-        throw new HttpError(409, "This Agent is already running");
+        // #254: a busy Agent queues plain messages instead of failing. Isolated/eval Runs
+        // (the only callers passing runId/workspacePath) carry options a dequeue could not
+        // reproduce, so they keep the 409.
+        if (options.runId !== undefined || options.workspacePath !== undefined) {
+          throw new HttpError(409, "This Agent is already running");
+        }
+        const pending = (storedAgent.pendingMessages ??= []);
+        if (pending.length >= PENDING_MESSAGES_CAP) {
+          throw new HttpError(429, "This Agent's message queue is full (" + PENDING_MESSAGES_CAP + " pending)");
+        }
+        pending.push({ id: message.id, content: prompt, queuedAt: timestamp });
+        storedAgent.updatedAt = timestamp;
+        return { receipt: { queued: true, position: pending.length, messageId: message.id } };
       }
       const workspaceBusy = database.agents.some((candidate) =>
         candidate.id !== storedAgent.id && candidate.status === "busy" && path.resolve(candidate.workspacePath) === path.resolve(storedAgent.workspacePath));
@@ -452,10 +496,16 @@ export class AgentService {
       storedAgent.status = "busy";
       storedAgent.lastError = null;
       storedAgent.updatedAt = timestamp;
-      return options.workspacePath
-        ? { ...snapshot, workspacePath: options.workspacePath, ...(options.workspaceName ? { workspaceName: options.workspaceName } : {}), codexThreadId: options.persistThread === false ? null : snapshot.codexThreadId }
-        : snapshot;
+      return {
+        agent: options.workspacePath
+          ? { ...snapshot, workspacePath: options.workspacePath, ...(options.workspaceName ? { workspaceName: options.workspaceName } : {}), codexThreadId: options.persistThread === false ? null : snapshot.codexThreadId }
+          : snapshot,
+      };
     });
+    // A queued message has no Run yet: like the rejected path below, ctx stays unset so the ingress
+    // hook emits nothing — the dequeued Run opens its own trace later (invariant 3).
+    if ("receipt" in outcome) return outcome.receipt;
+    const agentAtStart = outcome.agent;
     // Published only once the Run really exists (invariant 3: never fabricate evidence). A rejected
     // request (404/409) must leave `ctx.runId`/`ctx.agentId` unset, or the ingress `onResponse` hook
     // emits an orphan http.request.completed for a Run that never was.
@@ -491,7 +541,18 @@ export class AgentService {
       name: "run.created",
       status: "ok",
       source: { component: "AgentService", observed: true },
-      attributes: { promptBytes: Buffer.byteLength(prompt, "utf8"), configHash: run.configHash!, workspace: agentAtStart.workspaceName ?? path.basename(agentAtStart.workspacePath), ...options.tags },
+      attributes: {
+        promptBytes: Buffer.byteLength(prompt, "utf8"),
+        configHash: run.configHash!,
+        workspace: agentAtStart.workspaceName ?? path.basename(agentAtStart.workspacePath),
+        ...options.tags,
+        promptHash: createHash("sha256").update(prompt, "utf8").digest("hex").slice(0, 16),
+      },
+      // #258: bounded prompt summary, opt-in only — same gate as the run.completed outcome summary.
+      // The emitter's redactEvent scans it and would also strip it at metadata_only (policy_drop_summary).
+      ...(capturesSummaries(this.emitter.capturePolicy)
+        ? { summary: { text: redactText(prompt).text.slice(0, 240), policy: "safe_summary" as const } }
+        : {}),
     });
     this.spans.set(runId, {
       traceId: ctx.traceId,
@@ -531,7 +592,7 @@ export class AgentService {
    * Run a prompt from a new template copy and a fresh runner thread. It deliberately does not add
    * conversation messages or a thread id to the target Agent, while retaining the ordinary Run/trace.
    */
-  async runIsolated(input: IsolatedRunInput): Promise<{ run: AgentRun; message: Message }> {
+  async runIsolated(input: IsolatedRunInput): Promise<{ run: AgentRun; message: Message; workspacePath: string; cleanup: () => Promise<void> }> {
     const runId = randomUUID();
     const agent = this.getAgent(input.agentId);
     let materialized = false;
@@ -539,15 +600,24 @@ export class AgentService {
       const templateHash = await this.workspaces.templateHash(input.workspaceTemplate);
       const workspacePath = await this.workspaces.materializeEvalWorkspace(runId, input.workspaceTemplate, agent);
       materialized = true;
-      return await this.sendMessage(input.agentId, input.prompt, undefined, {
+      const result = await this.sendMessage(input.agentId, input.prompt, undefined, {
         runId,
         workspacePath,
         workspaceName: input.workspaceTemplate,
         tags: { ...input.tags, templateHash },
         persistMessages: false,
         persistThread: false,
-        ...(this.config.keepEvalWorkspaces ? {} : { cleanup: () => this.workspaces.removeEvalWorkspace(runId) }),
       });
+      // Isolated Runs pass runId/workspacePath, which sendMessage never queues (#254).
+      if ("queued" in result) throw new HttpError(409, "This Agent is already running");
+      // #282 ordering: the workspace must outlive the Run — post_check assertions execute in it after
+      // the Run finishes, so removal is the caller's job (EvalRunner cleans up after evaluateAll), not
+      // executeRun's. KEEP_EVAL_WORKSPACES=1 keeps the workspace forever by making cleanup a no-op.
+      return {
+        ...result,
+        workspacePath,
+        cleanup: this.config.keepEvalWorkspaces ? async () => undefined : () => this.workspaces.removeEvalWorkspace(runId),
+      };
     } catch (error) {
       if (materialized) await this.workspaces.removeEvalWorkspace(runId);
       throw error;
@@ -568,11 +638,128 @@ export class AgentService {
         this.config.runtimeProvider === "container"
           ? this.config.containerEngine
           : null,
+      // #260: the label must match runtimeProvider — local-process is a child process,
+      // container is the per-run application container (engine named when known).
       runtime:
         this.config.runtimeProvider === "container"
-          ? "Codex CLI in " + this.config.containerEngine + " Runtime"
-          : "Codex CLI in application container",
+          ? `Codex CLI in ${this.config.containerEngine} container`
+          : "Codex CLI as local process",
     };
+  }
+
+  /** Removes one still-pending message from the Agent's queue (#254); a message already dequeued into a Run is a 404. */
+  async cancelPendingMessage(agentId: string, messageId: string): Promise<void> {
+    await this.store.mutate((database) => {
+      const agent = database.agents.find((item) => item.id === agentId);
+      if (!agent) throw new HttpError(404, "Agent not found");
+      const index = (agent.pendingMessages ?? []).findIndex((item) => item.id === messageId);
+      if (index < 0) throw new HttpError(404, "Pending message not found");
+      agent.pendingMessages!.splice(index, 1);
+      agent.updatedAt = now();
+    });
+  }
+
+  /**
+   * #254: shifts the Agent's next pending message into a queued Run + user Message and re-claims the
+   * Agent. MUST run inside the store mutation that frees the Agent — that is where the one-active-Run
+   * invariant lives, so freeing and re-claiming are one atomic transaction.
+   */
+  private dequeueNext(
+    database: Database,
+    agent: Agent,
+    ctx: TraceContext,
+  ): { run: AgentRun; agentAtStart: Agent; ctx: TraceContext; queuedMs: number } | undefined {
+    const next = agent.pendingMessages?.shift();
+    if (!next) return undefined;
+    const timestamp = now();
+    const run: AgentRun = {
+      id: randomUUID(),
+      traceId: ctx.traceId,
+      traceParentSpanId: ctx.rootSpanId,
+      agentId: agent.id,
+      status: "queued",
+      prompt: next.content,
+      output: null,
+      error: null,
+      usage: null,
+      startedAt: null,
+      completedAt: null,
+      createdAt: timestamp,
+    };
+    run.configSnapshot = configSnapshot(agent, this.config);
+    run.configHash = configHash(run.configSnapshot);
+    database.runs.push(run);
+    // The chat Message keeps the pending id and queuedAt: it is the same user utterance, sent then.
+    database.messages.push({ id: next.id, agentId: agent.id, runId: run.id, role: "user", content: next.content, createdAt: next.queuedAt });
+    agent.status = "busy";
+    agent.lastError = null;
+    agent.updatedAt = timestamp;
+    return {
+      run: structuredClone(run),
+      agentAtStart: structuredClone(agent),
+      ctx,
+      queuedMs: Math.max(0, Date.parse(timestamp) - Date.parse(next.queuedAt)),
+    };
+  }
+
+  /** Emits the dequeued Run's own `run.created` (with `queuedMs`) on its fresh trace and starts execution. */
+  private startDequeuedRun(
+    dequeued: { run: AgentRun; agentAtStart: Agent; ctx: TraceContext; queuedMs: number },
+    restartNote?: string,
+  ): void {
+    const { run, agentAtStart, ctx, queuedMs } = dequeued;
+    if (restartNote) {
+      // #232 log seam: one line on the new Run's log telling the operator the wait crossed a restart.
+      void this.runLogs
+        ?.child({ runId: run.id, traceId: ctx.traceId, agentId: agentAtStart.id, component: "AgentService" })
+        .info(restartNote)
+        .catch(() => undefined);
+    }
+    this.emitter.emit({
+      traceId: ctx.traceId,
+      spanId: newId("spn"),
+      runId: run.id,
+      agentId: agentAtStart.id,
+      actorId: ctx.actorId,
+      actorType: ctx.actorType,
+      type: "run.created",
+      category: "control",
+      name: "run.created",
+      status: "ok",
+      source: { component: "AgentService", observed: true },
+      attributes: {
+        promptBytes: Buffer.byteLength(run.prompt, "utf8"),
+        configHash: run.configHash!,
+        workspace: agentAtStart.workspaceName ?? path.basename(agentAtStart.workspacePath),
+        queuedMs,
+      },
+      ...(capturesSummaries(this.emitter.capturePolicy)
+        ? { summary: { text: redactText(run.prompt).text.slice(0, 240), policy: "safe_summary" as const } }
+        : {}),
+    });
+    this.spans.set(run.id, { traceId: ctx.traceId, rootSpanId: ctx.rootSpanId, agentId: agentAtStart.id });
+    const execution = this.executeRun(agentAtStart, run, {});
+    this.activeExecutions.set(agentAtStart.id, execution);
+    void execution
+      .finally(() => {
+        if (this.activeExecutions.get(agentAtStart.id) === execution) {
+          this.activeExecutions.delete(agentAtStart.id);
+        }
+      })
+      .catch(() => undefined);
+  }
+
+  /** Atomically claims a `ready` Agent and starts its next pending message, if any (restart/start resume). */
+  private async dequeueAndStart(agentId: string, restartNote?: string): Promise<void> {
+    // Without a configured model every dequeued Run would fail instantly and burn the queue; keep it queued.
+    if (!isModelConfigured(this.config)) return;
+    const ctx = createTraceContext({}, this.emitter.capturePolicy);
+    const dequeued = await this.store.mutate((database) => {
+      const agent = database.agents.find((item) => item.id === agentId);
+      if (!agent || agent.status !== "ready") return undefined;
+      return this.dequeueNext(database, agent, ctx);
+    });
+    if (dequeued) this.startDequeuedRun(dequeued, restartNote);
   }
 
   private async executeRun(agentAtStart: Agent, run: AgentRun, options: ExecutionOptions = {}): Promise<void> {
@@ -590,6 +777,9 @@ export class AgentService {
     const logger = bindings ? this.runLogs?.child({ ...bindings, component: "AgentService" }) : undefined;
     const runnerLogger = bindings ? this.runLogs?.child({ ...bindings, component: "AgentRunner" }) : undefined;
     const pino = bindings ? this.appLogger?.child(bindings) : undefined;
+    const startedAtMs = Date.now();
+    const durationSeconds = () => Math.round((Date.now() - startedAtMs) / 1000);
+    let verify: VerifyOutcome | undefined;
     try {
       pino?.info("Run started");
       await logger?.info("Run started").catch(() => undefined);
@@ -689,14 +879,21 @@ export class AgentService {
         ...(bindings
           ? {
               logger: {
+                // Messages can carry stream-derived text (a command's argument0 may be a `SECRET=…`
+                // assignment): pino writes to stdout with no redaction of its own, so redact here.
+                // RunLogStore.append re-redacts its copy — defense in depth, not duplication.
                 info: (message: string) => {
-                  pino?.info(message);
+                  pino?.info(redactText(message, [LOG_SECRET_ASSIGNMENT]).text);
                   void runnerLogger?.info(message).catch(() => undefined);
+                },
+                warn: (message: string) => {
+                  pino?.warn?.(redactText(message, [LOG_SECRET_ASSIGNMENT]).text);
+                  void runnerLogger?.warn(message).catch(() => undefined);
                 },
                 error: (message: string, error?: unknown) => {
                   // Never hand pino the Error itself: its err serializer writes message/stack verbatim to stdout.
                   const detail = error === undefined ? undefined : redactText(String(error)).text.slice(0, 2_048);
-                  pino?.error(detail ? { detail } : {}, message);
+                  pino?.error(detail ? { detail } : {}, redactText(message, [LOG_SECRET_ASSIGNMENT]).text);
                   void runnerLogger?.error(message, detail).catch(() => undefined);
                 },
               },
@@ -707,6 +904,9 @@ export class AgentService {
         const workspaceAfter = await snapshotWorkspace(agentAtStart.workspacePath).catch(() => undefined);
         if (workspaceAfter) {
           const changes = diffWorkspace(workspaceBefore, workspaceAfter);
+          const changesLine = `Workspace changed: ${changes.added.length} added, ${changes.modified.length} modified, ${changes.removed.length} removed`;
+          pino?.info(changesLine);
+          await logger?.info(changesLine).catch(() => undefined);
           this.emitter.emit({
             ...ids,
             spanId: newId("spn"),
@@ -728,12 +928,27 @@ export class AgentService {
         }
       }
       const completedAt = now();
-      pino?.info("Run completed");
-      await logger?.info("Run completed").catch(() => undefined);
-      await this.store.mutate((database) => {
+      // Completion summary (#232): metadata-only counters the runner observed, no content.
+      const summaryLine = [
+        "Run completed: status=completed duration=" + durationSeconds() + "s",
+        ...(result.stats
+          ? [
+              "modelCalls=" + result.stats.modelCalls,
+              "toolCalls=" + result.stats.toolCalls,
+              "toolFailures=" + result.stats.toolFailures,
+              "sandboxDenials=" + result.stats.sandboxDenials,
+            ]
+          : []),
+        ...(result.usage?.inputTokens !== undefined ? ["tokensIn=" + result.usage.inputTokens] : []),
+        ...(result.usage?.outputTokens !== undefined ? ["tokensOut=" + result.usage.outputTokens] : []),
+      ].join(" ");
+      pino?.info(summaryLine);
+      await logger?.info(summaryLine).catch(() => undefined);
+      const queueCtx = createTraceContext({}, this.emitter.capturePolicy);
+      const dequeued = await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
-        if (!storedRun || !agent) return;
+        if (!storedRun || !agent) return undefined;
         storedRun.status = "completed";
         storedRun.output = result.output;
         storedRun.usage = result.usage;
@@ -753,7 +968,48 @@ export class AgentService {
         if (options.persistThread !== false) agent.codexThreadId = result.threadId;
         agent.lastError = null;
         agent.updatedAt = completedAt;
+        // #254: dequeue in the same mutation that freed the Agent — the one-active-Run invariant lives here.
+        return this.dequeueNext(database, agent, queueCtx);
       });
+      // #254 vs #253 ordering: the Agent is ready the moment the mutate commits, so the next queued Run
+      // starts now and does NOT wait for the verify below — the same accepted window as a user message
+      // arriving during a slow verify (see the ponytail note under the verify block).
+      if (dequeued) this.startDequeuedRun(dequeued);
+      // #253: operator-set verification of a completed ordinary Run. Eval-isolated Runs (the only callers
+      // that pass options.workspacePath) keep their own post_check assertion machinery. The verdict is a
+      // separate judgement stamped on the RunSummary — it must never change the Run's terminal status, and
+      // an infrastructure failure of the check itself leaves the outcome unknown.
+      // ponytail: the Agent is already `ready`, so a message sent during a slow verify starts run N+1 in
+      // the same workspace and this verdict measures post-N+1 state; serialize via a workspace claim if
+      // that window ever bites — for a ~seconds-long check it is the honest cheap trade.
+      if (agentAtStart.verifyCommand && options.workspacePath === undefined) {
+        try {
+          const check = await new PostCheckRunner(this.config, this.emitter).run({
+            workspacePath: agentAtStart.workspacePath,
+            command: agentAtStart.verifyCommand,
+            timeoutMs: VERIFY_TIMEOUT_MS,
+            ...(ids && service
+              ? { trace: { traceId: ids.traceId, runId: run.id, agentId: agentAtStart.id, parentSpanId: service.spanId } }
+              : {}),
+          });
+          if (check.signal !== null) {
+            // Killed (the runner's timeout path): not a real exit code, so no verdict.
+            const line = "Verify command did not finish within " + VERIFY_TIMEOUT_MS + " ms";
+            pino?.error({}, line);
+            await runnerLogger?.error(line).catch(() => undefined);
+          } else {
+            verify = { taskOutcome: check.exitCode === 0 ? "passed" : "failed", source: VERIFY_OUTCOME_SOURCE };
+            const line = "Verify command exited " + check.exitCode + " (taskOutcome=" + verify.taskOutcome + ")";
+            pino?.info(line);
+            await runnerLogger?.info(line).catch(() => undefined);
+          }
+        } catch (verifyError) {
+          const line = "Verify command failed to run";
+          const detail = redactText(String(verifyError)).text.slice(0, 2_048);
+          pino?.error({ detail }, line);
+          await runnerLogger?.error(line, detail).catch(() => undefined);
+        }
+      }
       if (ids && service) {
         const outcome = describeFinalMessage(result.output);
         this.emitter.emit({
@@ -771,7 +1027,7 @@ export class AgentService {
             reportedFailure: outcome.reportedFailure,
             ...(result.usage ?? {}),
           },
-          ...(this.emitter.capturePolicy === "safe_summary"
+          ...(capturesSummaries(this.emitter.capturePolicy)
             ? { summary: { text: outcome.summaryText, policy: "safe_summary" as const } }
             : {}),
           ...(result.threadId ? { sessionId: result.threadId } : {}),
@@ -783,12 +1039,17 @@ export class AgentService {
       const cancelled = error instanceof RunCancelledError;
       const message = error instanceof Error ? error.message : String(error);
       if (!cancelled) {
-        const logMessage = /timed out/i.test(message) ? "Runner timed out" : "Runner failed";
+        const logMessage = (/timed out/i.test(message) ? "Runner timed out" : "Runner failed") + " after " + durationSeconds() + "s";
         const detail = redactText(message).text.slice(0, 2_048);
         pino?.error({ detail }, logMessage);
         await runnerLogger?.error(logMessage, detail).catch(() => undefined);
+      } else {
+        const logMessage = "Run cancelled after " + durationSeconds() + "s";
+        pino?.info(logMessage);
+        await logger?.error(logMessage).catch(() => undefined);
       }
-      await this.store.mutate((database) => {
+      const queueCtx = createTraceContext({}, this.emitter.capturePolicy);
+      const dequeued = await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
         if (storedRun) {
@@ -803,8 +1064,17 @@ export class AgentService {
           }
           agent.lastError = cancelled ? null : message;
           agent.updatedAt = completedAt;
+          // #254: a failed Run still frees the Agent for the rest of the batch (the failed Run keeps
+          // its error evidence). A cancel is a user "stop"/delete gesture — auto-starting queued work
+          // would fight it (stopAgent sets `stopped` right after this settles), so the queue is kept
+          // but not started; startAgent resumes it.
+          if (!cancelled && agent.status !== "stopped") {
+            return this.dequeueNext(database, agent, queueCtx);
+          }
         }
+        return undefined;
       });
+      if (dequeued) this.startDequeuedRun(dequeued);
       if (ids && service) {
         const status: TraceStatus = cancelled
           ? "cancelled"
@@ -840,8 +1110,7 @@ export class AgentService {
       }
     } finally {
       this.spans.delete(run.id);
-      this.onRunEnded?.(run.id);
-      await options.cleanup?.();
+      this.onRunEnded?.(run.id, verify);
     }
   }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTrace, flattenSpans, formatExitCode, projectAudit } from "./query.js";
+import { buildTrace, flattenSpans, formatExitCode, projectAudit, providerHint } from "./query.js";
 import { SCHEMA_VERSION, type ObservationEvent } from "./schema.js";
 
 let seq = 0;
@@ -88,6 +88,44 @@ describe("buildTrace", () => {
     expect(summary.failure?.message).toContain("3221225794 (0xC0000142)");
     expect(summary.failure?.diagnosis).toContain("runtime CLI could not start; restart the server");
   });
+  it("derives a credentials hint from 401/403/'Unauthorized'/'API key' provider errors (#265)", () => {
+    const credentials = "Runtime credentials rejected — check ARK_API_KEY / model access in .env";
+    expect(providerHint("unexpected status 401 Unauthorized: The API key format is incorrect")).toBe(credentials);
+    expect(providerHint("unexpected status 403 Forbidden")).toBe(credentials);
+    expect(providerHint("The api key provided does not have access to model doubao-seed")).toBe(credentials);
+  });
+  it("derives a rate-limit hint from 429/'rate limit' provider errors", () => {
+    expect(providerHint("unexpected status 429 Too Many Requests")).toBe("Rate limited by the provider — retry later");
+    expect(providerHint("Provider rate limit exceeded, please retry")).toBe("Rate limited by the provider — retry later");
+  });
+  it("derives an unreachable hint from ENOTFOUND/ECONNREFUSED/ETIMEDOUT toward the provider", () => {
+    const unreachable = "Provider unreachable — check network/ARK_BASE_URL";
+    expect(providerHint("getaddrinfo ENOTFOUND ark.cn-beijing.volces.com")).toBe(unreachable);
+    expect(providerHint("connect ECONNREFUSED 203.0.113.7:443")).toBe(unreachable);
+    expect(providerHint("connect ETIMEDOUT 203.0.113.7:443")).toBe(unreachable);
+  });
+  it("never fabricates a hint for non-matching or absent error text", () => {
+    expect(providerHint("exit code 137")).toBeUndefined();
+    expect(providerHint("unexpected null")).toBeUndefined();
+    expect(providerHint(undefined)).toBeUndefined();
+  });
+  it("stamps the provider hint on the failure focus from the stored codex error (#265)", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "error.recorded", category: "control", spanId: "err", parentSpanId: "rt", status: "error", error: { type: "runtime_error", message: "Codex exited with code 1: unexpected status 401 Unauthorized: The API key format is incorrect" } }),
+      ev({ type: "run.failed", category: "control", spanId: "failed", parentSpanId: "svc", status: "error" })];
+    const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(summary.failure?.hint).toBe("Runtime credentials rejected — check ARK_API_KEY / model access in .env");
+  });
+  it("leaves the failure focus without a hint when the stored error matches no rule", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "tool.call.failed", category: "tool", spanId: "tool", parentSpanId: "rt", status: "error", error: { type: "exit_code", message: "exit code 137" } }),
+      ev({ type: "run.failed", category: "control", spanId: "failed", parentSpanId: "svc", status: "error" })];
+    const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(summary.failure).toBeDefined();
+    expect(summary.failure?.hint).toBeUndefined();
+  });
   it("formats runner-shaped 'exited with code N: detail' messages without losing the detail", () => {
     seq = 0;
     const events = [root(), svcStart(), rtStart(),
@@ -175,11 +213,14 @@ describe("buildTrace", () => {
     const events = [root(), svcStart(), rtStart(),
       ev({ type: "tool.call.failed", category: "tool", spanId: "tool-retry", parentSpanId: "rt", status: "error", attempt: 2 }),
       ev({ type: "policy.denied", category: "policy", spanId: "denial", parentSpanId: "rt", status: "error" }),
-      ev({ type: "model.completed", category: "model", spanId: "model", parentSpanId: "rt", status: "ok", attributes: { inputTokens: 3, cachedInputTokens: 2, outputTokens: 1, text: "ignored" } }),
+      ev({ type: "model.completed", category: "model", spanId: "model", parentSpanId: "rt", status: "ok", attributes: { inputTokens: 3, cachedInputTokens: 2, outputTokens: 1, reasoningOutputTokens: 4, text: "ignored" } }),
       ev({ type: "run.completed", category: "control", spanId: "done", parentSpanId: "svc", status: "ok" })];
     expect(buildTrace(events, { capturePolicy: "metadata_only" }).summary.metrics).toMatchObject({
       terminalStatus: "ok", toolCalls: 1, toolFailures: 1, modelCalls: 1,
-      tokens: { input: 3, cachedInput: 2, output: 1 }, retries: 1, denials: 1,
+      tokens: { input: 3, cachedInput: 2, output: 1, reasoning: 4 }, retries: 1, denials: 1,
+    });
+    expect(buildTrace(events, { capturePolicy: "metadata_only" }).summary.usage).toEqual({
+      inputTokens: 3, cachedInputTokens: 2, outputTokens: 1, reasoningOutputTokens: 4,
     });
   });
   it("derives model/tool/container timing and time to first tool from observed spans", () => {
@@ -382,6 +423,30 @@ describe("buildTrace", () => {
     expect(v.summary.status).toBe("ok");
     expect(v.summary.failure).toMatchObject({ kind: "degraded", component: "GlassBox", path: [] });
     expect(v.summary.failure!.diagnosis).toMatch(/trace store was unavailable/i);
+  });
+  it("projects capability unavailability independently for each layer", () => {
+    seq = 0;
+    const modelOnly = buildTrace([
+      ev({ type: "model.completed", category: "model", spanId: "model", attributes: { inputTokens: 1 } }),
+      ev({ type: "capability.unavailable", category: "runtime", spanId: "cap", attributes: { model: false, tool: true } }),
+    ], { capturePolicy: "metadata_only" });
+    expect(modelOnly.summary.capabilities).toEqual({ model: "observed", tool: "unavailable" });
+
+    const toolOnly = buildTrace([
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tool" }),
+      ev({ type: "capability.unavailable", category: "runtime", spanId: "cap", attributes: { model: true, tool: false } }),
+    ], { capturePolicy: "metadata_only" });
+    expect(toolOnly.summary.capabilities).toEqual({ model: "unavailable", tool: "observed" });
+  });
+  it("diagnosis names only the tool layer when model evidence exists and the declaration is tool-only", () => {
+    seq = 0;
+    const events = [root(), svcStart(), rtStart(),
+      ev({ type: "model.completed", category: "model", spanId: "model", parentSpanId: "rt", attributes: { inputTokens: 1 } }),
+      ev({ type: "capability.unavailable", category: "runtime", spanId: "cap", parentSpanId: "rt", attributes: { model: false, tool: true } }),
+      ev({ type: "run.failed", category: "control", spanId: "failed", parentSpanId: "svc", status: "error" })];
+    const { summary } = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(summary.failure?.diagnosis).toContain("No tool-level details were available from the runtime.");
+    expect(summary.failure?.diagnosis).not.toMatch(/model/i);
   });
   it("guards against a span-parent cycle: pathTo terminates and visits each id once", () => {
     seq = 0;

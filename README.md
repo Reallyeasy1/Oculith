@@ -1,71 +1,79 @@
-# Volc Agent Launchpad
+# Oculith — GlassBox
 
-A minimal Agent platform for three-day middleware hackathons. It provides Agent
-CRUD, a browser Playground, persistent workspaces, and Codex CLI backed by the
-Volcengine Ark Responses API.
+**TikTok TechJam 2026 · Track 1 "Agent Launchpad" · selected middleware track: Glass Box (observability).**
+Built on the CodeJam Starter Kit (React Playground + Fastify control plane + Codex CLI on the
+Volcengine/BytePlus Ark Responses API); GlassBox is the middleware layer this team added on top.
 
-Run it locally with Docker, Colima, or rootless Podman, or deploy it to
-Volcengine ECS.
+## Problem statement (Track 1)
 
-> [!WARNING]
-> This is a single-user proof of concept. It intentionally has no identity,
-> tracing, audit, or hardened sandbox middleware. Do not use production data or
-> credentials. See [SECURITY.md](SECURITY.md).
+A Run on the starter kit is a black box: the Playground shows a final message or a one-line error, but
+nothing connects the HTTP request, service state transitions, the runner process/container, Codex's own
+event stream, and the terminal result. When something fails, an operator cannot tell **which layer**
+failed — and the naive fix (dump everything to a log) turns observability into a secret-leak liability.
+Track 1 leaves "trace timeline" and "audit model" as intentionally absent middleware; GlassBox fills
+that gap. Full statement: [docs/PROBLEM_STATEMENT.md](docs/PROBLEM_STATEMENT.md) · spec: [docs/PRD.md](docs/PRD.md).
 
-## Screenshots
+## Product thesis: instrument → observe → audit → verify
 
-### Agent Playground
+Ship **evidence before control**. Every Run becomes one correlated, privacy-safe trace; everything else
+is derived from those stored facts and never invented:
 
-![Agent Playground showing lifecycle controls, starter prompts, and the Codex Runtime](docs/assets/playground.jpg)
+| Plane | What it gives you |
+|---|---|
+| **Instrument** | The real seams (Fastify → `AgentService` → `AgentRunner` → runtime container → Codex → workspace) emit one versioned `ObservationEvent` contract through a single redaction boundary |
+| **Observe** | Runs list + trace detail (tree, timeline, span drawer) with first-failure focus and per-layer capability honesty |
+| **Audit** | Actor/action/resource/outcome rows and sandbox `policy.denied` evidence, every row linked to its source event |
+| **Verify** | Save a Run as a Regression Case → rerun it as an isolated EvalRun → deterministic comparison that classifies PASS→FAIL as `REGRESSION` |
 
-### Create an Agent
+Three vocabularies are kept distinct everywhere: *observed fact* · *derived diagnosis* · *evaluator
+judgement* (PRD §17.1). No LLM writes a diagnosis or classifies a regression.
 
-![Create Agent form with name, description, and workspace instructions](docs/assets/create-agent.jpg)
+## Architecture
 
-## Features
+![GlassBox architecture](docs/assets/architecture.png)
 
-- React and TypeScript Web UI
-- Agent create, edit, start, stop, delete, and multi-turn chat
-- Fastify control plane with asynchronous Run state
-- Persistent Agent workspaces and Codex sessions
-- Disposable Docker, Colima, or Podman container for each local turn
-- Docker and Terraform deployment paths for Volcengine ECS
+*(Diagram being refreshed in #206.)* Component and extension boundaries:
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## Requirements
+Runtime flow in one line: Web UI → Fastify control plane → `AgentService` → `AgentRunner`
+(`local-process` or disposable `container`) → Codex CLI → Ark Responses API, with GlassBox observing
+every seam into per-Run NDJSON traces plus an in-memory index.
 
-- Node.js 22+
-- npm 10+
-- Docker, Colima, or Podman
-- A Volcengine Ark API key and endpoint that supports the Responses API
+## Middleware boundaries: instrumented vs derived
 
-Codex CLI is included in the Runtime image and is not required on the host.
+| Instrumented (facts, emitted at the seams) | Derived (computed from stored facts only) |
+|---|---|
+| HTTP boundary: `http.request.received`, trace/actor context | Rollups: status, duration, counts, usage totals |
+| `AgentService` lifecycle: run created/queued/completed, cancel, restart truth | First-failure focus + deterministic diagnosis text |
+| Runner envelope: process/container start, timeout, SIGTERM→SIGKILL, `docker rm --force` cleanup | Audit projection (actors, actions, outcomes) |
+| Codex JSONL stream: tool calls with duration/exit code, model calls, token usage, reasoning-token counts | Per-Run metrics, baselines, reliability aggregates |
+| Sandbox denials as `policy.denied` | Evaluator results and baseline/candidate comparison |
+| Workspace disk truth (bytes/files) | Capability states per layer: `observed` / `unavailable` / `unknown` — absence is never guessed |
 
-## Local browser SOP
+Adapters live in the existing starter-kit seams; GlassBox server code is `apps/server/src/glassbox/`
+(context, emitter, redact, store, query).
 
-### 1. Check the local tools
+## Setup
 
-Install Node.js 22+ and one supported container engine, then verify them:
+Requirements: Node.js 22+, npm 10+, Docker (or Colima/Podman), an Ark API key + Responses-capable
+endpoint ID. Codex CLI is included in the Runtime image.
 
 ```bash
 node --version
 npm --version
-docker --version        # Docker Desktop, Docker Engine, or Colima
-podman --version        # Use this instead when running Podman
+docker --version
+git clone https://github.com/Reallyeasy1/Oculith
+cd Oculith
+npm ci
+cp .env.example .env    # then set ARK_API_KEY, ARK_MODEL, APP_AUTH_TOKEN (24+ random chars)
 ```
 
-Only one container engine is required. Codex CLI is already included in the
-Runtime image.
+An empty `APP_AUTH_TOKEN` disables auth entirely; the demo sets 24+ random characters, entered once in
+the browser unlock screen.
 
-### 2. Clone the repository
+## Run it
 
-```bash
-git clone <repository-url> volc-agent-launchpad
-cd volc-agent-launchpad
-```
-
-Skip this step when already working from the repository root.
-
-### 3. Start the POC
+### One command (judged path)
 
 ```bash
 ARK_API_KEY=your-ark-api-key \
@@ -73,307 +81,233 @@ ARK_MODEL=ep-your-endpoint-id \
 npm run poc
 ```
 
-The first run installs Node.js dependencies and builds the Runtime image. The
-script automatically selects Docker, Colima, or Podman.
+Builds the Runtime image, auto-selects Docker/Colima/Podman, runs each turn in a disposable container,
+and serves <http://localhost:3000>. `Ctrl+C` stops it; workspaces and conversations are kept
+(macOS `~/.volc-agent-launchpad/`, Linux `.local/`, or `LOCAL_POC_DATA_ROOT`). Force an engine with
+`CONTAINER_ENGINE=podman` (Colima uses `docker`). Rootless Podman: [docs/LOCAL_POC.md](docs/LOCAL_POC.md#rootless-podman-on-linux).
+Note: `npm run poc` reads the **shell environment**, not `.env` (`set -a; . ./.env; set +a` first).
 
-### 4. Open the browser
-
-Visit <http://localhost:3000>, or open it from the terminal:
-
-```bash
-open http://localhost:3000       # macOS
-xdg-open http://localhost:3000   # Linux desktop
-```
-
-In the Web UI:
-
-1. Select **Create Agent**.
-2. Enter a name, description, instructions, and optionally choose or name a workspace.
-3. Select **Create Agent** again.
-4. Enter a task in the Playground, for example:
-
-   ```text
-   Create a TypeScript hello-world CLI, add a test, and run it.
-   ```
-
-The Agent can write files, run commands, and continue the same Codex session in
-later messages.
-
-### 5. Stop and resume
-
-Press `Ctrl+C` in the startup terminal. The script removes temporary Runtime
-containers but keeps Agent workspaces and conversations.
-
-- macOS state: `~/.volc-agent-launchpad/`
-- Linux state: `.local/`
-- Custom location: set `LOCAL_POC_DATA_ROOT`
-
-Run the same `npm run poc` command to continue later.
-
-### Select a specific container engine
-
-Force Podman when multiple engines are installed:
+**Windows:** npm hands scripts to `cmd.exe` and Git Bash mangles `dst=/workspace` mount paths, so run
+the same script directly from Git Bash:
 
 ```bash
-CONTAINER_ENGINE=podman \
-ARK_API_KEY=your-ark-api-key \
-ARK_MODEL=ep-your-endpoint-id \
-npm run poc
+MSYS_NO_PATHCONV=1 LOCAL_POC_DATA_ROOT="C:/<abs-path>/Oculith/.local" bash scripts/start-local-poc.sh
 ```
 
-Colima uses `CONTAINER_ENGINE=docker` because it exposes the Docker CLI.
+(with `ARK_*` exported). Verified 2026-08-26: the baseline acceptance task completes in ~70 s in a
+disposable container. On Docker Desktop the kernel lacks Landlock, so the script falls back to
+`CODEX_SANDBOX_MODE=danger-full-access` inside the outer container — expected, documented in
+`.env.example`; see [Known limitations](#known-limitations).
 
-For a clean Linux host, follow the
-[rootless Podman setup](docs/LOCAL_POC.md#rootless-podman-on-linux).
-
-## Docker Compose
-
-Create and edit the configuration:
+### Development mode
 
 ```bash
-./scripts/bootstrap-local.sh
-```
-
-Required values in `.env`:
-
-```dotenv
-ARK_API_KEY=your-ark-api-key
-ARK_MODEL=ep-your-endpoint-id
-APP_AUTH_TOKEN=replace-with-at-least-24-random-characters
-```
-
-Start the application:
-
-```bash
-docker compose up --build
-```
-
-Open <http://localhost:3000>. Stop it without deleting Agent data:
-
-```bash
-docker compose down
-```
-
-## Development
-
-```bash
-npm install
+npm ci
 cp .env.example .env
-npm install --global @openai/codex@0.111.0
+npm install --global @openai/codex@0.111.0   # codex on PATH for RUNTIME_PROVIDER=local-process
 npm run dev
 ```
 
-- Web UI: <http://localhost:5173>
-- API: <http://localhost:3000>
+Web UI <http://localhost:5173>, API <http://localhost:3000>. Use local paths in `.env` outside Docker:
+`APP_DATA_DIR=.data`, `AGENT_WORKSPACE_ROOT=workspaces`, `CODEX_HOME=codex-home`.
 
-Use local paths in `.env` when running outside Docker:
+### Docker Compose / deployment
 
-```dotenv
-APP_DATA_DIR=.data
-AGENT_WORKSPACE_ROOT=workspaces
-CODEX_HOME=codex-home
-```
+`docker compose up --build` (stop with `docker compose down`; data survives). Optional PostgreSQL
+backend for traces and summaries: `docker compose --profile postgres up` with `GLASSBOX_STORE=postgres`. Volcengine ECS
+and Terraform paths: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — the judged path is local.
 
-## Deployment
+## Demo
 
-- [Existing Linux ECS with Docker](docs/DEPLOYMENT.md#existing-linux-ecs)
-- [Complete Volcengine environment with Terraform](docs/DEPLOYMENT.md#terraform-deployment)
-- [Local Docker, Colima, and Podman details](docs/LOCAL_POC.md)
+Full rehearsal runbook: [docs/DEMO.md](docs/DEMO.md) *(being authored in #92)*. The 3-minute script is
+PRD §13. Short version:
 
-The existing-ECS script deploys from the current source tree:
+1. `.env`: `APP_AUTH_TOKEN` set (24+ chars), `GLASSBOX_CAPTURE_POLICY=safe_summary` (so the Outcome
+   column carries the Agent's final line), `GLASSBOX_DEMO_FAILURE=off`. The server reads these once at
+   boot — every change needs a restart.
+2. Start the server, seed one ok Run: `bash scripts/seed-demo.sh ok` (creates the **Demo** Agent if
+   missing, sends one real task, prints the run id — never the token).
+3. Set `GLASSBOX_DEMO_FAILURE=timeout` → restart → `bash scripts/seed-demo.sh fail` → the Run times out
+   after 3 s through the real Run path → set it back to `off` → restart.
+4. Open <http://localhost:3000>, unlock with the token → **Demo** Agent → the failed Run tops
+   **Needs attention** → open its trace → **Jump to failing span** → trust badges.
 
-```bash
-cp .env.example .env.production
-./scripts/deploy-existing-ecs.sh .env.production
-```
+The failure fixture adds no failure path of its own: it only overrides `CODEX_TIMEOUT_MS` to 3 s for
+the next Run, which then takes the ordinary runner timeout (SIGTERM→SIGKILL for `local-process`,
+`docker rm --force` for `container`) and ends in `run.timed_out`. It is off by default and never
+enabled by `npm run poc`.
 
-The Terraform path provisions VPC, subnet, security group, ECS, and EIP:
+![Agent Playground](docs/assets/playground.jpg)
 
-```bash
-cp deploy/volcengine/terraform.tfvars.example \
-  deploy/volcengine/terraform.tfvars
-./scripts/deploy-volcengine.sh
-```
+## Observability behaviour
+
+**Trace.** One append-only NDJSON file per Run (30 event types across 9 categories): stable
+`traceId/spanId/runId/agentId/sessionId/requestId/actorId/sequence`, per-turn token usage (input,
+cached-input, output, reasoning), per-call `modelCallsObserved`, bounded tool identities with durations
+and exit codes, workspace disk truth, `configHash` on every Run. Trace detail = fixed summary header,
+nested tree/timeline, span drawer, local filters, persistent first-error banner with **Jump to failing
+span**. Export (`GET /api/traces/:traceId/export`) is byte-identical in policy to the query response.
+
+**Per-layer capabilities.** Model/tool evidence has exactly three states and is never guessed:
+`observed` (the runtime emitted events for that layer), `unavailable` (the Run completed and the
+runtime exposed no detail — emits `capability.unavailable`), `unknown` (cancelled/timed out/stream
+never started, so absence proves nothing). An ok Run with zero tool calls shows a neutral
+`no tool calls`, not a warning.
+
+**Capture policies.** `GLASSBOX_CAPTURE_POLICY=metadata_only` (default) stores IDs/timing/status/counts
+only; `safe_summary` adds four bounded, redacted text fields (including the Outcome line — the demo
+sets `safe_summary`; the default keeps that column empty by design); `reasoning_summary` (opt-in, #259)
+adds everything `safe_summary` does plus one `model.reasoning` event per observed reasoning item,
+carrying only a 240-char redacted summary. `full`/raw capture is prohibited by PRD §4, not merely
+unimplemented.
+
+**Metrics and reliability.** `POST /api/metrics/query` answers one aggregate question over a fixed
+metric catalogue (completion/failure rates, tool calls, tokens, latency, denials, task completion —
+telemetry and evaluation metrics labelled apart, nearest-rank percentiles, every response carries
+`provenance`). `GET /api/agents/:id/reliability` and `GET /api/reliability/compare` shape the same
+semantics for the dashboard, so the two APIs can never disagree on the same window.
+
+## Audit, failure and denial behaviour
+
+- **Audit:** `GET /api/runs/:id/audit` derives actor/action/resource/outcome rows from stored control,
+  policy, sandbox, tool and terminal events — no fabricated rows; every row links to its source event.
+- **Failure:** first actionable error + causal path; timeout, cancellation, runtime failure, model
+  failure, tool failure and platform degradation are distinguished; diagnosis text is deterministic,
+  built only from stored facts. Exit-code hints (127, 137, …) appear on the failure banner.
+- **Denials:** a sandbox-declined tool outcome emits `policy.denied` with the declined program and
+  bounded metadata (no raw command/output under `metadata_only`); denials are counted, focused, and
+  surfaced in audit. `ok ≠ success`: `executionStatus` and `taskOutcome` are separate columns.
+- **Degradation:** if the trace store fails, the Run still completes and the gap is visible as
+  `telemetry.degraded`; after a server restart, in-flight Runs show as cancelled with open spans marked
+  `endedReason=server_restart` — never silently closed. On redactor error the event is persisted as
+  metadata only (`privacy.reason=redaction_failed_closed`).
+
+## Regression workflow (Verify)
+
+Save case → rerun → compare, all through the real Run path:
+
+1. **Save** a Run as a Regression Case: bounded prompt, baseline Run/config, workspace-template
+   reference with a **template content hash**, and deterministic assertions pre-filled from evidence
+   (`terminal_status`, `expected_tool`, `max_tool_calls`, `max_duration_ms`, `post_check`).
+2. **Rerun** as an EvalRun: a fresh copy of the same template and a fresh Codex thread, executed
+   serially through `AgentService` against the candidate config — the baseline workspace and thread are
+   never mutated. Template hashes are stamped on the case and the EvalRun; an edited template is a
+   mismatch, not a silent drift.
+3. **Compare** baseline vs candidate per assertion: PASS→FAIL is classified `REGRESSION` (FR-19);
+   FAIL→PASS and unchanged are shown but not scored. Both traces are linked as evidence.
+
+A rerun is new execution from a versioned starting state — **not** an exact replay (see limitations).
+
+## Automated testing
+
+| Command | What it proves |
+|---|---|
+| `npm run check` | typecheck + vitest (server + web view-models) + guard self-test + build. Includes the model-free regression integration fixture (#91): the full save → rerun → `REGRESSION` sequence through a fake runner, no network or model |
+| `npm run test:e2e` | The judged configuration end to end (Docker runtime image, production mode, Playwright on installed Chrome): create Agent → real model task → trace walkthrough → gated failure with container-cleanup evidence → seeded-secret sweep across every NDJSON file, API response, export, server log and the rendered DOM → append/query p95 bounds. Needs Docker, Chrome and an Ark key; 2–4 min |
+
+E2E details: it starts its own server on `:3100` with a throwaway state root, so a live `npm run poc`
+on `:3000` is never touched. Playwright is deliberately not a dependency: run
+`npx -y playwright@1.60.0 --version` once and point `PLAYWRIGHT_DIR` at the npx cache it created.
+
+**Windows:** `npm run check` has 2 documented platform-artifact failures, not bugs (see `CLAUDE.md`):
+a POSIX `/tmp` path assertion in `container-codex-runner.test.ts` always fails, and slow machines can
+hit vitest's 5 s default timeout on a few more tests (those pass with `--testTimeout=30000`). The suite
+is authoritative on Linux/macOS, where CI runs it. Shell scripts are bash — run them from Git Bash.
+
+## Security and redaction
+
+Covered:
+
+- **Redact before persistence, fail closed.** One redaction boundary in front of disk, API, export and
+  logs: allowlist of operational fields → case-insensitive key denylist (`authorization`, `apiKey`,
+  `token`, `secret`, `password`, `cookie`, `privateKey`) → bounded pattern scan (bearer tokens, `sk-`,
+  `ark-`, AK/SK pairs, private-key blocks, credential URLs) → truncation. If the redactor itself
+  errors, only metadata is persisted.
+- **No raw chain-of-thought, ever.** Reasoning *token counts* are recorded at every policy; raw
+  reasoning text is never stored. Under the explicit opt-in `reasoning_summary` policy only, each
+  reasoning item is kept as a 240-char redacted summary through the same pipeline — never by default
+  (invariant 5, PRD §4).
+- **No raw prompts/completions** at the default policy; `safe_summary`/`reasoning_summary` add only
+  bounded, redacted summaries. The E2E lane sweeps seeded fake credentials across every persisted and
+  rendered surface.
+- API keys reach Codex only via explicit env allow-lists, never argv; child processes never inherit the
+  full environment.
+
+Not covered — know this before putting anything sensitive near it:
+
+- **Workspace file contents are not redacted.** Whatever the agent writes into its workspace sits on
+  disk as plain files; the trace records bytes/paths, but the workspace itself is outside the redaction
+  boundary.
+- **The shared bearer token is a demo secret, not identity.** One `APP_AUTH_TOKEN` for every route;
+  no users, no authz — that is the Bouncer track, not this one.
+- Redaction is exact on structured attributes and best-effort on free text; a novel secret format in a
+  command string can slip past — which is why the default policy is `metadata_only`.
+- Single-user proof of concept: do not use production data or credentials. See [SECURITY.md](SECURITY.md).
+
+## Known limitations
+
+- **Single runtime instance, single process.** `JsonStore` and the NDJSON trace store are
+  in-memory-plus-file with no cross-process locking; run one server.
+- **Templates are versioned starting states, not exact replay.** An EvalRun reruns the task from the
+  template; it does not replay the original trace step by step.
+- **No policy engine.** Denials are *observed* sandbox facts; nothing in GlassBox decides or blocks —
+  controls are roadmap, written as linked `ControlDecision` records that never mutate observation facts.
+- **Landlock fallback in Docker Desktop.** Kernels without Landlock (Docker Desktop on Windows/macOS)
+  fall back to `danger-full-access` inside the outer container: the container boundary holds, per-Agent
+  filesystem isolation inside it does not. Use a scoped demo model key.
+- **Windows test artifacts.** 2 of the unit tests fail on Windows for platform-path/timeout reasons
+  (documented in `CLAUDE.md`); Linux/macOS is authoritative.
+- Local NDJSON only — no external backend; retention is a startup-only pass
+  (`GLASSBOX_RETENTION_DAYS` / `GLASSBOX_MAX_DISK_MB`), and evicted Runs keep their metadata skeleton
+  plus a `trace.truncated` tombstone (never silent deletion).
+- `workspace.changed` takes the platform's before/after disk snapshot as ground truth on every
+  Run; the stream-side file-change report is a fallback observed only when the model uses
+  `apply_patch` — neither path invents a diff ([docs/CODEX_EVENTS.md](docs/CODEX_EVENTS.md)).
+- Model/tool-level events are only emitted when the runtime genuinely exposes them; per-call latency /
+  time-to-first-token is structurally unavailable from `codex exec` and is declared, not approximated.
+- Agents cannot expose ports to the host; runnable build output stays in the workspace.
+
+## Future work (deliberately deferred)
+
+| Deferred | Where it stands |
+|---|---|
+| LLM judge / semantic evaluation | #171 (in review) — kept apart from deterministic Verify by design |
+| Cross-model comparison / tournament | Explicit non-goal for the MVP (PRD §16.2) |
+| OTLP / OTel GenAI mapping | #41 — adapter stub exists; internal schema stays authoritative |
+| SSE live streaming | #40 — polling ships first, gated on P0 per PRD |
+| Workspace browser | #65 / #66 |
+| Run-log follow-ups | #243 |
 
 ## Configuration
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `ARK_API_KEY` | Required | Ark model API key. |
-| `ARK_MODEL` | Required | Responses-capable endpoint or model ID. |
-| `TASK_COMPLETION_JUDGE` | `ark` | Task Completion evaluator backend. `fake` is deterministic and reserved for the repository E2E lane. |
-| `ARK_BASE_URL` | BytePlus ap-southeast v3 | Ark OpenAI-compatible API URL (TechJam uses BytePlus ModelArk). |
-| `OPENAI_API_KEY` | Required for `openai` | OpenAI API key, passed to Codex CLI as an env var. |
-| `OPENAI_MODEL` | Codex default | Optional model override for the `openai` provider. |
-| `APP_AUTH_TOKEN` | Empty (auth off) | Bearer token for every `/api/*` route. Empty disables auth entirely; the demo sets 24+ random characters so "protects API routes" is real, and production refuses to listen beyond loopback with fewer. |
-| `RUNTIME_PROVIDER` | `local-process` | `container` for disposable local Runtime containers. |
-| `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
-| `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
-| `LOCAL_POC_DATA_ROOT` | Platform-specific | Local metadata, workspace, and session directory. |
-| `GLASSBOX_CAPTURE_POLICY` | `metadata_only` | `metadata_only` or `safe_summary`; raw capture is not implemented. The Runs table's **Outcome** column and the trace's Outcome field carry the Agent's final line only under `safe_summary` — the demo sets it; the default keeps the column empty by design. |
-| `GLASSBOX_DEMO_FAILURE` | `off` | `timeout` forces a 3 s runtime timeout for the demo's controlled failure. |
-| `GLASSBOX_TRACE_DIR` | `$APP_DATA_DIR/traces` | Directory for per-Run NDJSON trace files. |
-| `GLASSBOX_RETENTION_DAYS` | `7` | At startup, compact finished Runs whose last event is older than this to terminal events + a `trace.truncated` tombstone. `0` disables. |
-| `GLASSBOX_STORE` | `json` | `json` keeps Run summaries in `launchpad.json`; `postgres` stores them in PostgreSQL (`docker compose --profile postgres up`). Traces stay NDJSON either way. |
-| `DATABASE_URL` | — | Required when `GLASSBOX_STORE=postgres`. |
-| `GLASSBOX_MAX_DISK_MB` | `200` | At startup, while trace files exceed this, compact the oldest finished Runs first (running Runs are never touched). `0` disables. |
-| `GLASSBOX_PRICE_PER_MTOK_INPUT` / `GLASSBOX_PRICE_PER_MTOK_OUTPUT` | — | Optional display-only token prices per million; when configured, Runs show an estimated cost. |
+| `ARK_API_KEY` / `ARK_MODEL` | Required | Ark key + Responses-capable endpoint ID (`ARK_BASE_URL` defaults to BytePlus ap-southeast v3) |
+| `MODEL_PROVIDER` | `ark` | `ark` or `openai` (`OPENAI_API_KEY`, optional `OPENAI_MODEL`) |
+| `TASK_COMPLETION_JUDGE` | `ark` | Task Completion evaluator backend; `fake` is deterministic and reserved for the repository E2E lane |
+| `APP_AUTH_TOKEN` | Empty (auth off) | Bearer token for every `/api/*` route; production refuses non-loopback with <24 chars |
+| `RUNTIME_PROVIDER` | `local-process` | `container` for disposable Runtime containers (`npm run poc` sets this) |
+| `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox; falls back to `danger-full-access` without Landlock |
+| `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn |
+| `GLASSBOX_CAPTURE_POLICY` | `metadata_only` | Or `safe_summary` (bounded, redacted summaries + the Outcome column — the demo sets it), or `reasoning_summary` (safe_summary plus 240-char redacted reasoning summaries, #259); raw capture is not implemented. Summaries already persisted stay on disk and are served after a policy downgrade — mind that when lowering the tier |
+| `GLASSBOX_DEMO_FAILURE` | `off` | `timeout` forces the 3 s demo failure through the real Run path |
+| `GLASSBOX_TRACE_DIR` | `$APP_DATA_DIR/traces` | Per-Run NDJSON trace files |
+| `GLASSBOX_RETENTION_DAYS` / `GLASSBOX_MAX_DISK_MB` | `7` / `200` | Startup-only compaction of finished Runs to terminal events + tombstone; `0` disables |
+| `GLASSBOX_LOG_MAX_MB` | `50` | Run-correlated, redacted server log rotation (3 files kept) |
+| `GLASSBOX_STORE` / `DATABASE_URL` | `json` / — | `postgres` keeps traces and Run summaries in PostgreSQL (`docker compose --profile postgres up`); the default keeps NDJSON + `db.json` |
+| `GLASSBOX_PRICE_PER_MTOK_INPUT` / `_CACHED_INPUT` / `_OUTPUT` | — | Optional cost estimates; cached input defaults to the input rate |
+| `GLASSBOX_POSTCHECK_ALLOWLIST` | `npm test` | Comma-separated commands `post_check` assertions may run in eval workspaces; anything else fails closed |
 
-See [.env.example](.env.example) for all Runtime and resource-limit options.
-
-## How it works
-
-```mermaid
-flowchart LR
-    UI["React Web UI"] --> API["Fastify control plane"]
-    API --> Store["JSON metadata and Agent workspaces"]
-    API --> Runtime{"Runtime provider"}
-    Runtime -->|Local POC| Container["Disposable Docker / Colima / Podman container"]
-    Runtime -->|ECS profile| Codex["Codex CLI in application container"]
-    Container --> Ark["Volcengine Ark Responses API"]
-    Codex --> Ark
-```
-
-The first turn uses `codex exec`; later turns resume the stored Codex thread.
-Deleting an Agent archives its workspace under `workspaces/.deleted/`.
-Named workspaces may be shared by multiple Agents and are never archived by Agent deletion. To seed one before creating an Agent, create a directly nested directory such as `workspaces/repo-doctor`; the Create Agent workspace field will list it after startup. Switching an Agent's workspace clears its Codex thread so later turns cannot retain references to the previous project.
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for component and extension
-boundaries.
-
-### Metrics query API (GlassBox)
-
-`POST /api/metrics/query` answers one aggregate question over a fixed metric catalogue — no expressions or
-free-form query language (PRD FR-23):
-
-```json
-{ "metric": "task_completion", "filter": { "agentId": "…", "configHash": "abc123" },
-  "range": { "lastRuns": 100 }, "aggregation": { "type": "rate" },
-  "evaluator": { "id": "task_completion", "version": 1 } }
-```
-
-Telemetry metrics come from stored Run summaries; the evaluation metric comes from evaluator results, and
-the two are labelled (`kind`) and never folded into one number:
-
-| metric | kind | aggregations |
-| --- | --- | --- |
-| `execution_completion` | telemetry | `rate` (completed / terminal Runs), `count` |
-| `tool_failure_rate` | telemetry | `rate` (Σ failures / Σ calls) |
-| `tool_calls`, `tokens` | telemetry | `avg`, `p50`, `p95`, `count` (sum) |
-| `latency` | telemetry | `avg`, `p50`, `p95` |
-| `denials` | telemetry | `count` (sum), `avg` |
-| `task_completion` | evaluation | `rate` (passed / evaluated; requires `evaluator { id, version? }`) |
-
-`aggregation: { "type": "series", "bucket": "hour"|"day", "statistic": … }` buckets any valid cell by UTC
-start time. An unknown metric or an aggregation outside the matrix is a 400 listing the valid choices.
-Percentiles are **nearest-rank** (`sorted[⌈q·n⌉−1]`): the answer is always a value some Run actually
-exhibited, never an interpolation. Runs missing the sampled field are excluded, visible as
-`provenance.sampled < provenance.count`; `task_completion` excludes unevaluated Runs and reports
-`provenance.evaluated`. Every response carries `provenance` (window size, contributing Runs, the effective
-filter to drill down with, and inline `runIds` for windows of ≤ 100 Runs).
-
-### Reliability aggregates API (GlassBox)
-
-Two specific endpoints shape the same semantics for the dashboard (#172); they share every definition —
-windows, rates, nearest-rank percentiles — with the metric catalogue above, so the two APIs can never
-disagree on the same window:
-
-- `GET /api/agents/:id/reliability?from&to&configHash&bucket=hour|day&evaluatorId&evaluatorVersion` — one
-  aggregate block for the Agent: `runs`, `executionCompletionRate` (completed / terminal),
-  `taskCompletionRate { evaluatorId, version, evaluated, passed, rate }` (passed / evaluated; unevaluated
-  Runs are on neither side), `toolFailureRate` (Σ failures / Σ calls), `avgToolCalls`,
-  `tokens { avgInput, avgOutput, sum, sampled }` (a half-observed pair is never reported as a total),
-  `latency { p50, p95, sampled }`, `denialRate` (Runs with ≥ 1 denial / Runs), plus a UTC `series[]` of the
-  same block per bucket and `provenance { count, runIds ≤ 100, filter }`. The evaluator defaults to the
-  latest `task_completion` version; the resolved version is always echoed as provenance.
-- `GET /api/reliability/compare?agentId&a=<configHash>&b=<configHash>&from&to` — the same block per side
-  plus per-number `deltas` (`b − a`; `null` when either side observed nothing).
-
-Aggregation is computed in memory from stored Run summaries (hundreds of Runs); a test holds the
-1,000-summary worst case under 500 ms before any materialised metric table is considered.
-
-## Validation
-
-```bash
-npm run check
-terraform fmt -check -recursive deploy/volcengine
-docker compose config
-```
-
-### Demo steps (PRD §13)
-
-Before you start: `.env` sets `APP_AUTH_TOKEN` to 24+ random characters (empty disables auth, and the
-"bearer token protects `/api/*`" beat would be a lie) and `GLASSBOX_DEMO_FAILURE=off`. The server reads
-both once at boot, so every change below needs a restart. `npm run dev` and Compose read `.env`;
-`npm run poc` reads the shell environment (`set -a; . ./.env; set +a` first).
-
-1. Start the server, then seed one ok Run: `bash scripts/seed-demo.sh ok` (creates the **Demo** Agent
-   if missing, sends one real task, waits, prints the run id — never the token).
-2. Set `GLASSBOX_DEMO_FAILURE=timeout` → restart the server → `bash scripts/seed-demo.sh fail` (the
-   second Run times out after 3 s through the real Run path) → open its trace in the browser and check
-   the banner → set `GLASSBOX_DEMO_FAILURE=off` → restart the server.
-3. Rehearse: open <http://localhost:3000>, unlock with the token → select **Demo** → send a real task →
-   the Runs list opens on **Needs attention** with the timeout Run on top → click it (the Playground
-   collapses; **Close trace** restores it) → **Jump to failing span** → trust badges → architecture.
-
-### Controlled failure (demo)
-
-The sequence is explicit and needs two restarts: set `GLASSBOX_DEMO_FAILURE=timeout` → restart the
-server → run a task → open its trace → set it back to `off` → restart. The fixture adds no failure path
-of its own: it only overrides `CODEX_TIMEOUT_MS` to 3 s for the next Run, which then takes the ordinary real
-runner timeout — SIGTERM→SIGKILL for `local-process`, `docker rm --force` for `container` — and ends in
-a `run.timed_out` terminal event. Open `GET /api/runs/<runId>/trace`: `summary.failure.diagnosis` names
-the failing span. Unset the variable to return to normal. The fixture is off by default and never
-enabled by `npm run poc`.
-
-What the automated suite proves and what it does not: the tests drive `AgentService` through a fake
-runner, so they cover the classification (timeout status, terminal event, first-failure focus,
-determinism across two Runs) but not the real process/container teardown. The real-runner span shape
-and its cleanup evidence (`runtime.codex.failed` with `terminationSignal`, `runtime.container.stopped`
-with `cleanup: "rm --force" | "signal"`) are covered by the E2E lane below, not by the unit suite.
-
-### Verification (E2E lane)
-
-`npm run test:e2e` (`scripts/e2e/run.sh`, bash) runs the judged configuration end to end: it goes through
-`scripts/start-local-poc.sh` (Docker runtime image, `NODE_ENV=production`, `RUNTIME_PROVIDER=container`,
-`ARK_*` from `.env` or `E2E_ENV_FILE`) with a throwaway state root under the temp dir, `PORT=${E2E_PORT:-3100}`
-and its own `RUNTIME_INSTANCE_ID`, so a live `npm run poc` on :3000 is never touched. The driver
-(`scripts/e2e/driver.cjs`, Playwright against installed Chrome) creates an Agent, runs a real model task, opens
-the trace from the Runs table by keyboard, walks the span tree, the drawer and its focus trap, applies the
-filters, checks export headers and byte-equality with `/trace`, restarts the server with
-`GLASSBOX_DEMO_FAILURE=timeout`, verifies the gated failure (first failing step `codex exec`, capabilities
-`unknown`, `cleanup: "rm --force"`, no `launchpad-*` container left), then sweeps seeded fake Ark/OpenAI/bearer/
-private-key strings (planted in the prompt and the Agent instructions) across every NDJSON file, `/api/runs`,
-`/trace`, `/events`, `/export`, the server log and the rendered GlassBox DOM, and prints append/query p95
-(bounds 200 ms / 500 ms). Playwright is deliberately not a dependency: run `npx -y playwright@1.60.0 --version`
-once and point `PLAYWRIGHT_DIR` at the npx cache directory it created (or set `NODE_PATH`). Expect 2–4 minutes;
-state is kept on failure and its path printed. Two manual steps complete the regression: run
-`npm run check` from a clean clone (`git clone … && npm ci && npm run check`) and the starter-kit acceptance
-flow (`baseline-verifier` agent). On Windows the single allowed `npm run check` failure is the `/tmp` path
-assertion in `container-codex-runner.test.ts` (see the Windows caveat in `CLAUDE.md`).
-
-## Limitations
-
-- Agents run in disposable containers and cannot expose ports to the user's machine; runnable build output stays in the workspace with a host-side command to start it.
-- Single process. `JsonStore` and the NDJSON trace store are in-memory-plus-file with no cross-process locking; run one server.
-- Local NDJSON trace store only — no external backend, no query engine beyond the in-memory index. Retention is a startup-only pass (`GLASSBOX_RETENTION_DAYS` / `GLASSBOX_MAX_DISK_MB`); evicted Runs keep their metadata skeleton and a `trace.truncated` tombstone.
-- No `workspace.changed` events on this Codex/Ark stack: Ark shells out instead of calling `apply_patch`, so no `file_change` item has ever been observed (see [docs/CODEX_EVENTS.md](docs/CODEX_EVENTS.md)). The mapping exists but stays dormant rather than inventing a diff.
-- Redaction is a key denylist plus a bounded pattern scan. It is exact on structured attributes and best-effort on free text; a novel secret format in a command string can slip past, which is why the default capture policy is `metadata_only`.
-- Model/tool capabilities have exactly three states and are never guessed: `observed` (the runtime emitted events for that layer), `unavailable` (the Run completed and the runtime exposed no tool or model detail — not "the runtime has no tools"; this is the only case that emits `capability.unavailable`), and `unknown` (the Run was cancelled, timed out, or its stream never started — including error Runs that died before the first stream event — so nothing was said and its absence proves nothing; the trace header shows `model: no evidence` / `tool: no evidence` with the long form in the tooltip, and the Runs list shows a neutral `no tool calls` on an ok Run with zero tool calls).
-- The unit suite never runs the built server; the production-mode routes and the real Docker teardown are only proven by the [E2E lane](#verification-e2e-lane), which needs Docker, Chrome and an Ark key.
+Full list including container/resource limits: [.env.example](.env.example).
 
 ## Documentation
 
-- [TechJam Track 1 problem statement](docs/PROBLEM_STATEMENT.md) — the requirements this project answers, with a mapping to the PRD
-- [Project brief](docs/PROJECT_BRIEF.md) — concept, what is built, sprint plan, working agreements
-- [Sprint plan](docs/SPRINTS.md)
+- **[User guide](docs/USER_GUIDE.md)** — how to operate the product · **[Tutorial](docs/TUTORIAL.md)** — first login to a detected regression in ~15 minutes
+- [Track 1 problem statement](docs/PROBLEM_STATEMENT.md) · [PRD](docs/PRD.md) · [Architecture](docs/ARCHITECTURE.md)
+- [Observability roadmap](docs/OBSERVABILITY_ROADMAP.md) — the stance on inputs, outputs and reasoning
 - [UAT coverage](docs/UAT_COVERAGE.md) — what has been tested, how, and what remains
-- [Architecture](docs/ARCHITECTURE.md)
-- [Local POC](docs/LOCAL_POC.md)
-- [Deployment](docs/DEPLOYMENT.md)
-- [Hackathon extension guide](docs/HACKATHON_EXTENSION_GUIDE.md)
-- [Security policy](SECURITY.md)
-- [Contributing](CONTRIBUTING.md)
+- [Local POC](docs/LOCAL_POC.md) · [Deployment](docs/DEPLOYMENT.md) · [Codex events](docs/CODEX_EVENTS.md)
+- [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [Hackathon extension guide](docs/HACKATHON_EXTENSION_GUIDE.md)
 
 ## License
 

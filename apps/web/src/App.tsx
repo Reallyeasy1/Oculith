@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
 import { agentPayload } from "./agent-form";
-import type { Agent, AgentRun, AgentRunBaseline, EvalRun, Message, RegressionCase, RunListItem, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
+import type { Agent, AgentRun, AgentRunBaseline, EvalRun, Message, RegressionCase, ReliabilityReport, RunListItem, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
 import RunsView from "./RunsView";
+import ReliabilityPanel from "./ReliabilityPanel";
 import TraceDetail from "./TraceDetail";
 import Overview from "./Overview";
 import CompareView from "./CompareView";
 import { refreshIntervalMs } from "./trace-view-model";
-import { workspaceOptionLabel } from "./runs-view-model";
+import { formatCount, LONG_SESSION_HINT, sessionHealth, workspaceOptionLabel } from "./runs-view-model";
+import { runtimeCardModel } from "./system-view-model";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -22,6 +24,7 @@ const emptyForm = {
     "Help me build and test software in this workspace. Keep changes small and explain the result.",
   workspace: "",
   template: "",
+  verifyCommand: "",
 };
 
 function formatTime(value: string): string {
@@ -49,6 +52,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [system, setSystem] = useState<SystemInfo | null>(null);
+  const [systemFailed, setSystemFailed] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [form, setForm] = useState(emptyForm);
@@ -56,6 +60,7 @@ export default function App() {
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
   const [runs, setRuns] = useState<RunListItem[]>([]);
   const [runBaseline, setRunBaseline] = useState<AgentRunBaseline | null>(null);
+  const [reliability, setReliability] = useState<ReliabilityReport | null>(null);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [templates, setTemplates] = useState<WorkspaceTemplate[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
@@ -91,6 +96,13 @@ export default function App() {
   selectedRunIdRef.current = selectedRunId;
   viewRef.current = view;
 
+  // The one way any chat affordance opens a trace — same path as a runs-table row click,
+  // so the ?run= URL sync and collapse behaviour stay identical (#264).
+  const openTrace = useCallback((runId: string) => {
+    setSelectedRunId(runId);
+    setPlaygroundExpanded(false);
+  }, []);
+
   // Escape/Close hands focus back to the Run's row; if a quick filter hides that row, the Runs heading keeps the keyboard user anchored (#103).
   const closeTrace = useCallback(() => {
     const runId = selectedRunIdRef.current;
@@ -98,11 +110,16 @@ export default function App() {
     requestAnimationFrame(() => (document.querySelector<HTMLElement>(`[data-run-id="${runId}"]`) ?? document.getElementById("runs-heading"))?.focus());
   }, []);
 
+  // Sidebar Runtime pane (#200): neutral placeholder until the first /api/system response.
+  const runtimeCard = runtimeCardModel(system, systemFailed);
+
   const selected = useMemo(
     () => agents.find((agent) => agent.id === selectedId) ?? null,
     [agents, selectedId],
   );
   const selectedWorkspaceName = selected?.workspaceName ?? selected?.workspacePath.split(/[\\/]/).at(-1) ?? "";
+  // #254: messages waiting behind the active Run, refreshed with the agents list.
+  const pendingMessages = selected?.pendingMessages ?? [];
   const selectedWorkspace = workspaces.find((workspace) => workspace.name === selectedWorkspaceName);
   const sharingAgents = selectedWorkspace?.agents
     .filter((id) => id !== selected?.id)
@@ -132,14 +149,16 @@ export default function App() {
     const overview = viewRef.current === "overview";
     const agentId = selectedIdRef.current;
     const scope = overview ? "overview" : agentId;
-    if (!scope) { setRuns([]); setRunBaseline(null); return; }
+    if (!scope) { setRuns([]); setRunBaseline(null); setReliability(null); return; }
     try {
-      const [result, baselineResult] = await Promise.all([
+      const [result, baselineResult, reliabilityResult] = await Promise.all([
         api.listRuns(overview ? { limit: 200 } : { agentId: agentId!, limit: 100 }),
         overview ? Promise.resolve(null) : api.runBaseline(agentId!).catch(() => null),
+        // #173: same fail-soft contract as the baseline — a server without the reliability endpoints just hides the panel.
+        overview ? Promise.resolve(null) : api.reliability(agentId!).catch(() => null),
       ]);
       const stillCurrent = (viewRef.current === "overview" ? "overview" : selectedIdRef.current) === scope;
-      if (mountedRef.current && stillCurrent) { setRuns(result.runs); setRunBaseline(baselineResult?.baseline ?? null); }
+      if (mountedRef.current && stillCurrent) { setRuns(result.runs); setRunBaseline(baselineResult?.baseline ?? null); setReliability(reliabilityResult); }
     } catch {
       // ponytail: runs table goes stale, baseline keeps working (invariant 12)
     }
@@ -174,7 +193,7 @@ export default function App() {
   }, [refreshTrace, selectedRunId]);
 
   const bootstrap = useCallback(async () => {
-    await Promise.all([refreshAgents(), refreshRuns(), refreshRegressionCases(), refreshEvalRuns(), api.system().then(setSystem), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces)), api.listWorkspaceTemplates().then((result) => setTemplates(result.templates))]);
+    await Promise.all([refreshAgents(), refreshRuns(), refreshRegressionCases(), refreshEvalRuns(), api.system().then((info) => { setSystem(info); setSystemFailed(false); }, (reason) => { setSystemFailed(true); throw reason; }), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces)), api.listWorkspaceTemplates().then((result) => setTemplates(result.templates))]);
     const runId = pendingDeepLinkRef.current;
     if (!runId) return;
     try {
@@ -241,6 +260,7 @@ export default function App() {
         instructions: selected.instructions,
         workspace: selected.workspaceName ?? selected.workspacePath.split(/[\\/]/).at(-1) ?? "",
         template: selected.workspaceTemplate ?? "",
+        verifyCommand: selected.verifyCommand ?? "",
       });
     }
   }, [selected]);
@@ -369,7 +389,19 @@ export default function App() {
     if (!selected) return;
     setError(null);
     try {
-      const { evalRun } = await api.startEvalRun({ agentId: selected.id, caseIds: [regressionCase.id] });
+      const request = { agentId: selected.id, caseIds: [regressionCase.id] };
+      let result;
+      try {
+        result = await api.startEvalRun(request);
+      } catch (reason) {
+        if (!(reason instanceof ApiError) || reason.status !== 409 || !reason.message.includes("template changed")) throw reason;
+        const force = window.confirm(
+          "This workspace template changed after the regression case was recorded. Run against the current template anyway? The evaluation will be marked as a template-hash mismatch.",
+        );
+        if (!force) return;
+        result = await api.startEvalRun({ ...request, force: true });
+      }
+      const { evalRun } = result;
       setEvalRuns((current) => [evalRun, ...current.filter((item) => item.id !== evalRun.id)]);
       await refreshRuns();
       void pollEvalRun(evalRun.id).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
@@ -418,6 +450,27 @@ export default function App() {
     return () => window.clearInterval(id);
   }, [selectedId, trace?.summary.status, view]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Shared by the composer and Re-run (#256): POST the prompt, reflect the new Run locally, poll it.
+  // #254: a busy Agent answers with a queued receipt instead of a Run — refresh so the queue rows
+  // and chip render the queued state, and skip the immediate-run path entirely.
+  const dispatchPrompt = async (agentId: string, content: string, rerunOf?: string) => {
+    const result = await api.sendMessage(agentId, content, rerunOf);
+    if ("queued" in result) {
+      await refreshAgents();
+      return;
+    }
+    if (selectedIdRef.current === agentId) {
+      setMessages((current) => [...current, result.message]);
+      setActiveRun(result.run);
+    }
+    setAgents((current) =>
+      current.map((agent) =>
+        agent.id === agentId ? { ...agent, status: "busy" } : agent,
+      ),
+    );
+    await pollRun(result.run.id, agentId);
+  };
+
   const sendMessage = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!selected || !prompt.trim()) return;
@@ -425,21 +478,37 @@ export default function App() {
     setPrompt("");
     setError(null);
     try {
-      const result = await api.sendMessage(selected.id, content);
-      if (selectedIdRef.current === selected.id) {
-        setMessages((current) => [...current, result.message]);
-        setActiveRun(result.run);
-      }
-      setAgents((current) =>
-        current.map((agent) =>
-          agent.id === selected.id ? { ...agent, status: "busy" } : agent,
-        ),
-      );
-      await pollRun(result.run.id, selected.id);
+      await dispatchPrompt(selected.id, content);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
       setActiveRun(null);
       await refreshAgents();
+    }
+  };
+
+  // #256: re-send a Run's originating prompt as an ordinary new Run in the same session thread,
+  // exactly as if retyped — run.prompt IS the stored user Message content for that Run. A busy
+  // Agent queues it like any composer send (#254); dispatchPrompt renders the queued state.
+  const rerunPrompt = async (runId: string) => {
+    setError(null);
+    try {
+      const { run } = await api.run(runId);
+      await dispatchPrompt(run.agentId, run.prompt, runId);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
+  // #254: remove a message still waiting in the queue; the server 404s if it already started.
+  const cancelPendingMessage = async (messageId: string) => {
+    if (!selected) return;
+    setError(null);
+    try {
+      await api.cancelPendingMessage(selected.id, messageId);
+      await refreshAgents();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      await refreshAgents().catch(() => undefined);
     }
   };
 
@@ -560,6 +629,11 @@ export default function App() {
                 <strong>{agent.name}</strong>
                 <span>{agent.description || "Coding Agent"}</span>
               </div>
+              {(agent.pendingMessages?.length ?? 0) > 0 && (
+                <span className="queue-chip" title="Messages queued behind the active run">
+                  {agent.pendingMessages!.length} queued
+                </span>
+              )}
               <span className={"mini-dot mini-" + agent.status} />
             </button>
           ))}
@@ -573,9 +647,9 @@ export default function App() {
 
         <div className="runtime-card">
           <span className="eyebrow">Runtime</span>
-          <strong>{system?.runtime ?? "Checking…"}</strong>
+          <strong>{runtimeCard.runtimeLabel}</strong>
           <span>
-            {system?.arkModel ?? "Ark model not configured"}
+            {runtimeCard.modelLabel}
             {system?.containerEngine ? " · " + system.containerEngine : ""}
           </span>
         </div>
@@ -608,7 +682,7 @@ export default function App() {
         )}
 
         {view === "overview" ? (
-          <><Overview runs={runs} cases={regressionCases} evalRuns={evalRuns} selectedAgent={selected} onRunCase={startEvaluation} onDeleteCase={deleteRegressionCase} /><CompareView evalRuns={evalRuns} onOpenEvidence={(runId, eventId) => { setFocusEventId(eventId ?? null); setSelectedRunId(runId); }} /></>
+          <><Overview runs={runs} cases={regressionCases} evalRuns={evalRuns} selectedAgent={selected} onRunCase={startEvaluation} onDeleteCase={deleteRegressionCase} /><CompareView evalRuns={evalRuns} onOpenEvidence={(runId, eventId) => { setFocusEventId(eventId ?? null); openTrace(runId); }} /></>
         ) : selected ? playgroundCollapsed ? (
           <div className="playground-bar">
             <div className="header-title-row">
@@ -732,6 +806,20 @@ export default function App() {
                     maxLength={10_000}
                   />
                 </label>
+                <label>
+                  Verify command
+                  <input
+                    value={form.verifyCommand}
+                    onChange={(event) => setForm({ ...form, verifyCommand: event.target.value })}
+                    placeholder="npm test"
+                    maxLength={500}
+                    aria-describedby="verify-command-help"
+                  />
+                </label>
+                <p className="form-help" id="verify-command-help">
+                  Runs in the workspace after every completed Run; its exit code becomes the Run&apos;s
+                  outcome. Leave empty to keep the derived phrase heuristic.
+                </p>
                 <div className="panel-footer">
                   <code title={selected.workspacePath}>{selected.workspaceName ?? selected.workspacePath}</code>
                   <button className="button button-primary" disabled={busy}>
@@ -750,6 +838,18 @@ export default function App() {
                 <div className="session-info">
                   <span className="pulse" />
                   {selected.codexThreadId ? "Session connected" : "New session"}
+                  {selected.codexThreadId && (() => {
+                    // #257: derived from the Runs list this view already polls — advisory only, no auto-reset.
+                    const health = sessionHealth(runs, selected.codexThreadId);
+                    return (
+                      <span
+                        className={"session-health" + (health.advisory ? " session-health-warn" : "")}
+                        title={health.advisory ? LONG_SESSION_HINT : undefined}
+                      >
+                        Session: {health.turns} {health.turns === 1 ? "turn" : "turns"} · {formatCount(health.inputTokens)} tokens in
+                      </span>
+                    );
+                  })()}
                 </div>
               </div>
 
@@ -779,6 +879,11 @@ export default function App() {
                       <div className="message-meta">
                         <strong>{message.role === "user" ? "You" : selected.name}</strong>
                         <span>{formatTime(message.createdAt)}</span>
+                        {message.role === "assistant" && (
+                          <button type="button" className="evidence-link message-trace" onClick={() => openTrace(message.runId)}>
+                            trace
+                          </button>
+                        )}
                       </div>
                       <div className="message-body">{message.content}</div>
                     </article>
@@ -797,10 +902,33 @@ export default function App() {
                     </div>
                   </article>
                 )}
+                {/* #254: work waiting behind the active Run, cancelable until it starts. */}
+                {pendingMessages.map((pendingMessage, index) => (
+                  <article className="message message-user message-queued" key={pendingMessage.id}>
+                    <div className="message-meta">
+                      <strong>You</strong>
+                      <span>queued, {index + 1} ahead</span>
+                      <button
+                        type="button"
+                        className="evidence-link queued-cancel"
+                        onClick={() => void cancelPendingMessage(pendingMessage.id)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                    <div className="message-body">{pendingMessage.content}</div>
+                  </article>
+                ))}
                 {activeRun?.status === "failed" && (
                   <article className="run-error">
                     <strong>Run failed</strong>
                     <span>{activeRun.error}</span>
+                    <button type="button" className="evidence-link run-error-trace" onClick={() => openTrace(activeRun.id)}>
+                      View trace
+                    </button>
+                    <button type="button" className="evidence-link run-error-rerun" onClick={() => void rerunPrompt(activeRun.id)}>
+                      Re-run prompt
+                    </button>
                   </article>
                 )}
                 <div ref={messageEnd} />
@@ -819,27 +947,23 @@ export default function App() {
                   placeholder={
                     selected.status === "stopped"
                       ? "Start this Agent to continue…"
-                      : "Describe what you want the Agent to do…"
+                      : selected.status === "busy" || (activeRun != null && ["queued", "running"].includes(activeRun.status))
+                        ? "Agent is busy — Enter queues your message…"
+                        : "Describe what you want the Agent to do…"
                   }
-                  disabled={
-                    selected.status === "stopped" ||
-                    selected.status === "busy" ||
-                    activeRun != null && ["queued", "running"].includes(activeRun.status)
-                  }
+                  disabled={selected.status === "stopped"}
                   rows={3}
                 />
                 <div className="composer-footer">
                   <span>
                     Enter to send · Shift + Enter for newline · {system?.codexSandboxMode ?? "checking sandbox"}
+                    {pendingMessages.length > 0 && (
+                      <> · queued, {pendingMessages.length} ahead</>
+                    )}
                   </span>
                   <button
                     className="send-button"
-                    disabled={
-                      !prompt.trim() ||
-                      selected.status === "stopped" ||
-                      selected.status === "busy" ||
-                      (activeRun != null && ["queued", "running"].includes(activeRun.status))
-                    }
+                    disabled={!prompt.trim() || selected.status === "stopped"}
                     aria-label="Send message"
                   >
                     ↑
@@ -866,6 +990,7 @@ export default function App() {
           </div>
         )}
 
+        {view === "agent" && selected && <ReliabilityPanel report={reliability} />}
         {selectedRunId && (
           <TraceDetail
             key={selectedRunId}
@@ -876,6 +1001,7 @@ export default function App() {
             focusEventId={focusEventId}
             onFocusHandled={() => setFocusEventId(null)}
             onCaseSaved={refreshRegressionCases}
+            onRerun={(runId) => void rerunPrompt(runId)}
             onClose={closeTrace}
           />
         )}
@@ -884,7 +1010,7 @@ export default function App() {
           key={view}
           runs={view === "agent" && selectedId ? runs.filter((run) => run.agentId === selectedId) : runs}
           selectedRunId={selectedRunId}
-          onOpenTrace={(runId) => { setSelectedRunId(runId); setPlaygroundExpanded(false); }}
+          onOpenTrace={openTrace}
           showAgent={view === "overview"}
           title={view === "agent" && selected ? "Runs · " + selected.name : "Runs"}
           emptyText={view === "agent" && selected ? "No Runs for this Agent yet." : "No Runs observed yet."}

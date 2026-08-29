@@ -89,6 +89,12 @@ describe("redactEvent", () => {
     expect(safe.privacy.storedBytes).toBe(1000);
     expect(safe.privacy.rules).toContain("truncated");
   });
+  it("reasoning_summary keeps summaries exactly like safe_summary (superset tier, #259)", () => {
+    const out = redactEvent(ev({ summary: { text: "plan: call Bearer " + BEARER_TOKEN, policy: "safe_summary" } }), { policy: "reasoning_summary" });
+    expect(out.summary?.text).toContain("[REDACTED:bearer]");
+    expect(out.summary?.text).not.toContain(BEARER_TOKEN);
+    expect(out.privacy.rules).not.toContain("policy_drop_summary");
+  });
   it("scans error messages under every policy", () => {
     const out = redactEvent(ev({ error: { type: "exit", message: "failed with " + FAKE_ARK } }), { policy: "metadata_only" });
     expect(out.error?.message).not.toContain("0f0f0f0f");

@@ -2,6 +2,13 @@ export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type MessageRole = "user" | "assistant";
 
+/** One message accepted while the Agent was busy (#254); becomes a Run + user Message when dequeued. */
+export interface PendingMessage {
+  id: string;
+  content: string;
+  queuedAt: string;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -12,10 +19,24 @@ export interface Agent {
   workspaceName?: string | undefined;
   workspaceManaged?: boolean | undefined;
   workspaceTemplate?: string | undefined;
+  /** Operator-set shell command run in the workspace after every completed ordinary Run (#253); its exit code sets the Run's taskOutcome. */
+  verifyCommand?: string | undefined;
+  /** FIFO of messages accepted while busy (#254), capped at 10; absent means empty. No Database
+   * version bump: old files simply lack the key, and old readers ignore it — the shape stays compatible. */
+  pendingMessages?: PendingMessage[] | undefined;
   codexThreadId: string | null;
   lastError: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** 202 body when a busy Agent queued the message instead of starting a Run (#254).
+ * `position` is the 1-based place in the queue; with exactly one Run always active while
+ * queueing, it also equals the number of work items ahead. */
+export interface QueuedMessageReceipt {
+  queued: true;
+  position: number;
+  messageId: string;
 }
 
 export interface Message {
@@ -46,7 +67,9 @@ export interface AgentConfigSnapshot {
   codexSandboxMode: "read-only" | "workspace-write" | "danger-full-access";
   runtimeProvider: "local-process" | "container";
   containerRuntimeImage: string;
-  capturePolicy: "metadata_only" | "safe_summary";
+  capturePolicy: "metadata_only" | "safe_summary" | "reasoning_summary";
+  /** sha256 of the Agent's verifyCommand (hashed like `instructions`); absent when none is set. */
+  verifyCommand?: string | undefined;
 }
 
 export interface AgentRun {
@@ -116,6 +139,7 @@ export interface CreateAgentInput {
   instructions?: string | undefined;
   workspace?: string | undefined;
   template?: string | undefined;
+  verifyCommand?: string | undefined;
 }
 
 export interface UpdateAgentInput {
@@ -123,12 +147,23 @@ export interface UpdateAgentInput {
   description?: string | undefined;
   instructions?: string | undefined;
   workspace?: string | undefined;
+  /** Empty string clears the command. */
+  verifyCommand?: string | undefined;
+}
+
+/** Bounded per-Run counters observed from the runtime stream; feeds the completion-summary log line (#232). */
+export interface RunnerRunStats {
+  modelCalls: number;
+  toolCalls: number;
+  toolFailures: number;
+  sandboxDenials: number;
 }
 
 export interface RunnerResult {
   output: string;
   threadId: string | null;
   usage: RunUsage | null;
+  stats?: RunnerRunStats | undefined;
 }
 
 export interface RunnerTraceContext {
@@ -153,6 +188,7 @@ export interface RunnerRequest {
 
 export interface RunnerLogger {
   info(message: string): void;
+  warn(message: string): void;
   error(message: string, error?: unknown): void;
 }
 

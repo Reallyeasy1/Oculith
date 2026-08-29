@@ -1,12 +1,12 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
-import type { AppConfig } from "./config.js";
+import { configuredModel, type AppConfig } from "./config.js";
 import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
 import { RunCancelledError } from "./errors.js";
 import { CodexActivityTracker } from "./glassbox/activity.js";
 import { CodexStreamObserver, RUNNER_ACTOR, type CodexStreamSink } from "./glassbox/codex-observer.js";
 import { createDefaultEmitter, type ObservationEmitter } from "./glassbox/emitter.js";
-import { newId } from "./glassbox/schema.js";
+import { capturesSummaries, newId } from "./glassbox/schema.js";
 import { redactText } from "./glassbox/redact.js";
 import type {
   AgentRunner,
@@ -223,7 +223,10 @@ export class ContainerCodexRunner implements AgentRunner {
         : undefined;
     const observer =
       request.trace && span
-        ? new CodexStreamObserver(this.emitter, request.trace, span.spanId, "ContainerCodexRunner")
+        ? new CodexStreamObserver(this.emitter, request.trace, span.spanId, "ContainerCodexRunner", {
+            log: request.logger,
+            resume: request.threadId !== null,
+          })
         : undefined;
     const sink: CodexStreamSink | undefined = request.onActivity
       ? new CodexActivityTracker(request.onActivity, observer)
@@ -237,6 +240,9 @@ export class ContainerCodexRunner implements AgentRunner {
         env: this.childEnvironment(),
         stdio: ["ignore", "pipe", "pipe"],
       },
+    );
+    request.logger?.info(
+      "Runner spawned: adapter=ContainerCodexRunner model=" + configuredModel(this.config) + " sandbox=" + this.config.codexSandboxMode,
     );
     const settled = new Promise<void>((resolve) => {
       child.once("close", () => resolve());
@@ -273,13 +279,17 @@ export class ContainerCodexRunner implements AgentRunner {
         return;
       }
       if (target === "stdout") {
-        if (!firstOutputObserved && chunk.byteLength > 0 && traceBase && span) {
+        if (!firstOutputObserved && chunk.byteLength > 0) {
           firstOutputObserved = true;
-          this.emitter.emit({
-            ...traceBase, spanId: newId("spn"), parentSpanId: span.spanId,
-            type: "runtime.codex.first_output", category: "runtime", name: "codex first output", status: "ok",
-            attributes: { latencyMs: Math.max(0, Date.now() - runtimeStartedAt) },
-          });
+          const latencyMs = Math.max(0, Date.now() - runtimeStartedAt);
+          request.logger?.info("Codex first output after " + latencyMs + " ms");
+          if (traceBase && span) {
+            this.emitter.emit({
+              ...traceBase, spanId: newId("spn"), parentSpanId: span.spanId,
+              type: "runtime.codex.first_output", category: "runtime", name: "codex first output", status: "ok",
+              attributes: { latencyMs },
+            });
+          }
         }
         stdout += chunk.toString("utf8");
         const lines = stdout.split(/\r?\n/);
@@ -319,7 +329,7 @@ export class ContainerCodexRunner implements AgentRunner {
         type: status === "ok" ? "runtime.codex.completed" : "runtime.codex.failed",
         attributes: { ...endAttrs, ...extra },
         ...(error ? { error } : {}),
-        ...(status !== "ok" && this.emitter.capturePolicy === "safe_summary" && stderr.trim()
+        ...(status !== "ok" && capturesSummaries(this.emitter.capturePolicy) && stderr.trim()
           ? { summary: { text: redactText(stderr).text.slice(-2_048), policy: "safe_summary" as const } }
           : {}),
       });
@@ -389,7 +399,7 @@ export class ContainerCodexRunner implements AgentRunner {
         throw new Error(message);
       }
       endSpans("ok", undefined, { outputBytes: Buffer.byteLength(output, "utf8") });
-      return { output, threadId: parsed.threadId, usage: parsed.usage };
+      return { output, threadId: parsed.threadId, usage: parsed.usage, ...(observer ? { stats: observer.stats() } : {}) };
     } catch (error) {
       // Only reached when the engine itself failed to spawn (the branches above end the spans).
       if (span && !spanEnded) {

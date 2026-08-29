@@ -2,7 +2,7 @@
 //   npx vitest run apps/web/src/runs-view-model.test.ts
 import { describe, expect, it } from "vitest";
 import type { RunListItem, TraceStatus } from "./types";
-import { evidenceBadges, formatCost, formatRunDuration, formatUsage, liveRuns, matchesFilter, needsAttention, outlierLabel, recoveredFailures, runOutlier, summarizeRuns, workspaceLabel, workspaceOptionLabel } from "./runs-view-model";
+import { ERROR_HEAD_CHARS, collapseRequestId, errorHead, evidenceBadges, formatCost, formatRunDuration, formatUsage, liveRuns, matchesFilter, needsAttention, outlierLabel, pluralize, recoveredFailures, runOutlier, SESSION_INPUT_TOKENS_ADVISORY_THRESHOLD, sessionHealth, summarizeRuns, workspaceLabel, workspaceOptionLabel } from "./runs-view-model";
 
 function run(status: TraceStatus, degraded = false, agentId = "a", agentName = "A", extra: Partial<RunListItem> = {}): RunListItem {
   return {
@@ -26,11 +26,11 @@ describe("summarizeRuns", () => {
     });
   });
 
-  it("counts ok Runs with tool failures or denials as recovered — and as needing attention (#131)", () => {
+  it("counts ok Runs with tool failures or denials as recovered — pure recovery is not attention (#131, #202)", () => {
     const runs = [run("ok", false, "a", "A", { toolFailures: 2 }), run("ok", false, "a", "A", { denials: 1 }), run("ok"), run("error", false, "a", "A", { toolFailures: 1 })];
     const s = summarizeRuns(runs);
-    expect([s.ok, s.recovered, s.attention]).toEqual([3, 2, 3]);
-    expect(s.agents).toEqual([{ agentId: "a", name: "A", count: 4, attention: 3 }]);
+    expect([s.ok, s.recovered, s.attention]).toEqual([3, 2, 2]);
+    expect(s.agents).toEqual([{ agentId: "a", name: "A", count: 4, attention: 2 }]);
   });
 
   it("is all zeros with no Agents for an empty list, and falls back to the agentId as a name", () => {
@@ -54,12 +54,18 @@ describe("needsAttention", () => {
     expect(matchesFilter(run(status, degraded), "attention")).toBe(expected);
   });
 
-  it("flags tool failures and denials on any status (#131)", () => {
-    expect(needsAttention(run("ok", false, "a", "A", { toolFailures: 2 }))).toBe(true);
+  it("does not flag pure recovery: an ok Run whose tool failures preceded success is informational (#202)", () => {
+    expect(needsAttention(run("ok", false, "a", "A", { toolFailures: 2 }))).toBe(false);
+    expect(matchesFilter(run("ok", false, "a", "A", { toolFailures: 2 }), "attention")).toBe(false);
+    expect(matchesFilter(run("ok", false, "a", "A", { toolFailures: 2 }), "failed")).toBe(false);
+    // The chip evidence survives even though the Run left the attention filter.
+    expect(recoveredFailures(run("ok", false, "a", "A", { toolFailures: 2 }))).toBe(2);
+  });
+
+  it("still flags tool failures on a Run that has not ended ok, and denials on any status (#131, #202)", () => {
     expect(needsAttention(run("ok", false, "a", "A", { denials: 1 }))).toBe(true);
     expect(needsAttention(run("running", false, "a", "A", { toolFailures: 1 }))).toBe(true);
-    expect(matchesFilter(run("ok", false, "a", "A", { toolFailures: 2 }), "attention")).toBe(true);
-    expect(matchesFilter(run("ok", false, "a", "A", { toolFailures: 2 }), "failed")).toBe(false);
+    expect(needsAttention(run("error", false, "a", "A", { toolFailures: 1 }))).toBe(true);
   });
 
   it("flags an ok Run when the agent reports failure in its final message", () => {
@@ -84,24 +90,46 @@ describe("needsAttention", () => {
 
 describe("formatUsage", () => {
   it("keeps small usage exact and compacts wide token counts", () => {
-    expect(formatUsage({ inputTokens: 37384, outputTokens: 383 })).toBe("37k in · 383 out");
+    expect(formatUsage({ inputTokens: 37384, cachedInputTokens: 12_400, outputTokens: 383 })).toBe("37k in · 12k cached · 383 out");
     expect(formatUsage({ inputTokens: 999, outputTokens: 1200 })).toBe("999 in · 1.2k out");
+    expect(formatUsage({ inputTokens: 2_100_000, outputTokens: 0 })).toBe("2.1M in · 0 out");
+  });
+});
+
+describe("sessionHealth (#257)", () => {
+  const turn = (sessionId: string | undefined, inputTokens?: number) =>
+    run("ok", false, "a", "A", { ...(sessionId ? { sessionId } : {}), ...(inputTokens === undefined ? {} : { usage: { inputTokens } }) });
+
+  it("is empty with no thread or no Runs on the thread", () => {
+    expect(sessionHealth([turn("thr-other", 50)], null)).toEqual({ turns: 0, inputTokens: 0, advisory: false });
+    expect(sessionHealth([], "thr-1")).toEqual({ turns: 0, inputTokens: 0, advisory: false });
+    expect(sessionHealth([turn("thr-other", 50), turn(undefined, 50)], "thr-1")).toEqual({ turns: 0, inputTokens: 0, advisory: false });
+  });
+
+  it("counts only the current thread's Runs and sums their input tokens; missing usage counts as 0", () => {
+    const runs = [turn("thr-1", 100), turn("thr-other", 9_999), turn("thr-1"), turn(undefined, 42), turn("thr-1", 25)];
+    expect(sessionHealth(runs, "thr-1")).toEqual({ turns: 3, inputTokens: 125, advisory: false });
+  });
+
+  it("turns advisory exactly at the cumulative input-token threshold", () => {
+    expect(sessionHealth([turn("thr-1", SESSION_INPUT_TOKENS_ADVISORY_THRESHOLD - 1)], "thr-1").advisory).toBe(false);
+    expect(sessionHealth([turn("thr-1", SESSION_INPUT_TOKENS_ADVISORY_THRESHOLD - 1), turn("thr-1", 1)], "thr-1").advisory).toBe(true);
   });
 });
 
 describe("runOutlier", () => {
-  const baseline = { sampleCount: 20, windowSize: 20 as const, durationMs: { median: 2_000, p90: 5_000 }, inputTokens: { median: 100 }, toolCalls: { median: 2 }, toolFailures: { median: 0 } };
+  const baseline = { sampleCount: 20, windowSize: 20 as const, durationMs: { p50: 2_000, p95: 5_000 }, inputTokens: { p50: 100 }, toolCalls: { p50: 2 }, toolFailures: { p50: 0 } };
 
-  it("flags values above three times the median and reports the exact multiple", () => {
+  it("flags values above three times the p50 and reports the exact multiple", () => {
     const outlier = runOutlier(run("ok", false, "a", "A", { durationMs: 6_001, usage: { inputTokens: 1_100 } }), baseline);
     expect(outlier).toEqual({ durationMultiple: 3.0005, inputTokensMultiple: 11 });
     expect(outlierLabel(outlier!)).toBe("outlier ×11 tokens");
   });
 
-  it("shows no chip with fewer than three Runs, missing/zero medians, or exactly three times", () => {
+  it("shows no chip with fewer than three Runs, missing/zero p50s, or exactly three times", () => {
     expect(runOutlier(run("ok", false, "a", "A", { durationMs: 10_000 }), { ...baseline, sampleCount: 2 })).toBeUndefined();
     expect(runOutlier(run("ok", false, "a", "A", { durationMs: 6_000 }), baseline)).toBeUndefined();
-    expect(runOutlier(run("ok", false, "a", "A", { durationMs: 10_000 }), { ...baseline, durationMs: { median: 0 } })).toBeUndefined();
+    expect(runOutlier(run("ok", false, "a", "A", { durationMs: 10_000 }), { ...baseline, durationMs: { p50: 0 } })).toBeUndefined();
   });
 
   it("formats optional estimated cost without pretending at high precision", () => {
@@ -145,6 +173,45 @@ describe("workspace presentation", () => {
   it("describes selectable workspaces with sharing and file-count context", () => {
     expect(workspaceOptionLabel({ name: "shared-repo", path: "/work/shared-repo", agents: ["a", "b"], fileCount: 7, lastModified: "2026-08-27T00:00:00Z", managed: false }))
       .toBe("shared-repo · 2 agents · unmanaged · 7 files");
+  });
+});
+
+describe("error de-duplication presentation (#263)", () => {
+  // Shaped like the trace-34910180 repro: the provider echoes the same request id twice.
+  const provider = "Provider rejected the request: 401 Unauthorized, invalid API key (request id: req-2026082716-abc123). Upstream said: unauthorized · request id: req-2026082716-abc123";
+
+  it("collapses a repeated request id, keeping the first occurrence", () => {
+    const collapsed = collapseRequestId(provider);
+    expect(collapsed.match(/request id/gi)).toHaveLength(1);
+    expect(collapsed).toContain("(request id: req-2026082716-abc123)");
+    expect(collapsed).toContain("Upstream said: unauthorized");
+  });
+
+  it("is idempotent and case-insensitive on the label", () => {
+    const once = collapseRequestId("boom Request id: r-1 and again request id: r-1");
+    expect(once).toBe("boom Request id: r-1 and again");
+    expect(collapseRequestId(once)).toBe(once);
+  });
+
+  it("keeps distinct request ids and untouched text alone", () => {
+    expect(collapseRequestId("a request id: r-1, b request id: r-2")).toBe("a request id: r-1, b request id: r-2");
+    expect(collapseRequestId("no ids here")).toBe("no ids here");
+  });
+
+  it("bounds errorHead at ERROR_HEAD_CHARS plus one ellipsis, leaving short text alone", () => {
+    const head = errorHead(provider);
+    expect(head.length).toBeLessThanOrEqual(ERROR_HEAD_CHARS + 1);
+    expect(head.endsWith("…")).toBe(true);
+    expect(errorHead("short error")).toBe("short error");
+    expect(errorHead("x".repeat(ERROR_HEAD_CHARS))).toBe("x".repeat(ERROR_HEAD_CHARS));
+  });
+
+  it("pluralizes counts, including the irregular retry/retries", () => {
+    expect(pluralize(1, "model call")).toBe("1 model call");
+    expect(pluralize(2, "model call")).toBe("2 model calls");
+    expect(pluralize(0, "tool call")).toBe("0 tool calls");
+    expect(pluralize(1, "retry", "retries")).toBe("1 retry");
+    expect(pluralize(3, "retry", "retries")).toBe("3 retries");
   });
 });
 

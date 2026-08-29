@@ -1,6 +1,13 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
+/** One message accepted while the Agent was busy (#254); becomes a Run + user Message when dequeued. */
+export interface PendingMessage {
+  id: string;
+  content: string;
+  queuedAt: string;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -11,10 +18,22 @@ export interface Agent {
   workspaceName?: string;
   workspaceManaged?: boolean;
   workspaceTemplate?: string;
+  /** Operator-set command run in the workspace after every completed Run (#253); its exit code sets the Run's taskOutcome. */
+  verifyCommand?: string;
+  /** FIFO of messages accepted while busy (#254), capped at 10; absent means empty. */
+  pendingMessages?: PendingMessage[];
   codexThreadId: string | null;
   lastError: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** 202 body when a busy Agent queued the message instead of starting a Run (#254);
+ * `position` is the 1-based place in the queue (= work items ahead, one Run being active). */
+export interface QueuedMessageReceipt {
+  queued: true;
+  position: number;
+  messageId: string;
 }
 
 export interface Workspace {
@@ -68,6 +87,8 @@ export interface AgentConfigSnapshot {
   runtimeProvider: "local-process" | "container";
   containerRuntimeImage: string;
   capturePolicy: CapturePolicy;
+  /** sha256 of the Agent's verifyCommand; absent when none is set. */
+  verifyCommand?: string;
 }
 
 // --- GlassBox query types (mirrors apps/server/src/glassbox/{schema,query}.ts) ---
@@ -83,7 +104,7 @@ export type Category =
   | "sandbox"
   | "policy"
   | "infrastructure";
-export type CapturePolicy = "metadata_only" | "safe_summary";
+export type CapturePolicy = "metadata_only" | "safe_summary" | "reasoning_summary";
 
 export interface RunListItem {
   runId: string;
@@ -91,6 +112,8 @@ export interface RunListItem {
   agentId: string;
   agentName: string;
   workspace?: string;
+  /** Codex thread the Run ran in — groups Runs into sessions (#257). */
+  sessionId?: string;
   status: TraceStatus;
   startedAt?: string;
   durationMs?: number;
@@ -104,6 +127,7 @@ export interface RunListItem {
     inputTokens?: number;
     cachedInputTokens?: number;
     outputTokens?: number;
+    reasoningOutputTokens?: number;
   };
   capabilities: { model: "observed" | "unavailable" | "unknown"; tool: "observed" | "unavailable" | "unknown" };
   toolCalls: number;
@@ -129,7 +153,7 @@ export interface RunListItem {
   estimatedCostUsd?: number;
 }
 
-export interface BaselineDistribution { median?: number; p90?: number }
+export interface BaselineDistribution { p50?: number; p95?: number }
 export interface AgentRunBaseline {
   sampleCount: number;
   windowSize: 20;
@@ -151,6 +175,8 @@ export interface FailureFocus {
   message?: string;
   path: string[];
   diagnosis: string;
+  /** #265 — deterministic provider-error hint derived server-side from the stored error text by fixed rules. */
+  hint?: string;
 }
 
 export type AuditOutcome = "allowed" | "denied" | "ok" | "error" | "timeout" | "cancelled";
@@ -196,6 +222,7 @@ export interface TraceSummary {
     inputTokens?: number;
     cachedInputTokens?: number;
     outputTokens?: number;
+    reasoningOutputTokens?: number;
   };
   metrics: {
     durationMs?: number;
@@ -206,7 +233,7 @@ export interface TraceSummary {
     modelCalls: number;
     timeToFirstToolMs?: number;
     timeSplit: { modelMs: number; toolMs: number; containerStartMs: number };
-    tokens?: { input?: number; cachedInput?: number; output?: number };
+    tokens?: { input?: number; cachedInput?: number; output?: number; reasoning?: number };
     retries: number;
     denials: number;
   };

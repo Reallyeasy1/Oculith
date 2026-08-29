@@ -1,4 +1,4 @@
-import type { Agent, AgentRun, Assertion, AuditRow, CapturePolicy, EvalRun, Message, RegressionCase, RunListItem, RunLogLine, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
+import type { Agent, AgentRun, Assertion, AuditRow, CapturePolicy, EvalRun, EvaluationResult, Message, QueuedMessageReceipt, RegressionCase, ReliabilityReport, RunListItem, RunLogLine, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -75,14 +75,19 @@ export const api = {
     request<{ runs: AgentRun[] }>("/api/agents/" + id + "/runs"),
   runBaseline: (id: string) =>
     request<{ baseline: import("./types").AgentRunBaseline }>("/api/agents/" + id + "/runs/baseline"),
-  sendMessage: (id: string, content: string) =>
-    request<{ run: AgentRun; message: Message }>(
+  // rerunOf (#256): id of the Run this prompt re-dispatches; stamped on run.created for lineage.
+  // #254: a busy Agent answers with a QueuedMessageReceipt instead of a started Run.
+  sendMessage: (id: string, content: string, rerunOf?: string) =>
+    request<{ run: AgentRun; message: Message } | QueuedMessageReceipt>(
       "/api/agents/" + id + "/messages",
       {
         method: "POST",
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, ...(rerunOf ? { rerunOf } : {}) }),
       },
     ),
+  // #254: cancel a message still waiting in the Agent's queue.
+  cancelPendingMessage: (agentId: string, messageId: string) =>
+    request<void>("/api/agents/" + agentId + "/messages/" + messageId, { method: "DELETE" }),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
   listRuns: (options: { agentId?: string; limit?: number } = {}) =>
     request<{ schemaVersion: string; capturePolicy: CapturePolicy; runs: RunListItem[] }>(
@@ -102,11 +107,18 @@ export const api = {
   listEvalRuns: () => request<{ evalRuns: EvalRun[] }>("/api/eval-runs"),
   evalRun: (id: string) => request<{ evalRun: EvalRun }>("/api/eval-runs/" + id),
   compareEvalRuns: (baselineId: string, candidateId: string) => request<import("./types").EvalComparison>("/api/eval-runs/" + baselineId + "/compare/" + candidateId),
-  startEvalRun: (body: { agentId: string; caseIds: string[] }) =>
+  startEvalRun: (body: { agentId: string; caseIds: string[]; force?: boolean }) =>
     request<{ evalRun: EvalRun }>("/api/eval-runs", {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  // #173: historical reliability aggregates for the Agent detail panel (#172's endpoint; server defaults
+  // to daily buckets and the seeded task_completion evaluator).
+  reliability: (agentId: string) =>
+    request<ReliabilityReport>("/api/agents/" + agentId + "/reliability"),
+  // #173: stored evaluation results for one Run, shown in the trace detail.
+  runEvaluations: (runId: string) =>
+    request<{ evaluations: EvaluationResult[] }>("/api/runs/" + runId + "/evaluations"),
   logs: (runId: string, level = "") => request<{ lines: RunLogLine[]; truncated: boolean }>("/api/runs/" + runId + "/logs?" + new URLSearchParams({ limit: "500", ...(level ? { level } : {}) })),
   audit: (runId: string) => request<{ schemaVersion: string; capturePolicy: CapturePolicy; audit: AuditRow[] }>("/api/runs/" + runId + "/audit"),
   exportTrace: async (traceId: string): Promise<{ blob: Blob; filename: string }> => {

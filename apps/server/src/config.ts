@@ -56,7 +56,7 @@ const envSchema = z.object({
   /** `fake` is deterministic and reserved for the repository E2E lane. */
   TASK_COMPLETION_JUDGE: z.enum(["ark", "fake"]).default("ark"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-  GLASSBOX_CAPTURE_POLICY: z.enum(["metadata_only", "safe_summary"]).default("metadata_only"),
+  GLASSBOX_CAPTURE_POLICY: z.enum(["metadata_only", "safe_summary", "reasoning_summary"]).default("metadata_only"),
   GLASSBOX_DEMO_FAILURE: z.enum(["off", "timeout"]).default("off"),
   GLASSBOX_TRACE_DIR: z.string().optional(),
   // Retention (FR-14): 0 disables a knob. Defaults are conservative for a single-user demo box.
@@ -67,9 +67,16 @@ const envSchema = z.object({
   DATABASE_URL: z.string().min(1).optional(),
   GLASSBOX_LOG_MAX_MB: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.coerce.number().finite().positive().default(50)),
   GLASSBOX_PRICE_PER_MTOK_INPUT: z.preprocess((value) => value === "" ? undefined : value, z.coerce.number().finite().nonnegative().optional()),
+  GLASSBOX_PRICE_PER_MTOK_CACHED_INPUT: z.preprocess((value) => value === "" ? undefined : value, z.coerce.number().finite().nonnegative().optional()),
   GLASSBOX_PRICE_PER_MTOK_OUTPUT: z.preprocess((value) => value === "" ? undefined : value, z.coerce.number().finite().nonnegative().optional()),
   /** Keep completed isolated evaluation workspaces for post-check/debugging; the default cleans them up. */
   KEEP_EVAL_WORKSPACES: z.enum(["0", "1"]).default("0"),
+  /**
+   * Comma-separated commands post_check assertions may execute in eval workspaces (#282). Same trust
+   * level as Agent.verifyCommand (#253): operator-set config, never case-authored text — any command
+   * not on this list fails the assertion closed.
+   */
+  GLASSBOX_POSTCHECK_ALLOWLIST: z.string().default("npm test"),
 });
 
 export type AppConfig = ReturnType<typeof loadConfig>;
@@ -129,8 +136,10 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     databaseUrl: env.DATABASE_URL,
     glassboxLogMaxMb: env.GLASSBOX_LOG_MAX_MB,
     glassboxPricePerMtokInput: env.GLASSBOX_PRICE_PER_MTOK_INPUT,
+    glassboxPricePerMtokCachedInput: env.GLASSBOX_PRICE_PER_MTOK_CACHED_INPUT ?? env.GLASSBOX_PRICE_PER_MTOK_INPUT,
     glassboxPricePerMtokOutput: env.GLASSBOX_PRICE_PER_MTOK_OUTPUT,
     keepEvalWorkspaces: env.KEEP_EVAL_WORKSPACES === "1",
+    postCheckAllowlist: env.GLASSBOX_POSTCHECK_ALLOWLIST.split(",").map((item) => item.trim()).filter(Boolean),
   };
 }
 
@@ -140,6 +149,11 @@ export function isModelConfigured(config: AppConfig): boolean {
   return config.modelProvider === "openai"
     ? !isPlaceholder(config.openaiApiKey)
     : !isPlaceholder(config.arkApiKey) && !isPlaceholder(config.arkModel);
+}
+
+/** The model name the active provider will run — the same value `configSnapshot` stamps on each Run. */
+export function configuredModel(config: AppConfig): string {
+  return config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default";
 }
 
 export function codexConfigToml(config: AppConfig): string {

@@ -49,9 +49,15 @@ export function evidenceBadges(run: RunListItem): EvidenceBadge[] {
     }));
 }
 
-/** error ∪ timeout ∪ cancelled ∪ degraded ∪ any tool failure/denial — the default Runs filter (#35, #131). */
+/**
+ * error ∪ timeout ∪ cancelled ∪ degraded ∪ agent-reported failure ∪ any denial ∪ tool failures on a non-ok Run —
+ * the default Runs filter (#35, #131, #202).
+ * #202 ruling: recovery alone is not attention-worthy. An ok Run whose tool failures all preceded a successful
+ * completion keeps its `recovered after N failures` chip as evidence but is informational, not attention.
+ * Denials stay attention-worthy even on an ok Run — they are policy evidence.
+ */
 export function needsAttention(run: RunListItem): boolean {
-  return run.outcome?.reportedFailure === true || run.degraded || run.toolFailures > 0 || run.denials > 0 || run.status === "error" || run.status === "timeout" || run.status === "cancelled";
+  return run.outcome?.reportedFailure === true || run.degraded || run.denials > 0 || (run.status !== "ok" && run.toolFailures > 0) || run.status === "error" || run.status === "timeout" || run.status === "cancelled";
 }
 
 /** Running Runs, newest first — the "Live now" strip, independent of the quick filter (#131). */
@@ -133,21 +139,39 @@ export function formatRunDuration(durationMs: number | undefined, endedReason?: 
 
 export function formatUsage(usage: RunListItem["usage"]): string {
   if (!usage || (usage.inputTokens === undefined && usage.outputTokens === undefined)) return "—";
-  return formatCount(usage.inputTokens ?? 0) + " in · " + formatCount(usage.outputTokens ?? 0) + " out";
+  return formatCount(usage.inputTokens ?? 0) + " in"
+    + (usage.cachedInputTokens === undefined ? "" : " · " + formatCount(usage.cachedInputTokens) + " cached")
+    + " · " + formatCount(usage.outputTokens ?? 0) + " out";
 }
 
 export function formatCount(value: number | undefined): string {
   if (value === undefined) return "—";
+  if (value >= 1_000_000) return (value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1).replace(/\.0$/, "") + "M";
   return value >= 1000 ? (value / 1000).toFixed(value >= 10_000 ? 0 : 1).replace(/\.0$/, "") + "k" : String(value);
+}
+
+// #257 — cumulative input tokens in one Codex session past which the badge turns advisory.
+// ponytail: module const, promote to config.ts + .env.example when someone actually needs to tune it.
+export const SESSION_INPUT_TOKENS_ADVISORY_THRESHOLD = 1_000_000;
+
+export const LONG_SESSION_HINT = "Long session — consider New session to reset context";
+
+export interface SessionHealth { turns: number; inputTokens: number; advisory: boolean }
+
+/** #257 — depth + cumulative input tokens of the Agent's current session, from Runs the view already polls. Advisory only: no auto-reset. */
+export function sessionHealth(runs: RunListItem[], threadId: string | null): SessionHealth {
+  const session = threadId === null ? [] : runs.filter((run) => run.sessionId === threadId);
+  const inputTokens = session.reduce((sum, run) => sum + (run.usage?.inputTokens ?? 0), 0);
+  return { turns: session.length, inputTokens, advisory: inputTokens >= SESSION_INPUT_TOKENS_ADVISORY_THRESHOLD };
 }
 
 export interface RunOutlier { durationMultiple?: number; inputTokensMultiple?: number }
 
-/** A baseline is too noisy below three terminal Runs; ratios require a positive median. */
+/** A baseline is too noisy below three terminal Runs; ratios require a positive p50. */
 export function runOutlier(run: RunListItem, baseline: AgentRunBaseline | null | undefined): RunOutlier | undefined {
   if (!baseline || baseline.sampleCount < 3) return undefined;
-  const durationMultiple = baseline.durationMs.median && run.durationMs !== undefined ? run.durationMs / baseline.durationMs.median : undefined;
-  const inputTokensMultiple = baseline.inputTokens.median && run.usage?.inputTokens !== undefined ? run.usage.inputTokens / baseline.inputTokens.median : undefined;
+  const durationMultiple = baseline.durationMs.p50 && run.durationMs !== undefined ? run.durationMs / baseline.durationMs.p50 : undefined;
+  const inputTokensMultiple = baseline.inputTokens.p50 && run.usage?.inputTokens !== undefined ? run.usage.inputTokens / baseline.inputTokens.p50 : undefined;
   const outlier = {
     ...(durationMultiple !== undefined && durationMultiple > 3 ? { durationMultiple } : {}),
     ...(inputTokensMultiple !== undefined && inputTokensMultiple > 3 ? { inputTokensMultiple } : {}),
@@ -167,6 +191,36 @@ function formatMultiple(value: number): string {
 export function outlierLabel(outlier: RunOutlier): string {
   if (outlier.inputTokensMultiple !== undefined) return `outlier ×${formatMultiple(outlier.inputTokensMultiple)} tokens`;
   return `outlier ×${formatMultiple(outlier.durationMultiple!)} duration`;
+}
+
+/**
+ * #263: some providers echo the same "request id: X" twice inside one error string. Keep the first
+ * occurrence per id and drop later repeats (with their leading separator). Presentation only — the
+ * stored event/log text is never touched. Idempotent: one occurrence per id always survives.
+ */
+export function collapseRequestId(text: string): string {
+  const seen = new Set<string>();
+  return text.replace(/[\s,;·]*\(?request id:\s*([\w-]+)\)?/gi, (match, id: string) => {
+    if (seen.has(id)) return "";
+    seen.add(id);
+    return match;
+  });
+}
+
+export const ERROR_HEAD_CHARS = 80;
+
+/**
+ * #263: the full error text renders exactly once (the focus-card diagnosis); span-row subtitles and
+ * the runs-table first-failing-step show this head, with the untouched full text in their `title`.
+ */
+export function errorHead(text: string): string {
+  const collapsed = collapseRequestId(text);
+  return collapsed.length <= ERROR_HEAD_CHARS ? collapsed : collapsed.slice(0, ERROR_HEAD_CHARS).trimEnd() + "…";
+}
+
+/** #263: "1 model calls" → "1 model call". */
+export function pluralize(count: number, singular: string, plural = singular + "s"): string {
+  return count + " " + (count === 1 ? singular : plural);
 }
 
 const clock = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });

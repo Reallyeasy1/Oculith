@@ -1,4 +1,5 @@
 import type { Category, Span, TraceStatus, TraceView } from "./types";
+import { formatCount } from "./runs-view-model";
 
 // Pure helpers for TraceDetail. Render only what the API returned — error path, diagnosis and
 // every flag come from `TraceView`; nothing here infers status or failure on its own.
@@ -18,6 +19,26 @@ export const CATEGORIES: Category[] = [
 export const STATUSES: TraceStatus[] = ["running", "ok", "error", "cancelled", "timeout", "unset"];
 
 export const DRAWER_EVENT_CAP = 200;
+
+export function formatReasoningTokens(tokens: TraceView["summary"]["metrics"]["tokens"]): string {
+  return tokens?.reasoning === undefined ? "" : `${formatCount(tokens.reasoning)} reasoning tokens`;
+}
+
+export const ACTORS_TOOLTIP = "Every consequential event attributed to who did it — see the Audit table for the rows.";
+
+/** ponytail: fixed display cap, no measuring — the full list always lives in the title. */
+const ACTOR_DISPLAY_LIMIT = 4;
+
+/** One summary-row line for `summary.audit` (#250): actors joined, capped, denial count appended. */
+export function formatActors(audit: TraceView["summary"]["audit"]): { text: string; title: string } {
+  const truncated = audit.actors.length > ACTOR_DISPLAY_LIMIT;
+  const shown = truncated ? audit.actors.slice(0, ACTOR_DISPLAY_LIMIT).join(" · ") + " · …" : audit.actors.join(" · ");
+  const denied = audit.denials > 0 ? ` · ${audit.denials} denied` : "";
+  return {
+    text: (shown || "—") + denied,
+    title: truncated ? `${ACTORS_TOOLTIP} All actors: ${audit.actors.join(" · ")}` : ACTORS_TOOLTIP,
+  };
+}
 
 export function refreshIntervalMs(status: TraceStatus | undefined): number {
   return status === "running" ? 1_500 : 5_000;

@@ -4,9 +4,10 @@ import type { ObservationEmitter } from "./emitter.js";
 import { buildTrace, type TraceMetrics, type TraceSummary, type TraceView } from "./query.js";
 import type { CapturePolicy, TraceStatus } from "./schema.js";
 import type { RunIndexEntry, TraceStore } from "./store.js";
+import { estimatedCost, type TokenPricing } from "./cost.js";
 
 /** Bump when `summaryFromView` changes shape or meaning; `npm run glassbox:backfill` then rewrites older records. */
-export const ROLLUP_VERSION = 6; // 6: metrics.timeSplit / timeToFirstToolMs (#129)
+export const ROLLUP_VERSION = 8; // 7: persisted estimatedCostUsd (#249); 8: reasoningOutputTokens in usage/metrics (#247)
 
 export type ExecutionStatus = "running" | "completed" | "failed" | "timeout" | "cancelled";
 export type TaskOutcome = "passed" | "failed" | "unknown";
@@ -19,16 +20,17 @@ export const traceStatusOf = (status: ExecutionStatus): TraceStatus => TRACE_STA
 /**
  * Persisted per-Run rollup: `buildTrace(events).summary` + the outcome fields, written once at Run end so listing
  * and aggregation never re-read NDJSON. `executionStatus` is the process status; `taskOutcome` says whether the
- * task succeeded and is set only by the evaluation plane (never by events) — `unknown` until then.
+ * task succeeded and is set only by the evaluation plane or the Agent's post-run verify command (#253) — never by events; `unknown` until then.
  */
 export interface RunSummary {
   runId: string; traceId: string; agentId: string; configHash?: string | undefined; capturePolicy: CapturePolicy;
   executionStatus: ExecutionStatus; taskOutcome: TaskOutcome;
-  /** `evaluator:<id>@<version>` | `deterministic:<evalRunId>`; absent while `taskOutcome` is `unknown`. */
+  /** `evaluator:<id>@<version>` | `deterministic:<evalRunId>` | `post_check` (#253); absent while `taskOutcome` is `unknown`. */
   taskOutcomeSource?: string | undefined;
   startedAt?: string | undefined; endedAt?: string | undefined; durationMs?: number | undefined; lastEventAt?: string | undefined;
   workspace?: string | undefined; sessionId?: string | undefined;
   metrics: TraceMetrics; usage?: TraceSummary["usage"]; denials: number; actions: number;
+  estimatedCostUsd?: number | undefined;
   capabilities: TraceSummary["capabilities"]; workspaceChanges?: TraceSummary["workspaceChanges"];
   /** #132 — `text` is an observed fact (the agent's own final words, safe_summary only); `reportedFailure` is a derived phrase match. Neither is `taskOutcome`. */
   outcome?: TraceSummary["outcome"];
@@ -118,6 +120,7 @@ export class JsonRunSummaryStore implements RunSummaryStore {
 
 export interface RollupDeps {
   traces: TraceStore; emitter: ObservationEmitter; summaries: RunSummaryStore;
+  pricing?: TokenPricing | undefined;
   log?: ((message: string, meta: Record<string, unknown>) => void) | undefined;
 }
 
@@ -127,15 +130,21 @@ export async function rollupRun(deps: RollupDeps, runId: string, entry?: RunInde
   if (events.length === 0) return undefined;
   const found = entry ?? deps.traces.listRuns().find((e) => e.runId === runId);
   const view = buildTrace(events, { capturePolicy: deps.emitter.capturePolicy, degraded: deps.emitter.isDegraded(runId), truncated: found?.truncated });
-  return deps.summaries.upsert(summaryFromView(view));
+  const summary = summaryFromView(view);
+  const cost = estimatedCost(summary, deps.pricing ?? {});
+  return deps.summaries.upsert(cost === undefined ? summary : { ...summary, estimatedCostUsd: cost });
 }
 
-/** Write path (invariant 3): waits for the terminal event to land, then rolls up; a failure is logged, never raised. */
-export function scheduleRollup(deps: RollupDeps, runId: string): Promise<void> {
-  return deps.emitter.flush().then(() => rollupRun(deps, runId)).then(
-    () => undefined,
-    (error) => { deps.log?.("summary.rollup_failed", { runId, error: String(error).slice(0, 200) }); },
-  );
+/** Write path (invariant 3): waits for the terminal event to land, then rolls up; a failure is logged, never raised.
+ * `outcome` (#253: the Agent's verifyCommand verdict) is stamped after the row exists, like the eval path does. */
+export function scheduleRollup(deps: RollupDeps, runId: string, outcome?: { taskOutcome: TaskOutcome; source: string } | undefined): Promise<void> {
+  return deps.emitter.flush()
+    .then(() => rollupRun(deps, runId))
+    .then((summary) => (outcome && summary ? deps.summaries.setTaskOutcome(runId, outcome.taskOutcome, outcome.source) : undefined))
+    .then(
+      () => undefined,
+      (error) => { deps.log?.("summary.rollup_failed", { runId, error: String(error).slice(0, 200) }); },
+    );
 }
 
 /** Rolls up every finished Run in the trace index whose summary is missing or older than `ROLLUP_VERSION`. Idempotent. */

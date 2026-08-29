@@ -636,6 +636,16 @@ textarea:focus {
   gap: 6px;
 }
 
+/* #257 session-health line: muted like the rest of the chip, amber past the advisory threshold. */
+.session-health {
+  border-left: 1px solid #e0ded6;
+  padding-left: 6px;
+}
+
+.session-health-warn {
+  color: #8a6d1f;
+}
+
 .pulse {
   width: 6px;
   height: 6px;
@@ -1204,19 +1214,43 @@ textarea:focus {
 }
 
 .runs-runtime,
-.runs-outcome {
+.runs-outcome,
+.runs-workspace,
+.runs-fail-step {
   max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.runs-workspace {
+  max-width: 120px;
 }
 
 .runs-outcome {
   max-width: 280px;
 }
 
+/* #199: badge-heavy cells wrap into a stack instead of widening the whole table. */
+.runs-table .runs-status,
+.runs-table .runs-tools {
+  white-space: normal;
+}
+
+.runs-status {
+  max-width: 170px;
+}
+
+.runs-tools {
+  max-width: 220px;
+}
+
+.runs-tools .tool-call-summary {
+  display: flex;
+}
+
 .runs-table th,
 .runs-table td {
-  padding: 9px 14px;
+  padding: 8px 10px;
   text-align: left;
   white-space: nowrap;
   border-bottom: 1px solid #ecebe5;
@@ -1242,6 +1276,31 @@ textarea:focus {
 .runs-table tbody tr:focus-visible {
   outline: 2px solid var(--purple);
   outline-offset: -2px;
+}
+
+/* #199: on 1366-class laptops tighten the wide columns further so the common
+   columns fit the wrapper; anything left scrolls inside .runs-table-wrap. */
+@media (max-width: 1439px) {
+  .runs-table th,
+  .runs-table td {
+    padding: 8px;
+  }
+
+  .runs-runtime {
+    max-width: 120px;
+  }
+
+  .runs-outcome {
+    max-width: 200px;
+  }
+
+  .runs-fail-step {
+    max-width: 140px;
+  }
+
+  .runs-tools {
+    max-width: 190px;
+  }
 }
 
 .runs-empty {
@@ -1645,6 +1704,12 @@ textarea:focus {
   background: var(--purple-soft);
 }
 
+/* #263: truncated error head beside the span name; full text lives in the row's title tooltip. */
+.trace-error-head {
+  font-weight: 400;
+  opacity: 0.8;
+}
+
 .trace-row.failing {
   background: #fae8e6;
 }
@@ -1997,3 +2062,100 @@ textarea:focus {
 .comparison-regression { background: #fff5f5; }
 .evidence-link { border: 0; background: transparent; padding: 0; color: inherit; cursor: pointer; text-align: left; }
 .evidence-link:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
+
+/* Chat → trace affordances (#264): per-reply muted link and the failure bubble's View trace. */
+.message-trace { color: #96968f; font-size: 9px; }
+.message-trace:hover { text-decoration: underline; color: var(--purple); }
+.run-error-trace { align-self: flex-start; font-size: 11px; text-decoration: underline; }
+
+/* #173 — reliability tiles + sparklines on the Agent detail, evaluation panel in the trace detail */
+.reliability-panel .summary-strip {
+  margin: 0;
+  padding: 0 22px 16px;
+}
+
+.reliability-strip > div {
+  min-width: 150px;
+}
+
+.reliability-detail {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.sparkline {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 20px;
+  margin-top: 6px;
+}
+
+.sparkline-bar {
+  width: 6px;
+  border-radius: 1px;
+  background: var(--purple);
+  opacity: 0.6;
+}
+
+.sparkline-bar.empty {
+  height: 100%;
+  background: var(--line);
+  opacity: 0.5;
+}
+
+.trace-evaluations {
+  margin: 0 22px 12px;
+}
+
+.trace-evaluations h3 {
+  margin: 0 0 6px;
+  font-size: 0.95rem;
+}
+
+.trace-evaluations ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.trace-evaluations li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.86rem;
+}
+
+.trace-evaluations .evidence-link {
+  color: var(--purple);
+  text-decoration: underline;
+}
+
+/* #254 — per-Agent message queue: sidebar depth chip, queued rows in the chat, cancel affordance */
+.queue-chip {
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 9px;
+  font-weight: 700;
+  background: rgba(122, 122, 115, 0.14);
+  color: #7a7a73;
+  white-space: nowrap;
+}
+
+.message-queued {
+  opacity: 0.7;
+  border: 1px dashed rgba(122, 122, 115, 0.5);
+}
+
+.queued-cancel {
+  font-size: 10px;
+  text-decoration: underline;
+}
+.queued-cancel:hover {
+  color: var(--purple);
+}

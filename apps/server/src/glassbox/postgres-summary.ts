@@ -1,26 +1,22 @@
 // PostgreSQL backend for RunSummaryStore (#191, phase C of #175). Opt-in via GLASSBOX_STORE=postgres; the judged
 // path stays on JsonStore. Same filter, ordering and 404 semantics as JsonRunSummaryStore — summary.test.ts runs
 // the store cases against both backends when DATABASE_URL is set.
-import { readdir, readFile } from "node:fs/promises";
-import pg from "pg";
+import type pg from "pg";
 import { HttpError } from "../errors.js";
 import type { JsonStore } from "../store.js";
+import { createPool, migrate } from "./postgres.js";
 import { JsonRunSummaryStore, type RunSummary, type RunSummaryQuery, type RunSummaryStore, type TaskOutcome } from "./summary.js";
-
-const SQL_DIR = new URL("../../sql/", import.meta.url);
 
 export class PostgresRunSummaryStore implements RunSummaryStore {
   private readonly pool: pg.Pool;
 
   constructor(connectionString: string) {
-    this.pool = new pg.Pool({ connectionString, max: 4, connectionTimeoutMillis: 5000 });
+    this.pool = createPool(connectionString);
   }
 
   /** Applies apps/server/sql/*.sql in name order; every file is idempotent, so this runs on each boot. */
   async migrate(): Promise<void> {
-    for (const file of (await readdir(SQL_DIR)).filter((f) => f.endsWith(".sql")).sort()) {
-      await this.pool.query(await readFile(new URL(file, SQL_DIR), "utf8"));
-    }
+    await migrate(this.pool);
   }
 
   async close(): Promise<void> {

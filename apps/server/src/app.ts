@@ -18,7 +18,7 @@ import { CATEGORIES, SCHEMA_VERSION, STATUSES } from "./glassbox/schema.js";
 import type { RunIndexEntry, TraceStore } from "./glassbox/store.js";
 import { executionStatusOf, isFresh, rollupRun, summaryFromView, traceStatusOf, type RunSummary, type RunSummaryStore } from "./glassbox/summary.js";
 import type { RunLogStore } from "./run-log-store.js";
-import { buildAgentRunBaseline, estimatedCost } from "./glassbox/baseline.js";
+import { BASELINE_QUERY_LIMIT, buildAgentRunBaseline, estimatedCost } from "./glassbox/baseline.js";
 import { caseFromRun, regressionCaseInput } from "./eval/cases.js";
 import { EvalRunner } from "./eval/runner.js";
 import { compareEvalRuns } from "./eval/compare.js";
@@ -37,6 +37,8 @@ const createAgentBody = z.object({
   instructions: z.string().max(10_000).optional(),
   workspace: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/).optional(),
   template: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/).optional(),
+  // #253: operator-set post-run verification; the service trims it and treats "" as "clear the command".
+  verifyCommand: z.string().max(500).optional(),
 });
 const updateAgentBody = createAgentBody.partial().refine(
   (value) => Object.keys(value).length > 0,
@@ -44,7 +46,12 @@ const updateAgentBody = createAgentBody.partial().refine(
 );
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
+  // #256: lineage of a one-click re-run. The Run itself is ordinary (same session thread, current
+  // workspace state); the id is only stamped on run.created.attributes so lineage is queryable.
+  rerunOf: z.string().uuid().optional(),
 });
+// #254: cancel-while-queued — both ids are server-issued UUIDs.
+const pendingMessageParams = z.object({ id: z.string().uuid(), messageId: z.string().uuid() });
 const evalRunBody = z.object({ agentId: z.string().uuid(), caseIds: z.array(z.string().uuid()).min(1).max(20).refine((ids) => new Set(ids).size === ids.length, "caseIds must be unique"), force: z.boolean().optional() });
 // A case is always derived from the trace evidence. The UI may only name it or remove an
 // automatically proposed assertion; it cannot supply a different prompt or template.
@@ -58,6 +65,11 @@ export async function createApp(
   service: AgentService,
   glassbox?: { emitter: ObservationEmitter; store: TraceStore; summaries?: RunSummaryStore | undefined; evaluations?: EvaluationStore | undefined; jobs?: EvaluationJobWorker | undefined; logs?: RunLogStore | undefined },
 ): Promise<FastifyInstance> {
+  const tokenPricing = {
+    inputPerMillion: config.glassboxPricePerMtokInput,
+    cachedInputPerMillion: config.glassboxPricePerMtokCachedInput,
+    outputPerMillion: config.glassboxPricePerMtokOutput,
+  };
   const app = Fastify({
     logger: {
       level: config.logLevel,
@@ -222,9 +234,20 @@ export async function createApp(
   app.post("/api/agents/:id/messages", async (request, reply) => {
     const { id } = agentIdParams.parse(request.params);
     const body = messageBody.parse(request.body);
-    const result = await service.sendMessage(id, body.content, request.glassbox);
+    const result = await service.sendMessage(id, body.content, request.glassbox,
+      body.rerunOf === undefined ? {} : { tags: { rerunOf: body.rerunOf } });
+    // #254: a busy Agent queued the message — no Run yet, so nothing to bind the request log to.
+    // The client tells the two 202 bodies apart by the `queued: true` discriminator.
+    if ("queued" in result) return reply.code(202).send(result);
     request.log = request.log.child({ traceId: result.run.traceId, runId: result.run.id, agentId: id });
     return reply.code(202).send(result);
+  });
+
+  // #254: cancel a message that is still waiting in the Agent's queue.
+  app.delete("/api/agents/:id/messages/:messageId", async (request, reply) => {
+    const { id, messageId } = pendingMessageParams.parse(request.params);
+    await service.cancelPendingMessage(id, messageId);
+    return reply.code(204).send();
   });
 
   app.get("/api/runs/:id", async (request) => {
@@ -266,7 +289,7 @@ export async function createApp(
       body.caseIds.forEach((id) => service.getRegressionCase(id));
       const snapshot = configSnapshot(agent, config);
       const evalRun = await service.createEvalRun({ caseIds: body.caseIds, target: { agentId: agent.id, snapshot, configHash: configHash(snapshot) } }, { force: body.force });
-      void new EvalRunner(service, glassbox).execute(evalRun.id).catch(async (error) => {
+      void new EvalRunner(service, { ...glassbox, pricing: tokenPricing }, config).execute(evalRun.id).catch(async (error) => {
         await service.updateEvalRun(evalRun.id, (item) => { item.status = "failed"; item.completedAt = new Date().toISOString(); item.results.push({ caseId: "", results: [], error: error instanceof Error ? error.message : String(error) }); });
       });
       return reply.code(202).send({ evalRun });
@@ -331,13 +354,10 @@ export async function createApp(
       app.get("/api/agents/:id/runs/baseline", async (request) => {
         const { id } = agentIdParams.parse(request.params);
         service.getAgent(id);
-        // The builder selects the newest 20 terminal Runs. Recent in-progress
-        // Runs must not displace older completed evidence from that window.
-        const summaries = await glassbox.summaries!.query({ agentId: id });
-        return { baseline: buildAgentRunBaseline(summaries, {
-          inputPerMillion: config.glassboxPricePerMtokInput,
-          outputPerMillion: config.glassboxPricePerMtokOutput,
-        }) };
+        // The builder selects the newest 20 terminal Runs; the bounded query leaves headroom so recent
+        // in-progress Runs cannot displace older completed evidence from that window (#213).
+        const summaries = await glassbox.summaries!.query({ agentId: id, limit: BASELINE_QUERY_LIMIT });
+        return { baseline: buildAgentRunBaseline(summaries, tokenPricing) };
       });
     }
     // Derives the case from the Run's trace evidence; 409 without a template, 400 when the Run cannot be a baseline.
@@ -369,9 +389,13 @@ export async function createApp(
       // the page can still come back under `limit` even though older matching runs exist.
       const runs = service.allRuns().filter((r) => (!q.agentId || r.agentId === q.agentId) && (!q.from || r.createdAt >= q.from) && (!q.to || r.createdAt <= q.to))
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, q.limit * 2);
-      // Stored summaries are the read model (#168): one snapshot per request, no NDJSON read for a fresh row.
-      const known = new Map(((await glassbox.summaries?.query()) ?? []).map((s) => [s.runId, s]));
-      const rollup = glassbox.summaries ? { traces: glassbox.store, emitter: glassbox.emitter, summaries: glassbox.summaries } : undefined;
+      // Stored summaries are the read model (#168): one snapshot per request, no NDJSON read for a fresh
+      // row. Scoped to the agent filter (#213) — only agentId is safe to push down: the runs above match it
+      // exactly, while from/to bound createdAt, not the summaries' startedAt, and a summary missing from
+      // this map triggers a stored re-rollup of its Run on every poll. The key is omitted entirely when
+      // unfiltered so a backend that distinguishes "present but undefined" cannot misread it as a filter.
+      const known = new Map(((await glassbox.summaries?.query(q.agentId ? { agentId: q.agentId } : {})) ?? []).map((s) => [s.runId, s]));
+      const rollup = glassbox.summaries ? { traces: glassbox.store, emitter: glassbox.emitter, summaries: glassbox.summaries, pricing: tokenPricing } : undefined;
       const empty = (runId: string): RunSummary => summaryFromView(buildTrace([], { capturePolicy: glassbox.emitter.capturePolicy, degraded: glassbox.emitter.isDegraded(runId) }));
       const items = [];
       for (const run of runs) {
@@ -386,8 +410,8 @@ export async function createApp(
           : summaryFromView(await viewFor(run.id, entry));
         const status = s.eventCount ? traceStatusOf(s.executionStatus) : run.status === "completed" ? "ok" : run.status === "failed" ? "error" : run.status === "cancelled" ? "cancelled" : "running";
         if (q.status && status !== q.status) continue;
-        const cost = estimatedCost(s, { inputPerMillion: config.glassboxPricePerMtokInput, outputPerMillion: config.glassboxPricePerMtokOutput });
-        items.push({ runId: run.id, traceId: run.traceId ?? s.traceId, agentId: run.agentId, agentName: agents.get(run.agentId) ?? "", workspace: s.workspace, status, startedAt: s.startedAt ?? run.createdAt, durationMs: s.durationMs, endedReason: s.endedReason, interruptedAfterMs: s.interruptedAfterMs,
+        const cost = s.estimatedCostUsd ?? estimatedCost(s, tokenPricing);
+        items.push({ runId: run.id, traceId: run.traceId ?? s.traceId, agentId: run.agentId, agentName: agents.get(run.agentId) ?? "", workspace: s.workspace, sessionId: s.sessionId, status, startedAt: s.startedAt ?? run.createdAt, durationMs: s.durationMs, endedReason: s.endedReason, interruptedAfterMs: s.interruptedAfterMs,
           firstFailingStep: s.firstFailingStep, eventCount: s.eventCount, runtime: config.runtimeProvider, model: config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default",
           usage: s.usage, workspaceChanges: s.workspaceChanges, outcome: s.outcome, capabilities: s.capabilities, toolCalls: s.metrics.toolCalls, toolFailures: s.metrics.toolFailures, toolIdentities: s.metrics.toolIdentities,
           tokens: s.metrics.tokens?.output !== undefined ? { output: s.metrics.tokens.output } : undefined,

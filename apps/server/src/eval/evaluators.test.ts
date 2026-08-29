@@ -37,6 +37,24 @@ describe("evaluator registry", () => {
     expect(results.flatMap((item) => item.evidenceEventIds).every((id) => trace.events.some((event) => event.eventId === id))).toBe(true);
   });
 
+  it("#283: expected_tool matches argument0, so a wrapped command is assertable on both runtimes", async () => {
+    sequence = 0;
+    const trace = buildTrace([
+      event({ type: "run.created", category: "control", spanId: "create", status: "ok" }),
+      // Windows shape: every command is the powershell wrapper; argument0 is the script's first token.
+      event({ type: "tool.call.completed", category: "tool", spanId: "t1", status: "ok", name: "shell:powershell.exe", attributes: { program: "powershell.exe", argument0: "npm" } }),
+      event({ type: "run.completed", category: "control", spanId: "done", status: "ok" }),
+    ], { capturePolicy: "metadata_only" });
+    const [byArg, byWrapper, absent] = await evaluateAll(trace, [
+      { type: "expected_tool", program: "npm" },
+      { type: "expected_tool", program: "powershell.exe" },
+      { type: "expected_tool", program: "git" },
+    ]);
+    expect(byArg!.pass).toBe(true);
+    expect(byWrapper!.pass).toBe(true);
+    expect(absent!.pass).toBe(false);
+  });
+
   it("reports failing tool, count, duration, and terminal-status assertions", async () => {
     const results = await evaluateAll(view(), [
       { type: "terminal_status", expected: "error" },

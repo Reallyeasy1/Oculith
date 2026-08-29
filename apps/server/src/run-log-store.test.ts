@@ -30,4 +30,17 @@ describe("RunLogStore", () => {
     expect(result.lines.every((line) => !("runId" in line) && !("traceId" in line))).toBe(true);
     expect(result.truncated).toBe(true);
   });
+
+  it("writes warn lines through child() and serves them to the level filter (#232)", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "run-logs-")); dirs.push(directory);
+    const store = new RunLogStore(directory, 1_000_000, 3);
+    await store.initialize();
+    const child = store.child({ runId: "run-1", traceId: "trace-1", agentId: "agent-1", component: "AgentRunner" });
+    await child.info("Run started");
+    await child.warn("Sandbox declined shell:pwsh Get-ChildItem");
+    await store.flush();
+    const result = await store.readRun("run-1", { level: "warn", limit: 10 });
+    expect(result.lines).toHaveLength(1);
+    expect(result.lines[0]).toMatchObject({ level: "warn", msg: "Sandbox declined shell:pwsh Get-ChildItem" });
+  });
 });

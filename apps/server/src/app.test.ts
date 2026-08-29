@@ -10,8 +10,9 @@ import { ObservationEmitter } from "./glassbox/emitter.js";
 import type { EvaluationStore } from "./glassbox/evaluation.js";
 import { JsonEvaluationStore } from "./glassbox/evaluation.js";
 import { builtinRunEvaluators, EvaluationJobWorker, JsonEvaluationJobStore } from "./glassbox/jobs.js";
+import { buildTrace } from "./glassbox/query.js";
 import { MemoryTraceStore } from "./glassbox/store.js";
-import { JsonRunSummaryStore } from "./glassbox/summary.js";
+import { JsonRunSummaryStore, summaryFromView } from "./glassbox/summary.js";
 import { JsonStore } from "./store.js";
 import { RunLogStore } from "./run-log-store.js";
 import type { RunSummary, RunSummaryStore } from "./glassbox/summary.js";
@@ -141,6 +142,57 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     await app.close();
   });
 
+  it("threads rerunOf through to sendMessage as a run.created tag, absent when omitted (#256)", async () => {
+    const options: unknown[] = [];
+    const svc = {
+      ...service,
+      sendMessage: async (_id: string, _content: string, _ctx: unknown, opts: unknown) => {
+        options.push(opts);
+        return { run: { id: "run-1" }, message: {} };
+      },
+    } as unknown as AgentService;
+    const app = await createApp(config(), svc);
+    const post = (payload: Record<string, unknown>) => app.inject({
+      method: "POST",
+      url: "/api/agents/2c1b9f8e-3b7e-4b9d-9d3a-1c2d3e4f5a6b/messages",
+      headers: { ...auth, "content-type": "application/json" },
+      payload,
+    });
+    const rerunOf = "12345678-1234-4234-8234-123456789abc";
+    expect((await post({ content: "again", rerunOf })).statusCode).toBe(202);
+    expect((await post({ content: "fresh" })).statusCode).toBe(202);
+    expect((await post({ content: "bad", rerunOf: "not-a-uuid" })).statusCode).toBe(400);
+    expect(options).toEqual([{ tags: { rerunOf } }, {}]);
+    await app.close();
+  });
+
+  it("passes the queued receipt through as 202 and cancels a pending message (#254)", async () => {
+    const agentId = "2c1b9f8e-3b7e-4b9d-9d3a-1c2d3e4f5a6b";
+    const messageId = "9e107d9d-3721-4a2f-8f3b-1a2b3c4d5e6f";
+    const cancelled: string[][] = [];
+    const svc = {
+      ...service,
+      sendMessage: async () => ({ queued: true, position: 2, messageId }),
+      cancelPendingMessage: async (id: string, message: string) => { cancelled.push([id, message]); },
+    } as unknown as AgentService;
+    const app = await createApp(config(), svc);
+    const posted = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agentId}/messages`,
+      headers: { ...auth, "content-type": "application/json" },
+      payload: { content: "hi" },
+    });
+    expect(posted.statusCode).toBe(202);
+    expect(posted.json()).toEqual({ queued: true, position: 2, messageId });
+
+    const removed = await app.inject({ method: "DELETE", url: `/api/agents/${agentId}/messages/${messageId}`, headers: auth });
+    expect(removed.statusCode).toBe(204);
+    expect(cancelled).toEqual([[agentId, messageId]]);
+    expect((await app.inject({ method: "DELETE", url: `/api/agents/${agentId}/messages/not-a-uuid`, headers: auth })).statusCode).toBe(400);
+    expect((await app.inject({ method: "DELETE", url: `/api/agents/${agentId}/messages/${messageId}` })).statusCode).toBe(401);
+    await app.close();
+  });
+
   it("serves one Run's log lines under auth, bounded, with truncation reported (#75)", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "run-logs-"));
     const logs = new RunLogStore(dir, 1_000_000);
@@ -168,7 +220,7 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     const ids = { traceId: "trc_9", runId: "run-9", agentId: "agt-9" };
     const configSnapshot = { instructions: "sha256:" + "a".repeat(64), modelProvider: "ark", model: "model", codexSandboxMode: "workspace-write", runtimeProvider: "container", containerRuntimeImage: "runtime:test", capturePolicy: "metadata_only" } as const;
     emitter.emit({ ...ids, spanId: "root", type: "http.request.received", category: "control", name: "POST", phase: "start", status: "running", source: { component: "Fastify", observed: true } });
-    emitter.emit({ ...ids, spanId: "created", parentSpanId: "root", type: "run.created", category: "control", name: "run.created", status: "ok", attributes: { configHash: "0123456789abcdef" }, source: { component: "AgentService", observed: true } });
+    emitter.emit({ ...ids, sessionId: "thr-9", spanId: "created", parentSpanId: "root", type: "run.created", category: "control", name: "run.created", status: "ok", attributes: { configHash: "0123456789abcdef" }, source: { component: "AgentService", observed: true } });
     emitter.emit({ ...ids, spanId: "rt", parentSpanId: "root", type: "runtime.codex.started", category: "runtime", name: "codex", phase: "start", status: "running", source: { component: "AgentRunner", observed: true } });
     emitter.emit({ ...ids, spanId: "tool", parentSpanId: "rt", type: "tool.call.failed", category: "tool", name: "shell", status: "error", source: { component: "CodexStreamObserver", observed: true } });
     emitter.emit({ ...ids, spanId: "model", parentSpanId: "rt", type: "model.completed", category: "model", name: "model", status: "ok", attributes: { outputTokens: 7 }, source: { component: "CodexStreamObserver", observed: true } });
@@ -184,7 +236,7 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     expect(list.statusCode).toBe(200);
     const body = list.json();
     expect(body.schemaVersion).toBe("1.0"); expect(body.capturePolicy).toBe("metadata_only");
-    expect(body.runs[0]).toMatchObject({ runId: "run-9", agentName: "Nine", status: "timeout", firstFailingStep: "codex", eventCount: 7, toolCalls: 1, toolFailures: 1, tokens: { output: 7 }, denials: 0, configHash: "0123456789abcdef", configSnapshot, capabilities: { model: "observed", tool: "observed" }, actions: 5 });
+    expect(body.runs[0]).toMatchObject({ runId: "run-9", agentName: "Nine", sessionId: "thr-9", status: "timeout", firstFailingStep: "codex", eventCount: 7, toolCalls: 1, toolFailures: 1, tokens: { output: 7 }, denials: 0, configHash: "0123456789abcdef", configSnapshot, capabilities: { model: "observed", tool: "observed" }, actions: 5 });
     const trace = await get("/api/runs/run-9/trace");
     expect(body.runs[0].toolCalls).toBe(trace.json().summary.metrics.toolCalls);
     expect(body.runs[0].toolFailures).toBe(trace.json().summary.metrics.toolFailures);
@@ -215,6 +267,36 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     await app.close();
   });
 
+  it("serves the runs list from stored summaries, scoped to the agent filter (#213)", async () => {
+    const store = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const agentId = "87654321-4321-4321-8321-cba987654321";
+    const ids = { runId: "run-9", agentId, traceId: "trc_9" };
+    emitter.emit({ ...ids, spanId: "root", type: "run.completed", category: "control", name: "run.completed", status: "ok", source: { component: "AgentService", observed: true } });
+    await emitter.flush();
+    // A fresh stored row (current rollup version, event count matches the index) must be served as-is —
+    // the evaluation plane's outcome included — with no re-rollup write on the poll path.
+    const fresh = summaryFromView(buildTrace(await store.readRun("run-9"), { capturePolicy: "metadata_only" }), { taskOutcome: "passed", taskOutcomeSource: "deterministic:eval-1" });
+    const queries: unknown[] = [];
+    const upserts: unknown[] = [];
+    const summaries = {
+      query: async (query: unknown) => { queries.push(query); return [fresh]; },
+      upsert: async (summary: RunSummary) => { upserts.push(summary); return summary; },
+    } as unknown as RunSummaryStore;
+    const run = { id: "run-9", agentId, status: "completed", traceId: "trc_9", createdAt: "2026-08-26T00:00:00.000Z" };
+    const svc = { ...service, getRuns: () => [], listAgents: () => [{ id: agentId, name: "Nine" }], allRuns: () => [run] } as unknown as AgentService;
+    const app = await createApp(config(), svc, { emitter, store, summaries });
+    const filtered = await app.inject({ method: "GET", url: `/api/runs?agentId=${agentId}`, headers: auth });
+    expect(filtered.statusCode).toBe(200);
+    expect(filtered.json().runs[0]).toMatchObject({ runId: "run-9", status: "ok", taskOutcome: "passed" });
+    const unfiltered = await app.inject({ method: "GET", url: "/api/runs", headers: auth });
+    expect(unfiltered.json().runs).toHaveLength(1);
+    // #213: the summary read model is scoped to the same agent filter as the runs themselves.
+    expect(queries).toEqual([{ agentId }, {}]);
+    expect(upserts).toEqual([]);
+    await app.close();
+  });
+
   it("serves an Agent's rolling baseline from the newest terminal summaries", async () => {
     const store = new MemoryTraceStore();
     const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
@@ -224,16 +306,19 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
       executionStatus: "completed", taskOutcome: "unknown", startedAt: `2026-08-${String(index).padStart(2, "0")}T00:00:00.000Z`,
       durationMs: index * 1_000, metrics: { terminalStatus: "ok", toolCalls: index, toolFailures: 0, modelCalls: 1,
         tokens: { input: index * 100, output: index * 10 }, retries: 0, denials: 0 },
-      usage: { inputTokens: index * 100, outputTokens: index * 10 }, denials: 0, actions: 0,
+      usage: { inputTokens: index * 100, cachedInputTokens: index * 20, outputTokens: index * 10 }, denials: 0, actions: 0,
       capabilities: { model: "observed", tool: "observed" }, degraded: false, truncated: false, evicted: false,
       redactedEvents: 0, eventCount: 1, rollupVersion: 1, updatedAt: "2026-08-28T00:00:00.000Z",
     });
-    const summaries = { query: async () => [makeSummary(3), makeSummary(2), makeSummary(1)] } as unknown as RunSummaryStore;
+    const queries: unknown[] = [];
+    const summaries = { query: async (query: unknown) => { queries.push(query); return [makeSummary(3), makeSummary(2), makeSummary(1)]; } } as unknown as RunSummaryStore;
     const svc = { ...service, getAgent: (id: string) => { if (id !== agentId) throw new HttpError(404, "Agent not found"); return { id }; } } as unknown as AgentService;
-    const app = await createApp(config({ GLASSBOX_PRICE_PER_MTOK_INPUT: "2", GLASSBOX_PRICE_PER_MTOK_OUTPUT: "4" }), svc, { emitter, store, summaries });
+    const app = await createApp(config({ GLASSBOX_PRICE_PER_MTOK_INPUT: "2", GLASSBOX_PRICE_PER_MTOK_CACHED_INPUT: "1", GLASSBOX_PRICE_PER_MTOK_OUTPUT: "4" }), svc, { emitter, store, summaries });
     const result = await app.inject({ method: "GET", url: `/api/agents/${agentId}/runs/baseline`, headers: auth });
     expect(result.statusCode).toBe(200);
-    expect(result.json().baseline).toMatchObject({ sampleCount: 3, windowSize: 20, durationMs: { median: 2_000, p90: 3_000 }, inputTokens: { median: 200, p90: 300 }, toolCalls: { median: 2, p90: 3 }, estimatedCostUsd: { median: 0.00048, p90: 0.00072 } });
+    expect(result.json().baseline).toMatchObject({ sampleCount: 3, windowSize: 20, durationMs: { p50: 2_000, p95: 3_000 }, inputTokens: { p50: 200, p95: 300 }, toolCalls: { p50: 2, p95: 3 }, estimatedCostUsd: { p50: 0.00044, p95: 0.00066 } });
+    // #213: the store query is bounded so the Postgres backend never scans an Agent's whole history.
+    expect(queries).toEqual([{ agentId, limit: 40 }]);
     expect((await app.inject({ method: "GET", url: "/api/agents/12345678-1234-4234-8234-123456789abc/runs/baseline", headers: auth })).statusCode).toBe(404);
     await app.close();
   });

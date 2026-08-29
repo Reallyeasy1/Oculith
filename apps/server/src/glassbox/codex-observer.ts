@@ -1,7 +1,8 @@
 import path from "node:path";
-import type { RunnerTraceContext } from "../types.js";
+import type { RunnerLogger, RunnerRunStats, RunnerTraceContext } from "../types.js";
 import type { ObservationEmitter } from "./emitter.js";
-import { newId, type EventInput, type EventType } from "./schema.js";
+import { redactText } from "./redact.js";
+import { capturesSummaries, newId, type EventInput, type EventType } from "./schema.js";
 
 /** What `parseCodexEventLine` reports while it walks a `codex exec --json` stream.
  * Every hook is optional work for the parser's existing callers — the sink argument is optional. */
@@ -35,13 +36,16 @@ export function describeFinalMessage(text: string): { finalMessageBytes: number;
 
 /** Bounded identity (#130): basename of the program plus its first argument, 64 chars max. Codex wraps every
  * command as `/bin/bash -lc '<script>'` (E3/E4) or `powershell.exe -Command "<script>"` (E5), so the first
- * argument of a shell wrapper is the script's own first token — `bash python3`, not `bash -lc`. */
+ * argument of a shell wrapper is the script's own first token — `bash python3`, not `bash -lc`. A leading
+ * `cd <path> &&`/`cd <path> ;` prefix (possibly chained) is skipped so argument0 names the command that
+ * actually ran (#295); a bare `cd <path>` with no continuation keeps argument0 `cd`. */
 export function commandIdentity(command: string): { program: string } | { program: string; argument0: string } {
   const tokenize = (text: string): string[] => text.trim().match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
   const unquote = (token: string): string => token.replace(/^(?:"|')|(?:"|')$/g, "");
+  const skipCd = (script: string): string => script.replace(/^(?:cd\s+(?:"[^"]*"|'[^']*'|[^\s;&]+)\s*(?:&&|;)\s*)+/, "");
   const tokens = tokenize(command);
   const program = path.win32.basename(unquote(tokens[0] ?? "")).slice(0, 40);
-  const script = /^-(?:l?c|Command)$/i.test(tokens[1] ?? "") && tokens[2] ? tokenize(unquote(tokens[2]))[0] : undefined;
+  const script = /^-(?:l?c|Command)$/i.test(tokens[1] ?? "") && tokens[2] ? tokenize(skipCd(unquote(tokens[2])))[0] : undefined;
   const argument0 = (script ?? (tokens[1] ? unquote(tokens[1]) : undefined))?.slice(0, 64);
   return { program, ...(argument0 ? { argument0 } : {}) };
 }
@@ -56,9 +60,10 @@ const USAGE_KEYS: Record<string, string> = {
 /**
  * Turns an observed Codex event stream into ObservationEvents. Mapping is pinned to the captures
  * catalogued in `docs/CODEX_EVENTS.md` — nothing here is inferred from a schema we have not seen:
- *  - `reasoning` items are never captured (no chain-of-thought, deliberately unmapped, E7); only their
- *    count is kept, as a per-turn model-call proxy (#207) — codex exec emits exactly one turn per
- *    prompt, so the turn span alone cannot distinguish one model call from many.
+ *  - `reasoning` item text is never captured raw. Its count is always kept, as a per-turn model-call
+ *    proxy (#207) — codex exec emits exactly one turn per prompt, so the turn span alone cannot
+ *    distinguish one model call from many. Under the explicit opt-in `reasoning_summary` policy ONLY
+ *    (#259), each item additionally emits a `model.reasoning` event with a 240-char redacted summary.
  *  - an `item.type === "error"` is a non-fatal notice on every Ark run (E8) and is dropped.
  *  - top-level `error` lines are retry noise (E11); the last one is buffered and only surfaces as a
  *    single `error.recorded` when the run itself fails.
@@ -66,6 +71,11 @@ const USAGE_KEYS: Record<string, string> = {
  *    reports { fileCount, added, updated, deleted } only. The platform's disk snapshot (AgentService, adapter
  *    WorkspaceSnapshot) is the honest source for `workspace.changed`; buildTrace prefers it over this report.
  */
+/** After this many individual denial log lines in a Run, further denials are coalesced. */
+const DENIAL_LOG_LIMIT = 5;
+/** One coalesced summary line per this many further denials. */
+const DENIAL_LOG_BATCH = 10;
+
 export class CodexStreamObserver implements CodexStreamSink {
   sessionId: string | undefined;
   private sawAnyEvent = false;
@@ -73,10 +83,12 @@ export class CodexStreamObserver implements CodexStreamSink {
   private sawModel = false;
   private finished = false;
   private lastError: string | undefined;
+  private retryNoticeLogged = false;
   private turnIndex = 0;
   private activeTurn: { spanId: string; turnIndex: number } | undefined;
   private observedCalls = 0;
   private unpairedReasoning = 0;
+  private readonly totals: RunnerRunStats = { modelCalls: 0, toolCalls: 0, toolFailures: 0, sandboxDenials: 0 };
   private readonly activeItems = new Map<string, { spanId: string; kind: string }>();
 
   constructor(
@@ -84,7 +96,15 @@ export class CodexStreamObserver implements CodexStreamSink {
     private readonly trace: RunnerTraceContext,
     private readonly parentSpanId: string,
     private readonly adapter: "CodexRunner" | "ContainerCodexRunner",
+    /** Optional per-Run log sink (#232). Lines carry only the bounded identities computed here —
+     * never raw command text, message content, or chain-of-thought (invariants 1/3/5). */
+    private readonly options: { log?: RunnerLogger | undefined; resume?: boolean | undefined } = {},
   ) {}
+
+  /** Bounded counters observed so far; returned on RunnerResult for the completion-summary line. */
+  stats(): RunnerRunStats {
+    return { ...this.totals };
+  }
 
   private base(type: EventType, name: string, spanId = newId("spn")): Omit<EventInput, "category"> {
     return {
@@ -106,7 +126,10 @@ export class CodexStreamObserver implements CodexStreamSink {
 
   onThreadStarted(threadId: string): void {
     this.sawAnyEvent = true;
+    const first = this.sessionId === undefined;
     this.sessionId = threadId;
+    // The thread id resolving is the moment we know whether Codex resumed or started fresh.
+    if (first) this.options.log?.info(this.options.resume ? "Codex session resumed" : "New Codex session started");
   }
 
   onTurnStarted(): void {
@@ -155,14 +178,47 @@ export class CodexStreamObserver implements CodexStreamSink {
     this.sawAnyEvent = true;
     const kind = str(item.type);
     if (kind === "reasoning") {
-      // Each reasoning item is one model call (#207). Count only — the text stays unmapped (E7).
+      // Each reasoning item is one model call (#207). Counting comes first and is policy-independent.
       this.observedCalls++;
       this.unpairedReasoning++;
+      // #259: reasoning text is captured ONLY under the explicit opt-in reasoning_summary tier — never
+      // under safe_summary or metadata_only — as a bounded redacted summary, redacted BEFORE the slice
+      // (the #258 rule: a cut can drop the anchor a pattern needs and leak the bare token). Mirrors
+      // model.message below.
+      if (this.emitter.capturePolicy === "reasoning_summary") {
+        const text = str(item.text) ?? "";
+        this.emitter.emit({
+          ...this.base("model.reasoning", "model.reasoning"),
+          category: "model",
+          status: "ok",
+          attributes: { reasoningBytes: Buffer.byteLength(text, "utf8") },
+          summary: { text: redactText(text).text.slice(0, 240), policy: "safe_summary" },
+        });
+      }
     } else if (kind === "agent_message") {
       // A message produced by the same call as its reasoning is not a second call; without one
       // (non-reasoning models) the message is the only evidence the call happened.
       if (this.unpairedReasoning > 0) this.unpairedReasoning--;
       else this.observedCalls++;
+      // #258: every agent message (not just the final one) is captured as a bounded summary — but only
+      // under a summary-capturing policy. Its sole payload is content, so at metadata_only the event is
+      // not emitted at all (an empty shell would carry nothing an operator can use). Counting above is
+      // policy-independent.
+      if (capturesSummaries(this.emitter.capturePolicy)) {
+        const text = str(item.text) ?? "";
+        this.emitter.emit({
+          ...this.base("model.message", "model.message"),
+          category: "model",
+          status: "ok",
+          attributes: { messageBytes: Buffer.byteLength(text, "utf8") },
+          summary: { text: redactText(text).text.slice(0, 240), policy: "safe_summary" },
+        });
+      }
+    }
+    if (kind && ["command_execution", "file_change", "mcp_tool_call", "web_search"].includes(kind)) {
+      // A message emitted after a tool result must come from a later model call — the model had to
+      // see the tool output to produce it — so a pre-tool reasoning item can no longer absorb it.
+      this.unpairedReasoning = 0;
     }
     if (kind === "command_execution") {
       this.commandExecution(item);
@@ -172,9 +228,32 @@ export class CodexStreamObserver implements CodexStreamSink {
     } else if (kind === "mcp_tool_call" || kind === "web_search") {
       this.completeGenericTool(item, kind);
     }
-    // agent_message: the runner's final output, not trace content (counted above only).
-    // reasoning: deliberately never captured (counted above only).
+    // reasoning: raw text never captured; counted above, summarised only under reasoning_summary (#259).
     // error: non-fatal notice (E8), not a failure.
+  }
+
+  /** #258: last 512 chars of `aggregated_output`, appended to tool summaries under summary-capturing policies only.
+   * Redacted BEFORE slicing (same as the runner's stderr tail): a tail cut can drop the `Bearer `/key
+   * prefix a pattern anchors on and leak the bare token. The emitter's redactEvent scans it again. */
+  private outputTail(item: Record<string, unknown>): string | undefined {
+    const output = str(item.aggregated_output);
+    return output ? redactText(output).text.slice(-512) : undefined;
+  }
+
+  /** "shell:powershell.exe Get-ChildItem" — the same bounded identity the trace stores, nothing more. */
+  private identityLabel(identity: ReturnType<typeof commandIdentity>): string {
+    return "shell:" + identity.program + ("argument0" in identity ? " " + identity.argument0 : "");
+  }
+
+  private logDenial(identity: ReturnType<typeof commandIdentity>): void {
+    const count = ++this.totals.sandboxDenials;
+    // Coalesce bursts: the first DENIAL_LOG_LIMIT denials get one line each; after that, one summary
+    // line per DENIAL_LOG_BATCH further denials, so a denial storm cannot flood the log sink.
+    if (count <= DENIAL_LOG_LIMIT) {
+      this.options.log?.warn("Sandbox declined " + this.identityLabel(identity));
+    } else if ((count - DENIAL_LOG_LIMIT) % DENIAL_LOG_BATCH === 0) {
+      this.options.log?.warn(DENIAL_LOG_BATCH + " more sandbox denials (" + count + " total)");
+    }
   }
 
   private commandExecution(item: Record<string, unknown>): void {
@@ -190,6 +269,11 @@ export class CodexStreamObserver implements CodexStreamSink {
     const identity = commandIdentity(command);
     const active = str(item.id) ? this.activeItems.get(str(item.id)!) : undefined;
     if (str(item.id)) this.activeItems.delete(str(item.id)!);
+    const tail = capturesSummaries(this.emitter.capturePolicy) ? this.outputTail(item) : undefined;
+    this.totals.toolCalls++;
+    if (failed) this.totals.toolFailures++;
+    if (declined) this.logDenial(identity);
+    else if (failed) this.options.log?.error("Tool failed " + this.identityLabel(identity) + " (exit code " + String(exitCode) + ")");
     this.emitter.emit({
       ...this.base(failed ? "tool.call.failed" : "tool.call.completed", "shell:" + identity.program, active?.spanId),
       category: "tool",
@@ -202,8 +286,15 @@ export class CodexStreamObserver implements CodexStreamSink {
         ...(exitCode !== undefined ? { exitCode } : {}),
         outputBytes: bytes(item.aggregated_output),
       },
-      ...(this.emitter.capturePolicy === "safe_summary"
-        ? { summary: { text: command.slice(0, 512), policy: "safe_summary" as const } }
+      // #258: command text (1024) plus a redacted tail of the output — for failed tools this is the
+      // error text the operator previously never saw. Bounded well under the 4096 summary cap.
+      ...(capturesSummaries(this.emitter.capturePolicy)
+        ? {
+            summary: {
+              text: command.slice(0, 1024) + (tail !== undefined ? "\n--- output tail ---\n" + tail : ""),
+              policy: "safe_summary" as const,
+            },
+          }
         : {}),
       ...(failed
         ? {
@@ -230,16 +321,24 @@ export class CodexStreamObserver implements CodexStreamSink {
 
   private completeGenericTool(item: Record<string, unknown>, kind: string): void {
     this.sawTool = true;
+    const tail = capturesSummaries(this.emitter.capturePolicy) ? this.outputTail(item) : undefined;
     const id = str(item.id);
     const active = id ? this.activeItems.get(id) : undefined;
     if (id) this.activeItems.delete(id);
     const failed = str(item.status) === "failed" || str(item.status) === "declined";
+    this.totals.toolCalls++;
+    if (failed) {
+      this.totals.toolFailures++;
+      this.options.log?.error("Tool failed " + kind);
+    }
     this.emitter.emit({
       ...this.base(failed ? "tool.call.failed" : "tool.call.completed", kind, active?.spanId),
       category: "tool",
       ...(active ? { phase: "end" as const } : {}),
       status: failed ? "error" : "ok",
       attributes: { tool: kind },
+      // #258: when the stream reported output for this tool, keep its redacted tail under safe_summary.
+      ...(tail !== undefined ? { summary: { text: tail, policy: "safe_summary" as const } } : {}),
       ...(failed ? { error: { type: "tool_failed", message: kind + " failed" } } : {}),
     });
   }
@@ -256,7 +355,7 @@ export class CodexStreamObserver implements CodexStreamSink {
         updated: count("update"),
         deleted: count("delete"),
       },
-      ...(this.emitter.capturePolicy === "safe_summary"
+      ...(capturesSummaries(this.emitter.capturePolicy)
         ? {
             summary: {
               text: changes.map((c) => str(c.path) ?? "?").slice(0, 20).join(", "),
@@ -291,6 +390,9 @@ export class CodexStreamObserver implements CodexStreamSink {
         ...attributes,
       },
     });
+    // Completion-summary counter: a completed turn is at least one model call (the same floor
+    // buildTrace applies when no item evidence arrived). ponytail: an abandoned turn adds nothing.
+    this.totals.modelCalls += this.observedCalls > 0 ? this.observedCalls : 1;
     this.activeTurn = undefined;
     this.observedCalls = 0;
     this.unpairedReasoning = 0;
@@ -300,6 +402,11 @@ export class CodexStreamObserver implements CodexStreamSink {
   onError(message: string): void {
     this.sawAnyEvent = true;
     this.lastError = message;
+    // Metadata-only notice, at most once per Run: the raw provider message stays out of the log.
+    if (!this.retryNoticeLogged) {
+      this.retryNoticeLogged = true;
+      this.options.log?.warn("Codex stream reported a retryable error notice");
+    }
   }
 
   /** Call once when the stream is done, with the run's real outcome. A non-`ok` outcome releases the
@@ -320,14 +427,16 @@ export class CodexStreamObserver implements CodexStreamSink {
         error: { type: "codex_error", message: this.lastError.slice(0, 2048) },
       });
     }
-    if (this.sawAnyEvent && !this.sawTool && !this.sawModel && (outcome === "ok" || outcome === "error")) {
+    if (this.sawAnyEvent && (!this.sawTool || !this.sawModel) && (outcome === "ok" || outcome === "error")) {
       this.emitter.emit({
         ...this.base("capability.unavailable", "capability.unavailable"),
         ...RUNNER_ACTOR,
         category: "runtime",
         status: "unset",
-        attributes: { model: false, tool: false },
+        attributes: { model: !this.sawModel, tool: !this.sawTool },
       });
+      if (!this.sawModel) this.options.log?.warn("Capability layer unavailable: model");
+      if (!this.sawTool) this.options.log?.warn("Capability layer unavailable: tool");
     }
   }
 }

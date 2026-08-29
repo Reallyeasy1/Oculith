@@ -137,6 +137,30 @@ describe("CodexRunner against a real child process", () => {
     expect(firstOutput[0]).toMatchObject({ phase: "instant", parentSpanId: expect.any(String), attributes: { latencyMs: expect.any(Number) } });
   }, 30_000);
 
+  it("logs runner spawn, first output and session start through the request logger (#232)", async () => {
+    const lines = [
+      { type: "thread.started", thread_id: "thr_1" },
+      { type: "item.completed", item: { id: "item_1", type: "agent_message", text: "done" } },
+      { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+    const ws = await workspace(
+      "for (const line of " + JSON.stringify(lines.map((l) => JSON.stringify(l))) + ") process.stdout.write(line + '\\n');",
+    );
+    const { runner } = setup(ws);
+    const logged: string[] = [];
+    const logger = {
+      info: (message: string) => logged.push("info " + message),
+      warn: (message: string) => logged.push("warn " + message),
+      error: (message: string) => logged.push("error " + message),
+    };
+    const result = await runner.run({ agentId: "agt-1", workspacePath: ws, prompt: "p", threadId: null, trace, logger });
+    expect(result.output).toBe("done");
+    expect(result.stats).toEqual({ modelCalls: 1, toolCalls: 0, toolFailures: 0, sandboxDenials: 0 });
+    expect(logged).toContain("info Runner spawned: adapter=CodexRunner model=ep-test sandbox=workspace-write");
+    expect(logged).toContain("info New Codex session started");
+    expect(logged.some((line) => /^info Codex first output after \d+ ms$/.test(line))).toBe(true);
+  }, 30_000);
+
   it("reports live activity through onActivity while the stream progresses (#223)", async () => {
     const lines = [
       { type: "thread.started", thread_id: "thr_1" },

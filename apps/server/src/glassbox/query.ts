@@ -10,6 +10,8 @@ export interface Span {
 export interface FailureFocus {
   kind: "error" | "timeout" | "cancelled" | "denied" | "degraded"; spanId: string; eventId: string; sequence: number;
   name: string; category: Category; component: string; message?: string | undefined; path: string[]; diagnosis: string;
+  /** #265 — deterministic provider-error hint derived from the stored error text by PROVIDER_HINTS (invariant 3: fixed rules, no LLM). */
+  hint?: string | undefined;
 }
 export type AuditOutcome = "allowed" | "denied" | "ok" | "error" | "timeout" | "cancelled";
 export interface AuditRow {
@@ -29,7 +31,7 @@ export interface TraceSummary {
   degraded: boolean; truncated: boolean;
   /** Content events were removed by retention cleanup (age/disk cap); terminal/error evidence is kept. */
   evicted: boolean;
-  usage?: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number } | undefined;
+  usage?: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number; reasoningOutputTokens?: number } | undefined;
   metrics: TraceMetrics;
   configHash?: string | undefined;
   /** `unknown` = no evidence either way (run cut short before the stream said anything) — never claim `unavailable` from absence. */
@@ -49,7 +51,7 @@ export interface TraceMetrics {
   modelCalls: number;
   timeToFirstToolMs?: number | undefined;
   timeSplit: { modelMs: number; toolMs: number; containerStartMs: number };
-  tokens?: { input?: number | undefined; cachedInput?: number | undefined; output?: number | undefined } | undefined;
+  tokens?: { input?: number | undefined; cachedInput?: number | undefined; output?: number | undefined; reasoning?: number | undefined } | undefined;
   retries: number;
   denials: number;
 }
@@ -190,6 +192,19 @@ export function formatExitCode(code: number): string {
   return decimal + hex + (hint ? ` — ${hint}` : "");
 }
 
+// #265 — provider-error vocabulary, the EXIT_HINTS pattern applied to stored codex.error / failure text.
+// First match wins; anything unmatched carries no hint (invariant 3 — never fabricate).
+const PROVIDER_HINTS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\b40[13]\b|unauthorized|api key/i, "Runtime credentials rejected — check ARK_API_KEY / model access in .env"],
+  [/\b429\b|rate limit/i, "Rate limited by the provider — retry later"],
+  [/ENOTFOUND|ECONNREFUSED|ETIMEDOUT/, "Provider unreachable — check network/ARK_BASE_URL"],
+];
+
+export function providerHint(message: string | undefined): string | undefined {
+  if (!message) return undefined;
+  return PROVIDER_HINTS.find(([pattern]) => pattern.test(message))?.[1];
+}
+
 const formatFailureMessage = (message: string | undefined): string | undefined => {
   // Matches the observer's bare "exit code N" and the runners' "Codex exited with code N: detail".
   return message?.replace(/\b((?:exited with|exit) code )(\d+)/i, (_, prefix: string, code: string) => prefix + formatExitCode(Number(code)));
@@ -202,6 +217,17 @@ function formatElapsed(ms: number | undefined): string {
   const minutes = Math.floor(ms / 60_000);
   const seconds = Math.round((ms % 60_000) / 1000);
   return minutes + "m " + String(seconds).padStart(2, "0") + "s";
+}
+
+// Before per-layer declarations, the sole capability.unavailable marker carried { model: false, tool: false }
+// while meaning that both layers were unavailable. Retain that interpretation for persisted traces.
+function unavailableLayers(events: ObservationEvent[]): { model: boolean; tool: boolean } {
+  const declaration = events.find((e) => e.type === "capability.unavailable");
+  const legacyAllUnavailable = declaration?.attributes.model === false && declaration.attributes.tool === false;
+  return {
+    model: legacyAllUnavailable || declaration?.attributes.model === true,
+    tool: legacyAllUnavailable || declaration?.attributes.tool === true,
+  };
 }
 
 function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, status: TraceStatus, degraded: boolean, durationMs: number | undefined, interruptedAfterMs?: number): FailureFocus | undefined {
@@ -230,7 +256,7 @@ function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, stat
   const elapsed = formatElapsed(durationMs);
   const secs = durationMs === undefined ? "an unknown duration" : (durationMs / 1000).toFixed(1) + " s";
   const cleanup = events.find((e) => e.type === "runtime.container.stopped" || (e.type === "runtime.codex.failed" && e.attributes.terminationSignal));
-  const capability = events.find((e) => e.type === "capability.unavailable");
+  const capability = unavailableLayers(events);
   const diagnosis = [
     kind === "denied"
       ? `sandbox declined \`${String(first.attributes.program || first.name)}\``
@@ -238,10 +264,16 @@ function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, stat
       ? `Run interrupted by a server restart after ${formatElapsed(interruptedAfterMs)}; last trace evidence was ${elapsed} after the Run started; ${open ? `the ${open.category} span ${open.name} never closed` : "no open span was recorded"}.`
       : `Run ${status} in ${first.source.component} after ${secs}. First actionable ${kind}: ${first.name}${target.message ? " — " + target.message : ""}.`,
     cleanup ? `Cleanup evidence: ${cleanup.name}${typeof cleanup.attributes.exitCode === "number" ? " (exit " + formatExitCode(cleanup.attributes.exitCode) + ")" : ""}${cleanup.attributes.terminationSignal ? " via " + String(cleanup.attributes.terminationSignal) : ""}.` : "",
-    capability ? "No model/tool-level details were available from the runtime." : "",
+    capability.model && capability.tool
+      ? "No model/tool-level details were available from the runtime."
+      : capability.model
+      ? "No model-level details were available from the runtime."
+      : capability.tool
+      ? "No tool-level details were available from the runtime."
+      : "",
     degraded ? "Trace store was degraded during this Run; evidence may be incomplete." : "",
   ].filter(Boolean).join(" ");
-  return { kind, ...target, path, diagnosis };
+  return { kind, ...target, path, diagnosis, hint: providerHint(first.error?.message) };
 }
 
 const isRestartCancel = (e: ObservationEvent): boolean => e.type === "run.cancelled" && e.attributes.reason === "server_restart";
@@ -281,13 +313,17 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
   const usage = usageEvents.length
     ? { ...(hasNumeric("inputTokens") ? { inputTokens: sum("inputTokens") } : {}),
         ...(hasNumeric("cachedInputTokens") ? { cachedInputTokens: sum("cachedInputTokens") } : {}),
-        ...(hasNumeric("outputTokens") ? { outputTokens: sum("outputTokens") } : {}) }
+        ...(hasNumeric("outputTokens") ? { outputTokens: sum("outputTokens") } : {}),
+        ...(hasNumeric("reasoningOutputTokens") ? { reasoningOutputTokens: sum("reasoningOutputTokens") } : {}) }
     : undefined;
   const toolSpans = flat.filter((span) =>
     span.category === "tool" && events.some((event) => event.spanId === span.spanId && event.type.startsWith("tool.call.")),
   );
+  // Turn spans only: a model.message (#258) or model.reasoning (#259) is a content capture on its own
+  // instant span, not a call — counting it would double the calls its turn's modelCallsObserved already
+  // accounts for.
   const modelSpans = flat.filter((span) =>
-    span.category === "model" && events.some((event) => event.spanId === span.spanId && event.type.startsWith("model.")),
+    span.category === "model" && events.some((event) => event.spanId === span.spanId && (event.type === "model.request" || event.type === "model.completed")),
   );
   const retrySpans = new Set(events.filter((event) => event.attempt > 1).map((event) => event.spanId));
   const firstRunEvent = events.find((event) => event.type === "run.started" || event.type === "run.created");
@@ -335,11 +371,12 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
         ? Math.max(0, Date.parse(codexStarted.timestamp) - Date.parse(containerStarted.timestamp))
         : 0,
     },
-    ...(usage && (usage.inputTokens !== undefined || usage.cachedInputTokens !== undefined || usage.outputTokens !== undefined)
+    ...(usage && (usage.inputTokens !== undefined || usage.cachedInputTokens !== undefined || usage.outputTokens !== undefined || usage.reasoningOutputTokens !== undefined)
       ? { tokens: {
           ...(usage.inputTokens !== undefined ? { input: usage.inputTokens } : {}),
           ...(usage.cachedInputTokens !== undefined ? { cachedInput: usage.cachedInputTokens } : {}),
           ...(usage.outputTokens !== undefined ? { output: usage.outputTokens } : {}),
+          ...(usage.reasoningOutputTokens !== undefined ? { reasoning: usage.reasoningOutputTokens } : {}),
         } }
       : {}),
     retries: retrySpans.size,
@@ -352,7 +389,7 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
   const evicted = events.some(isEvictionMarker);
   const failure = focusFailure(events, spans, status, degraded, durationMs, interruptedAfterMs);
   const auditRows = projectAudit(events);
-  const declaredUnavailable = events.some((e) => e.type === "capability.unavailable");
+  const unavailable = unavailableLayers(events);
   const workspace = events.find((event) => event.type === "run.created" && typeof event.attributes.workspace === "string")?.attributes.workspace;
   // Two emitters share this type: the runtime stream's file_change report ({ fileCount, added, updated, deleted })
   // and the platform's before/after disk snapshot ({ added, modified, removed, bytesDelta, paths }). The snapshot
@@ -387,7 +424,7 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
       actors: [...new Set(auditRows.map((row) => row.actor.type + "/" + row.actor.id))].sort(),
     },
     degraded, truncated, evicted, usage, metrics, configHash, workspaceChanges, outcome,
-    capabilities: { model: events.some((e) => e.category === "model") ? "observed" : declaredUnavailable ? "unavailable" : "unknown", tool: events.some((e) => e.category === "tool") ? "observed" : declaredUnavailable ? "unavailable" : "unknown" },
+    capabilities: { model: events.some((e) => e.category === "model") ? "observed" : unavailable.model ? "unavailable" : "unknown", tool: events.some((e) => e.category === "tool") ? "observed" : unavailable.tool ? "unavailable" : "unknown" },
     firstFailingStep: failure && failure.kind !== "degraded" ? failure.name : undefined, failure,
   };
   return { summary, spans: tree, events };

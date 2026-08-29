@@ -34,6 +34,7 @@ export interface CleanupReport {
   evicted: { runId: string; traceId: string; status: TraceStatus; reason: EvictionReason; bytesFreed: number }[];
 }
 export type AppendResult = { stored: true } | { stored: false; reason: "duplicate" | "cap_events" | "cap_bytes" };
+export type TraceStoreLog = (message: string, meta: Record<string, unknown>) => void;
 
 export interface TraceStore {
   initialize(): Promise<void>;
@@ -42,6 +43,8 @@ export interface TraceStore {
   runIdForTrace(traceId: string): string | undefined;
   listRuns(): RunIndexEntry[];
   markTruncated(runId: string): void;
+  cleanup(opts: CleanupOptions): Promise<CleanupReport>;
+  close?(): Promise<void>;
 }
 
 export function shrinkToCap(event: ObservationEvent): ObservationEvent {
@@ -53,8 +56,8 @@ export function shrinkToCap(event: ObservationEvent): ObservationEvent {
 
 const keepAlways = (e: ObservationEvent) => ALWAYS_KEEP_TYPES.has(e.type) || e.status === "error" || e.status === "timeout" || e.status === "cancelled";
 
-/** Shared index/cap logic; subclasses only implement raw persistence. */
-abstract class BaseTraceStore implements TraceStore {
+/** Shared index/cap/retention logic; subclasses only implement raw persistence. */
+export abstract class BaseTraceStore implements TraceStore {
   protected readonly index = new Map<string, RunIndexEntry>();
   protected readonly seen = new Map<string, Set<string>>();
   protected readonly traceToRun = new Map<string, string>();
@@ -62,9 +65,15 @@ abstract class BaseTraceStore implements TraceStore {
   // serialises admit->persist->track so concurrent appends to one run can't both pass the cap check.
   private readonly queues = new Map<string, Promise<void>>();
 
+  /** `log` surfaces silently dropped records: without it a schemaVersion bump would empty every trace
+   * and read as an empty history rather than as a migration the operator still has to do. */
+  constructor(protected readonly log?: TraceStoreLog | undefined) {}
+
   abstract initialize(): Promise<void>;
   protected abstract persist(event: ObservationEvent, line: string): Promise<void>;
   abstract readRun(runId: string): Promise<ObservationEvent[]>;
+  /** Store-specific rewrite for eviction: replace the Run's persisted events with exactly `kept` + `tombstone`. */
+  protected abstract compact(entry: RunIndexEntry, kept: ObservationEvent[], tombstone: ObservationEvent): Promise<void>;
 
   protected admit(event: ObservationEvent): AppendResult | ObservationEvent {
     const ids = this.seen.get(event.runId) ?? new Set<string>();
@@ -115,6 +124,57 @@ abstract class BaseTraceStore implements TraceStore {
   runIdForTrace(traceId: string): string | undefined { return this.traceToRun.get(traceId); }
   listRuns(): RunIndexEntry[] { return [...this.index.values()].sort((a, b) => b.lastTimestamp.localeCompare(a.lastTimestamp)); }
   markTruncated(runId: string): void { const e = this.index.get(runId); if (e) e.truncated = true; }
+
+  /**
+   * Retention (FR-14), startup-only, one implementation for every backend. Age: Runs whose LAST event is older
+   * than `retentionDays`. Disk: while total indexed bytes exceed `maxDiskMb`, evict the oldest finished Run.
+   * `0` disables a knob. Eviction never deletes a Run: it compacts it to a metadata skeleton — always-kept
+   * terminal/error events, the root run.* events, the `start` half of every kept span and both halves of
+   * `model.turn` (`model.completed` usage, #129) — plus one `trace.truncated` (`reason: retention_*`) tombstone,
+   * so status/startedAt/durationMs/incomplete/usage roll up identically and the Run survives a rebuild.
+   * A Run whose storage fails to compact is logged (`retention.evict_failed`) and skipped; the pass continues.
+   */
+  async cleanup(opts: CleanupOptions): Promise<CleanupReport> {
+    const now = opts.now ?? new Date();
+    const total = () => [...this.index.values()].reduce((n, e) => n + e.bytes, 0);
+    const report: CleanupReport = { runs: this.index.size, bytesBefore: total(), bytesAfter: 0, overCap: false, evicted: [] };
+    // ponytail: a Run with no terminal event stays forever ("running" = never evict); AgentService.initialize()
+    // writes run.cancelled for interrupted Runs on the next boot, so this only leaks if telemetry was degraded.
+    const finished = () => [...this.index.values()].filter((e) => e.status !== "running" && !e.evicted).sort((a, b) => a.lastTimestamp.localeCompare(b.lastTimestamp));
+    const tryEvict = async (e: RunIndexEntry, reason: EvictionReason) => {
+      try { const r = await this.evict(e, reason, now); if (r) report.evicted.push(r); }
+      catch (error) { this.log?.("retention.evict_failed", { runId: e.runId, reason, error: String(error).slice(0, 200) }); }
+    };
+    if (opts.retentionDays > 0) {
+      const cutoff = new Date(now.getTime() - opts.retentionDays * 86_400_000).toISOString();
+      for (const e of finished()) if (e.lastTimestamp < cutoff) await tryEvict(e, "retention_age");
+    }
+    if (opts.maxDiskMb > 0) {
+      const cap = opts.maxDiskMb * 1024 * 1024;
+      for (const e of finished()) { if (total() <= cap) break; await tryEvict(e, "retention_disk"); }
+      report.overCap = total() > cap;
+    }
+    report.bytesAfter = total();
+    return report;
+  }
+
+  /** Returns undefined (and touches nothing) when the Run is already a skeleton — an eviction that drops nothing is not one. */
+  private async evict(entry: RunIndexEntry, reason: EvictionReason, now: Date): Promise<CleanupReport["evicted"][number] | undefined> {
+    const mine = await this.readRun(entry.runId);
+    const keptSpans = new Set(mine.filter((e) => keepAlways(e) || e.type === "model.completed").map((e) => e.spanId)); // model.completed is the end half of a model.turn span (#129): keep its start so durationMs/incomplete survive
+    const kept = mine.filter((e) => keepAlways(e) || e.type === "run.created" || e.type === "run.started" || e.type === "model.completed" || (e.phase === "start" && keptSpans.has(e.spanId)));
+    if (kept.length === mine.length) return undefined;
+    const tombstone = observationEventSchema.parse({
+      schemaVersion: SCHEMA_VERSION, eventId: newId("evt"), sequence: entry.lastSequence + 1, traceId: entry.traceId, spanId: newId("spn"),
+      runId: entry.runId, agentId: entry.agentId, timestamp: now.toISOString(), type: "trace.truncated", category: "control",
+      name: "trace.truncated", status: "unset", source: { component: "GlassBox", observed: true },
+      attributes: { reason, droppedEvents: mine.length - kept.length }, privacy: { redacted: false, rulesetVersion: REDACTION_RULESET_VERSION },
+    });
+    await this.compact(entry, kept, tombstone);
+    this.index.delete(entry.runId); this.seen.delete(entry.runId);
+    for (const e of [...kept, tombstone]) this.track(e, Buffer.byteLength(JSON.stringify(e) + "\n", "utf8"));
+    return { runId: entry.runId, traceId: entry.traceId, status: entry.status, reason, bytesFreed: entry.bytes - this.index.get(entry.runId)!.bytes };
+  }
 }
 
 export class MemoryTraceStore extends BaseTraceStore {
@@ -126,15 +186,16 @@ export class MemoryTraceStore extends BaseTraceStore {
   async readRun(runId: string): Promise<ObservationEvent[]> {
     return [...(this.events.get(runId) ?? [])].sort((a, b) => a.sequence - b.sequence);
   }
+  protected async compact(entry: RunIndexEntry, kept: ObservationEvent[], tombstone: ObservationEvent): Promise<void> {
+    this.events.set(entry.runId, [...kept, tombstone]);
+  }
 }
 
 export class NdjsonTraceStore extends BaseTraceStore {
-  /** `log` surfaces silently dropped lines: without it a schemaVersion bump would empty every trace
-   * and read as an empty history rather than as a migration the operator still has to do. */
   constructor(
     private readonly directory: string,
-    private readonly log?: ((message: string, meta: Record<string, unknown>) => void) | undefined,
-  ) { super(); }
+    log?: TraceStoreLog | undefined,
+  ) { super(log); }
   /** Files whose skipped lines were already reported: readRun re-parses on every poll, so report once per file per process. */
   private readonly reported = new Set<string>();
   private file(runId: string): string { return path.join(this.directory, runId.replace(/[^a-zA-Z0-9_-]/g, "_") + ".ndjson"); }
@@ -188,58 +249,12 @@ export class NdjsonTraceStore extends BaseTraceStore {
       .sort((a, b) => a.sequence - b.sequence);
   }
 
-  /**
-   * Retention (FR-14), startup-only. Age: Runs whose LAST event is older than `retentionDays`. Disk: while total
-   * indexed bytes exceed `maxDiskMb`, evict the oldest finished Run. `0` disables a knob. Eviction never deletes a
-   * file: it compacts the Run to a metadata skeleton — always-kept terminal/error events, the root run.* events, the
-   * `start` half of every kept span and both halves of `model.turn` (`model.completed` usage, #129) — plus one `trace.truncated` (`reason: retention_*`)
-   * tombstone, so status/startedAt/durationMs/incomplete/usage roll up identically and the Run survives a rebuild.
-   * A Run whose file fails to compact is logged (`retention.evict_failed`) and skipped; the pass continues.
-   */
-  async cleanup(opts: CleanupOptions): Promise<CleanupReport> {
-    const now = opts.now ?? new Date();
-    const total = () => [...this.index.values()].reduce((n, e) => n + e.bytes, 0);
-    const report: CleanupReport = { runs: this.index.size, bytesBefore: total(), bytesAfter: 0, overCap: false, evicted: [] };
-    // ponytail: a Run with no terminal event stays forever ("running" = never evict); AgentService.initialize()
-    // writes run.cancelled for interrupted Runs on the next boot, so this only leaks if telemetry was degraded.
-    const finished = () => [...this.index.values()].filter((e) => e.status !== "running" && !e.evicted).sort((a, b) => a.lastTimestamp.localeCompare(b.lastTimestamp));
-    const tryEvict = async (e: RunIndexEntry, reason: EvictionReason) => {
-      try { const r = await this.evict(e, reason, now); if (r) report.evicted.push(r); }
-      catch (error) { this.log?.("retention.evict_failed", { runId: e.runId, reason, error: String(error).slice(0, 200) }); }
-    };
-    if (opts.retentionDays > 0) {
-      const cutoff = new Date(now.getTime() - opts.retentionDays * 86_400_000).toISOString();
-      for (const e of finished()) if (e.lastTimestamp < cutoff) await tryEvict(e, "retention_age");
-    }
-    if (opts.maxDiskMb > 0) {
-      const cap = opts.maxDiskMb * 1024 * 1024;
-      for (const e of finished()) { if (total() <= cap) break; await tryEvict(e, "retention_disk"); }
-      report.overCap = total() > cap;
-    }
-    report.bytesAfter = total();
-    return report;
-  }
-
-  /** Returns undefined (and touches nothing) when the Run is already a skeleton — an eviction that drops nothing is not one. */
-  private async evict(entry: RunIndexEntry, reason: EvictionReason, now: Date): Promise<CleanupReport["evicted"][number] | undefined> {
+  protected async compact(entry: RunIndexEntry, kept: ObservationEvent[], tombstone: ObservationEvent): Promise<void> {
     const file = this.file(entry.runId);
     const all = await this.parseFile(file);
-    const mine = all.filter((e) => e.runId === entry.runId);
-    const keptSpans = new Set(mine.filter((e) => keepAlways(e) || e.type === "model.completed").map((e) => e.spanId)); // model.completed is the end half of a model.turn span (#129): keep its start so durationMs/incomplete survive
-    const kept = mine.filter((e) => keepAlways(e) || e.type === "run.created" || e.type === "run.started" || e.type === "model.completed" || (e.phase === "start" && keptSpans.has(e.spanId)));
-    if (kept.length === mine.length) return undefined;
-    const tombstone = observationEventSchema.parse({
-      schemaVersion: SCHEMA_VERSION, eventId: newId("evt"), sequence: entry.lastSequence + 1, traceId: entry.traceId, spanId: newId("spn"),
-      runId: entry.runId, agentId: entry.agentId, timestamp: now.toISOString(), type: "trace.truncated", category: "control",
-      name: "trace.truncated", status: "unset", source: { component: "GlassBox", observed: true },
-      attributes: { reason, droppedEvents: mine.length - kept.length }, privacy: { redacted: false, rulesetVersion: REDACTION_RULESET_VERSION },
-    });
     const survivors = [...all.filter((e) => e.runId !== entry.runId), ...kept, tombstone]; // other runIds sharing this sanitized filename are untouched
     // tmp + rename (same as JsonStore): a crash mid-write must not lose exactly the terminal events we promised to keep.
     await writeFile(file + ".tmp", survivors.map((e) => JSON.stringify(e) + "\n").join(""), { encoding: "utf8", mode: 0o600 });
     await rename(file + ".tmp", file);
-    this.index.delete(entry.runId); this.seen.delete(entry.runId);
-    for (const e of [...kept, tombstone]) this.track(e, Buffer.byteLength(JSON.stringify(e) + "\n", "utf8"));
-    return { runId: entry.runId, traceId: entry.traceId, status: entry.status, reason, bytesFreed: entry.bytes - this.index.get(entry.runId)!.bytes };
   }
 }

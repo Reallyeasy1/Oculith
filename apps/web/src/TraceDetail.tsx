@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import type { Assertion, AuditRow, ObservationEvent, RunListItem, RunLogLine, Span, TraceView } from "./types";
-import { REPORTED_FAILURE_HINT, STATUS_ICON, formatClock, formatDuration, formatRunDuration, formatUsage, workspaceLabel } from "./runs-view-model";
+import type { Assertion, AuditRow, EvaluationResult, ObservationEvent, RunListItem, RunLogLine, Span, TraceView } from "./types";
+import { evaluatorLabel, metadataSummary } from "./eval-view-model";
+import { REPORTED_FAILURE_HINT, STATUS_ICON, collapseRequestId, errorHead, formatClock, formatDuration, formatRunDuration, formatUsage, pluralize, workspaceLabel } from "./runs-view-model";
 import {
   CATEGORIES,
   DRAWER_EVENT_CAP,
@@ -11,6 +12,8 @@ import {
   capabilityBadgeLabel,
   capabilityCopy,
   defaultExpanded,
+  formatActors,
+  formatReasoningTokens,
   formatAttribute,
   isFailed,
   indexSpans,
@@ -42,12 +45,14 @@ interface Props {
   focusEventId: string | null;
   onFocusHandled: () => void;
   onCaseSaved: () => Promise<void>;
+  /** #256: re-dispatch this Run's originating prompt as an ordinary new Run (busy Agent → error banner). */
+  onRerun: (runId: string) => void;
   onClose: () => void;
 }
 
 // Trace detail (UX-02): summary header, first-error banner with Jump, nested tree with duration bars,
 // client-side filters, focus-trapped span drawer. Everything shown comes straight from the API payload.
-export default function TraceDetail({ runId, run, view, templateBacked, focusEventId, onFocusHandled, onCaseSaved, onClose }: Props) {
+export default function TraceDetail({ runId, run, view, templateBacked, focusEventId, onFocusHandled, onCaseSaved, onRerun, onClose }: Props) {
   const [filter, setFilter] = useState<TraceFilter>(EMPTY_FILTER);
   // null = untouched → follow the API's default (roots + failure path) even as the trace grows while polling.
   const [expandedState, setExpanded] = useState<Set<string> | null>(null);
@@ -67,6 +72,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
   const [auditRows, setAuditRows] = useState<AuditRow[] | null>(null);
   const [auditError, setAuditError] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [evaluations, setEvaluations] = useState<EvaluationResult[]>([]);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   // Bumped whenever focus must move programmatically (keyboard nav, Jump, drawer close); the effect below
   // runs after the target row has rendered, which matters when Jump expands a collapsed path.
@@ -97,6 +103,16 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
       .catch((reason) => { if (!cancelled) setAuditError(reason instanceof Error ? reason.message : String(reason)); });
     return () => { cancelled = true; };
   }, [runId, showAudit, view]);
+
+  // #173: stored evaluation results refresh alongside the trace poll (`view` changes every tick while
+  // open). A server without the evaluation store (404) or a Run without results keeps the panel hidden.
+  useEffect(() => {
+    let cancelled = false;
+    void api.runEvaluations(runId)
+      .then(({ evaluations: results }) => { if (!cancelled) setEvaluations(results); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [runId, view]);
 
   useEffect(() => {
     if (focusReq > 0 && rovingId) rowRefs.current.get(rovingId)?.focus();
@@ -133,6 +149,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
   const { summary } = view;
   const failure = summary.failure;
   const workspace = workspaceLabel(summary.workspace ?? run?.workspace, summary.agentId || run?.agentId || "");
+  const actors = formatActors(summary.audit);
   const failingSpan = failure && byId.get(failure.spanId);
   const openSpan = openId ? byId.get(openId) : undefined;
   const saveReason = summary.status !== "ok"
@@ -217,6 +234,19 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
     setFocusReq((n) => n + 1);
   };
 
+  // Evidence links use the same jump mechanism as the audit table and the first-failure banner:
+  // expand the cited span's path, focus its row and open the drawer (#173).
+  const openEvidenceEvent = (eventId: string) => {
+    const event = view.events.find((item) => item.eventId === eventId);
+    if (!event) return;
+    const path: string[] = [];
+    for (let current = byId.get(event.spanId); current; current = current.parentSpanId ? byId.get(current.parentSpanId) : undefined) path.unshift(current.spanId);
+    setFilter(EMPTY_FILTER);
+    setExpanded((prev) => { const next = new Set(prev ?? expanded); path.forEach((id) => next.add(id)); return next; });
+    setFocusId(event.spanId);
+    setOpenId(event.spanId);
+  };
+
   const downloadExport = async () => {
     setExportError(null);
     try {
@@ -251,6 +281,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
           >
             Export JSON
           </a>
+          <button type="button" className="button button-ghost" onClick={() => onRerun(runId)}>Re-run prompt</button>
           <button type="button" className="button button-ghost" onClick={openSaveCase} disabled={Boolean(saveReason)} title={saveReason || undefined}>Save as regression case</button>
           <button type="button" className="button button-ghost" onClick={onClose}>Close trace</button>
         </div>
@@ -270,10 +301,12 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
         <Field label="Events">{summary.eventCount} · {summary.spanCount} spans</Field>
         <Field label="Usage">{formatUsage(summary.usage)}</Field>
         <Field label="Metrics">
-          {summary.metrics.toolCalls} tool calls · {summary.metrics.toolFailures} failed · {summary.metrics.modelCalls} model calls
-          {summary.metrics.retries > 0 ? ` · ${summary.metrics.retries} retries` : ""}
+          {pluralize(summary.metrics.toolCalls, "tool call")} · {summary.metrics.toolFailures} failed · {pluralize(summary.metrics.modelCalls, "model call")}
+          {summary.metrics.tokens?.reasoning === undefined ? "" : ` · ${formatReasoningTokens(summary.metrics.tokens)}`}
+          {summary.metrics.retries > 0 ? ` · ${pluralize(summary.metrics.retries, "retry", "retries")}` : ""}
           {summary.metrics.denials > 0 ? ` · ${summary.metrics.denials} denied` : ""}
         </Field>
+        <Field label="Actors"><span className="trace-muted" title={actors.title}>{actors.text}</span></Field>
         <Field label="Time split">
           model {formatDuration(summary.metrics.timeSplit.modelMs)} · tools {formatDuration(summary.metrics.timeSplit.toolMs)} · start {formatDuration(summary.metrics.timeSplit.containerStartMs)}
           {summary.metrics.timeToFirstToolMs !== undefined ? ` · first tool ${formatDuration(summary.metrics.timeToFirstToolMs)}` : ""}
@@ -296,13 +329,37 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
         <div className="error-banner trace-banner" aria-live="polite">
           <div>
             <strong>{failure.kind === "denied" ? "First denial" : "First actionable " + failure.kind}: {failure.name}</strong>
-            <span className="trace-banner-meta">{failure.category} · {failure.component}{failure.message ? " · " + failure.message : ""}</span>
-            <p id="trace-diagnosis" className="trace-diagnosis">{failure.diagnosis}</p>
+            {/* #263: the meta line names the origin only; the full error text renders once, in the diagnosis. */}
+            <span className="trace-banner-meta" title={failure.message || undefined}>{failure.category} · {failure.component}</span>
+            {failure.hint && <span className="badge badge-warn" title="Derived from the stored provider error by a fixed rule — not a judgement.">{failure.hint}</span>}
+            <p id="trace-diagnosis" className="trace-diagnosis">{collapseRequestId(failure.diagnosis)}</p>
           </div>
           {failingSpan && (
             <button type="button" className="button button-primary" onClick={jump} aria-describedby="trace-diagnosis">Jump to failing span</button>
           )}
         </div>
+      )}
+
+      {evaluations.length > 0 && (
+        <section className="trace-evaluations" aria-labelledby="trace-evaluations-heading">
+          <h3 id="trace-evaluations-heading">Evaluation</h3>
+          <ul>
+            {evaluations.map((result) => (
+              <li key={evaluatorLabel(result)}>
+                <span className={"badge " + (result.passed ? "" : "badge-warn")}>{result.passed ? "PASS" : "FAIL"}</span>
+                <code>{evaluatorLabel(result)}</code>
+                {result.score !== undefined && <span>score {result.score}</span>}
+                {result.explanation && <span className="trace-muted">{result.explanation}</span>}
+                {metadataSummary(result.metadata) && <span className="trace-muted">{metadataSummary(result.metadata)}</span>}
+                {result.evidenceEventIds.map((eventId, index) => (
+                  <button key={eventId} type="button" className="evidence-link" onClick={() => openEvidenceEvent(eventId)}>
+                    evidence{result.evidenceEventIds.length > 1 ? " " + (index + 1) : ""}
+                  </button>
+                ))}
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
 
       <div className="trace-filters" role="group" aria-label="Span filters">
@@ -394,7 +451,11 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
                 {row.hasChildren ? (row.expanded ? "▾" : "▸") : "·"}
               </button>
               <span className={"status status-" + s.status}><span aria-hidden="true">{STATUS_ICON[s.status]}</span>{spanStatusLabel(s, summary.endedReason)}</span>
-              <span className="trace-name" title={[[s.attributes.program, s.attributes.argument0].filter((value) => typeof value === "string" && value.length > 0).join(" "), s.error?.message].filter(Boolean).join("\n") || undefined}>{s.name}</span>
+              <span className="trace-name" title={[[s.attributes.program, s.attributes.argument0].filter((value) => typeof value === "string" && value.length > 0).join(" "), s.error?.message].filter(Boolean).join("\n") || undefined}>
+                {s.name}
+                {/* #263: error subtitle is a truncated head; the full text stays in the row's title tooltip. */}
+                {s.error?.message && <span className="trace-error-head"> — {errorHead(s.error.message)}</span>}
+              </span>
               <span className="trace-cat">{s.category}</span>
               <span className="trace-badges">
                 {s.incomplete && <span className="badge badge-warn">incomplete</span>}
@@ -430,6 +491,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
               <select value={logLevel} onChange={(event) => setLogLevel(event.target.value)}>
                 <option value="">all</option>
                 <option value="info">info</option>
+                <option value="warn">warn</option>
                 <option value="error">error</option>
               </select>
             </label>
