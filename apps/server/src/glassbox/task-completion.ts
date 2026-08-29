@@ -41,7 +41,8 @@ export class JsonTaskCompletionSource implements TaskCompletionSource {
     const run = snapshot.runs.find((item) => item.id === runId);
     const messages = snapshot.messages.filter((message) => message.runId === runId);
     const userRequest = messages.find((message) => message.role === "user")?.content ?? run?.prompt ?? "";
-    const finalResponse = messages.filter((message) => message.role === "assistant").at(-1)?.content;
+    // EvalRuns (#105) never create Messages; their reply lives on run.output (#306) — mirror the prompt fallback above.
+    const finalResponse = messages.filter((message) => message.role === "assistant").at(-1)?.content ?? run?.output ?? undefined;
     return {
       userRequest,
       ...(finalResponse === undefined ? {} : { finalResponse }),

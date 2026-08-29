@@ -13,6 +13,7 @@ import { JsonStore } from "../store.js";
 import {
   ArkTaskCompletionJudge,
   FakeTaskCompletionJudge,
+  JsonTaskCompletionSource,
   TaskCompletionEvaluator,
   buildEvaluationView,
   taskCompletionOutputSchema,
@@ -161,6 +162,29 @@ describe("TaskCompletionEvaluator", () => {
       expect(persistedResult).not.toContain(success.finalResponse);
       expect(JSON.stringify(success.events)).not.toContain(success.userRequest);
       expect(JSON.stringify(success.events)).not.toContain(success.finalResponse);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("JsonTaskCompletionSource", () => {
+  it("falls back to run.output for the final response when the Run has no assistant Message (#306, EvalRuns)", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "task-completion-source-"));
+    try {
+      const json = new JsonStore(path.join(root, "launchpad.json"));
+      await json.initialize();
+      await json.mutate((database) => {
+        database.runs.push({
+          id: "run-eval", agentId: "agent-1", status: "completed", prompt: "Fix the failing test",
+          output: "Fixed the off-by-one in src/fees.js; npm test passes.", error: null, usage: null,
+          startedAt: "2026-08-29T00:00:00.000Z", completedAt: "2026-08-29T00:01:00.000Z", createdAt: "2026-08-29T00:00:00.000Z",
+        });
+      });
+      const traces = { readRun: async () => [] } as unknown as ConstructorParameters<typeof JsonTaskCompletionSource>[1];
+      const record = await new JsonTaskCompletionSource(json, traces).load("run-eval");
+      expect(record.userRequest).toBe("Fix the failing test");
+      expect(record.finalResponse).toBe("Fixed the off-by-one in src/fees.js; npm test passes.");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
