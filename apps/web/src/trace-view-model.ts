@@ -29,14 +29,21 @@ export const ACTORS_TOOLTIP = "Every consequential event attributed to who did i
 /** ponytail: fixed display cap, no measuring — the full list always lives in the title. */
 const ACTOR_DISPLAY_LIMIT = 4;
 
+/** #341: header actors reuse the audit table's short form (#338) — `kind · shortId`; full `kind/id` stays in the title. */
+function shortActorLabel(actor: string): string {
+  const slash = actor.indexOf("/");
+  return slash > 0 ? formatAuditActor({ type: actor.slice(0, slash), id: actor.slice(slash + 1) }).text : actor;
+}
+
 /** One summary-row line for `summary.audit` (#250): actors joined, capped, denial count appended. */
 export function formatActors(audit: TraceView["summary"]["audit"]): { text: string; title: string } {
   const truncated = audit.actors.length > ACTOR_DISPLAY_LIMIT;
-  const shown = truncated ? audit.actors.slice(0, ACTOR_DISPLAY_LIMIT).join(" · ") + " · …" : audit.actors.join(" · ");
+  const short = audit.actors.map(shortActorLabel);
+  const shown = truncated ? short.slice(0, ACTOR_DISPLAY_LIMIT).join(" · ") + " · …" : short.join(" · ");
   const denied = audit.denials > 0 ? ` · ${audit.denials} denied` : "";
   return {
     text: (shown || "—") + denied,
-    title: truncated ? `${ACTORS_TOOLTIP} All actors: ${audit.actors.join(" · ")}` : ACTORS_TOOLTIP,
+    title: audit.actors.length > 0 ? `${ACTORS_TOOLTIP} All actors: ${audit.actors.join(" · ")}` : ACTORS_TOOLTIP,
   };
 }
 
@@ -79,8 +86,33 @@ export function capabilityBadgeLabel(
   return layer + (state === "unknown" && runStatus !== "running" ? ": " : " ") + copy.label;
 }
 
-export function spanStatusLabel(span: Pick<Span, "status" | "incomplete">, endedReason?: "server_restart"): string {
-  return endedReason === "server_restart" && span.incomplete ? "interrupted" : span.status;
+/**
+ * Restart-interrupted spans read "interrupted"; a still-open span in any other terminal trace reads
+ * "never closed" (#341) — a dead Run must never wear the activity-blue RUNNING pill.
+ */
+export function spanStatusLabel(
+  span: Pick<Span, "status" | "incomplete">,
+  summary: Pick<TraceView["summary"], "status" | "endedReason">,
+): string {
+  if (span.incomplete && summary.endedReason === "server_restart") return "interrupted";
+  if (span.status === "running" && span.incomplete && summary.status !== "running") return "never closed";
+  return span.status;
+}
+
+/** #341: the discriminating first argument (e.g. the script behind 16 identical "shell:powershell.exe" rows). */
+export function spanArgument(attributes: Span["attributes"]): string {
+  const value = attributes.argument0;
+  return typeof value === "string" ? value : "";
+}
+
+/** #341: the server diagnosis restates the banner heading's "First actionable <kind>: <name>" clause — trim it. */
+export function trimDiagnosis(diagnosis: string, failure: { kind: string; name: string }): string {
+  const clause = `First actionable ${failure.kind}: ${failure.name}`;
+  const start = diagnosis.indexOf(clause);
+  if (start === -1) return diagnosis;
+  const rest = diagnosis.slice(start + clause.length);
+  // Keep the error message the clause carried (" — message.") but drop a bare restatement (".").
+  return (diagnosis.slice(0, start) + (rest.startsWith(" — ") ? rest.slice(3) : rest.replace(/^\.\s*/, ""))).trim();
 }
 
 export function interruptedSpanDurationMs(span: Pick<Span, "startedAt" | "incomplete">, summary: TraceView["summary"]): number | undefined {
@@ -145,23 +177,38 @@ export interface VisibleRow {
 }
 
 /**
- * Errors-only view (#338): collapse a run of consecutive identical leaf error rows (same name, depth and
- * error message) into one row carrying a repeat count. Parents are never collapsed — their children rows
- * would be orphaned in the flattened list.
+ * Errors-only view (#338, #341): collapse a repeating sequence of identical leaf error rows (same name,
+ * depth and error message) into its first occurrence, each kept row carrying the ×N repeat count. The
+ * window is 1 or 2 rows — period 2 covers the flagship alternating tool→policy denial pairs, which a
+ * consecutive-identical scan never folds. Parents are never collapsed — their children rows would be
+ * orphaned in the flattened list.
+ * ponytail: periods 1–2 only; extend PERIODS if a real trace ever repeats a longer window.
  */
 export function coalesceErrorRows(rows: VisibleRow[]): VisibleRow[] {
+  const collapsible = (row: VisibleRow) => row.span.error?.message !== undefined && !row.hasChildren;
+  const same = (a: VisibleRow, b: VisibleRow) =>
+    a.span.name === b.span.name && a.span.depth === b.span.depth && a.span.error?.message === b.span.error?.message;
+  const PERIODS = [1, 2];
   const out: VisibleRow[] = [];
-  for (const row of rows) {
-    const prev = out[out.length - 1];
-    const message = row.span.error?.message;
-    if (
-      prev && message !== undefined && !row.hasChildren && !prev.hasChildren &&
-      prev.span.error?.message === message && prev.span.name === row.span.name && prev.span.depth === row.span.depth
-    ) {
-      out[out.length - 1] = { ...prev, repeat: (prev.repeat ?? 1) + 1 };
-    } else {
-      out.push(row);
+  let index = 0;
+  while (index < rows.length) {
+    let folded = false;
+    for (const period of PERIODS) {
+      const window = rows.slice(index, index + period);
+      if (window.length < period || !window.every(collapsible)) continue;
+      let repeats = 1;
+      while (window.every((w, offset) => {
+        const candidate = rows[index + repeats * period + offset];
+        return candidate !== undefined && collapsible(candidate) && same(w, candidate);
+      })) repeats += 1;
+      if (repeats > 1) {
+        out.push(...window.map((w) => ({ ...w, repeat: repeats })));
+        index += repeats * period;
+        folded = true;
+        break;
+      }
     }
+    if (!folded) { out.push(rows[index]!); index += 1; }
   }
   return out;
 }

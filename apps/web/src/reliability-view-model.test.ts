@@ -112,6 +112,12 @@ describe("reliabilityTiles", () => {
     });
   });
 
+  it("fixes the sparkline scale at 1 for the four 0–1 rate tiles only", () => {
+    const byKey = Object.fromEntries(reliabilityTiles(report({ runs: 2 })).map((tile) => [tile.key, tile]));
+    for (const key of ["executionCompletionRate", "taskCompletionRate", "toolFailureRate", "denialRate"]) expect(byKey[key]?.sparklineMax).toBe(1);
+    for (const key of ["avgToolCalls", "tokens", "latency"]) expect(byKey[key]?.sparklineMax).toBeUndefined();
+  });
+
   it("drills only where the Runs table states the provenance exactly (#173): all Runs, and failed tasks", () => {
     const byKey = Object.fromEntries(reliabilityTiles(report({ runs: 2 })).map((tile) => [tile.key, tile]));
     expect(byKey.executionCompletionRate?.drill).toEqual({ quick: "all", taskOutcome: "all" });
@@ -129,5 +135,10 @@ describe("sparklineHeights", () => {
     expect(sparklineHeights([0, 0])).toEqual([0, 0]);
     expect(sparklineHeights([])).toEqual([]);
     expect(sparklineHeights([null])).toEqual([null]);
+  });
+
+  it("scales to a fixed max when given one, so a flat 50% no longer renders like a flat 100%", () => {
+    expect(sparklineHeights([0.5, 0.5], 1)).toEqual([50, 50]);
+    expect(sparklineHeights([1, 0.25, null], 1)).toEqual([100, 25, null]);
   });
 });

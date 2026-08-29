@@ -3,7 +3,7 @@
 // (vitest is hoisted from the server workspace — no new dependency.)
 import { describe, expect, it } from "vitest";
 import type { Span, TraceView } from "./types";
-import { ACTORS_TOOLTIP, EMPTY_FILTER, barGeometry, capabilityBadgeLabel, capabilityCopy, coalesceErrorRows, defaultExpanded, firstFailedSpanId, formatActors, formatAuditActor, formatReasoningTokens, interruptedSpanDurationMs, matchesSpan, refreshIntervalMs, spanStatusLabel, timelineTicks, visibleRows, type VisibleRow } from "./trace-view-model";
+import { ACTORS_TOOLTIP, EMPTY_FILTER, barGeometry, capabilityBadgeLabel, capabilityCopy, coalesceErrorRows, defaultExpanded, firstFailedSpanId, formatActors, formatAuditActor, formatReasoningTokens, interruptedSpanDurationMs, matchesSpan, refreshIntervalMs, spanArgument, spanStatusLabel, timelineTicks, trimDiagnosis, visibleRows, type VisibleRow } from "./trace-view-model";
 
 const t0 = "2026-08-26T10:00:00.000Z";
 const at = (ms: number) => new Date(Date.parse(t0) + ms).toISOString();
@@ -42,14 +42,18 @@ describe("trace-view-model", () => {
     expect(formatReasoningTokens(undefined)).toBe("");
   });
 
-  it("formats audit actors with denial count, truncating long lists into the title (#250)", () => {
+  it("formats audit actors in the short kind · shortId form, full list in the title (#250, #341)", () => {
     expect(formatActors({ actions: 0, denials: 0, actors: [] })).toEqual({ text: "—", title: ACTORS_TOOLTIP });
     expect(formatActors({ actions: 5, denials: 0, actors: ["agent/agt-1", "human/local-user"] }))
-      .toEqual({ text: "agent/agt-1 · human/local-user", title: ACTORS_TOOLTIP });
+      .toEqual({ text: "agent · agt-1 · human · local-user", title: `${ACTORS_TOOLTIP} All actors: agent/agt-1 · human/local-user` });
+    // Long UUID-ish ids collapse to the #338 short form; the full id survives only in the title.
+    const uuid = formatActors({ actions: 2, denials: 0, actors: ["agent/agt-0123456789abcdef0123456789abcdef"] });
+    expect(uuid.text).toBe("agent · agt-0123…");
+    expect(uuid.title).toBe(`${ACTORS_TOOLTIP} All actors: agent/agt-0123456789abcdef0123456789abcdef`);
     expect(formatActors({ actions: 5, denials: 3, actors: ["agent/agt-1", "service/runner"] }).text)
-      .toBe("agent/agt-1 · service/runner · 3 denied");
+      .toBe("agent · agt-1 · service · runner · 3 denied");
     const many = formatActors({ actions: 9, denials: 1, actors: ["a/1", "b/2", "c/3", "d/4", "e/5", "f/6"] });
-    expect(many.text).toBe("a/1 · b/2 · c/3 · d/4 · … · 1 denied");
+    expect(many.text).toBe("a · 1 · b · 2 · c · 3 · d · 4 · … · 1 denied");
     expect(many.title).toBe(`${ACTORS_TOOLTIP} All actors: a/1 · b/2 · c/3 · d/4 · e/5 · f/6`);
   });
 
@@ -113,10 +117,38 @@ describe("trace-view-model", () => {
     expect(refreshIntervalMs(undefined)).toBe(5_000);
   });
 
-  it("labels only restart-incomplete spans as interrupted", () => {
-    expect(spanStatusLabel({ status: "running", incomplete: true }, "server_restart")).toBe("interrupted");
-    expect(spanStatusLabel({ status: "running", incomplete: true })).toBe("running");
-    expect(spanStatusLabel({ status: "cancelled", incomplete: false }, "server_restart")).toBe("cancelled");
+  it("labels restart-incomplete spans interrupted and open spans in any dead Run as never closed (#341)", () => {
+    const live = { status: "running" as const };
+    const restart = { status: "cancelled" as const, endedReason: "server_restart" as const };
+    expect(spanStatusLabel({ status: "running", incomplete: true }, restart)).toBe("interrupted");
+    expect(spanStatusLabel({ status: "running", incomplete: true }, live)).toBe("running");
+    expect(spanStatusLabel({ status: "cancelled", incomplete: false }, restart)).toBe("cancelled");
+    // Terminal trace (any of failed/timeout/cancelled/ok) with a still-open span: never the RUNNING pill.
+    for (const status of ["error", "timeout", "cancelled", "ok"] as const) {
+      expect(spanStatusLabel({ status: "running", incomplete: true }, { status })).toBe("never closed");
+    }
+    expect(spanStatusLabel({ status: "ok", incomplete: false }, { status: "error" })).toBe("ok");
+  });
+
+  it("surfaces argument0 as the discriminator for identically named tool rows (#341)", () => {
+    expect(spanArgument({ program: "powershell.exe", argument0: "-Command Get-ChildItem" })).toBe("-Command Get-ChildItem");
+    expect(spanArgument({ program: "powershell.exe" })).toBe("");
+    expect(spanArgument({ argument0: 7 })).toBe("");
+  });
+
+  it("trims the heading's First-actionable clause out of the diagnosis (#341)", () => {
+    const failure = { kind: "timeout", name: "runtime.codex.failed" };
+    expect(trimDiagnosis(
+      "Run timeout in AgentRunner after 120.7 s. First actionable timeout: runtime.codex.failed — Codex run timed out after 120000 ms. Cleanup evidence: x.",
+      failure,
+    )).toBe("Run timeout in AgentRunner after 120.7 s. Codex run timed out after 120000 ms. Cleanup evidence: x.");
+    // Without a message the whole sentence goes; following sentences survive.
+    expect(trimDiagnosis("Run timeout in X after 2.0 s. First actionable timeout: runtime.codex.failed. Trace store was degraded during this Run; evidence may be incomplete.", failure))
+      .toBe("Run timeout in X after 2.0 s. Trace store was degraded during this Run; evidence may be incomplete.");
+    expect(trimDiagnosis("Run timeout in X after 2.0 s. First actionable timeout: runtime.codex.failed.", failure))
+      .toBe("Run timeout in X after 2.0 s.");
+    // A diagnosis without the clause (denied, restart) passes through untouched.
+    expect(trimDiagnosis("sandbox declined `pwsh`", { kind: "denied", name: "pwsh" })).toBe("sandbox declined `pwsh`");
   });
 
   it("uses the restart marker as the honest lower bound for an incomplete span", () => {
@@ -180,6 +212,25 @@ describe("trace-view-model", () => {
     // Non-error rows pass through untouched.
     const ok: VisibleRow = { span: span("ok"), hasChildren: false, expanded: false, context: false };
     expect(coalesceErrorRows([ok, ok])).toHaveLength(2);
+  });
+
+  it("coalesces a repeating tool→policy denial pair into its first pair with ×N on both rows (#341)", () => {
+    const row = (id: string, name: string, message = "operation not permitted"): VisibleRow => ({
+      span: span(id, { name, depth: 2, error: { type: "E", message } }),
+      hasChildren: false, expanded: false, context: false,
+    });
+    // The flagship pattern: 8 denials = 16 alternating tool→policy rows with identical messages.
+    const pairs = Array.from({ length: 8 }, (_, i) => [row(`t${i}`, "shell:powershell.exe"), row(`p${i}`, "policy.denied")]).flat();
+    const out = coalesceErrorRows(pairs);
+    expect(out.map((r) => [r.span.spanId, r.repeat])).toEqual([["t0", 8], ["p0", 8]]);
+
+    // A trailing partial repeat and a different tail survive uncollapsed.
+    const ragged = coalesceErrorRows([...pairs.slice(0, 4), row("t9", "shell:powershell.exe"), row("x", "other", "different")]);
+    expect(ragged.map((r) => [r.span.spanId, r.repeat ?? 1])).toEqual([["t0", 2], ["p0", 2], ["t9", 1], ["x", 1]]);
+
+    // Period 1 still wins over period 2 for plain runs: A A A A collapses to one ×4 row, not two ×2 pairs.
+    const run4 = coalesceErrorRows([row("a1", "retry"), row("a2", "retry"), row("a3", "retry"), row("a4", "retry")]);
+    expect(run4.map((r) => [r.span.spanId, r.repeat])).toEqual([["a1", 4]]);
   });
 
   it("renders incomplete spans to the timeline end and zero-duration spans as instants", () => {

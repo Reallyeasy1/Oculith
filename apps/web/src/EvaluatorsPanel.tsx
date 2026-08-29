@@ -53,6 +53,7 @@ export default function EvaluatorsPanel() {
       </div>
       {open && (
         <form onSubmit={(event) => void submit(event)} className="evaluator-form">
+          <p className="form-help">Creates an llm_judge evaluator — the model scores each Run against this rubric using cited trace evidence.</p>
           <label>
             Name
             <input value={form.name} onChange={(event) => set({ name: event.target.value })} maxLength={80} placeholder="e.g. Politeness Judge" />
@@ -89,7 +90,7 @@ export default function EvaluatorsPanel() {
       <div className="runs-table-wrap">
         <table className="runs-table">
           <thead>
-            <tr><th scope="col">Name</th><th scope="col">Id</th><th scope="col">Version</th><th scope="col">Type</th><th scope="col">Range</th><th scope="col">Pass ≥</th><th scope="col">Rubric</th></tr>
+            <tr><th scope="col">Name</th><th scope="col">Id</th><th scope="col">Version</th><th scope="col">Type</th><th scope="col">Range</th><th scope="col">Pass ≥</th><th scope="col">Sets outcome</th><th scope="col">Rubric</th></tr>
           </thead>
           <tbody>
             {evaluators.map((item) => (
@@ -100,7 +101,8 @@ export default function EvaluatorsPanel() {
                 <td>{item.type}</td>
                 <td>{item.minScore}–{item.maxScore}</td>
                 <td>{item.passThreshold}</td>
-                <td className="trace-muted">{item.rubric.length > 120 ? item.rubric.slice(0, 120) + "…" : item.rubric}</td>
+                <td>{item.setsTaskOutcome ? <span role="img" aria-label="Verdicts set the Run's task outcome">✓</span> : <span className="dash">—</span>}</td>
+                <td className="trace-muted" title={item.rubric}>{item.rubric.length > 120 ? item.rubric.slice(0, 120) + "…" : item.rubric}</td>
               </tr>
             ))}
           </tbody>

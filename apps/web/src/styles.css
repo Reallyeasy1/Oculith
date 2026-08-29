@@ -189,6 +189,8 @@ button {
   align-items: center;
   justify-content: center;
   gap: 7px;
+  /* #341: buttons wrap as units in wrapping toolbars, never mid-label. */
+  white-space: nowrap;
 }
 
 .button:disabled {
@@ -1671,10 +1673,6 @@ select:focus {
   flex-wrap: wrap;
 }
 
-.trace-header .header-actions .button {
-  white-space: nowrap;
-}
-
 .trace-header h2 {
   display: flex;
   align-items: center;
@@ -2181,11 +2179,34 @@ select:focus {
 /* One breakpoint set, on the trace container's content width. #124's viewport values (800 / 1099)
    translated with the sidebar, page padding and border removed (800 → 654, 1099 → 753), so the tree
    compacts the same way without a drawer and also when the docked drawer eats the width. */
+/* #341: staged compaction — at 690 only the cosmetic cat/badges columns drop
+   (the timeline bar is the evidence, so it survives), and the bar + axis go
+   only below 520 where there is no honest room left to draw them. */
 @container trace-detail (max-width: 690px) {
   .trace-detail > .trace-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .trace-axis,
+  .trace-row {
+    grid-template-columns: 18px 84px minmax(0, 1fr) minmax(120px, 1fr) 64px;
+  }
+
+  .trace-axis-title {
+    display: none;
+  }
+
+  .trace-axis-scale {
+    grid-column: 4;
+  }
+
+  .trace-row .trace-cat,
+  .trace-row .trace-badges {
+    display: none;
+  }
+}
+
+@container trace-detail (max-width: 520px) {
   .trace-axis {
     display: none;
   }
@@ -2194,8 +2215,6 @@ select:focus {
     grid-template-columns: 18px 84px minmax(0, 1fr) 64px;
   }
 
-  .trace-row .trace-cat,
-  .trace-row .trace-badges,
   .trace-row .trace-bar {
     display: none;
   }
@@ -2299,7 +2318,8 @@ select:focus {
 .comparison-banner.has-regression strong { text-transform: uppercase; letter-spacing: 0.06em; font-weight: 800; }
 .comparison-banner.no-regression { color: var(--green-ink); background: var(--green-soft); border: 1px solid #9ed8bb; }
 .comparison-regression { background: var(--red-soft); }
-.comparison-regression td:last-child { color: #8d2727; font-weight: 600; }
+/* #341: keyed on a class the panel applies only to numeric deltas, so dash/error cells stay plain. */
+.comparison-regression td.delta-regressed { color: #8d2727; font-weight: 600; }
 .evidence-link { border: 0; background: transparent; padding: 0; color: inherit; cursor: pointer; text-align: left; }
 .evidence-link:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
 
@@ -2528,8 +2548,9 @@ select:focus {
 
 /* #65: read-only workspace browser in the Agent detail */
 .workspace-panel {
-  padding: 16px 20px;
-  border-radius: 14px;
+  /* #341: padding + radius aligned with .settings-panel's rhythm. */
+  padding: 20px;
+  border-radius: var(--radius-xl);
   margin-bottom: 14px;
 }
 
@@ -2537,7 +2558,14 @@ select:focus {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+  flex-wrap: wrap;
   gap: 12px;
+}
+
+/* #341: toolbar buttons wrap as whole units at narrow widths. */
+.workspace-panel-head .header-actions,
+.workspace-preview-head .header-actions {
+  flex-wrap: wrap;
 }
 
 .workspace-panel-head h2 {
@@ -2563,7 +2591,7 @@ select:focus {
 
 .workspace-tree {
   margin-top: 12px;
-  border-top: 1px solid #ecebe5;
+  border-top: 1px solid var(--line);
   font-size: 12px;
   max-height: 320px;
   overflow-y: auto;
@@ -2575,18 +2603,20 @@ select:focus {
   align-items: center;
   gap: 8px;
   padding: 5px 14px 5px 12px;
-  border-bottom: 1px solid #ecebe5;
+  border-bottom: 1px solid var(--line);
   cursor: pointer;
 }
 
 .workspace-row:hover,
 .workspace-row:focus-visible {
-  background: rgba(81, 61, 185, 0.06);
+  background: var(--purple-soft);
   outline: none;
 }
 
+/* #341: selected stays identifiable under hover — same inset accent as .trace-row. */
 .workspace-row.selected {
-  background: rgba(81, 61, 185, 0.1);
+  background: var(--purple-soft);
+  box-shadow: inset 3px 0 0 var(--purple);
 }
 
 .workspace-row-kind {
@@ -2607,7 +2637,7 @@ select:focus {
 .workspace-preview {
   margin-top: 12px;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   padding: 12px 14px;
 }
 
@@ -2628,7 +2658,7 @@ select:focus {
   margin-left: 6px;
   padding: 1px 7px;
   border-radius: 999px;
-  background: rgba(81, 61, 185, 0.1);
+  background: var(--purple-soft);
   color: var(--purple-dark);
   font-size: 11px;
   font-weight: 600;
@@ -2637,7 +2667,9 @@ select:focus {
 .workspace-preview-content {
   margin: 10px 0 0;
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
+  /* #341: recessed code surface — no token matches (sits between --paper and the
+     page ground); shared with .workspace-editor textarea below. */
   background: #f4f3ee;
   font-size: 12px;
   line-height: 1.5;
@@ -2673,8 +2705,8 @@ select:focus {
   margin: 10px 0 8px;
   padding: 10px 12px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #f4f3ee;
+  border-radius: var(--radius-sm);
+  background: #f4f3ee; /* see .workspace-preview-content */
   font-family: var(--mono, ui-monospace, monospace);
   font-size: 12px;
   line-height: 1.5;
@@ -2683,7 +2715,7 @@ select:focus {
 
 .workspace-history {
   margin-top: 12px;
-  border-top: 1px solid #ecebe5;
+  border-top: 1px solid var(--line);
   padding-top: 10px;
 }
 
