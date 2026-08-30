@@ -31,7 +31,9 @@ export const STATIC_SERVER_SCRIPT = [
   'const types={".html":"text/html",".js":"text/javascript",".mjs":"text/javascript",".css":"text/css",".json":"application/json",".map":"application/json",".svg":"image/svg+xml",".png":"image/png",".jpg":"image/jpeg",".ico":"image/x-icon",".txt":"text/plain",".woff2":"font/woff2",".woff":"font/woff",".ttf":"font/ttf",".otf":"font/otf",".wasm":"application/wasm",".webp":"image/webp",".gif":"image/gif",".mp3":"audio/mpeg",".ogg":"audio/ogg",".wav":"audio/wav",".mp4":"video/mp4",".webm":"video/webm",".webmanifest":"application/manifest+json"};',
   'const send=(res,file,data)=>{res.writeHead(200,{"content-type":types[path.extname(file).toLowerCase()]||"application/octet-stream"});res.end(data)};',
   "const server=http.createServer((req,res)=>{",
-  'let file=path.normalize(path.join(root,decodeURIComponent((req.url||"/").split("?")[0])));',
+  // decodeURIComponent throws on malformed %-sequences; uncaught it would kill the whole server.
+  'let decoded;try{decoded=decodeURIComponent((req.url||"/").split("?")[0])}catch{res.writeHead(400);res.end("Bad request");return}',
+  "let file=path.normalize(path.join(root,decoded));",
   "if(file!==root&&!file.startsWith(root+path.sep)){res.writeHead(403);res.end();return}",
   'try{if(fs.statSync(file).isDirectory())file=path.join(file,"index.html")}catch{}',
   "fs.readFile(file,(err,data)=>{",

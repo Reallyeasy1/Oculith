@@ -569,6 +569,10 @@ describe("static server script (#375)", () => {
       // …but a missing asset stays an honest 404, and traversal stays refused.
       expect((await get("/assets/missing.js")).status).toBe(404);
       expect((await get("/..%2f..%2fetc%2fpasswd")).status).toBe(403);
+
+      // Malformed percent-encoding must be a 400, never an uncaught URIError that kills the server.
+      expect((await get("/%zz")).status).toBe(400);
+      expect((await get("/")).status).toBe(200);
     } finally {
       child.kill("SIGKILL");
     }
