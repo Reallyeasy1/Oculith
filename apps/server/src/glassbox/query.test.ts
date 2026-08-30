@@ -462,7 +462,9 @@ describe("buildTrace", () => {
     expect(summary.failure?.spanId).toBe("x");
     const path = summary.failure!.path;
     expect(new Set(path).size).toBe(path.length);
-    expect(path).toEqual(expect.arrayContaining(["x", "y"]));
+    // #361: x is the promoted cycle root (back-pointer cleared), so the root-to-x path is just ["x"];
+    // y hangs beneath it as a child. The old ["x","y"] pin reflected the cyclic back-pointer world.
+    expect(path).toEqual(["x"]);
   });
   it("end-before-start: a later start event corrects the provisional span and closes it", () => {
     seq = 0;
@@ -549,7 +551,10 @@ describe("buildTrace correctness (#357)", () => {
     expect(span.events.map((e) => e.eventId)).toEqual([instant.eventId]);
     expect(view.summary.incompleteSpans).toBe(1);
   });
-  it.each([{ seed: 1 }, { seed: 42 }, { seed: 20260830 }])("buildTrace(events) deep-equals buildTrace(shuffle(events)) (seed $seed)", ({ seed }) => {
+  // Seed 150 swaps the tieA/tieB pair (review #361: the lower seeds never do, and the sort is
+  // stable, so without a tie-swapping order the eventId tiebreak is unexercised); the reverse case
+  // below guarantees it deterministically as well.
+  it.each([{ seed: 1 }, { seed: 42 }, { seed: 150 }, { seed: 20260830 }])("buildTrace(events) deep-equals buildTrace(shuffle(events)) (seed $seed)", ({ seed }) => {
     const shuffle = (list: ObservationEvent[], seedValue: number): ObservationEvent[] => {
       const out = [...list];
       let state = seedValue >>> 0;
@@ -581,6 +586,8 @@ describe("buildTrace correctness (#357)", () => {
     ];
     const expected = buildTrace(fixture, { capturePolicy: "metadata_only" });
     expect(buildTrace(shuffle(fixture, seed), { capturePolicy: "metadata_only" })).toEqual(expected);
+    // Reversal puts tieB before tieA, so this fails if the eventId tiebreak is removed.
+    expect(buildTrace([...fixture].reverse(), { capturePolicy: "metadata_only" })).toEqual(expected);
     expect(expected.summary.spanCount).toBe(11); // sanity: root, svc, rt, tieA, tieB, tool1, m1, cx, cy, oo, done — cycle spans accounted for
   });
 });

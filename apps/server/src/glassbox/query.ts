@@ -185,6 +185,9 @@ function buildTree(spans: Map<string, Span>): Span[] {
       .sort((a, b) => a.sequence - b.sequence || a.spanId.localeCompare(b.spanId))[0]!;
     const parent = entry.parentSpanId ? spans.get(entry.parentSpanId) : undefined;
     if (parent) parent.children.splice(parent.children.indexOf(entry), 1);
+    // Clear the back-pointer too (#361 review): consumers walk parentSpanId without cycle guards
+    // (TraceDetail path expansion, OTel export) — a promoted root must be a real root both ways.
+    entry.parentSpanId = undefined;
     roots.push(entry);
     mark(entry);
   }
