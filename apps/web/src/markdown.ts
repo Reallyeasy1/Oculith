@@ -1,6 +1,10 @@
 // Minimal GFM-subset parser for assistant replies (#378). No dependencies by design
 // (.claude/rules/web.md); safety comes from the renderer emitting React elements only,
 // so anything this parser leaves as "text" can never become live HTML.
+//
+// Recursion is depth-capped in both the block and inline grammars: model output is
+// untrusted and a run of 20,000 asterisks or 3,000 ">" must degrade to literal text,
+// not a RangeError that unmounts the app (PR #380 review).
 
 export type InlineToken =
   | { kind: "text"; text: string }
@@ -18,6 +22,9 @@ export type MarkdownBlock =
   | { kind: "blockquote"; children: MarkdownBlock[] }
   | { kind: "hr" };
 
+const MAX_BLOCK_DEPTH = 8;
+const MAX_INLINE_DEPTH = 8;
+
 const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 const HEADING = /^ {0,3}(#{1,6})\s+(.*)$/;
 const HR = /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/;
@@ -25,10 +32,15 @@ const BLOCKQUOTE = /^ {0,3}>/;
 const LIST_ITEM = /^(\s*)([-*+]|\d{1,9}[.)])(\s+)(.*)$/;
 
 export function parseMarkdown(source: string): MarkdownBlock[] {
-  return parseBlockLines(source.replace(/\r\n/g, "\n").split("\n"));
+  return parseBlockLines(source.replace(/\r\n/g, "\n").split("\n"), 0);
 }
 
-function parseBlockLines(lines: string[]): MarkdownBlock[] {
+function parseBlockLines(lines: string[], depth: number): MarkdownBlock[] {
+  if (depth >= MAX_BLOCK_DEPTH) {
+    const literal = lines.filter((line) => line.trim() !== "").map((line): InlineToken[] => [{ kind: "text", text: line }]);
+    return literal.length > 0 ? [{ kind: "paragraph", lines: literal }] : [];
+  }
+
   const blocks: MarkdownBlock[] = [];
   let i = 0;
   while (i < lines.length) {
@@ -77,7 +89,28 @@ function parseBlockLines(lines: string[]): MarkdownBlock[] {
         quoted.push((lines[i] ?? "").replace(/^ {0,3}> ?/, ""));
         i += 1;
       }
-      blocks.push({ kind: "blockquote", children: parseBlockLines(quoted) });
+      blocks.push({ kind: "blockquote", children: parseBlockLines(quoted, depth + 1) });
+      continue;
+    }
+
+    // Indented code (4+ spaces) at a block boundary stays verbatim — Codex often
+    // pastes snippets and directory trees without fences.
+    if (leadingSpaces(line) >= 4) {
+      const body: string[] = [];
+      while (i < lines.length) {
+        const current = lines[i] ?? "";
+        if (current.trim() === "") {
+          const ahead = nextNonBlank(lines, i + 1);
+          if (ahead === null || leadingSpaces(lines[ahead] ?? "") < 4) break;
+          body.push("");
+          i += 1;
+          continue;
+        }
+        if (leadingSpaces(current) < 4) break;
+        body.push(current.slice(4));
+        i += 1;
+      }
+      blocks.push({ kind: "code", language: "", text: body.join("\n") });
       continue;
     }
 
@@ -107,7 +140,7 @@ function parseBlockLines(lines: string[]): MarkdownBlock[] {
           itemLines.push(next.slice(Math.min(indent, contentIndent)));
           i += 1;
         }
-        items.push(parseBlockLines(itemLines));
+        items.push(parseBlockLines(itemLines, depth + 1));
         // Blank lines between siblings keep it one list.
         while (i < lines.length && (lines[i] ?? "").trim() === "") {
           const ahead = nextNonBlank(lines, i);
@@ -121,17 +154,29 @@ function parseBlockLines(lines: string[]): MarkdownBlock[] {
       continue;
     }
 
+    // Lines are NOT trimmed: the wrapper inherits pre-wrap, so author spacing in
+    // unmodeled content (aligned columns, ASCII trees, pipe tables) survives intact.
     const paragraph: InlineToken[][] = [];
     while (i < lines.length) {
       const current = lines[i] ?? "";
       if (current.trim() === "") break;
-      if (FENCE_OPEN.test(current) || HEADING.test(current) || HR.test(current) || BLOCKQUOTE.test(current) || LIST_ITEM.test(current)) break;
-      paragraph.push(parseInline(current.trim()));
+      if (FENCE_OPEN.test(current) || HEADING.test(current) || HR.test(current) || BLOCKQUOTE.test(current) || interruptsParagraph(current)) break;
+      paragraph.push(parseInline(current));
       i += 1;
     }
     blocks.push({ kind: "paragraph", lines: paragraph });
   }
   return blocks;
+}
+
+// Only a bullet or a "1." item interrupts a paragraph (CommonMark): a soft-wrapped
+// "…shipped in\n2024. It was great." must not become <ol start="2024">.
+function interruptsParagraph(line: string): boolean {
+  const m = line.match(LIST_ITEM);
+  if (!m) return false;
+  const marker = m[2] ?? "";
+  if (!/^\d/.test(marker)) return true;
+  return Number.parseInt(marker, 10) === 1;
 }
 
 function nextNonBlank(lines: string[], from: number): number | null {
@@ -147,28 +192,64 @@ function leadingSpaces(line: string): number {
 
 const SAFE_HREF = /^(https?:|mailto:)/i;
 
-type InlineMatcher = { re: RegExp; build: (m: RegExpExecArray) => InlineToken[] };
+type InlineContext = { depth: number; allowLinks: boolean };
+
+type InlineMatcher = {
+  re: RegExp;
+  // Link matchers are disabled inside link labels so labels that are themselves
+  // URLs never produce nested <a> elements.
+  isLink?: boolean;
+  // Opening delimiter must not follow a word char or backtick. Checked in code
+  // instead of a lookbehind: Safari < 16.4 throws SyntaxError parsing lookbehind
+  // at module load, which would blank the whole app.
+  leftBoundary?: boolean;
+  build: (m: RegExpExecArray, ctx: InlineContext) => InlineToken[];
+};
 
 // Priority order: earliest match wins; on a tie the earlier matcher wins,
 // so inline code shields its contents from emphasis and link parsing.
+// There is deliberately no __strong__ matcher: Codex uses ** for bold, while
+// double underscores in its replies are almost always Python dunders
+// (__init__, __repr__) that must stay literal.
 const INLINE_MATCHERS: InlineMatcher[] = [
   { re: /(`+)([\s\S]+?)\1(?!`)/g, build: (m) => [{ kind: "code", text: m[2] ?? "" }] },
-  { re: /\*\*(?=\S)([\s\S]*?\S)\*\*(?!\*)/g, build: (m) => [{ kind: "strong", children: parseInline(m[1] ?? "") }] },
-  { re: /__(?=\S)([\s\S]*?\S)__(?!_)/g, build: (m) => [{ kind: "strong", children: parseInline(m[1] ?? "") }] },
-  { re: /\*(?=\S)([^*]*?\S)\*(?!\*)/g, build: (m) => [{ kind: "em", children: parseInline(m[1] ?? "") }] },
-  { re: /(?<![\w`])_(?=\S)([^_]*?\S)_(?![\w])/g, build: (m) => [{ kind: "em", children: parseInline(m[1] ?? "") }] },
-  { re: /~~(?=\S)([\s\S]*?\S)~~/g, build: (m) => [{ kind: "del", children: parseInline(m[1] ?? "") }] },
+  {
+    re: /\*\*(?=\S)([\s\S]*?\S)\*\*(?!\*)/g,
+    build: (m, ctx) => [{ kind: "strong", children: parseInlineWith(m[1] ?? "", deeper(ctx)) }],
+  },
+  {
+    re: /\*(?=\S)([^*]*?\S)\*(?!\*)/g,
+    build: (m, ctx) => [{ kind: "em", children: parseInlineWith(m[1] ?? "", deeper(ctx)) }],
+  },
+  {
+    re: /_(?=\S)([^_]*?\S)_(?!\w)/g,
+    leftBoundary: true,
+    build: (m, ctx) => [{ kind: "em", children: parseInlineWith(m[1] ?? "", deeper(ctx)) }],
+  },
+  {
+    re: /~~(?=\S)([\s\S]*?\S)~~/g,
+    build: (m, ctx) => [{ kind: "del", children: parseInlineWith(m[1] ?? "", deeper(ctx)) }],
+  },
   {
     re: /!?\[([^\]]*)\]\(\s*((?:[^()\s]|\([^()\s]*\))*)(?:\s+"[^"]*")?\s*\)/g,
-    build: (m) => {
-      const label = parseInline(m[1] ?? "");
+    isLink: true,
+    build: (m, ctx) => {
       const href = m[2] ?? "";
-      return SAFE_HREF.test(href) ? [{ kind: "link", href, children: label }] : label;
+      if (!SAFE_HREF.test(href)) {
+        // Keep the literal source so a relative or file: path is still readable
+        // and copyable instead of silently vanishing.
+        return [{ kind: "text", text: m[0] ?? "" }];
+      }
+      const label = parseInlineWith(m[1] ?? "", { depth: ctx.depth + 1, allowLinks: false });
+      return [{ kind: "link", href, children: label }];
     },
   },
   {
-    // Ends on a non-punctuation char so a trailing "." or ")" stays ordinary text.
-    re: /https?:\/\/[^\s<>"`)\]]*[^\s<>"`)\].,;:!?]/g,
+    // Balanced single-level parens are part of the URL (Wikipedia-style paths);
+    // the final unit excludes trailing punctuation so "…example.com." keeps its dot
+    // as ordinary text.
+    re: /https?:\/\/(?:\([^\s()]*\)|[^\s<>"`()])*(?:\([^\s()]*\)|[^\s<>"`().,;:!?])/g,
+    isLink: true,
     build: (m) => {
       const href = m[0] ?? "";
       return [{ kind: "link", href, children: [{ kind: "text", text: href }] }];
@@ -176,7 +257,24 @@ const INLINE_MATCHERS: InlineMatcher[] = [
   },
 ];
 
+function deeper(ctx: InlineContext): InlineContext {
+  return { depth: ctx.depth + 1, allowLinks: ctx.allowLinks };
+}
+
+function validLeftBoundary(text: string, index: number): boolean {
+  if (index === 0) return true;
+  return !/[\w`]/.test(text.charAt(index - 1));
+}
+
 export function parseInline(text: string): InlineToken[] {
+  return parseInlineWith(text, { depth: 0, allowLinks: true });
+}
+
+function parseInlineWith(text: string, ctx: InlineContext): InlineToken[] {
+  if (ctx.depth >= MAX_INLINE_DEPTH) {
+    return text === "" ? [] : [{ kind: "text", text }];
+  }
+
   const tokens: InlineToken[] = [];
   const pushText = (chunk: string) => {
     if (chunk === "") return;
@@ -185,12 +283,27 @@ export function parseInline(text: string): InlineToken[] {
     else tokens.push({ kind: "text", text: chunk });
   };
 
+  // Per-call cache of each matcher's next match keeps the scan linear: a matcher
+  // is only re-run once the cursor passes its cached position.
+  const cache: Array<RegExpExecArray | null | undefined> = new Array(INLINE_MATCHERS.length).fill(undefined);
+
   let pos = 0;
   while (pos < text.length) {
     let best: { index: number; match: RegExpExecArray; matcher: InlineMatcher } | null = null;
-    for (const matcher of INLINE_MATCHERS) {
-      matcher.re.lastIndex = pos;
-      const match = matcher.re.exec(text);
+    for (let k = 0; k < INLINE_MATCHERS.length; k += 1) {
+      const matcher = INLINE_MATCHERS[k];
+      if (!matcher) continue;
+      if (matcher.isLink && !ctx.allowLinks) continue;
+      let match = cache[k];
+      if (match === undefined || (match !== null && match.index < pos)) {
+        matcher.re.lastIndex = pos;
+        match = matcher.re.exec(text);
+        while (match && matcher.leftBoundary && !validLeftBoundary(text, match.index)) {
+          matcher.re.lastIndex = match.index + 1;
+          match = matcher.re.exec(text);
+        }
+        cache[k] = match;
+      }
       if (match && (best === null || match.index < best.index)) {
         best = { index: match.index, match, matcher };
       }
@@ -200,7 +313,7 @@ export function parseInline(text: string): InlineToken[] {
       break;
     }
     pushText(text.slice(pos, best.index));
-    for (const token of best.matcher.build(best.match)) {
+    for (const token of best.matcher.build(best.match, ctx)) {
       if (token.kind === "text") pushText(token.text);
       else tokens.push(token);
     }

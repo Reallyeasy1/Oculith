@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Fragment, memo, useMemo, type ReactNode } from "react";
 import { parseMarkdown, type InlineToken, type MarkdownBlock } from "./markdown";
 
 // Renders assistant markdown as React elements only — no dangerouslySetInnerHTML —
@@ -29,10 +29,15 @@ function renderInline(tokens: InlineToken[]): ReactNode[] {
   });
 }
 
+// Each soft-wrapped line gets its own keyed Fragment so renderInline's per-line
+// indices never collide across sibling lines.
 function renderLines(lines: InlineToken[][]): ReactNode[] {
-  return lines.flatMap((line, index) =>
-    index === 0 ? renderInline(line) : [<br key={"br-" + index} />, ...renderInline(line)],
-  );
+  return lines.map((line, index) => (
+    <Fragment key={index}>
+      {index > 0 && <br />}
+      {renderInline(line)}
+    </Fragment>
+  ));
 }
 
 function renderItem(item: MarkdownBlock[]): ReactNode {
@@ -79,6 +84,17 @@ function renderBlock(block: MarkdownBlock, key: number): ReactNode {
   }
 }
 
-export default function Markdown({ source }: { source: string }) {
-  return <div className="markdown">{parseMarkdown(source).map(renderBlock)}</div>;
-}
+// memo + useMemo: the message list re-renders on every composer keystroke and every
+// run poll tick, and parsing must not be paid again for unchanged content.
+export default memo(function MarkdownView({ source }: { source: string }) {
+  const blocks = useMemo(() => {
+    try {
+      return parseMarkdown(source);
+    } catch {
+      // A parser bug must degrade to the plain-text rendering, not unmount the app.
+      return null;
+    }
+  }, [source]);
+  if (blocks === null) return <div className="markdown">{source}</div>;
+  return <div className="markdown">{blocks.map(renderBlock)}</div>;
+});

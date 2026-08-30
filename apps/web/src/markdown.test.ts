@@ -112,10 +112,50 @@ describe("parseMarkdown blocks", () => {
         { kind: "list", ordered: false, start: 1, items: [[{ kind: "paragraph", lines: [[text("item")]] }]] },
       ],
     },
+    {
+      name: "a soft-wrapped year does not interrupt a paragraph as an ordered list",
+      source: "The release shipped in\n2024. It was great.",
+      expected: [{ kind: "paragraph", lines: [[text("The release shipped in")], [text("2024. It was great.")]] }],
+    },
+    {
+      name: "ordered list not starting at 1 still starts a fresh block after a blank line",
+      source: "intro\n\n2. two",
+      expected: [
+        { kind: "paragraph", lines: [[text("intro")]] },
+        { kind: "list", ordered: true, start: 2, items: [[{ kind: "paragraph", lines: [[text("two")]] }]] },
+      ],
+    },
+    {
+      name: "indented lines at a block boundary are verbatim code",
+      source: "    const x = 1;\n    done()",
+      expected: [{ kind: "code", language: "", text: "const x = 1;\ndone()" }],
+    },
+    {
+      name: "indented lines cannot interrupt a paragraph — trees stay one block",
+      source: "src/\n    main.ts\n    util.ts",
+      expected: [{ kind: "paragraph", lines: [[text("src/")], [text("    main.ts")], [text("    util.ts")]] }],
+    },
   ];
 
   it.each(cases)("$name", ({ source, expected }) => {
     expect(parseMarkdown(source)).toEqual(expected);
+  });
+});
+
+describe("hostile input degrades instead of crashing", () => {
+  it("a run of 20,000 asterisks parses without throwing", () => {
+    expect(() => parseMarkdown("note: " + "*".repeat(20_000))).not.toThrow();
+  });
+
+  it("3,000 nested blockquote markers parse without throwing", () => {
+    expect(() => parseMarkdown("> ".repeat(3_000) + "x")).not.toThrow();
+  });
+
+  it("deeply nested emphasis is capped, and the tail stays literal text", () => {
+    const blocks = parseMarkdown("**".repeat(40) + "core" + "**".repeat(40));
+    expect(blocks).toHaveLength(1);
+    const flat = JSON.stringify(blocks);
+    expect(flat).toContain("core");
   });
 });
 
@@ -148,9 +188,38 @@ describe("parseInline", () => {
       expected: [text("see "), { kind: "link", href: "https://example.com/a", children: [text("docs")] }],
     },
     {
-      name: "unsafe scheme is dropped — label survives as plain content",
+      name: "unsafe scheme never becomes a link — the literal source is kept",
       source: "[click](javascript:alert(1))",
-      expected: [text("click")],
+      expected: [text("[click](javascript:alert(1))")],
+    },
+    {
+      name: "relative-path link keeps its readable literal instead of losing the path",
+      source: "see [the config](./apps/server/config.yaml)",
+      expected: [text("see [the config](./apps/server/config.yaml)")],
+    },
+    {
+      name: "a URL used as a link label does not nest a second link",
+      source: "[https://a.com](https://b.com)",
+      expected: [{ kind: "link", href: "https://b.com", children: [text("https://a.com")] }],
+    },
+    {
+      name: "autolink keeps balanced parens and drops trailing punctuation",
+      source: "see https://ex.com/a_(b)_c.",
+      expected: [
+        text("see "),
+        { kind: "link", href: "https://ex.com/a_(b)_c", children: [text("https://ex.com/a_(b)_c")] },
+        text("."),
+      ],
+    },
+    {
+      name: "underscore emphasis works at word boundaries",
+      source: "say _hi_ now",
+      expected: [text("say "), { kind: "em", children: [text("hi")] }, text(" now")],
+    },
+    {
+      name: "python dunders stay literal — no __strong__ matcher",
+      source: "Override __init__ and __repr__ in my_class.py",
+      expected: [text("Override __init__ and __repr__ in my_class.py")],
     },
     {
       name: "bare URL autolinks",
