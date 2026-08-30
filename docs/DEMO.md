@@ -9,8 +9,10 @@ from any step; it reuses whatever already exists and never prints secrets). Targ
 > judged Docker path has run steps 1–7 green from a clean root (29 Aug — steps 1–4 in 92 s,
 > `post_check` executed for real). That rehearsal is what proved instruction-rigging alone
 > could not regress step 9 and led to the `fee-ledger` knowledge gate (#298), which merged
-> after it. **Still pending:** the two timed ≤ 3:00 judged-path (`npm run poc`) rehearsals
-> from a clean root on `fee-ledger` — tracked on #92.
+> after it. **AC met:** the two consecutive clean-root rehearsals of the judged path
+> (`npm run poc`) are done — two
+> consecutive clean-root cycles on `fee-ledger` in the Docker container runtime finished in
+> **171 s** and **168 s**, both under the 3:00 budget (logged on #92).
 
 ## Pre-flight checklist (before the audience arrives)
 
@@ -78,6 +80,31 @@ rehearsal (the script reuses them automatically on re-run) and the screenshots u
 
 Total budget: step 3 ≈ 70 s live; every other step is seconds. Steps 5 and 6 are recorded
 evidence by design — the demo never depends on the model being in a good mood.
+
+## Optional: showing redaction live
+
+The default story never trips the redactor — nothing secret-shaped crosses the pipeline, so
+the baseline trace shows `redactedEvents: 0`. To show the middleware's signature proof live,
+opt in before the run:
+
+```bash
+DEMO_REDACTION_BEAT=1 bash scripts/demo/run-demo.sh
+```
+
+Step 3 then creates a uniquely named `.notes/glassbox-redaction-demo.*.txt` in the demo
+workspace — one **provably fake**
+canary, an `ARK_API_KEY` assignment whose value is `ark-` plus the all-zeros/`dead-beef`
+UUID (shaped to match the `ark_key` rule but impossible as a real key) — and appends one sentence
+to the baseline prompt asking the agent to read that file, so the content crosses a tool
+summary. The audience sees the **redacted** chip on the trace, `[REDACTED:env_assignment]` in the
+drawer summary (the assignment rule swallows the inner key marker — that label is what actually
+renders), and `redactedEvents > 0`. The exclusive temporary name cannot overwrite an existing
+workspace file, and an exit/signal trap removes it after success, failure, or interruption.
+When an ok baseline already exists, opting in intentionally sends a fresh redaction Run; repeated
+opt-in rehearsals each use and clean up a different temporary file. Say the
+honest line out loud: *"that's a seeded fake credential — the redactor caught it before it
+reached persisted trace data."* It adds ~10–20 s to step 3, and with the flag unset the script's
+behavior is unchanged (the #92 timings stand) — skip the beat when tight on time.
 
 ## Resuming mid-demo
 

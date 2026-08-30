@@ -32,7 +32,7 @@ judgement* (PRD §17.1). No LLM writes a diagnosis or classifies a regression.
 
 ![GlassBox architecture](docs/assets/architecture.png)
 
-*(Diagram being refreshed in #206.)* Component and extension boundaries:
+Component and extension boundaries:
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 Runtime flow in one line: Web UI → Fastify control plane → `AgentService` → `AgentRunner`
@@ -132,7 +132,7 @@ and Terraform paths: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — the judged pat
 
 ## Demo
 
-Full rehearsal runbook: [docs/DEMO.md](docs/DEMO.md) *(being authored in #92)*. The 3-minute script is
+Full rehearsal runbook: [docs/DEMO.md](docs/DEMO.md). The 3-minute script is
 PRD §13. Short version:
 
 1. `.env`: `APP_AUTH_TOKEN` set (24+ chars), `GLASSBOX_CAPTURE_POLICY=safe_summary` (so the Outcome
