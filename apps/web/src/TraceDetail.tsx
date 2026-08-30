@@ -88,8 +88,12 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
   // runs after the target row has rendered, which matters when Jump expands a collapsed path.
   const [focusReq, setFocusReq] = useState(0);
   // Once per open (App keys this component by runId): bring the header + banner into the first viewport.
+  // #371: fire again when the trace payload lands — on deep links the panels above (Reliability,
+  // comparison) populate after the mount scroll and push the loading placeholder below the fold.
+  // Poll refreshes keep `loaded` true, so this never scroll-jacks a reading user.
   const sectionRef = useRef<HTMLElement>(null);
-  useEffect(() => { sectionRef.current?.scrollIntoView({ block: "start" }); }, []);
+  const loaded = view !== null;
+  useEffect(() => { sectionRef.current?.scrollIntoView({ block: "start" }); }, [loaded]);
   useEffect(() => {
     void api.logs(runId, logLevel).then((result) => { setLogs(result.lines); setLogsTruncated(result.truncated); }).catch(() => undefined);
   }, [logLevel, runId]);
@@ -295,7 +299,8 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
           <span className="eyebrow">Trace · schema {summary.schemaVersion} · {summary.capturePolicy}</span>
           <h2 id="trace-heading">
             <span className={"status status-" + summary.status}><span aria-hidden="true">{STATUS_ICON[summary.status]}</span>{summary.status}</span>{" "}
-            <code>{summary.runId || runId}</code>
+            {/* #371: runs-list short-id style — full UUID stays hoverable here and in the TRACE field. */}
+            Run <code title={summary.runId || runId}>{(summary.runId || runId).slice(0, 8)}</code>
           </h2>
         </div>
         <div className="header-actions">
@@ -507,7 +512,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
                 {(row.repeat ?? 1) > 1 && <span className="badge" title={`repeated ${row.repeat} times — identical repeats collapsed`}>×{row.repeat}</span>}
                 {s.incomplete && <span className="badge badge-warn">incomplete</span>}
                 {!s.source.observed && <span className="badge">unavailable</span>}
-                {redactedSpans.has(s.spanId) && <span className="badge">redacted</span>}
+                {redactedSpans.has(s.spanId) && <span className="badge badge-redacted">redacted</span>}
               </span>
               <span className="trace-bar" title={timingDescription} aria-hidden="true">
                 {geo?.instant && <span className={"trace-bar-marker fill-" + fillStatus} style={{ left: geo.left + "%" }} />}
@@ -785,7 +790,7 @@ function EventRow({ event: e }: { event: ObservationEvent }) {
       <span className="trace-name">{e.type}</span>
       <span className="trace-cat">{e.phase}</span>
       <span className="trace-badges">
-        {e.privacy.redacted && <span className="badge">redacted</span>}
+        {e.privacy.redacted && <span className="badge badge-redacted">redacted</span>}
         {!e.source.observed && <span className="badge">unavailable</span>}
       </span>
       <span className="trace-dur">{formatClock(e.timestamp)}</span>

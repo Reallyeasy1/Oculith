@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentRunBaseline, RunListItem, Workspace } from "./types";
 import type { ReliabilityDrill } from "./reliability-view-model";
 import {
@@ -69,6 +69,14 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
   const now = Date.now();
   // #338 — a column empty ("—") on every listed Run is hidden (extends the old showCost check).
   const cols = runsColumns(runs);
+  // #371: the "Scroll →" hint only when the table actually pans. Rechecked as the poll swaps
+  // `runs` each tick; ponytail: no resize listener — a viewport resize corrects on the next tick.
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [overflowing, setOverflowing] = useState(false);
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (el) setOverflowing(el.scrollWidth > el.clientWidth + 1);
+  }, [visible, cols]);
 
   return (
     <section className="runs-view" aria-labelledby="runs-heading">
@@ -135,7 +143,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
           ))}
         </ul>
       )}
-      <div className="runs-table-wrap runs-table-wrap-scroll-hint">
+      <div ref={wrapRef} className={"runs-table-wrap" + (overflowing ? " runs-table-wrap-scroll-hint" : "")}>
         <table className="runs-table">
           <thead>
             <tr>

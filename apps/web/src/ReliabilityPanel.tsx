@@ -119,6 +119,8 @@ export default function ReliabilityPanel({ report, agentId, onDrill }: Props) {
 function Tile({ tile, onDrill }: { tile: ReliabilityTile; onDrill?: (drill: ReliabilityDrill) => void }) {
   const heights = sparklineHeights(tile.series, tile.sparklineMax);
   const drill = tile.drill;
+  // #371: the sub-line clamps to one row in CSS; the full text survives in its own title.
+  const detailText = [tile.detail, tile.kind].filter(Boolean).join(" · ");
   return (
     <div title={tile.kind === "evaluation" ? "Evaluation metric: computed from stored evaluator verdicts." : "Telemetry metric: computed from observed Run summaries."}>
       <dt>{tile.label}</dt>
@@ -135,7 +137,7 @@ function Tile({ tile, onDrill }: { tile: ReliabilityTile; onDrill?: (drill: Reli
           </button>
         ) : tile.value}
       </dd>
-      <span className="reliability-detail">{[tile.detail, tile.kind].filter(Boolean).join(" · ")}</span>
+      <span className="reliability-detail" title={detailText}>{detailText}</span>
       {heights.length > 1 && (
         <span className="sparkline" aria-hidden="true">
           {heights.map((height, index) => (
