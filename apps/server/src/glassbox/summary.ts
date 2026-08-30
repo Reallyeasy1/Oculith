@@ -128,6 +128,11 @@ export interface RollupDeps {
 export async function rollupRun(deps: RollupDeps, runId: string, entry?: RunIndexEntry | undefined): Promise<RunSummary | undefined> {
   const events = await deps.traces.readRun(runId);
   if (events.length === 0) return undefined;
+  // #255/#96: a refusal or preview trace (never run.created) is evidence of a request or an exposure,
+  // not a Run — summarizing it (e.g. via backfill-summaries) would count a non-Run in every
+  // reliability metric and feed a preview's lifetime into the baseline as latency.
+  const NON_RUN_TYPES = new Set(["run.refused", "runtime.preview.started", "runtime.preview.stopped"]);
+  if (events.some((event) => NON_RUN_TYPES.has(event.type)) && !events.some((event) => event.type === "run.created")) return undefined;
   const found = entry ?? deps.traces.listRuns().find((e) => e.runId === runId);
   const view = buildTrace(events, { capturePolicy: deps.emitter.capturePolicy, degraded: deps.emitter.isDegraded(runId), truncated: found?.truncated });
   const summary = summaryFromView(view);

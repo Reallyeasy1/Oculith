@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, setAuthToken } from "./api";
-import { agentPayload } from "./agent-form";
+import { api, ApiError, getAuthToken, setAuthToken } from "./api";
+import { connectLive } from "./live";
+import { agentPayload, budgetFormError } from "./agent-form";
 import { showLastErrorHint } from "./agent-view-model";
-import type { Agent, AgentRun, AgentRunBaseline, EvalRun, Message, RegressionCase, ReliabilityReport, RunListItem, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
+import { budgetBanner } from "./budget-view-model";
+import type { Agent, AgentBudgetReport, AgentRun, AgentRunBaseline, EvalRun, Message, PreviewServability, RegressionCase, ReliabilityReport, RunListItem, SystemInfo, TraceView, Workspace, WorkspacePreview, WorkspaceTemplate } from "./types";
 import RunsView from "./RunsView";
 import ReliabilityPanel from "./ReliabilityPanel";
 import type { ReliabilityDrill } from "./reliability-view-model";
@@ -11,6 +13,7 @@ import Overview from "./Overview";
 import CompareView from "./CompareView";
 import EvaluatorsPanel from "./EvaluatorsPanel";
 import ConfigComparison from "./ConfigComparison";
+import WorkspacePanel from "./WorkspacePanel";
 import type { EvalComparisonPair } from "./config-comparison-view-model";
 import { refreshIntervalMs } from "./trace-view-model";
 import { formatCount, LONG_SESSION_HINT, sessionHealth, workspaceOptionLabel } from "./runs-view-model";
@@ -30,6 +33,8 @@ const emptyForm = {
   workspace: "",
   template: "",
   verifyCommand: "",
+  maxTokensPerDay: "",
+  maxEstimatedUsdPerDay: "",
 };
 
 function formatTime(value: string): string {
@@ -37,6 +42,20 @@ function formatTime(value: string): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+// #325: the GlassBox mark — a wireframe (glass) box with one captured event inside it.
+function BrandMark() {
+  return (
+    <div className="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round">
+        <path d="M12 3 20 7.5 12 12 4 7.5 12 3Z" />
+        <path d="M4 7.5v9L12 21v-9" />
+        <path d="M20 7.5v9L12 21" />
+        <circle cx="12" cy="15.4" r="1.7" fill="currentColor" stroke="none" />
+      </svg>
+    </div>
+  );
 }
 
 function StatusPill({ status }: { status: Agent["status"] }) {
@@ -66,9 +85,17 @@ export default function App() {
   const [runs, setRuns] = useState<RunListItem[]>([]);
   const [runBaseline, setRunBaseline] = useState<AgentRunBaseline | null>(null);
   const [reliability, setReliability] = useState<ReliabilityReport | null>(null);
+  // #255: live budget status behind the banner; null when no Agent is selected or the endpoint is absent.
+  const [budget, setBudget] = useState<AgentBudgetReport | null>(null);
   // #173 drill-back: a fresh object per tile click so RunsView re-applies the filters on repeat clicks.
   const [runsDrill, setRunsDrill] = useState<ReliabilityDrill | null>(null);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  // #96: the selected Agent's workspace preview; container runtime only, in-process server state.
+  const [preview, setPreview] = useState<WorkspacePreview | null>(null);
+  // #335: what the selected workspace can serve (local vite / built dist); null while unknown.
+  const [previewServable, setPreviewServable] = useState<PreviewServability | null>(null);
+  /** The agent whose preview state is currently loaded — gates the clear-on-switch below. */
+  const previewAgentRef = useRef<string | null>(null);
   const [templates, setTemplates] = useState<WorkspaceTemplate[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [trace, setTrace] = useState<TraceView | null>(null);
@@ -133,6 +160,7 @@ export default function App() {
     [agents, selectedId],
   );
   const selectedWorkspaceName = selected?.workspaceName ?? selected?.workspacePath.split(/[\\/]/).at(-1) ?? "";
+  const selectedStatus = selected?.status;
   // #254: messages waiting behind the active Run, refreshed with the agents list.
   const pendingMessages = selected?.pendingMessages ?? [];
   const selectedWorkspace = workspaces.find((workspace) => workspace.name === selectedWorkspaceName);
@@ -164,16 +192,18 @@ export default function App() {
     const overview = viewRef.current === "overview";
     const agentId = selectedIdRef.current;
     const scope = overview ? "overview" : agentId;
-    if (!scope) { setRuns([]); setRunBaseline(null); setReliability(null); return; }
+    if (!scope) { setRuns([]); setRunBaseline(null); setReliability(null); setBudget(null); return; }
     try {
-      const [result, baselineResult, reliabilityResult] = await Promise.all([
+      const [result, baselineResult, reliabilityResult, budgetResult] = await Promise.all([
         api.listRuns(overview ? { limit: 200 } : { agentId: agentId!, limit: 100 }),
         overview ? Promise.resolve(null) : api.runBaseline(agentId!).catch(() => null),
         // #173: same fail-soft contract as the baseline — a server without the reliability endpoints just hides the panel.
         overview ? Promise.resolve(null) : api.reliability(agentId!).catch(() => null),
+        // #255: fail-soft too — no budget endpoint, no banner.
+        overview ? Promise.resolve(null) : api.agentBudget(agentId!).catch(() => null),
       ]);
       const stillCurrent = (viewRef.current === "overview" ? "overview" : selectedIdRef.current) === scope;
-      if (mountedRef.current && stillCurrent) { setRuns(result.runs); setRunBaseline(baselineResult?.baseline ?? null); setReliability(reliabilityResult); }
+      if (mountedRef.current && stillCurrent) { setRuns(result.runs); setRunBaseline(baselineResult?.baseline ?? null); setReliability(reliabilityResult); setBudget(budgetResult); }
     } catch {
       // ponytail: runs table goes stale, baseline keeps working (invariant 12)
     }
@@ -267,6 +297,32 @@ export default function App() {
       );
   }, [refreshMessages, selectedId]);
 
+  // #335: gated on the probed engine state, not the Codex provider. The server probes per
+  // request, but this page fetches /api/system once at boot — an engine started after page
+  // load shows up on reload.
+  const previewSupported = system?.previewAvailable === true;
+
+  useEffect(() => {
+    // Clear only on an agent switch: a busy→ready refetch (below) must not blank a running
+    // preview's header for the fetch round-trip.
+    if (previewAgentRef.current !== selectedId) {
+      previewAgentRef.current = selectedId;
+      setPreview(null);
+      setPreviewServable(null);
+    }
+    if (!selectedId || !previewSupported) return;
+    void api
+      .preview(selectedId)
+      .then((result) => {
+        if (selectedIdRef.current !== selectedId) return;
+        setPreview(result.preview);
+        setPreviewServable(result.servable);
+      })
+      .catch(() => undefined); // no banner: the header simply shows no preview
+    // #335: selectedStatus is a dep so a Run finishing (busy → ready) re-checks servability —
+    // the build the Run just produced is what makes Preview worth offering.
+  }, [selectedId, previewSupported, selectedStatus]);
+
   useEffect(() => {
     if (selected) {
       setForm({
@@ -276,6 +332,8 @@ export default function App() {
         workspace: selected.workspaceName ?? selected.workspacePath.split(/[\\/]/).at(-1) ?? "",
         template: selected.workspaceTemplate ?? "",
         verifyCommand: selected.verifyCommand ?? "",
+        maxTokensPerDay: selected.budget?.maxTokensPerDay?.toString() ?? "",
+        maxEstimatedUsdPerDay: selected.budget?.maxEstimatedUsdPerDay?.toString() ?? "",
       });
     }
   }, [selected]);
@@ -291,6 +349,9 @@ export default function App() {
 
   const createAgent = async (event: React.FormEvent) => {
     event.preventDefault();
+    // #255: refuse the submit rather than let budgetPayload coerce a typo into "no limit".
+    const budgetError = budgetFormError(form);
+    if (budgetError) { setError(budgetError); return; }
     setBusy(true);
     setError(null);
     try {
@@ -310,6 +371,9 @@ export default function App() {
   const saveAgent = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!selected) return;
+    // #255: a typo in a budget field must not silently clear the stored cap on save.
+    const budgetError = budgetFormError(form);
+    if (budgetError) { setError(budgetError); return; }
     const currentWorkspace = selected.workspaceName ?? selected.workspacePath.split(/[\\/]/).at(-1) ?? "";
     if (form.workspace !== currentWorkspace && !window.confirm("Switch workspace? This clears the Agent's existing Codex conversation thread.")) return;
     setBusy(true);
@@ -336,6 +400,41 @@ export default function App() {
         await api.stopAgent(selected.id);
       }
       await refreshAgents();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const togglePreview = async () => {
+    if (!selected) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (preview) {
+        await api.stopPreview(selected.id);
+        setPreview(null);
+      } else {
+        // #335: serve what the workspace actually has — vite when installed, else the built dist/.
+        const agentId = selected.id;
+        setPreview((await api.startPreview(agentId, previewServable?.vite ? "vite" : "static")).preview);
+        // A container can die right after start (--rm erases it); re-check shortly so a dead
+        // preview never keeps a "running" header. The server closes it honestly on observation.
+        window.setTimeout(() => {
+          void api
+            .preview(agentId)
+            .then((result) => {
+              if (selectedIdRef.current !== agentId) return;
+              setPreview(result.preview);
+              setPreviewServable(result.servable);
+              if (!result.preview) {
+                setError("The preview stopped right after starting — the workspace could not serve inside the runtime container.");
+              }
+            })
+            .catch(() => undefined);
+        }, 2000);
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -436,34 +535,56 @@ export default function App() {
     }
   };
 
-  // The one dashboard refresh timer (#98). It covers both All runs and the selected Agent so Runs
-  // started outside this browser appear without a reload. Trace and poll failures stay soft.
+  // The one dashboard refresh routine, shared by the fallback timer (#98) and the SSE nudge (#40).
+  // It covers both All runs and the selected Agent so Runs started outside this browser appear
+  // without a reload. Trace and poll failures stay soft. Reads refs, so a stale closure is harmless.
+  const refreshVisibleRuns = async () => {
+    await refreshRuns();
+    const openRunId = selectedRunIdRef.current;
+    if (openRunId) await refreshTrace(openRunId).catch(() => undefined);
+    // the overview's case rows show the latest evaluation; keep them live after a reload mid-evaluation
+    if (viewRef.current === "overview") await refreshEvalRuns().catch(() => undefined);
+    const agentId = selectedIdRef.current;
+    if (viewRef.current !== "agent" || !agentId) return;
+    try {
+      const result = await api.runs(agentId);
+      if (selectedIdRef.current !== agentId) return;
+      const latest = result.runs[0] ?? null;
+      setActiveRun(latest);
+      if (latest && ["queued", "running"].includes(latest.status)) {
+        void pollRun(latest.id, agentId).catch(() => undefined);
+      }
+    } catch {
+      // ponytail: keep the last good Agent/run state when a refresh tick fails (invariant 12)
+    }
+  };
+
   useEffect(() => {
     if (view === "agent" && !selectedId) return;
-    const refreshVisibleRuns = async () => {
-      await refreshRuns();
-      const openRunId = selectedRunIdRef.current;
-      if (openRunId) await refreshTrace(openRunId).catch(() => undefined);
-      // the overview's case rows show the latest evaluation; keep them live after a reload mid-evaluation
-      if (viewRef.current === "overview") await refreshEvalRuns().catch(() => undefined);
-      const agentId = selectedIdRef.current;
-      if (viewRef.current !== "agent" || !agentId) return;
-      try {
-        const result = await api.runs(agentId);
-        if (selectedIdRef.current !== agentId) return;
-        const latest = result.runs[0] ?? null;
-        setActiveRun(latest);
-        if (latest && ["queued", "running"].includes(latest.status)) {
-          void pollRun(latest.id, agentId).catch(() => undefined);
-        }
-      } catch {
-        // ponytail: keep the last good Agent/run state when a refresh tick fails (invariant 12)
-      }
-    };
     const intervalMs = refreshIntervalMs(trace?.summary.status);
     const id = window.setInterval(() => void refreshVisibleRuns(), intervalMs);
     return () => window.clearInterval(id);
   }, [selectedId, trace?.summary.status, view]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // #40: live updates — an SSE notification triggers the same refresh path the timer runs, just
+  // sooner. The polling intervals above stay untouched as the safety net, so a failed or
+  // unsupported stream silently degrades to pre-#40 behaviour.
+  useEffect(() => {
+    if (authRequired !== false) return;
+    let pending: number | null = null;
+    const dispose = connectLive(getAuthToken, () => {
+      // coalesce a burst of observation events from one Run into a single refetch round
+      if (pending !== null) return;
+      pending = window.setTimeout(() => {
+        pending = null;
+        void refreshVisibleRuns();
+      }, 250);
+    });
+    return () => {
+      if (pending !== null) window.clearTimeout(pending);
+      dispose();
+    };
+  }, [authRequired]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Shared by the composer and Re-run (#256): POST the prompt, reflect the new Run locally, poll it.
   // #254: a busy Agent answers with a queued receipt instead of a Run — refresh so the queue rows
@@ -551,8 +672,8 @@ export default function App() {
     return (
       <main className="auth-screen">
         <section className="auth-card" aria-live="polite">
-          <div className="brand-mark">A</div>
-          <span className="eyebrow">Agent Launchpad</span>
+          <BrandMark />
+          <span className="eyebrow">GlassBox · Agent Launchpad</span>
           <h1>Connecting to the control plane</h1>
           {error ? <div className="error-banner" role="alert">{error}</div> : <Spinner />}
         </section>
@@ -564,8 +685,8 @@ export default function App() {
     return (
       <main className="auth-screen">
         <form className="auth-card" onSubmit={unlock}>
-          <div className="brand-mark">A</div>
-          <span className="eyebrow">Agent Launchpad</span>
+          <BrandMark />
+          <span className="eyebrow">GlassBox · Agent Launchpad</span>
           <h1>Enter the access token</h1>
           <p>This shared demo token is configured by the platform operator.</p>
           {error && <div className="error-banner" role="alert">{error}</div>}
@@ -592,14 +713,10 @@ export default function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">A</div>
+          <BrandMark />
           <div>
-            <strong>Agent Launchpad</strong>
-            <span>
-              {system?.runtimeProvider === "container"
-                ? "Local container · Codex CLI"
-                : "ECS / Docker · Codex CLI"}
-            </span>
+            <strong>GlassBox</strong>
+            <span>Observability for Agent Runs</span>
           </div>
         </div>
 
@@ -617,6 +734,8 @@ export default function App() {
           <button
             className={"agent-card " + (view === "overview" ? "selected" : "")}
             aria-current={view === "overview" ? "page" : undefined}
+            aria-label="All runs"
+            title="All runs"
             onClick={() => setView("overview")}
           >
             <div className="agent-avatar">◎</div>
@@ -636,6 +755,8 @@ export default function App() {
             <button
               className={"agent-card " + (view === "agent" && agent.id === selectedId ? "selected" : "")}
               aria-current={view === "agent" && agent.id === selectedId ? "page" : undefined}
+              aria-label={agent.name}
+              title={agent.name}
               key={agent.id}
               onClick={() => { setSelectedId(agent.id); setView("agent"); }}
             >
@@ -692,7 +813,7 @@ export default function App() {
         {error && (
           <div className="error-banner" role="alert">
             <span>{error}</span>
-            <button onClick={() => setError(null)}>×</button>
+            <button type="button" aria-label="Dismiss error" onClick={() => setError(null)}>×</button>
           </div>
         )}
 
@@ -727,11 +848,31 @@ export default function App() {
                   <code>{selected.workspacePath}</code>{" "}
                   <button type="button" className="button button-ghost" onClick={() => void navigator.clipboard.writeText(selected.workspacePath)}>Copy path</button>
                 </p>
+                {previewSupported && preview && (
+                  <p>
+                    Preview running on{" "}
+                    <a href={preview.url} target="_blank" rel="noreferrer">
+                      {preview.url}
+                    </a>{" "}
+                    <button type="button" className="button button-ghost" onClick={togglePreview} disabled={busy}>
+                      Stop preview
+                    </button>
+                  </p>
+                )}
               </div>
               <div className="header-actions">
                 {selectedRunId && playgroundExpanded && (
                   <button className="button button-ghost" onClick={() => setPlaygroundExpanded(false)}>
                     Collapse Playground
+                  </button>
+                )}
+                {previewSupported && !preview && (previewServable?.vite || previewServable?.static) && (
+                  <button
+                    className="button button-ghost"
+                    onClick={togglePreview}
+                    disabled={busy || selected.status === "busy"}
+                  >
+                    Preview
                   </button>
                 )}
                 <button
@@ -749,7 +890,7 @@ export default function App() {
                   {selected.status === "stopped" ? "Start" : "Stop"}
                 </button>
                 <button
-                  className="button button-danger"
+                  className="button button-danger delete-agent"
                   onClick={deleteAgent}
                   disabled={busy || selected.status === "busy"}
                 >
@@ -765,7 +906,7 @@ export default function App() {
                     <span className="eyebrow">Agent configuration</span>
                     <h2>Instructions and identity</h2>
                   </div>
-                  <button type="button" onClick={() => setShowSettings(false)}>×</button>
+                  <button type="button" aria-label="Close settings" onClick={() => setShowSettings(false)}>×</button>
                 </div>
                 <div className="form-grid">
                   <label>
@@ -835,14 +976,60 @@ export default function App() {
                   Runs in the workspace after every completed Run; its exit code becomes the Run&apos;s
                   outcome. Leave empty to keep the derived phrase heuristic.
                 </p>
+                <div className="form-grid">
+                  <label>
+                    Daily token budget
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={form.maxTokensPerDay}
+                      onChange={(event) => setForm({ ...form, maxTokensPerDay: event.target.value })}
+                      placeholder="no limit"
+                      aria-describedby="budget-help"
+                    />
+                  </label>
+                  <label>
+                    Daily cost budget (USD)
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={form.maxEstimatedUsdPerDay}
+                      onChange={(event) => setForm({ ...form, maxEstimatedUsdPerDay: event.target.value })}
+                      placeholder="no limit"
+                      aria-describedby="budget-help"
+                    />
+                  </label>
+                </div>
+                <p className="form-help" id="budget-help">
+                  {/* #255 honesty constraint: usage is only known at turn end, so the gate is pre-run. */}
+                  Refuses new runs once observed usage in the last 24 h reaches a limit. Checked before
+                  each run only — a run that already started can overshoot. Leave both empty for no budget.
+                </p>
                 <div className="panel-footer">
-                  <code title={selected.workspacePath}>{selected.workspaceName ?? selected.workspacePath}</code>
+                  {/* The Workspace field above already shows the workspace identity. */}
                   <button className="button button-primary" disabled={busy}>
                     {busy ? <Spinner /> : "Save changes"}
                   </button>
                 </div>
               </form>
             )}
+
+            {/* #65: read-only browser over the same workspace the header names; counts come from the
+                workspaces list this view already fetches. */}
+            <WorkspacePanel
+              agentId={selected.id}
+              workspacePath={selected.workspacePath}
+              fileCount={selectedWorkspace?.fileCount}
+              lastModified={selectedWorkspace?.lastModified}
+              busy={selected.status === "busy"}
+              history={selected.workspaceHistory}
+              onChanged={() => {
+                // #66: an edit changed the Agent record (history, maybe the thread) and the counts.
+                void Promise.all([refreshAgents(), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces))]);
+              }}
+            />
 
             <section className="playground">
               <div className="playground-topbar">
@@ -958,6 +1145,14 @@ export default function App() {
                 </p>
               )}
 
+              {/* #255: the pre-run gate is refusing new Runs for this Agent; sourced from the polled
+                  budget endpoint so it clears by itself once older usage leaves the rolling window. */}
+              {budgetBanner(budget) && (
+                <p className="budget-banner" role="status">
+                  {budgetBanner(budget)}
+                </p>
+              )}
+
               <form className="composer" onSubmit={sendMessage}>
                 <textarea
                   value={prompt}
@@ -1053,11 +1248,11 @@ export default function App() {
           >
             <div className="modal-heading">
               <div>
-                <span className="eyebrow">New workspace</span>
+                <span className="eyebrow">New Agent</span>
                 <h2>Create an Agent</h2>
                 <p>Each Agent gets a persistent folder and a resumable Codex session.</p>
               </div>
-              <button type="button" onClick={() => setShowCreate(false)}>×</button>
+              <button type="button" aria-label="Close create Agent dialog" onClick={() => setShowCreate(false)}>×</button>
             </div>
             <label>
               Name

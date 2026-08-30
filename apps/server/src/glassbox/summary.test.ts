@@ -87,8 +87,10 @@ describe("summaryFromView", () => {
   });
 });
 
-// The store cases run against every backend (#191): Postgres only when DATABASE_URL points at a database.
-const DATABASE_URL = process.env.DATABASE_URL;
+// The store cases run against every backend (#191): Postgres only when TEST_DATABASE_URL points at a throwaway
+// database. Deliberately NOT the app's DATABASE_URL (#216): the Postgres backend empties runs_summary between
+// cases, and a shell that exports the real connection string must never watch its telemetry vanish.
+const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
 interface Backend { name: string; open: () => Promise<{ summaries: RunSummaryStore; reopen: () => Promise<RunSummaryStore>; done: () => Promise<void> }> }
 const backends: Backend[] = [
   { name: "JsonRunSummaryStore", open: async () => {
@@ -97,15 +99,35 @@ const backends: Backend[] = [
     const reopen = async () => { const r = new JsonStore(path.join(root, "db.json")); await r.initialize(); return new JsonRunSummaryStore(r); };
     return { summaries, reopen, done: async () => {} };
   } },
-  ...(DATABASE_URL ? [{ name: "PostgresRunSummaryStore", open: async () => {
-    const summaries = new PostgresRunSummaryStore(DATABASE_URL);
+  ...(TEST_DATABASE_URL ? [{ name: "PostgresRunSummaryStore", open: async () => {
+    const summaries = new PostgresRunSummaryStore(TEST_DATABASE_URL);
     await summaries.migrate();
-    const pool = new pg.Pool({ connectionString: DATABASE_URL });
+    const pool = new pg.Pool({ connectionString: TEST_DATABASE_URL });
     await pool.query("DELETE FROM runs_summary");
     await pool.end();
-    return { summaries, reopen: async () => new PostgresRunSummaryStore(DATABASE_URL), done: () => summaries.close() };
+    return { summaries, reopen: async () => new PostgresRunSummaryStore(TEST_DATABASE_URL), done: () => summaries.close() };
   } }] : []),
 ];
+
+// glibc locale collations don't sort text byte-wise; only "C" makes the schema's byte-for-byte comment true (#216).
+describe.runIf(Boolean(TEST_DATABASE_URL))("PostgresRunSummaryStore schema", () => {
+  it("#216: ordered/range text columns carry COLLATE \"C\"", async () => {
+    const summaries = new PostgresRunSummaryStore(TEST_DATABASE_URL!);
+    await summaries.migrate();
+    const pool = new pg.Pool({ connectionString: TEST_DATABASE_URL });
+    const { rows } = await pool.query<{ column_name: string; collation_name: string | null }>(
+      `SELECT column_name, collation_name FROM information_schema.columns
+       WHERE table_name = 'runs_summary' AND column_name IN ('run_id', 'started_at', 'updated_at') ORDER BY column_name`,
+    );
+    await pool.end();
+    await summaries.close();
+    expect(rows).toEqual([
+      { column_name: "run_id", collation_name: "C" },
+      { column_name: "started_at", collation_name: "C" },
+      { column_name: "updated_at", collation_name: "C" },
+    ]);
+  });
+});
 
 describe.each(backends)("$name", ({ open }) => {
   it("upserts, filters and returns newest first; setTaskOutcome records the source", async () => {

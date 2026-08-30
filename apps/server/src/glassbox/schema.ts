@@ -10,11 +10,16 @@ export const CATEGORIES = [
 ] as const;
 export const EVENT_TYPES = [
   "run.created", "run.started", "run.completed", "run.failed", "run.cancelled", "run.timed_out",
+  // #255: a request refused before any Run existed (budget gate). Terminal for its trace; never
+  // paired with run.created, so the rollup ignores the trace and it can't pollute Run metrics.
+  "run.refused",
   "http.request.received", "http.request.completed",
   "agent_service.run.started", "agent_service.run.completed", "agent_service.run.failed",
   "runtime.container.started", "runtime.container.stopped",
   "runtime.codex.started", "runtime.codex.first_output", "runtime.codex.completed", "runtime.codex.failed",
   "runtime.postcheck.started", "runtime.postcheck.completed", "runtime.postcheck.failed",
+  // #96: workspace preview lifecycle — one trace per preview, started/stopped bracketing the span.
+  "runtime.preview.started", "runtime.preview.stopped",
   "model.request", "model.completed", "model.message", "model.reasoning",
   "tool.call.started", "tool.call.completed", "tool.call.failed",
   "workspace.changed", "policy.denied", "redaction.applied", "limit.exceeded",
@@ -87,6 +92,10 @@ export type Category = z.infer<typeof categorySchema>;
 export type EventType = z.infer<typeof eventTypeSchema>;
 export type CapturePolicy = z.infer<typeof capturePolicySchema>;
 
+// Ids must stay lowercase and fixed-format: the JSON backends order ids with localeCompare (ICU) while
+// the Postgres backend orders with COLLATE "C" (bytes), and the two only agree because every comparand
+// differs first at a digit/hex character. Mixed case or variable length would silently break that
+// cross-backend ordering parity (#216).
 export function newId(prefix: "trc" | "spn" | "evt"): string {
   return prefix + "_" + randomUUID().replace(/-/g, "").slice(0, 20);
 }

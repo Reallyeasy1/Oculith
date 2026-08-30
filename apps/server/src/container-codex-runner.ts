@@ -69,6 +69,10 @@ export function buildHardenedContainerPrefix(options: {
   config: AppConfig;
   includeModelCredentials: boolean;
   mountCodexHome: boolean;
+  /** Label value distinguishing per-Run runtime containers from long-lived previews (#96). */
+  role?: "agent-runtime" | "agent-preview" | undefined;
+  /** Serve-only containers (#96) get the workspace read-only; the Codex runtime keeps it writable. */
+  workspaceReadOnly?: boolean | undefined;
 }): string[] {
   const { name, agentId, workspacePath, config } = options;
   const engineName = config.containerEngine.split(/[\\/]/).at(-1)?.toLowerCase();
@@ -79,7 +83,7 @@ export function buildHardenedContainerPrefix(options: {
     "--name",
     name,
     "--label",
-    "io.codejam.launchpad=agent-runtime",
+    "io.codejam.launchpad=" + (options.role ?? "agent-runtime"),
     "--label",
     "io.codejam.agent-id=" + agentId,
     "--label",
@@ -106,7 +110,7 @@ export function buildHardenedContainerPrefix(options: {
     "--env",
     "NO_COLOR=1",
     "--mount",
-    "type=bind,src=" + workspacePath + ",dst=/workspace",
+    "type=bind,src=" + workspacePath + ",dst=/workspace" + (options.workspaceReadOnly ? ",readonly" : ""),
     ...(options.mountCodexHome ? ["--mount", "type=bind,src=" + config.codexHome + ",dst=/codex-home"] : []),
     "--workdir",
     "/workspace",
@@ -225,7 +229,7 @@ export class ContainerCodexRunner implements AgentRunner {
       request.trace && span
         ? new CodexStreamObserver(this.emitter, request.trace, span.spanId, "ContainerCodexRunner", {
             log: request.logger,
-            resume: request.threadId !== null,
+            resumeThreadId: request.threadId ?? undefined,
           })
         : undefined;
     const sink: CodexStreamSink | undefined = request.onActivity
@@ -319,10 +323,15 @@ export class ContainerCodexRunner implements AgentRunner {
       extra: Record<string, string | number | boolean | null> = {},
     ) => {
       spanEnded = span !== undefined;
+      // `resumed` is the echo-verified sibling of the started event's intent-only `resume` attribute:
+      // it compares the thread id Codex actually echoed against the one argv asked it to resume (#243).
       const endAttrs = {
         ...(child.exitCode !== null ? { exitCode: child.exitCode } : {}),
         ...(child.signalCode ? { terminationSignal: child.signalCode } : {}),
         ...(observer?.sessionId ? { sessionId: observer.sessionId } : {}),
+        ...(request.threadId !== null && observer?.sessionId !== undefined
+          ? { resumed: observer.sessionId === request.threadId }
+          : {}),
         stderrBytes,
       };
       span?.end(status, {
@@ -333,13 +342,14 @@ export class ContainerCodexRunner implements AgentRunner {
           ? { summary: { text: redactText(stderr).text.slice(-2_048), policy: "safe_summary" as const } }
           : {}),
       });
+      // Only the container's own outcome (status/exitCode/cleanup) — the codex `error` belongs to the
+      // codex span above, not to the container wrapper (#54).
       containerSpan?.end(status, {
         type: "runtime.container.stopped",
         attributes: {
           ...(child.exitCode !== null ? { exitCode: child.exitCode } : {}),
           ...(active.cleanup ? { cleanup: active.cleanup } : {}),
         },
-        ...(error ? { error } : {}),
       });
     };
 
@@ -406,9 +416,8 @@ export class ContainerCodexRunner implements AgentRunner {
         observer?.finish("error");
         endSpans("error", { type: "spawn_failed", message: String(error).slice(0, 2048) });
       }
-      if (!(error instanceof RunCancelledError)) {
-        request.logger?.error(active.timedOut ? "Container runner timed out" : "Container runner failed", error);
-      }
+      // No log line here: AgentService's catch writes the one "Runner failed/timed out after Ns" line
+      // for every runner failure — a second line from the runner double-reported each failure (#243).
       throw error;
     } finally {
       clearTimeout(timeout);

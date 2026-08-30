@@ -16,15 +16,17 @@ afterEach(async () => {
 });
 async function tmp(): Promise<string> { const d = await mkdtemp(path.join(tmpdir(), "glassbox-store-")); dirs.push(d); return d; }
 
-// The conformance cases run against every backend (#175): Postgres only when DATABASE_URL points at a database.
-const DATABASE_URL = process.env.DATABASE_URL;
+// The conformance cases run against every backend (#175): Postgres only when TEST_DATABASE_URL points at a
+// throwaway database. Deliberately NOT the app's DATABASE_URL (#216): these cases DELETE whole tables between cases, and
+// a shell that exports the app's real connection string must never watch its telemetry vanish.
+const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
 /** Empties observation_events (tests share one database), then hands back a fresh store whose pool is closed afterEach. */
 async function freshPostgres(log?: TraceStoreLog): Promise<PostgresTraceStore> {
-  const pool = createPool(DATABASE_URL!);
-  await migrate(pool);
+  await migrate(TEST_DATABASE_URL!);
+  const pool = createPool(TEST_DATABASE_URL!);
   await pool.query("DELETE FROM observation_events");
   await pool.end();
-  const store = new PostgresTraceStore(DATABASE_URL!, log);
+  const store = new PostgresTraceStore(TEST_DATABASE_URL!, log);
   closers.push(() => store.close());
   return store;
 }
@@ -40,7 +42,7 @@ const ev = (sequence: number, over: Partial<ObservationEvent> = {}): Observation
 describe.each([
   ["NdjsonTraceStore", async (): Promise<TraceStore> => new NdjsonTraceStore(path.join(await tmp(), "traces"))],
   ["MemoryTraceStore", async (): Promise<TraceStore> => new MemoryTraceStore()],
-  ...(DATABASE_URL ? [["PostgresTraceStore", () => freshPostgres()] as [string, () => Promise<TraceStore>]] : []),
+  ...(TEST_DATABASE_URL ? [["PostgresTraceStore", () => freshPostgres()] as [string, () => Promise<TraceStore>]] : []),
 ])("%s", (_name, make) => {
   it("appends, reads in sequence order, and ignores duplicate eventIds", async () => {
     const store = await make(); await store.initialize();
@@ -182,6 +184,37 @@ describe("shrinkToCap", () => {
     expect(out.privacy.reason).toBe("event_truncated");
     expect(shrinkToCap(ev(2))).toEqual(ev(2));
   });
+  it("a size cap is a truncation, not a redaction: the redacted flag survives unchanged (#54)", () => {
+    const many: Record<string, string> = {}; for (let i = 0; i < 40; i++) many["k" + i] = "v".repeat(1000);
+    const clean = shrinkToCap(ev(1, { attributes: many }));
+    expect(clean.privacy).toMatchObject({ redacted: false, reason: "event_truncated" });
+    const redacted = shrinkToCap(ev(2, { attributes: many, privacy: { redacted: true, rulesetVersion: "1", rules: ["bearer"] } }));
+    expect(redacted.privacy).toMatchObject({ redacted: true, reason: "event_truncated" });
+  });
+});
+
+describe("BaseTraceStore bookkeeping", () => {
+  it("drops the per-run append queue entry once the run is terminal (no growth over a long-lived process)", async () => {
+    const store = new MemoryTraceStore();
+    await store.initialize();
+    const queues = (store as unknown as { queues: Map<string, unknown> }).queues;
+    await store.append(ev(1));
+    expect(queues.size).toBe(1);
+    await store.append(ev(2, { type: "run.completed", category: "control", status: "ok" }));
+    expect(queues.size).toBe(0);
+    // A late append still works — it just recreates (and then re-drops) the entry.
+    await store.append(ev(3));
+    expect(queues.size).toBe(0);
+    expect((await store.readRun("run-1")).map((e) => e.sequence)).toEqual([1, 2, 3]);
+  });
+  it("a throwing log callback never breaks reads or appends", async () => {
+    const dir = path.join(await tmp(), "traces");
+    const store = new NdjsonTraceStore(dir, () => { throw new Error("logger exploded"); });
+    await store.initialize();
+    await store.append(ev(1));
+    await writeFile(path.join(dir, "run-1.ndjson"), JSON.stringify(ev(1)) + "\nnot-json\n", "utf8");
+    await expect(store.readRun("run-1")).resolves.toHaveLength(1);
+  });
 });
 
 describe("cleanup (retention, FR-14)", () => {
@@ -209,9 +242,9 @@ describe("cleanup (retention, FR-14)", () => {
       return { store, reopen: async () => { const r = new NdjsonTraceStore(dir); await r.initialize(); return r; } };
     }],
     ["MemoryTraceStore", async (log?: TraceStoreLog) => ({ store: new MemoryTraceStore(log) })],
-    ...(DATABASE_URL ? [["PostgresTraceStore", async (log?: TraceStoreLog) => {
+    ...(TEST_DATABASE_URL ? [["PostgresTraceStore", async (log?: TraceStoreLog) => {
       const store = await freshPostgres(log); await store.initialize();
-      return { store, reopen: async () => { const r = new PostgresTraceStore(DATABASE_URL!); closers.push(() => r.close()); await r.initialize(); return r; } };
+      return { store, reopen: async () => { const r = new PostgresTraceStore(TEST_DATABASE_URL!); closers.push(() => r.close()); await r.initialize(); return r; } };
     }] as [string, (log?: TraceStoreLog) => Promise<Opened>]] : []),
   ];
 
@@ -369,19 +402,35 @@ describe("cleanup (retention, FR-14)", () => {
   });
 });
 
-// Only when DATABASE_URL points at a database (same convention as summary.test.ts).
-describe.runIf(Boolean(DATABASE_URL))("PostgresTraceStore persistence", () => {
+// Only when TEST_DATABASE_URL points at a database (same convention as summary.test.ts).
+describe.runIf(Boolean(TEST_DATABASE_URL))("PostgresTraceStore persistence", () => {
   it("rebuilds the index from rows on initialize and suppresses duplicates across a restart", async () => {
     const a = await freshPostgres(); await a.initialize();
     await a.append(ev(1)); await a.append(ev(2));
     await a.append(ev(3, { type: "trace.truncated", category: "control" }));
-    const b = new PostgresTraceStore(DATABASE_URL!); closers.push(() => b.close()); await b.initialize();
+    const b = new PostgresTraceStore(TEST_DATABASE_URL!); closers.push(() => b.close()); await b.initialize();
     expect(b.listRuns()).toEqual(a.listRuns());
     expect(b.listRuns()[0]).toMatchObject({ runId: "run-1", truncated: true });
     expect(await b.readRun("run-1")).toEqual(await a.readRun("run-1"));
     // the PK backs the seen-set after a restart: a replayed eventId is still a duplicate, not a double count
     expect(await b.append(ev(2))).toEqual({ stored: false, reason: "duplicate" });
     expect((await b.readRun("run-1")).map((e) => e.sequence)).toEqual([1, 2, 3]);
+  });
+
+  it("#216: ordered/range text columns carry COLLATE \"C\" so ordering matches the NDJSON backend byte for byte", async () => {
+    const store = await freshPostgres(); await store.initialize();
+    const pool = createPool(TEST_DATABASE_URL!);
+    const { rows } = await pool.query<{ column_name: string; collation_name: string | null }>(
+      `SELECT column_name, collation_name FROM information_schema.columns
+       WHERE table_name = 'observation_events' AND column_name IN ('event_id', 'run_id', 'timestamp') ORDER BY column_name`,
+    );
+    await pool.end();
+    // glibc locale collations don't sort text byte-wise; only "C" makes the schema comment true (#216).
+    expect(rows).toEqual([
+      { column_name: "event_id", collation_name: "C" },
+      { column_name: "run_id", collation_name: "C" },
+      { column_name: "timestamp", collation_name: "C" },
+    ]);
   });
 
   it("stores an event whose strings carry a NUL byte (jsonb rejects U+0000) instead of degrading the run", async () => {
@@ -395,14 +444,14 @@ describe.runIf(Boolean(DATABASE_URL))("PostgresTraceStore persistence", () => {
   it("skips a row that fails the schema, reports it once per scope, and keeps the rest", async () => {
     const a = await freshPostgres(); await a.initialize();
     await a.append(ev(1));
-    const pool = createPool(DATABASE_URL!);
+    const pool = createPool(TEST_DATABASE_URL!);
     await pool.query(
       `INSERT INTO observation_events (event_id, run_id, trace_id, agent_id, sequence, timestamp, event_type, doc)
        VALUES ('evt_bad', 'run-1', 'trc_1', 'agt-1', 99, 'not-a-time', 'tool.call.completed', '{"not": "an event"}')`,
     );
     await pool.end();
     const logged: Array<[string, Record<string, unknown>]> = [];
-    const b = new PostgresTraceStore(DATABASE_URL!, (m, meta) => logged.push([m, meta])); closers.push(() => b.close());
+    const b = new PostgresTraceStore(TEST_DATABASE_URL!, (m, meta) => logged.push([m, meta])); closers.push(() => b.close());
     await b.initialize();
     expect(logged).toEqual([["trace.rows_skipped", expect.objectContaining({ scope: "initialize", skipped: 1 })]]);
     expect(b.listRuns()[0]).toMatchObject({ runId: "run-1", eventCount: 1 });

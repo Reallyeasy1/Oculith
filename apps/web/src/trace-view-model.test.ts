@@ -3,7 +3,7 @@
 // (vitest is hoisted from the server workspace — no new dependency.)
 import { describe, expect, it } from "vitest";
 import type { Span, TraceView } from "./types";
-import { ACTORS_TOOLTIP, EMPTY_FILTER, barGeometry, capabilityBadgeLabel, capabilityCopy, defaultExpanded, formatActors, formatReasoningTokens, interruptedSpanDurationMs, matchesSpan, refreshIntervalMs, spanStatusLabel, timelineTicks, visibleRows } from "./trace-view-model";
+import { ACTORS_TOOLTIP, EMPTY_FILTER, barGeometry, capabilityBadgeLabel, capabilityCopy, coalesceErrorRows, defaultExpanded, firstFailedSpanId, formatActors, formatAuditActor, formatReasoningTokens, interruptedSpanDurationMs, matchesSpan, refreshIntervalMs, spanStatusLabel, timelineTicks, visibleRows, type VisibleRow } from "./trace-view-model";
 
 const t0 = "2026-08-26T10:00:00.000Z";
 const at = (ms: number) => new Date(Date.parse(t0) + ms).toISOString();
@@ -137,6 +137,49 @@ describe("trace-view-model", () => {
     expect(uneven).toHaveLength(4);
     expect(uneven.at(-1)).toEqual({ milliseconds: 1234, percent: 100 });
     expect(timelineTicks(undefined)).toEqual([]);
+  });
+
+  it("drops an interior tick that would collide with the right-anchored last tick", () => {
+    // 302828 ms: step 100000 puts 300000 at 99% — it must yield to the exact-end tick.
+    expect(timelineTicks(302_828).map((tick) => tick.milliseconds)).toEqual([0, 100_000, 200_000, 302_828]);
+    // 401 ms: step 200 puts 400 at 99.75% — same collision, smallest scale.
+    expect(timelineTicks(401).map((tick) => tick.milliseconds)).toEqual([0, 200, 401]);
+    // Interior ticks at or below ~92% stay (1000/1234 ≈ 81%) — covered by the uneven case above.
+  });
+
+  it("finds the first failed span in document order for the ok-Run tool-failure anchor", () => {
+    expect(firstFailedSpanId(view.spans)).toBe("a1");
+    const recovered = span("tool-fail", { status: "ok", error: { type: "E", message: "retryable" } });
+    expect(firstFailedSpanId([span("ok-root", { children: [recovered] })])).toBe("tool-fail");
+    expect(firstFailedSpanId([span("clean")])).toBeUndefined();
+    expect(firstFailedSpanId([])).toBeUndefined();
+  });
+
+  it("shortens long audit actor ids to kind · shortId, keeping the full id in the title (#338)", () => {
+    expect(formatAuditActor({ type: "agent", id: "agt-0123456789abcdef0123456789abcdef0123" }))
+      .toEqual({ text: "agent · agt-0123…", title: "agent/agt-0123456789abcdef0123456789abcdef0123" });
+    expect(formatAuditActor({ type: "human", id: "local-user" }))
+      .toEqual({ text: "human · local-user", title: "human/local-user" });
+  });
+
+  it("coalesces consecutive identical leaf error rows into one ×N row (#338)", () => {
+    const errRow = (id: string, message = "boom"): VisibleRow => ({
+      span: span(id, { name: "retry", depth: 1, error: { type: "E", message } }),
+      hasChildren: false, expanded: false, context: false,
+    });
+    const out = coalesceErrorRows([errRow("e1"), errRow("e2"), errRow("e3")]);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ repeat: 3, span: { spanId: "e1" } });
+
+    // A different message breaks the run; parents never collapse.
+    const mixed = coalesceErrorRows([errRow("e1"), errRow("e2"), errRow("other", "different")]);
+    expect(mixed.map((r) => [r.span.spanId, r.repeat ?? 1])).toEqual([["e1", 2], ["other", 1]]);
+
+    expect(coalesceErrorRows([{ ...errRow("p"), hasChildren: true }, errRow("e2")])).toHaveLength(2);
+
+    // Non-error rows pass through untouched.
+    const ok: VisibleRow = { span: span("ok"), hasChildren: false, expanded: false, context: false };
+    expect(coalesceErrorRows([ok, ok])).toHaveLength(2);
   });
 
   it("renders incomplete spans to the timeline end and zero-duration spans as instants", () => {

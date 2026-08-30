@@ -19,7 +19,7 @@ export class PostgresTraceStore extends BaseTraceStore {
   /** Scopes whose skipped rows were already reported (mirrors NdjsonTraceStore.reported): once per run per process. */
   private readonly reported = new Set<string>();
 
-  constructor(connectionString: string, log?: TraceStoreLog | undefined) {
+  constructor(private readonly connectionString: string, log?: TraceStoreLog | undefined) {
     super(log);
     this.pool = createPool(connectionString);
   }
@@ -29,7 +29,7 @@ export class PostgresTraceStore extends BaseTraceStore {
   }
 
   async initialize(): Promise<void> {
-    await migrate(this.pool);
+    await migrate(this.connectionString);
     this.index.clear(); this.seen.clear(); this.traceToRun.clear();
     // Rebuild the in-memory run index the same way the NDJSON backend replays its files: one ordered scan.
     // The index stays derived state — a persisted copy could diverge from the events on a crash mid-append.

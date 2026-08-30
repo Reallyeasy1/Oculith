@@ -98,7 +98,7 @@ export class CodexStreamObserver implements CodexStreamSink {
     private readonly adapter: "CodexRunner" | "ContainerCodexRunner",
     /** Optional per-Run log sink (#232). Lines carry only the bounded identities computed here —
      * never raw command text, message content, or chain-of-thought (invariants 1/3/5). */
-    private readonly options: { log?: RunnerLogger | undefined; resume?: boolean | undefined } = {},
+    private readonly options: { log?: RunnerLogger | undefined; resumeThreadId?: string | undefined } = {},
   ) {}
 
   /** Bounded counters observed so far; returned on RunnerResult for the completion-summary line. */
@@ -128,20 +128,25 @@ export class CodexStreamObserver implements CodexStreamSink {
     this.sawAnyEvent = true;
     const first = this.sessionId === undefined;
     this.sessionId = threadId;
-    // The thread id resolving is the moment we know whether Codex resumed or started fresh.
-    if (first) this.options.log?.info(this.options.resume ? "Codex session resumed" : "New Codex session started");
+    // The thread id resolving is the moment we know whether Codex resumed or started fresh — verified
+    // against the echoed id, not argv intent: `resume <id>` on argv does not stop Codex from silently
+    // starting a fresh thread, and claiming "resumed" then would overstate what was observed (#243).
+    if (first) {
+      const requested = this.options.resumeThreadId;
+      if (requested === undefined) this.options.log?.info("New Codex session started");
+      else if (threadId === requested) this.options.log?.info("Codex session resumed");
+      else this.options.log?.warn("Codex resume requested but a new session was started");
+    }
   }
 
   onTurnStarted(): void {
     this.sawAnyEvent = true;
     this.sawModel = true;
     // A turn abandoned without turn.completed (E12 turn.failed) must not donate its item count to the
-    // next turn — buildTrace already floors the abandoned span at one call. Items seen before any
-    // turn.started (out-of-order streams) still belong to the turn that is opening now.
-    if (this.activeTurn) {
-      this.observedCalls = 0;
-      this.unpairedReasoning = 0;
-    }
+    // next turn — it is folded into the stats at the same one-call floor buildTrace applies to its
+    // span (#243). Items seen before any turn.started (out-of-order streams) still belong to the turn
+    // that is opening now.
+    if (this.activeTurn) this.foldAbandonedTurn();
     const turn = { spanId: newId("spn"), turnIndex: ++this.turnIndex };
     this.activeTurn = turn;
     this.emitter.emit({
@@ -391,8 +396,20 @@ export class CodexStreamObserver implements CodexStreamSink {
       },
     });
     // Completion-summary counter: a completed turn is at least one model call (the same floor
-    // buildTrace applies when no item evidence arrived). ponytail: an abandoned turn adds nothing.
+    // buildTrace applies when no item evidence arrived).
     this.totals.modelCalls += this.observedCalls > 0 ? this.observedCalls : 1;
+    this.activeTurn = undefined;
+    this.observedCalls = 0;
+    this.unpairedReasoning = 0;
+  }
+
+  /** #243: a turn that never completed counts exactly one model call, the same floor buildTrace
+   * applies to its span. Its observed item count was never stamped on the span (modelCallsObserved
+   * rides the turn-end model.completed only), so BOTH sides drop the count and keep the floor —
+   * the completion summary and the trace rollup can never disagree about a Run's modelCalls. */
+  private foldAbandonedTurn(): void {
+    if (!this.activeTurn) return;
+    this.totals.modelCalls += 1;
     this.activeTurn = undefined;
     this.observedCalls = 0;
     this.unpairedReasoning = 0;
@@ -418,13 +435,17 @@ export class CodexStreamObserver implements CodexStreamSink {
   finish(outcome: "ok" | "error" | "cancelled" | "timeout" = "ok"): void {
     if (this.finished) return;
     this.finished = true;
+    // A turn still open when the stream ends gets the same one-call floor buildTrace gives its span (#243).
+    this.foldAbandonedTurn();
     if (outcome !== "ok" && this.lastError) {
       this.emitter.emit({
         ...this.base("error.recorded", "codex.error"),
         ...RUNNER_ACTOR,
         category: "runtime",
         status: "error",
-        error: { type: "codex_error", message: this.lastError.slice(0, 2048) },
+        // Redact BEFORE slicing: a clamp on the raw string could cut a key at the boundary and
+        // leave a partial that no longer matches any pattern (same class as #54's redact.ts fix).
+        error: { type: "codex_error", message: redactText(this.lastError).text.slice(0, 2048) },
       });
     }
     if (this.sawAnyEvent && (!this.sawTool || !this.sawModel) && (outcome === "ok" || outcome === "error")) {

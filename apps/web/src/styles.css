@@ -12,8 +12,35 @@
   --purple-dark: #513db9;
   --purple-soft: #efecff;
   --green: #33906d;
+  --green-ink: #277756;
+  --green-soft: #dcf2e9;
   --red: #c55353;
-  --shadow: 0 24px 60px rgba(39, 38, 33, 0.12);
+  /* #338: -ink shades are the text-on-soft-tint reds/greens — darker than the
+     accent tokens on purpose so chip text keeps its contrast. */
+  --red-ink: #ac4343;
+  --red-soft: #f6dfdc;
+  /* #338: warning family for timeout/degraded chips; --amber-bar is the
+     mid-amber used for timeline bar fills/markers where the ink shade is too dark. */
+  --amber: #8a6d1f;
+  --amber-soft: #f6ecd2;
+  --amber-bar: #c9a13d;
+  /* #325: activity (running/busy/live) gets its own hue so status never reads as a button. */
+  --blue: #2e6da4;
+  --blue-soft: #e2eef8;
+  /* #338: radius + control-height scale (9→8, 11→10, 13→12, 14/17/18→16 drift folded in). */
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --control-h: 40px;
+  --mono: ui-monospace, "Cascadia Code", "Cascadia Mono", Consolas, "SF Mono", monospace;
+  --shadow: 0 1px 2px rgba(39, 38, 33, 0.05), 0 10px 30px rgba(39, 38, 33, 0.08);
+}
+
+h1,
+h2,
+h3 {
+  letter-spacing: -0.015em;
 }
 
 * {
@@ -31,14 +58,14 @@ body {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: radial-gradient(circle at top, #f0edff, #f2f1ed 45%);
+  background: radial-gradient(circle at top, var(--purple-soft), #f2f1ed 45%);
 }
 
 .auth-card {
   width: min(420px, 100%);
   padding: 34px;
   border: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: var(--radius-xl);
   background: var(--paper);
   box-shadow: var(--shadow);
 }
@@ -68,9 +95,9 @@ body {
 }
 
 .auth-card input {
-  min-height: 44px;
+  min-height: var(--control-h);
   border: 1px solid var(--line);
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   padding: 0 12px;
 }
 
@@ -91,13 +118,25 @@ button {
 }
 
 .sidebar {
+  /* #338: dark sidebar palette, deliberately separate from the light-theme tokens
+     (folding it into --line/--muted/--purple would force visible changes).
+     Scoped here so every dark-surface color has one home; one-off shades on
+     descendants (avatars, dots, runtime card) stay literal below. */
+  --sb-bg: #242421;
+  --sb-ink: #f5f3ed;
+  --sb-line: #363632;
+  --sb-muted: #85857e;
+  --sb-hover: #2e2e2a;
+  --sb-selected: #353430;
+  --sb-selected-line: #464540;
+  --sb-accent: #826ff0;
   min-height: 100vh;
   padding: 24px 18px;
-  background: #242421;
-  color: #f5f3ed;
+  background: var(--sb-bg);
+  color: var(--sb-ink);
   display: flex;
   flex-direction: column;
-  border-right: 1px solid #363632;
+  border-right: 1px solid var(--sb-line);
 }
 
 .brand {
@@ -110,7 +149,7 @@ button {
 .brand-mark {
   width: 38px;
   height: 38px;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   display: grid;
   place-items: center;
   color: white;
@@ -139,8 +178,8 @@ button {
 
 .button {
   border: 0;
-  border-radius: 10px;
-  min-height: 38px;
+  border-radius: var(--radius-md);
+  min-height: var(--control-h);
   padding: 0 15px;
   font-weight: 600;
   font-size: 13px;
@@ -155,6 +194,32 @@ button {
 .button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+/* Pressed (toggled) chips: .button has border: 0, so a border-color tint never
+   painted — the inset ring is the one visible pressed treatment everywhere. */
+.button[aria-pressed="true"] {
+  background: var(--purple-soft);
+  color: var(--purple-dark);
+  box-shadow: inset 0 0 0 1.5px var(--purple);
+}
+
+.button:focus-visible,
+.agent-card:focus-visible,
+.prompt-grid button:focus-visible,
+.send-button:focus-visible,
+.trace-caret:focus-visible,
+.audit-evidence:focus-visible,
+.trace-logs summary:focus-visible,
+.settings-title button:focus-visible,
+.modal-heading button:focus-visible,
+.error-banner button:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: 2px;
 }
 
 .button-primary {
@@ -178,8 +243,8 @@ button {
 }
 
 .button-danger {
-  background: #f7e9e7;
-  color: #ae4646;
+  background: var(--red-soft);
+  color: var(--red-ink);
 }
 
 .button-danger:hover:not(:disabled) {
@@ -189,9 +254,9 @@ button {
 .create-button {
   width: 100%;
   justify-content: flex-start;
-  min-height: 44px;
+  min-height: var(--control-h);
   padding-left: 16px;
-  background: #6b56db;
+  background: var(--purple);
 }
 
 .create-button span {
@@ -203,7 +268,7 @@ button {
   display: flex;
   justify-content: space-between;
   padding: 25px 7px 10px;
-  color: #85857e;
+  color: var(--sb-muted);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.12em;
@@ -221,7 +286,7 @@ button {
   border: 1px solid transparent;
   background: transparent;
   padding: 9px;
-  border-radius: 11px;
+  border-radius: var(--radius-md);
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) 8px;
   align-items: center;
@@ -232,13 +297,13 @@ button {
 }
 
 .agent-card:hover {
-  background: #2e2e2a;
+  background: var(--sb-hover);
 }
 
 .agent-card.selected {
-  background: #353430;
-  border-color: #464540;
-  box-shadow: inset 3px 0 #826ff0;
+  background: var(--sb-selected);
+  border-color: var(--sb-selected-line);
+  box-shadow: inset 3px 0 var(--sb-accent);
 }
 
 .agent-avatar {
@@ -246,7 +311,7 @@ button {
   height: 34px;
   display: grid;
   place-items: center;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   color: #dcd4ff;
   background: #4a415f;
   font-size: 13px;
@@ -287,12 +352,12 @@ button {
   background: #7a7a73;
 }
 
-.mini-ready,
-.mini-busy {
+.mini-ready {
   background: #5fc99e;
 }
 
 .mini-busy {
+  background: var(--blue);
   animation: pulse 1.2s infinite;
 }
 
@@ -305,7 +370,7 @@ button {
   font-size: 12px;
   text-align: center;
   border: 1px dashed #42423d;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   padding: 24px 12px;
 }
 
@@ -318,7 +383,7 @@ button {
 .runtime-card {
   margin-top: auto;
   border: 1px solid #3d3d38;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   padding: 13px;
   background: #292925;
 }
@@ -334,7 +399,7 @@ button {
 }
 
 .runtime-card > span:last-child {
-  color: #85857e;
+  color: var(--sb-muted);
   font-size: 9px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -363,7 +428,7 @@ button {
   margin: 0 auto 14px;
   display: flex;
   align-items: center;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   padding: 10px 13px;
   font-size: 12px;
 }
@@ -380,7 +445,7 @@ button {
   height: 22px;
   display: grid;
   place-items: center;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   color: white;
   font-weight: 700;
   background: #bc9239;
@@ -407,8 +472,8 @@ button {
 
 .error-banner {
   justify-content: space-between;
-  color: #a13f3f;
-  background: #fae8e6;
+  color: var(--red-ink);
+  background: var(--red-soft);
   border: 1px solid #edc4c0;
 }
 
@@ -424,9 +489,20 @@ button {
   margin: 0 auto 18px;
   min-height: 78px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 24px;
+}
+
+/* #201: the title block must shrink below its content (the workspace path is one
+   unbreakable token) or the actions get pushed past the viewport on laptops. */
+.agent-header > div:first-child {
+  min-width: 0;
+}
+
+.agent-header code {
+  overflow-wrap: anywhere;
 }
 
 .agent-header h1,
@@ -460,11 +536,22 @@ button {
   gap: 7px;
 }
 
+/* Destructive action sits apart from the Settings/Start-Stop group.
+   ponytail: margin-left: auto is a no-op here (.header-actions is shrink-to-fit),
+   a fixed gap separates in every layout. */
+.header-actions .delete-agent {
+  margin-left: 14px;
+}
+
 .status {
   border-radius: 999px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  /* #338: inline-block (not inline-flex) so sentence-long pill content can
+     ellipsize — text-overflow never applies to anonymous flex items. */
+  display: inline-block;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   padding: 4px 9px;
   font-size: 9px;
   font-weight: 700;
@@ -475,27 +562,34 @@ button {
 }
 
 .status-dot {
+  display: inline-block;
   width: 6px;
   height: 6px;
   background: currentColor;
 }
 
+/* Replaces the old flex gap: the leading dot / glyph span keeps its 6px gap to the label. */
+.status > span:first-child {
+  margin-right: 6px;
+}
+
 .status-ready {
-  color: #277756;
-  background: #dcf2e9;
+  color: var(--green-ink);
+  background: var(--green-soft);
 }
 
 .status-busy {
-  color: #5640bc;
-  background: #e8e4fb;
+  color: var(--blue);
+  background: var(--blue-soft);
 }
 
 .status-error {
-  color: #ac4343;
-  background: #f6dfdc;
+  color: var(--red-ink);
+  background: var(--red-soft);
 }
 
 .settings-panel,
+.workspace-panel,
 .playground {
   max-width: 1180px;
   margin-left: auto;
@@ -507,7 +601,7 @@ button {
 
 .settings-panel {
   padding: 20px;
-  border-radius: 14px;
+  border-radius: var(--radius-xl);
   margin-bottom: 14px;
 }
 
@@ -546,18 +640,20 @@ label {
 }
 
 input,
-textarea {
+textarea,
+select {
   width: 100%;
-  border: 1px solid #d9d7cf;
+  border: 1px solid var(--line);
   background: white;
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   color: var(--ink);
   outline: none;
   transition: 150ms ease;
 }
 
-input {
-  height: 40px;
+input,
+select {
+  height: var(--control-h);
   padding: 0 12px;
   margin-top: 6px;
 }
@@ -570,8 +666,9 @@ textarea {
 }
 
 input:focus,
-textarea:focus {
-  border-color: #8a78e8;
+textarea:focus,
+select:focus {
+  border-color: var(--purple);
   box-shadow: 0 0 0 3px rgba(105, 84, 217, 0.11);
 }
 
@@ -580,7 +677,7 @@ textarea:focus {
 }
 
 .form-help {
-  margin: 6px 0 0;
+  margin: 6px 0 14px;
   color: #66645d;
   font-size: 12px;
   line-height: 1.45;
@@ -589,22 +686,17 @@ textarea:focus {
 .panel-footer {
   margin-top: 13px;
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: center;
   gap: 20px;
 }
 
-.panel-footer code {
-  font-size: 9px;
-  color: #8a8a83;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .playground {
+  /* ponytail: fixed header assumption (150px) — flexing .main regressed wide
+     tables (min-width:auto) and page height; revisit only with a real fix. */
   height: calc(100vh - 150px);
   min-height: 560px;
-  border-radius: 17px;
+  border-radius: var(--radius-xl);
   overflow: hidden;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
@@ -614,10 +706,25 @@ textarea:focus {
   min-height: 70px;
   padding: 17px 22px;
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
-  border-bottom: 1px solid #e5e3dc;
+  gap: 10px 24px;
+  border-bottom: 1px solid var(--line);
   background: rgba(251, 250, 247, 0.94);
+}
+
+.playground-topbar > * {
+  min-width: 0;
+}
+
+/* Below ~1100px the title / filter-chip clusters stack instead of interleaving
+   into a ragged wrapped pile (or clipping under .runs-view { overflow: hidden }). */
+@media (max-width: 1100px) {
+  .playground-topbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }
 
 .playground h2 {
@@ -628,7 +735,7 @@ textarea:focus {
 .session-info {
   color: #777870;
   font-size: 9px;
-  border: 1px solid #e0ded6;
+  border: 1px solid var(--line);
   border-radius: 999px;
   padding: 5px 9px;
   display: flex;
@@ -638,20 +745,20 @@ textarea:focus {
 
 /* #257 session-health line: muted like the rest of the chip, amber past the advisory threshold. */
 .session-health {
-  border-left: 1px solid #e0ded6;
+  border-left: 1px solid var(--line);
   padding-left: 6px;
 }
 
 .session-health-warn {
-  color: #8a6d1f;
+  color: var(--amber);
 }
 
 .pulse {
   width: 6px;
   height: 6px;
-  background: #54b98e;
+  background: var(--blue);
   border-radius: 50%;
-  box-shadow: 0 0 0 3px rgba(84, 185, 142, 0.13);
+  box-shadow: 0 0 0 3px rgba(46, 109, 164, 0.13);
 }
 
 .messages {
@@ -660,7 +767,7 @@ textarea:focus {
   padding: 28px max(28px, calc((100% - 760px) / 2));
   background:
     linear-gradient(rgba(255, 255, 255, 0.52), rgba(255, 255, 255, 0.52)),
-    radial-gradient(circle at 20% 0, #f1effb, transparent 38%);
+    radial-gradient(circle at 20% 0, var(--purple-soft), transparent 38%);
 }
 
 .welcome {
@@ -700,7 +807,7 @@ textarea:focus {
 .welcome-orbit::after {
   width: 5px;
   height: 5px;
-  background: #7e68e6;
+  background: var(--purple);
   top: 8px;
   right: 13px;
   box-shadow: -52px 35px 0 #bcaef2;
@@ -711,7 +818,7 @@ textarea:focus {
   height: 34px;
   display: grid;
   place-items: center;
-  border-radius: 11px;
+  border-radius: var(--radius-md);
   color: white;
   background: linear-gradient(145deg, #8f7af0, #644ed0);
   font-size: 22px;
@@ -741,8 +848,8 @@ textarea:focus {
 
 .prompt-grid button {
   min-height: 86px;
-  border: 1px solid #e0ded6;
-  border-radius: 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
   padding: 12px;
   background: rgba(255, 255, 255, 0.72);
   text-align: left;
@@ -803,16 +910,16 @@ textarea:focus {
 }
 
 .message-user .message-body {
-  background: #ebe7fc;
+  background: var(--purple-soft);
   color: #4b3d86;
   border: 1px solid #ddd6f8;
-  border-radius: 13px 4px 13px 13px;
+  border-radius: var(--radius-lg) 4px var(--radius-lg) var(--radius-lg);
   padding: 11px 13px;
 }
 
 .message-assistant .message-body {
   padding-left: 14px;
-  border-left: 2px solid #8a76e7;
+  border-left: 2px solid var(--purple);
 }
 
 .thinking {
@@ -842,18 +949,45 @@ textarea:focus {
   flex-direction: column;
   gap: 5px;
   border-left: 2px solid var(--red);
-  background: #fbefed;
+  background: var(--red-soft);
   padding: 10px 12px;
-  color: #9e4545;
+  color: var(--red-ink);
   font-size: 11px;
+}
+
+/* Compact single-line variant for completed Runs that only had tool failures:
+   same evidence colors, no card height. */
+.run-error-slim {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  border-left: 2px solid var(--red);
+  background: var(--red-soft);
+  padding: 4px 12px;
+  color: var(--red-ink);
+  font-size: 11px;
+}
+
+/* #255: pre-run budget gate is refusing new Runs — amber, because the Agent is healthy, just capped. */
+.budget-banner {
+  margin: 0;
+  padding: 6px max(22px, calc((100% - 800px) / 2));
+  border-top: 1px solid #eddda1;
+  background: #fff7d8;
+  color: #6c541b;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 /* #266: subtle persisted "last run failed" note above the composer, sourced from Agent.lastError. */
 .last-run-hint {
   margin: 0;
   padding: 6px max(22px, calc((100% - 800px) / 2));
-  border-top: 1px solid #e1dfd8;
-  color: #ac4343;
+  border-top: 1px solid var(--line);
+  color: var(--red-ink);
   font-size: 12px;
   line-height: 1.45;
   overflow-wrap: anywhere;
@@ -861,7 +995,7 @@ textarea:focus {
 
 .composer {
   margin: 0;
-  border-top: 1px solid #e1dfd8;
+  border-top: 1px solid var(--line);
   padding: 13px max(22px, calc((100% - 800px) / 2)) 15px;
   background: #f8f7f3;
 }
@@ -892,7 +1026,7 @@ textarea:focus {
 .send-button {
   width: 32px;
   height: 32px;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   border: 0;
   color: white;
   background: var(--purple);
@@ -955,7 +1089,7 @@ textarea:focus {
 .modal {
   width: min(560px, 100%);
   border: 1px solid rgba(255, 255, 255, 0.55);
-  border-radius: 18px;
+  border-radius: var(--radius-xl);
   background: var(--paper);
   padding: 25px;
   box-shadow: var(--shadow);
@@ -996,7 +1130,7 @@ textarea:focus {
   gap: 12px;
   padding: 8px 10px;
   border: 1px solid var(--line);
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   background: var(--paper);
 }
 
@@ -1018,6 +1152,20 @@ textarea:focus {
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .spinner,
+  .mini-busy,
+  .pulse {
+    animation: none;
+  }
+
+  .button-primary:hover:not(:disabled),
+  .prompt-grid button:hover,
+  .button:active:not(:disabled) {
+    transform: none;
+  }
+}
+
 @media (max-width: 900px) {
   .app-shell {
     grid-template-columns: 76px minmax(0, 1fr);
@@ -1031,7 +1179,12 @@ textarea:focus {
     padding: 2px 9px 24px;
   }
 
-  .brand > div:last-child,
+  /* #201: hide the brand text outright — font-size: 0 was overridden by the
+     explicit sizes on .brand strong/span, leaving clipped fragments. */
+  .brand > div:last-child {
+    display: none;
+  }
+
   .create-button:not(:focus) {
     font-size: 0;
   }
@@ -1133,6 +1286,12 @@ textarea:focus {
     min-height: 490px;
   }
 
+  /* #338: the 76px gutter assumed the 900px-breakpoint sidebar rail, which no
+     longer exists at this width (the sidebar is a top bar here). */
+  .span-drawer {
+    width: min(460px, 100vw);
+  }
+
   .playground-topbar {
     padding: 14px;
   }
@@ -1160,7 +1319,7 @@ textarea:focus {
   margin: 18px auto 0;
   background: var(--paper);
   border: 1px solid var(--line);
-  border-radius: 17px;
+  border-radius: var(--radius-xl);
   box-shadow: 0 12px 36px rgba(43, 42, 38, 0.06);
   overflow: hidden;
 }
@@ -1182,22 +1341,24 @@ textarea:focus {
   text-transform: capitalize;
 }
 
-.runs-filters .button[aria-pressed="true"] {
-  background: var(--purple-soft);
-  border-color: var(--purple);
-  color: var(--purple-dark);
-}
-
 .runs-table-wrap {
   overflow-x: auto;
   position: relative;
+  padding-right: 14px;
   scrollbar-color: var(--purple) #ecebe5;
+  /* Right-edge fade while more columns hide off-screen: the paper-colored cover
+     scrolls with the content (local) and hides the pinned fade at scroll end. */
+  background:
+    linear-gradient(to left, #fbfaf7, rgba(251, 250, 247, 0)) right / 34px 100% no-repeat,
+    linear-gradient(to left, rgba(39, 38, 33, 0.1), transparent) right / 16px 100% no-repeat;
+  background-attachment: local, scroll;
 }
 
 .runs-baseline {
   margin: 0 0 0.75rem;
+  padding: 0 22px;
   color: var(--muted);
-  font-size: 0.86rem;
+  font-size: 13px;
 }
 
 .badge-outlier {
@@ -1222,6 +1383,23 @@ textarea:focus {
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.runs-table code {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+/* #325: numeric columns right-align so magnitudes line up. */
+.runs-table th.num,
+.runs-table td.num {
+  text-align: right;
+}
+
+/* #325: placeholder em-dashes recede so real values carry the row. */
+.dash {
+  color: #bcbbb2;
 }
 
 .runs-runtime,
@@ -1261,7 +1439,8 @@ textarea:focus {
 
 .runs-table th,
 .runs-table td {
-  padding: 8px 10px;
+  /* #338: compact density — 8px vertical padding read ~2× taller than needed. */
+  padding: 5px 10px;
   text-align: left;
   white-space: nowrap;
   border-bottom: 1px solid #ecebe5;
@@ -1284,6 +1463,11 @@ textarea:focus {
   background: var(--purple-soft);
 }
 
+/* Selected stays identifiable under hover: an inset accent hover never gets. */
+.runs-table tbody tr.selected td:first-child {
+  box-shadow: inset 3px 0 0 var(--purple);
+}
+
 .runs-table tbody tr:focus-visible {
   outline: 2px solid var(--purple);
   outline-offset: -2px;
@@ -1294,7 +1478,7 @@ textarea:focus {
 @media (max-width: 1439px) {
   .runs-table th,
   .runs-table td {
-    padding: 8px;
+    padding: 5px 8px;
   }
 
   .runs-runtime {
@@ -1325,13 +1509,15 @@ textarea:focus {
   margin-top: 16px;
   padding: 12px;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
 }
 
 .trace-logs summary { cursor: pointer; font-weight: 700; }
 .trace-logs label { display: inline-grid; gap: 4px; margin: 12px 0; }
 .run-logs { margin: 0; padding-left: 24px; font: 12px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .run-logs small { display: block; color: var(--muted); }
+.run-logs .log-error strong { color: var(--red-ink); }
+.run-logs .log-warn strong { color: var(--amber); }
 
 .runs-empty-action {
   margin-left: 8px;
@@ -1339,19 +1525,25 @@ textarea:focus {
 }
 
 .status-ok {
-  color: #277756;
-  background: #dcf2e9;
+  color: var(--green-ink);
+  background: var(--green-soft);
 }
 
 .status-running {
-  color: #5640bc;
-  background: #e8e4fb;
+  color: var(--blue);
+  background: var(--blue-soft);
 }
 
-.status-timeout,
-.status-cancelled {
-  color: #8a6d1f;
-  background: #f6ecd2;
+.status-timeout {
+  color: var(--amber);
+  background: var(--amber-soft);
+}
+
+/* Cancelled/started are neutral, not warnings — amber stays for timeout/degraded. */
+.status-cancelled,
+.status-started {
+  color: var(--muted);
+  background: #f0efea;
 }
 
 .badge {
@@ -1368,9 +1560,9 @@ textarea:focus {
 }
 
 .badge-warn {
-  color: #8a6d1f;
+  color: var(--amber);
   border-color: #e3cf95;
-  background: #f6ecd2;
+  background: var(--amber-soft);
 }
 
 .badge-recovered {
@@ -1395,7 +1587,7 @@ textarea:focus {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin: 0 0 12px;
+  margin: 0 22px 12px;
   padding: 0;
   list-style: none;
 }
@@ -1405,9 +1597,9 @@ textarea:focus {
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
-  border: 1px solid var(--purple);
-  border-radius: 12px;
-  background: var(--purple-soft);
+  border: 1px solid var(--blue);
+  border-radius: var(--radius-lg);
+  background: var(--blue-soft);
   color: var(--ink);
   font: inherit;
   font-size: 12px;
@@ -1416,7 +1608,11 @@ textarea:focus {
 
 .live-run:hover,
 .live-run.selected {
-  background: #e8e4fb;
+  background: #d3e5f5;
+}
+
+.live-run.selected {
+  box-shadow: inset 3px 0 0 var(--purple);
 }
 
 .live-run:focus-visible {
@@ -1425,9 +1621,9 @@ textarea:focus {
 }
 
 .badge-error {
-  color: #ac4343;
+  color: var(--red-ink);
   border-color: #e8b4ae;
-  background: #f6dfdc;
+  background: var(--red-soft);
 }
 
 
@@ -1442,7 +1638,7 @@ textarea:focus {
 }
 
 .trace-export-error {
-  margin: 0 0 12px;
+  margin: 0 22px 12px;
   color: var(--red);
   font-size: 12px;
 }
@@ -1458,7 +1654,7 @@ textarea:focus {
   gap: 12px;
   background: var(--paper);
   border: 1px solid var(--line);
-  border-radius: 17px;
+  border-radius: var(--radius-xl);
 }
 
 .playground-bar h1 {
@@ -1468,6 +1664,15 @@ textarea:focus {
 
 .trace-header {
   padding: 17px 22px 10px;
+}
+
+/* Action labels never break mid-word at narrow widths; the cluster wraps as whole buttons. */
+.trace-header .header-actions {
+  flex-wrap: wrap;
+}
+
+.trace-header .header-actions .button {
+  white-space: nowrap;
 }
 
 .trace-header h2 {
@@ -1586,9 +1791,12 @@ textarea:focus {
 .trace-filters input[type="search"] {
   font: inherit;
   font-size: 12px;
+  height: auto;
+  min-height: 0;
+  margin: 0;
   padding: 5px 8px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: #fff;
   color: var(--ink);
 }
@@ -1608,12 +1816,6 @@ textarea:focus {
   margin: 0;
   padding: 0;
   accent-color: var(--purple);
-}
-
-.trace-filters .button[aria-pressed="true"] {
-  background: var(--purple-soft);
-  border-color: var(--purple);
-  color: var(--purple-dark);
 }
 
 .audit-table-wrap {
@@ -1715,6 +1917,10 @@ textarea:focus {
   background: var(--purple-soft);
 }
 
+.trace-row.selected {
+  box-shadow: inset 3px 0 0 var(--purple);
+}
+
 /* #263: truncated error head beside the span name; full text lives in the row's title tooltip. */
 .trace-error-head {
   font-weight: 400;
@@ -1722,11 +1928,18 @@ textarea:focus {
 }
 
 .trace-row.failing {
-  background: #fae8e6;
+  background: var(--red-soft);
 }
 
 .trace-row.context {
   opacity: 0.6;
+}
+
+/* Errors-only view: context rows keep their status text but drop the full-strength
+   green/blue pill so the failing rows lead. */
+.trace-row.context .status {
+  color: var(--muted);
+  background: #f0efea;
 }
 
 .trace-row:focus-visible,
@@ -1796,7 +2009,12 @@ textarea:focus {
 
 .trace-bar-fill.fill-timeout,
 .trace-bar-fill.fill-cancelled {
-  background: #c9a13d;
+  background: var(--amber-bar);
+}
+
+/* #325 activity-blue: a still-running span is activity, not brand purple. */
+.trace-bar-fill.fill-running {
+  background: var(--blue);
 }
 
 .trace-bar-fill.open-ended {
@@ -1815,7 +2033,11 @@ textarea:focus {
 
 .trace-bar-fill.open-ended.fill-timeout,
 .trace-bar-fill.open-ended.fill-cancelled {
-  color: #c9a13d;
+  color: var(--amber-bar);
+}
+
+.trace-bar-fill.open-ended.fill-running {
+  color: var(--blue);
 }
 
 .trace-bar-marker {
@@ -1838,7 +2060,11 @@ textarea:focus {
 
 .trace-bar-marker.fill-timeout,
 .trace-bar-marker.fill-cancelled {
-  background: #c9a13d;
+  background: var(--amber-bar);
+}
+
+.trace-bar-marker.fill-running {
+  background: var(--blue);
 }
 
 .sr-only {
@@ -1948,7 +2174,7 @@ textarea:focus {
 
 .span-event-error {
   grid-column: 1 / -1;
-  color: #a13f3f;
+  color: var(--red-ink);
   overflow-wrap: anywhere;
 }
 
@@ -1983,8 +2209,8 @@ textarea:focus {
 
 /* Span drawer docking (#138). The drawer is fixed to the viewport, so where it lives is a viewport
    decision: >= 1500 px the trace reserves 460 px beside it and may grow past the usual 1180 px so the
-   tree keeps its width; 801–1499 px it docks below the tree; <= 800 px it stays the #100 overlay
-   (min(460px, 100vw - 76px)). */
+   tree keeps its width; 1100–1499 px it stays the fixed right-side overlay (docking there put the
+   drawer ~2000 px below the clicked row); < 1100 px it docks below the tree. */
 @media (min-width: 1500px) {
   .trace-detail-with-drawer {
     max-width: 1640px;
@@ -1992,7 +2218,7 @@ textarea:focus {
   }
 }
 
-@media (min-width: 801px) and (max-width: 1499px) {
+@media (max-width: 1099px) {
   .trace-detail-with-drawer .span-drawer {
     position: static;
     width: 100%;
@@ -2022,7 +2248,7 @@ textarea:focus {
   min-width: 120px;
   padding: 10px 14px;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   background: var(--paper);
 }
 
@@ -2038,6 +2264,7 @@ textarea:focus {
   margin: 2px 0 0;
   font-size: 20px;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
 .summary-agents {
@@ -2067,26 +2294,29 @@ textarea:focus {
 .comparison-view { margin-top: 18px; }
 .comparison-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; padding: 14px; }
 .comparison-controls label { display: grid; gap: 4px; font-size: 11px; color: var(--muted); }
-.comparison-banner { margin: 0 14px 14px; padding: 10px 12px; border-radius: 9px; }
-.comparison-banner.has-regression { color: #8d2727; background: #fbe5e5; border: 1px solid #e2aaaa; }
-.comparison-banner.no-regression { color: #277756; background: #dcf2e9; border: 1px solid #9ed8bb; }
-.comparison-regression { background: #fff5f5; }
+.comparison-banner { margin: 0 14px 14px; padding: 10px 12px; border-radius: var(--radius-sm); }
+.comparison-banner.has-regression { color: #8d2727; background: var(--red-soft); border: 1px solid #e2aaaa; border-left: 4px solid #8d2727; }
+.comparison-banner.has-regression strong { text-transform: uppercase; letter-spacing: 0.06em; font-weight: 800; }
+.comparison-banner.no-regression { color: var(--green-ink); background: var(--green-soft); border: 1px solid #9ed8bb; }
+.comparison-regression { background: var(--red-soft); }
+.comparison-regression td:last-child { color: #8d2727; font-weight: 600; }
 .evidence-link { border: 0; background: transparent; padding: 0; color: inherit; cursor: pointer; text-align: left; }
 .evidence-link:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
 
 /* #174 — historical config comparison: raw deltas, redacted snapshot hashes, provenance drill-back. */
 .config-comparison { margin-top: 18px; }
 .config-comparison-controls input,
-.config-comparison-controls select { min-height: 34px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink); font: inherit; }
+.config-comparison-controls select { height: auto; min-height: 34px; margin: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; color: var(--ink); font: inherit; }
 .config-comparison-note { margin: 0 14px 14px; color: var(--muted); }
-.config-comparison-copy { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin: 0 14px 14px; padding: 12px 14px; border: 1px solid var(--purple); border-radius: 10px; background: var(--purple-soft); font-size: 12px; }
+.config-comparison-copy { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin: 0 14px 14px; padding: 12px 14px; border: 1px solid var(--purple); border-radius: var(--radius-md); background: var(--purple-soft); font-size: 12px; }
 .config-comparison-subheading { margin: 18px 14px 8px; font-size: 13px; }
 .config-diff-table th[scope="row"],
 .config-metrics-table th[scope="row"] { text-transform: none; letter-spacing: 0; color: var(--ink); font-size: 11px; }
-.config-diff-table code { display: block; max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
+/* #338: max-width guards column width but long values wrap instead of being hard-clipped. */
+.config-diff-table code { display: block; max-width: 360px; white-space: normal; overflow-wrap: anywhere; }
 .config-diff-table .badge { margin-left: 6px; }
-.config-changed { background: #f5f2ff; }
-.comparison-metric { width: 100%; min-width: 110px; padding: 5px 7px; border: 0; border-radius: 7px; background: transparent; color: var(--purple-dark); text-align: left; cursor: pointer; }
+.config-changed { background: var(--purple-soft); }
+.comparison-metric { width: 100%; min-width: 110px; padding: 5px 7px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--purple-dark); text-align: left; cursor: pointer; }
 .comparison-metric:hover { background: var(--purple-soft); }
 .comparison-metric:focus-visible { outline: 2px solid var(--purple); outline-offset: -2px; }
 .comparison-metric strong,
@@ -2098,7 +2328,8 @@ textarea:focus {
 /* Chat → trace affordances (#264): per-reply muted link and the failure bubble's View trace. */
 .message-trace { color: #96968f; font-size: 9px; }
 .message-trace:hover { text-decoration: underline; color: var(--purple); }
-.run-error-trace { align-self: flex-start; font-size: 11px; text-decoration: underline; }
+.run-error-trace,
+.run-error-rerun { align-self: flex-start; font-size: 11px; text-decoration: underline; }
 
 /* #173 — reliability tiles + sparklines on the Agent detail, evaluation panel in the trace detail */
 .reliability-panel .summary-strip {
@@ -2106,8 +2337,14 @@ textarea:focus {
   padding: 0 22px 16px;
 }
 
+/* Grid instead of flex-wrap so 1024/800 widths fill rows evenly (no ragged 2/3/2). */
+.reliability-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
 .reliability-strip > div {
-  min-width: 150px;
+  min-width: 0;
 }
 
 .reliability-detail {
@@ -2144,11 +2381,18 @@ textarea:focus {
   padding: 0;
   background: none;
   font: inherit;
-  color: var(--purple-dark);
+  /* #325: the value reads as data (ink), the purple underline alone carries the drill affordance. */
+  color: var(--ink);
   cursor: pointer;
   text-decoration: underline;
   text-decoration-color: var(--purple);
-  text-underline-offset: 3px;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 4px;
+}
+
+.reliability-drill:hover,
+.reliability-drill:focus-visible {
+  color: var(--purple-dark);
 }
 
 /* #173 — taskOutcome filter axis next to the quick filters (own class: E2E counts one pressed quick filter) */
@@ -2172,12 +2416,6 @@ textarea:focus {
   text-transform: capitalize;
 }
 
-.runs-task-filters .button[aria-pressed="true"] {
-  background: var(--purple-soft);
-  border-color: var(--purple);
-  color: var(--purple-dark);
-}
-
 .runs-task-verdict {
   display: inline-flex;
   flex-direction: column;
@@ -2198,7 +2436,7 @@ textarea:focus {
 
 .trace-evaluations h3 {
   margin: 0 0 6px;
-  font-size: 0.95rem;
+  font-size: 15px;
 }
 
 .trace-evaluations ul {
@@ -2214,7 +2452,7 @@ textarea:focus {
   flex-wrap: wrap;
   align-items: baseline;
   gap: 8px;
-  font-size: 0.86rem;
+  font-size: 13px;
 }
 
 .trace-evaluations .evidence-link {
@@ -2252,11 +2490,31 @@ textarea:focus {
   gap: 13px;
   max-width: 640px;
   margin-bottom: 16px;
+  padding: 0 14px;
+}
+/* Same stacked-label treatment as .comparison-controls. */
+.evaluator-form label {
+  display: grid;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.evaluator-form label.evaluator-outcome {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .evaluator-scores {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 13px;
+}
+/* ponytail: lives here, not in the shared 680px block above — same specificity,
+   so the later base rule would win on source order. */
+@media (max-width: 680px) {
+  .evaluator-scores {
+    grid-template-columns: 1fr;
+  }
 }
 .evaluator-outcome {
   display: flex;
@@ -2266,4 +2524,184 @@ textarea:focus {
 .evaluator-outcome input {
   width: auto;
   height: auto;
+}
+
+/* #65: read-only workspace browser in the Agent detail */
+.workspace-panel {
+  padding: 16px 20px;
+  border-radius: 14px;
+  margin-bottom: 14px;
+}
+
+.workspace-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.workspace-panel-head h2 {
+  font-size: 16px;
+  margin: 3px 0 6px;
+}
+
+.workspace-panel-meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.workspace-summary {
+  margin-left: 6px;
+}
+
+.workspace-note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.workspace-tree {
+  margin-top: 12px;
+  border-top: 1px solid #ecebe5;
+  font-size: 12px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.workspace-row {
+  display: grid;
+  grid-template-columns: 18px minmax(160px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 14px 5px 12px;
+  border-bottom: 1px solid #ecebe5;
+  cursor: pointer;
+}
+
+.workspace-row:hover,
+.workspace-row:focus-visible {
+  background: rgba(81, 61, 185, 0.06);
+  outline: none;
+}
+
+.workspace-row.selected {
+  background: rgba(81, 61, 185, 0.1);
+}
+
+.workspace-row-kind {
+  color: var(--muted);
+}
+
+.workspace-row-name {
+  font-family: var(--mono, ui-monospace, monospace);
+  overflow-wrap: anywhere;
+}
+
+.workspace-row-meta {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.workspace-preview {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.workspace-preview-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.workspace-preview-head h3 {
+  margin: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.workspace-managed-badge {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(81, 61, 185, 0.1);
+  color: var(--purple-dark);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.workspace-preview-content {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f4f3ee;
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* #66: workspace editing — new-file form, plain-textarea editor, "Recent changes" list. */
+.workspace-newfile {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.workspace-newfile label {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.workspace-newfile input {
+  font-family: var(--mono, ui-monospace, monospace);
+}
+
+.workspace-editor textarea {
+  width: 100%;
+  margin: 10px 0 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f4f3ee;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.workspace-history {
+  margin-top: 12px;
+  border-top: 1px solid #ecebe5;
+  padding-top: 10px;
+}
+
+.workspace-history h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+
+.workspace-history ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.workspace-history li {
+  padding: 2px 0;
+  font-family: var(--mono, ui-monospace, monospace);
+  overflow-wrap: anywhere;
 }

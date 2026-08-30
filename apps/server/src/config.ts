@@ -31,6 +31,22 @@ const envSchema = z.object({
     .default("2g"),
   CONTAINER_PIDS_LIMIT: z.coerce.number().int().positive().default(256),
   CONTAINER_USER: z.string().optional(),
+  /**
+   * #96: host ports the workspace preview may publish on (loopback only). Bounded to unprivileged
+   * ports and a small span so a typo cannot open a wide range; each running preview takes one port.
+   */
+  PREVIEW_PORT_RANGE: z
+    .string()
+    .regex(/^\d+-\d+$/, "PREVIEW_PORT_RANGE must look like 5180-5189")
+    .default("5180-5189")
+    .superRefine((value, ctx) => {
+      const [start = 0, end = 0] = value.split("-").map(Number);
+      if (start < 1024 || end > 65535 || start > end || end - start > 99) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "PREVIEW_PORT_RANGE must be ascending, within 1024-65535, and span at most 100 ports" });
+      }
+    }),
+  /** #96: lifetime cap on a preview container; it is removed without a request once this elapses. */
+  PREVIEW_TTL_MS: z.coerce.number().int().min(10_000).max(86_400_000).default(1_800_000),
   RUNTIME_INSTANCE_ID: z
     .string()
     .trim()
@@ -115,6 +131,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     containerMemoryLimit: env.CONTAINER_MEMORY_LIMIT,
     containerPidsLimit: env.CONTAINER_PIDS_LIMIT,
     containerUser: env.CONTAINER_USER?.trim() || defaultContainerUser,
+    previewPortStart: Number(env.PREVIEW_PORT_RANGE.split("-")[0]),
+    previewPortEnd: Number(env.PREVIEW_PORT_RANGE.split("-")[1]),
+    previewTtlMs: env.PREVIEW_TTL_MS,
     runtimeInstanceId: env.RUNTIME_INSTANCE_ID,
     authToken,
     modelProvider: env.MODEL_PROVIDER,
@@ -151,9 +170,10 @@ export function isModelConfigured(config: AppConfig): boolean {
     : !isPlaceholder(config.arkApiKey) && !isPlaceholder(config.arkModel);
 }
 
-/** The model name the active provider will run — the same value `configSnapshot` stamps on each Run. */
+/** The model name the active provider will run — the same value `configSnapshot` stamps on each Run.
+ * An unset ARK_MODEL falls back to the placeholder `codexConfigToml` writes, never to "" (#54). */
 export function configuredModel(config: AppConfig): string {
-  return config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default";
+  return config.modelProvider === "ark" ? config.arkModel || "ep-not-configured" : config.openaiModel || "openai-default";
 }
 
 export function codexConfigToml(config: AppConfig): string {

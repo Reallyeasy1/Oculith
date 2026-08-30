@@ -287,6 +287,36 @@ export class FakeTaskCompletionJudge implements TaskCompletionJudge {
   }
 }
 
+export interface AcceptedJudgeVerdict {
+  score: number;
+  passed: boolean;
+  /** Redacted and bounded; safe to persist. */
+  explanation: string;
+  /** Citations that reference stored events, deduplicated in judge order. */
+  citedEventIds: string[];
+  /** True when the judge cited ids outside the stored allow-list (they were dropped). */
+  uncited: boolean;
+}
+
+/**
+ * The one gate every judge verdict passes before persistence (#177 shares it): the score must sit
+ * inside the definition's own range (#192), `passed` must agree with the pass threshold, citations
+ * are clamped to the stored evidence allow-list, and the explanation is redacted fail-closed.
+ */
+export function acceptJudgeVerdict(definition: EvaluatorDefinition, view: BuiltEvaluationView, raw: unknown): AcceptedJudgeVerdict {
+  const output = taskCompletionOutputSchema
+    .extend({ score: z.number().int().min(definition.minScore).max(definition.maxScore) })
+    .parse(raw);
+  if (output.passed !== (output.score >= definition.passThreshold)) throw new Error("Judge output is inconsistent with the evaluator pass threshold");
+  const allowed = new Set(view.eventIds);
+  const missing = output.citedEventIds.filter((id) => !allowed.has(id));
+  const cited = [...new Set(output.citedEventIds.filter((id) => allowed.has(id)))];
+  let explanation: string;
+  try { explanation = redactText(output.explanation).text.slice(0, 4_096); }
+  catch { explanation = "[REDACTED:failed_closed]"; }
+  return { score: output.score, passed: output.passed, explanation, citedEventIds: cited, uncited: missing.length > 0 };
+}
+
 export class TaskCompletionEvaluator implements RunEvaluator {
   constructor(private readonly source: TaskCompletionSource, private readonly judge: TaskCompletionJudge) {}
 
@@ -296,24 +326,14 @@ export class TaskCompletionEvaluator implements RunEvaluator {
       return { passed: false, explanation: "no final response", evidenceEventIds: [], metadata: { noFinalResponse: true } };
     }
     const view = buildEvaluationView({ summary, userRequest: source.userRequest, finalResponse: source.finalResponse, events: source.events });
-    // #192: the score must sit inside the definition's own range (seeded task_completion stays 1-5).
-    const output = taskCompletionOutputSchema
-      .extend({ score: z.number().int().min(definition.minScore).max(definition.maxScore) })
-      .parse(await this.judge.judge({ definition, view: view.text }));
-    if (output.passed !== (output.score >= definition.passThreshold)) throw new Error("Judge output is inconsistent with the evaluator pass threshold");
-    const allowed = new Set(view.eventIds);
-    const missing = output.citedEventIds.filter((id) => !allowed.has(id));
-    const cited = [...new Set(output.citedEventIds.filter((id) => allowed.has(id)))];
-    let explanation: string;
-    try { explanation = redactText(output.explanation).text.slice(0, 4_096); }
-    catch { explanation = "[REDACTED:failed_closed]"; }
+    const verdict = acceptJudgeVerdict(definition, view, await this.judge.judge({ definition, view: view.text }));
     return {
-      score: output.score,
-      passed: output.passed,
-      explanation,
-      evidenceEventIds: cited,
+      score: verdict.score,
+      passed: verdict.passed,
+      explanation: verdict.explanation,
+      evidenceEventIds: verdict.citedEventIds,
       evaluatorModel: this.judge.model,
-      metadata: { ...(missing.length ? { uncited: true } : {}), ...(view.truncated ? { viewTruncated: true } : {}) },
+      metadata: { ...(verdict.uncited ? { uncited: true } : {}), ...(view.truncated ? { viewTruncated: true } : {}) },
     };
   }
 }

@@ -1,17 +1,18 @@
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import type { AppConfig } from "./config.js";
+import { configuredModel, type AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import { configHash, configSnapshot, type AgentService } from "./agent-service.js";
 import { createTraceContext, type TraceContext } from "./glassbox/context.js";
 import { redactText } from "./glassbox/redact.js";
 import type { ObservationEmitter } from "./glassbox/emitter.js";
-import type { EvaluationStore } from "./glassbox/evaluation.js";
+import { SEEDED_EVALUATORS, type EvaluationStore } from "./glassbox/evaluation.js";
 import type { EvaluationJobWorker } from "./glassbox/jobs.js";
+import { redactAccessToken, type LiveNotifier } from "./glassbox/live.js";
 import { MetricStore, metricQueryBody } from "./glassbox/metrics.js";
 import { ReliabilityService, reliabilityCompareQuerySchema, reliabilityQuerySchema } from "./glassbox/reliability.js";
 import { buildTrace, projectAudit, type TraceView } from "./glassbox/query.js";
@@ -19,6 +20,7 @@ import { CATEGORIES, SCHEMA_VERSION, STATUSES } from "./glassbox/schema.js";
 import type { RunIndexEntry, TraceStore } from "./glassbox/store.js";
 import { executionStatusOf, isFresh, rollupRun, summaryFromView, traceStatusOf, type RunSummary, type RunSummaryStore } from "./glassbox/summary.js";
 import type { RunLogStore } from "./run-log-store.js";
+import type { PreviewManager } from "./preview.js";
 import { BASELINE_QUERY_LIMIT, buildAgentRunBaseline, estimatedCost } from "./glassbox/baseline.js";
 import { caseFromRun, regressionCaseInput } from "./eval/cases.js";
 import { EvalRunner } from "./eval/runner.js";
@@ -40,6 +42,11 @@ const createAgentBody = z.object({
   template: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/).optional(),
   // #253: operator-set post-run verification; the service trims it and treats "" as "clear the command".
   verifyCommand: z.string().max(500).optional(),
+  // #255: per-Agent daily budget; `null` (or no limits) clears it. Limits are counts, never content.
+  budget: z.object({
+    maxTokensPerDay: z.number().int().min(1).max(1_000_000_000_000).optional(),
+    maxEstimatedUsdPerDay: z.number().positive().max(1_000_000).optional(),
+  }).nullable().optional(),
 });
 const updateAgentBody = createAgentBody.partial().refine(
   (value) => Object.keys(value).length > 0,
@@ -79,7 +86,8 @@ const evaluatorSlug = (name: string): string =>
 export async function createApp(
   config: AppConfig,
   service: AgentService,
-  glassbox?: { emitter: ObservationEmitter; store: TraceStore; summaries?: RunSummaryStore | undefined; evaluations?: EvaluationStore | undefined; jobs?: EvaluationJobWorker | undefined; logs?: RunLogStore | undefined },
+  glassbox?: { emitter: ObservationEmitter; store: TraceStore; summaries?: RunSummaryStore | undefined; evaluations?: EvaluationStore | undefined; jobs?: EvaluationJobWorker | undefined; logs?: RunLogStore | undefined; live?: LiveNotifier | undefined },
+  previews?: PreviewManager,
 ): Promise<FastifyInstance> {
   const tokenPricing = {
     inputPerMillion: config.glassboxPricePerMtokInput,
@@ -90,6 +98,13 @@ export async function createApp(
     logger: {
       level: config.logLevel,
       redact: ["req.headers.authorization", "req.headers.cookie"],
+      serializers: {
+        // #40: the SSE route accepts the bearer token as ?access_token= (EventSource cannot set
+        // headers), so the logged URL must be scrubbed before it reaches the request log.
+        req(request: FastifyRequest) {
+          return { method: request.method, url: redactAccessToken(request.url), remoteAddress: request.ip };
+        },
+      },
     },
     bodyLimit: 1_048_576,
   });
@@ -140,7 +155,12 @@ export async function createApp(
       return;
     }
     const header = request.headers.authorization ?? "";
-    const candidate = header.startsWith("Bearer ") ? header.slice(7) : "";
+    let candidate = header.startsWith("Bearer ") ? header.slice(7) : "";
+    // #40: EventSource cannot set Authorization, so the stream route — and only it — also accepts
+    // the same shared token as ?access_token=. The req serializer above redacts it from the log.
+    if (!candidate && request.url.split("?")[0] === "/api/events/stream") {
+      candidate = new URLSearchParams(request.url.split("?")[1] ?? "").get("access_token") ?? "";
+    }
     const expectedBuffer = Buffer.from(config.authToken);
     const candidateBuffer = Buffer.from(candidate);
     const valid =
@@ -155,7 +175,8 @@ export async function createApp(
     app.addHook("onRequest", async (request) => {
       if (
         request.method === "POST" &&
-        /^\/api\/agents\/[^/]+\/messages$/.test(request.url)
+        // The matched route pattern, not request.url: a query string (?x=1) must not bypass the http root span (#54).
+        request.routeOptions.url === "/api/agents/:id/messages"
       ) {
         request.glassbox = createTraceContext(
           {
@@ -170,7 +191,9 @@ export async function createApp(
 
     app.addHook("onResponse", async (request, reply) => {
       const ctx = request.glassbox;
-      // Only the accepted path has a Run to attach to; a rejected request never opened a trace.
+      // Emit only when the service published ids: the accepted path (a Run exists) and the #255 budget
+      // refusal (429), which deliberately sets ctx.runId after writing policy.denied + run.refused so
+      // this hook closes that trace. Every other rejection leaves ctx unset and never opened a trace.
       if (!ctx?.runId || !ctx.agentId) return;
       glassbox.emitter.emit({
         traceId: ctx.traceId,
@@ -198,7 +221,12 @@ export async function createApp(
 
   app.get("/api/auth", async () => ({ required: config.authToken.length > 0 }));
 
-  app.get("/api/system", async () => service.systemInfo());
+  // #335: preview availability rides on /api/system so the web gate reflects the probed engine
+  // state, not the Codex provider; without a PreviewManager the feature is simply off.
+  app.get("/api/system", async () => ({
+    ...(await service.systemInfo()),
+    previewAvailable: previews ? await previews.isAvailable() : false,
+  }));
 
   app.get("/api/agents", async () => ({ agents: service.listAgents() }));
 
@@ -219,12 +247,35 @@ export async function createApp(
   app.patch("/api/agents/:id", async (request) => {
     const { id } = agentIdParams.parse(request.params);
     const body = updateAgentBody.parse(request.body);
+    // #96: a workspace switch would leave the preview serving the old directory's bind mount.
+    if (body.workspace !== undefined && previews?.get(id)) {
+      throw new HttpError(409, "Stop the preview before switching workspaces — the container has the current one mounted");
+    }
     return { agent: await service.updateAgent(id, body) };
   });
 
   app.delete("/api/agents/:id", async (request) => {
     const { id } = agentIdParams.parse(request.params);
+    // #96: deleting the Agent archives the workspace out from under the preview's mount — stop it
+    // first, but only once the Agent is known to exist (a bad id must stay a plain 404). A stop the
+    // engine cannot confirm throws 502 and aborts the delete: archiving under a live mount is the
+    // exact hazard the stop prevents.
+    service.getAgent(id);
+    await previews?.stop(id, "agent_deleted");
     return service.deleteAgent(id);
+  });
+
+  // #255: live budget status for the Agent banner — the same rolling 24 h window the pre-run gate
+  // enforces. Served even without a budget (exceeded: false) so the client needs no second probe.
+  app.get("/api/agents/:id/budget", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    const status = await service.budgetStatus(id);
+    return {
+      budget: status.budget,
+      usage: status.usage,
+      exceeded: status.denial !== undefined,
+      ...(status.denial ? { denial: status.denial } : {}),
+    };
   });
 
   app.post("/api/agents/:id/start", async (request) => {
@@ -236,6 +287,106 @@ export async function createApp(
     const { id } = agentIdParams.parse(request.params);
     return { agent: await service.stopAgent(id) };
   });
+
+  // #65: read-only workspace browser. Responses carry file metadata (and bounded utf8 content from
+  // the file route only); nothing here writes, and nothing here reaches a trace, a log or a store.
+  const workspacePathQuery = z.object({ path: z.string().max(1_024).default("") });
+  app.get("/api/agents/:id/workspace", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    const query = workspacePathQuery.parse(request.query);
+    return service.browseAgentWorkspace(id, query.path);
+  });
+
+  app.get("/api/agents/:id/workspace/file", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    const query = workspacePathQuery.parse(request.query);
+    return service.readAgentWorkspaceFile(id, query.path);
+  });
+
+  // #66: workspace editing from the browser. The service refuses edits while a Run has the
+  // directory mounted (409) and refuses anything that looks like a credential (400); per-route
+  // bodyLimits cover base64 inflation (~4/3) over the 1 MB file / 8 MB batch caps the module
+  // enforces on the decoded bytes. Uploads arrive as base64 inside JSON by design — no multipart
+  // dependency (#66).
+  const workspaceUploadSchema = z.object({
+    path: z.string().min(1).max(1_024),
+    content: z.string(),
+    encoding: z.enum(["utf8", "base64"]).default("utf8"),
+  });
+  app.put("/api/agents/:id/workspace/file", { bodyLimit: 4 * 1024 * 1024 }, async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    const body = workspaceUploadSchema.parse(request.body);
+    return { file: await service.writeAgentWorkspaceFile(id, body) };
+  });
+
+  app.post("/api/agents/:id/workspace/files", { bodyLimit: 16 * 1024 * 1024 }, async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    const body = z.object({ files: z.array(workspaceUploadSchema).min(1).max(20) }).parse(request.body);
+    return { files: await service.seedAgentWorkspaceFiles(id, body.files) };
+  });
+
+  app.delete("/api/agents/:id/workspace/file", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    const query = z.object({ path: z.string().min(1).max(1_024) }).parse(request.query);
+    return { file: await service.deleteAgentWorkspaceFile(id, query.path) };
+  });
+
+  app.post("/api/agents/:id/workspace/reset", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    const body = z.object({ forgetThread: z.boolean().optional() }).parse(request.body ?? {});
+    // #96: reset archives the directory the preview container has bind-mounted.
+    if (previews?.get(id)) {
+      throw new HttpError(409, "Stop the preview before resetting this workspace — the container has it mounted");
+    }
+    return service.resetAgentWorkspace(id, body);
+  });
+
+  // #96: workspace preview — one long-lived hardened container per Agent, publishing a loopback
+  // port from PREVIEW_PORT_RANGE. Started/stopped edges are observed as runtime.preview.* events;
+  // the manager enforces the command allow-list, the port range and the TTL.
+  if (previews) {
+    const previewBody = z.object({ command: z.enum(["vite", "static"]).default("vite") });
+    app.post("/api/agents/:id/preview", async (request, reply) => {
+      const { id } = agentIdParams.parse(request.params);
+      const body = previewBody.parse(request.body ?? {});
+      const agent = service.getAgent(id);
+      // #335: the prerequisite is a working engine + runtime image, not RUNTIME_PROVIDER —
+      // Codex may run as a local process while Docker hosts the (still sandboxed) preview.
+      if (!(await previews.isAvailable())) {
+        throw new HttpError(
+          409,
+          "Workspace preview needs a running container engine (docker/podman) and the runtime image — build it with: docker build -f Dockerfile.runtime -t " +
+            config.containerRuntimeImage + " .",
+        );
+      }
+      if (agent.status === "busy") {
+        throw new HttpError(409, "A run is in progress — the workspace is mounted in the sandbox. Stop the run first.");
+      }
+      // Deliberately one-directional: a Run may start while a preview serves (the preview mount is
+      // read-only, and watching an Agent iterate on a served page is the point of the feature).
+      const preview = await previews.start(agent, body.command);
+      return reply.code(201).send({ preview });
+    });
+
+    app.get("/api/agents/:id/preview", async (request) => {
+      const { id } = agentIdParams.parse(request.params);
+      const agent = service.getAgent(id);
+      // #335: servability rides along so the UI offers Preview only when the workspace has
+      // something to serve (local vite install or a built dist/).
+      return {
+        preview: (await previews.status(id)) ?? null,
+        servable: await previews.servable(agent.workspacePath),
+      };
+    });
+
+    app.delete("/api/agents/:id/preview", async (request) => {
+      const { id } = agentIdParams.parse(request.params);
+      service.getAgent(id);
+      const preview = await previews.stop(id, "user_request");
+      if (!preview) throw new HttpError(404, "No preview is running for this Agent");
+      return { preview };
+    });
+  }
 
   app.get("/api/agents/:id/messages", async (request) => {
     const { id } = agentIdParams.parse(request.params);
@@ -288,6 +439,50 @@ export async function createApp(
     const { baseline, candidate } = z.object({ baseline: z.string().uuid(), candidate: z.string().uuid() }).parse(request.params);
     return compareEvalRuns(service.getEvalRun(baseline), service.getEvalRun(candidate));
   });
+
+  if (glassbox?.live) {
+    const live = glassbox.live;
+    // ponytail: module-local counter, not per-socket bookkeeping — single-user app, one process.
+    // Cap covers a few tabs plus a curl; raise if the app ever becomes multi-user.
+    const MAX_STREAMS = 4;
+    let streams = 0;
+    // #40: one SSE endpoint emitting lightweight notification frames; clients refetch through the
+    // existing REST endpoints, so nothing here serializes trace content (invariant 1).
+    app.get("/api/events/stream", (request, reply) => {
+      if (streams >= MAX_STREAMS) {
+        void reply.code(503).send({ error: "Too many live streams" });
+        return;
+      }
+      streams += 1;
+      reply.hijack();
+      let open = true;
+      const heartbeat = setInterval(() => write(":hb\n\n"), live.heartbeatMs);
+      heartbeat.unref?.();
+      const unsubscribe = live.subscribe((notification) => write("data: " + JSON.stringify(notification) + "\n\n"));
+      function close(): void {
+        if (!open) return;
+        open = false;
+        streams -= 1;
+        clearInterval(heartbeat);
+        unsubscribe();
+        try { reply.raw.end(); } catch { /* peer already gone */ }
+      }
+      // Every raw write is wrapped: a dead client must never throw into the server (invariant 4).
+      function write(frame: string): void {
+        if (!open) return;
+        try { reply.raw.write(frame); } catch { close(); }
+      }
+      request.raw.on("close", close);
+      try {
+        reply.raw.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache, no-transform",
+          connection: "keep-alive",
+        });
+        reply.raw.write("retry: 3000\n\n");
+      } catch { close(); }
+    });
+  }
 
   if (glassbox) {
     const runsQuery = z.object({ status: z.enum(STATUSES).optional(), agentId: z.string().uuid().optional(), from: z.string().datetime().optional(), to: z.string().datetime().optional(), limit: z.coerce.number().int().min(1).max(200).default(50) });
@@ -369,7 +564,12 @@ export async function createApp(
         catch { throw new HttpError(400, "Evaluator name could not be scanned for secrets"); }
         const id = evaluatorSlug(safeName);
         if (!id) throw new HttpError(400, "Evaluator name must contain letters or digits");
-        if (id === "task_completion") throw new HttpError(409, 'Evaluator id "task_completion" is reserved for the seeded judge');
+        // Every seeded llm_judge id is reserved (#177 privacy review): a user-authored v2 of one would
+        // reach that id's registered runtime — e.g. recovery_quality's notEligible shortcut — with the
+        // user's own setsTaskOutcome/threshold, stamping outcomes the runtime never judged.
+        if (SEEDED_EVALUATORS.some((seed) => seed.id === id && seed.type === "llm_judge")) {
+          throw new HttpError(409, `Evaluator id "${id}" is reserved for a seeded judge`);
+        }
         const existing = await glassbox.evaluations!.getDefinition(id);
         if (existing && existing.type !== "llm_judge") throw new HttpError(409, `Evaluator "${id}" is a ${existing.type} evaluator and cannot become an llm_judge`);
         const evaluator = await glassbox.evaluations!.createDefinition({
@@ -447,7 +647,7 @@ export async function createApp(
         if (q.status && status !== q.status) continue;
         const cost = s.estimatedCostUsd ?? estimatedCost(s, tokenPricing);
         items.push({ runId: run.id, traceId: run.traceId ?? s.traceId, agentId: run.agentId, agentName: agents.get(run.agentId) ?? "", workspace: s.workspace, sessionId: s.sessionId, status, startedAt: s.startedAt ?? run.createdAt, durationMs: s.durationMs, endedReason: s.endedReason, interruptedAfterMs: s.interruptedAfterMs,
-          firstFailingStep: s.firstFailingStep, eventCount: s.eventCount, runtime: config.runtimeProvider, model: config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default",
+          firstFailingStep: s.firstFailingStep, eventCount: s.eventCount, runtime: config.runtimeProvider, model: configuredModel(config),
           usage: s.usage, workspaceChanges: s.workspaceChanges, outcome: s.outcome, capabilities: s.capabilities, toolCalls: s.metrics.toolCalls, toolFailures: s.metrics.toolFailures, toolIdentities: s.metrics.toolIdentities,
           tokens: s.metrics.tokens?.output !== undefined ? { output: s.metrics.tokens.output } : undefined,
           denials: s.denials, actions: s.actions, executionStatus: executionStatusOf(status), taskOutcome: s.taskOutcome, taskOutcomeSource: s.taskOutcomeSource, configHash: s.configHash ?? run.configHash, configSnapshot: run.configSnapshot,
@@ -486,7 +686,8 @@ export async function createApp(
       const { traceId } = traceParams.parse(request.params); const q = eventsQuery.parse(request.query);
       const runId = runIdFor(traceId);
       const categories = q.category === undefined ? undefined : z.array(z.enum(CATEGORIES)).min(1).parse(q.category.split(",").map((value) => value.trim()).filter(Boolean));
-      const events = (await glassbox.store.readRun(runId)).filter((e) => (!categories || categories.includes(e.category)) && (!q.status || e.status === q.status) && (!q.q || (e.name + " " + (e.error?.message ?? "")).toLowerCase().includes(q.q.toLowerCase())));
+      // q scans name + error + summary text (#54): the captured summary is often the only place a phrase appears.
+      const events = (await glassbox.store.readRun(runId)).filter((e) => (!categories || categories.includes(e.category)) && (!q.status || e.status === q.status) && (!q.q || (e.name + " " + (e.error?.message ?? "") + " " + (e.summary?.text ?? "")).toLowerCase().includes(q.q.toLowerCase())));
       return { schemaVersion: SCHEMA_VERSION, capturePolicy: glassbox.emitter.capturePolicy, events };
     });
   }

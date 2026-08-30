@@ -5,14 +5,26 @@ import { REDACTION_RULESET_VERSION, SCHEMA_VERSION, newId, observationEventSchem
 export const TRACE_CAPS = { maxEventsPerRun: 1000, maxEventBytes: 32 * 1024, maxRunBytes: 10 * 1024 * 1024 } as const;
 
 export const ALWAYS_KEEP_TYPES: ReadonlySet<string> = new Set([
-  "run.completed", "run.failed", "run.cancelled", "run.timed_out",
+  "run.completed", "run.failed", "run.cancelled", "run.timed_out", "run.refused",
   "agent_service.run.completed", "agent_service.run.failed",
   "runtime.codex.completed", "runtime.codex.failed", "runtime.container.stopped",
+  // #96: the preview audit trail ("who exposed what and when") survives retention as a skeleton.
+  "runtime.preview.started", "runtime.preview.stopped",
   "error.recorded", "telemetry.degraded", "trace.truncated", "capability.unavailable", "limit.exceeded",
 ]);
 
-/** Run terminal events → trace status. Shared by the index (retention needs "is this Run finished?") and the query rollup. */
-export const TERMINAL_EVENT_STATUS: Record<string, TraceStatus> = { "run.completed": "ok", "run.failed": "error", "run.cancelled": "cancelled", "run.timed_out": "timeout" };
+/** Run terminal events → trace status. Shared by the index (retention needs "is this Run finished?") and the query rollup.
+ * `run.refused` (#255) closes a refusal trace so retention can evict it — without it every 429 would pin an immortal file.
+ * `runtime.preview.stopped` (#96) does the same for a preview lifecycle trace; while the preview serves, its trace is
+ * honestly `running` and retention leaves it alone. */
+export const TERMINAL_EVENT_STATUS: Record<string, TraceStatus> = { "run.completed": "ok", "run.failed": "error", "run.cancelled": "cancelled", "run.timed_out": "timeout", "run.refused": "error", "runtime.preview.stopped": "ok" };
+
+/** #96: a preview's stop edge carries its own outcome (clean stop = ok, self-exit = error, close never
+ * observed = unset), so it maps by status, not by type; Run terminal events keep the fixed mapping. */
+export const terminalEventStatus = (event: { type: string; status: TraceStatus }): TraceStatus | undefined =>
+  event.type === "runtime.preview.stopped"
+    ? (event.status === "running" ? "ok" : event.status)
+    : TERMINAL_EVENT_STATUS[event.type];
 export type EvictionReason = "retention_age" | "retention_disk";
 /** A `trace.truncated` written by retention cleanup (vs. one written by the emitter on a per-run cap). */
 export const isEvictionMarker = (e: ObservationEvent): boolean =>
@@ -49,7 +61,9 @@ export interface TraceStore {
 
 export function shrinkToCap(event: ObservationEvent): ObservationEvent {
   if (Buffer.byteLength(JSON.stringify(event), "utf8") <= TRACE_CAPS.maxEventBytes) return event;
-  const out: ObservationEvent = { ...event, attributes: {}, privacy: { ...event.privacy, redacted: true, reason: "event_truncated" } };
+  // A size cap is a truncation, not a redaction: keep the redaction pass's own flag so the UI's
+  // "redacted" badge never fires for a merely oversized event (#54); `reason` records the truncation.
+  const out: ObservationEvent = { ...event, attributes: {}, privacy: { ...event.privacy, reason: "event_truncated" } };
   delete out.summary;
   return out;
 }
@@ -65,9 +79,14 @@ export abstract class BaseTraceStore implements TraceStore {
   // serialises admit->persist->track so concurrent appends to one run can't both pass the cap check.
   private readonly queues = new Map<string, Promise<void>>();
 
+  protected readonly log?: TraceStoreLog | undefined;
+
   /** `log` surfaces silently dropped records: without it a schemaVersion bump would empty every trace
-   * and read as an empty history rather than as a migration the operator still has to do. */
-  constructor(protected readonly log?: TraceStoreLog | undefined) {}
+   * and read as an empty history rather than as a migration the operator still has to do.
+   * Wrapped so a throwing callback never becomes a second failure on the append/read path. */
+  constructor(log?: TraceStoreLog | undefined) {
+    this.log = log ? (message, meta) => { try { log(message, meta); } catch { /* swallowed by design */ } } : undefined;
+  }
 
   abstract initialize(): Promise<void>;
   protected abstract persist(event: ObservationEvent, line: string): Promise<void>;
@@ -96,7 +115,7 @@ export abstract class BaseTraceStore implements TraceStore {
       lastTimestamp: prev && prev.lastTimestamp > event.timestamp ? prev.lastTimestamp : event.timestamp,
       bytes: (prev?.bytes ?? 0) + bytes,
       truncated: (prev?.truncated ?? false) || event.type === "trace.truncated",
-      status: TERMINAL_EVENT_STATUS[event.type] ?? prev?.status ?? "running",
+      status: terminalEventStatus(event) ?? prev?.status ?? "running",
       evicted: (prev?.evicted ?? false) || isEvictionMarker(event),
     });
     this.traceToRun.set(event.traceId, event.runId);
@@ -117,8 +136,15 @@ export abstract class BaseTraceStore implements TraceStore {
       this.track(admitted, Buffer.byteLength(line, "utf8"));
       result = { stored: true };
     });
-    this.queues.set(event.runId, operation.catch(() => undefined));
+    const tracked = operation.catch(() => undefined);
+    this.queues.set(event.runId, tracked);
     await operation;
+    // A terminal Run stops appending: drop its settled queue entry so a long-lived process doesn't keep
+    // one per finished Run (#54). Only when the map still holds OUR promise (a concurrent append may have
+    // chained a newer one); a late append simply recreates the entry.
+    if (this.queues.get(event.runId) === tracked && (this.index.get(event.runId)?.status ?? "running") !== "running") {
+      this.queues.delete(event.runId);
+    }
     return result;
   }
   runIdForTrace(traceId: string): string | undefined { return this.traceToRun.get(traceId); }

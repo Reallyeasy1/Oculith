@@ -81,9 +81,55 @@ describe("Container Codex runner", () => {
     const stopped = events.find((e) => e.type === "runtime.container.stopped");
     expect(stopped).toMatchObject({ status: "cancelled", attributes: { cleanup: "signal" } });
     expect(stopped!.attributes).not.toHaveProperty("removed");
+    // #54: container.stopped carries only the container outcome (status/exitCode/cleanup);
+    // the codex span's error stays on the codex span.
+    expect(stopped!.error).toBeUndefined();
+    expect(events.find((e) => e.type === "runtime.codex.failed")!.error).toMatchObject({ type: "cancelled" });
     const firstOutput = events.filter((e) => e.type === "runtime.codex.first_output");
     expect(firstOutput).toHaveLength(1);
     expect(firstOutput[0]).toMatchObject({ phase: "instant", parentSpanId: expect.any(String), attributes: { latencyMs: expect.any(Number) } });
+  }, 30_000);
+
+  it("#243: stamps echo-verified `resumed` on the span end and logs the resume once, with no runner-side failure line", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "container-runner-"));
+    dirs.push(dir);
+    const stream = [
+      { type: "thread.started", thread_id: "thread-123" },
+      { type: "item.completed", item: { id: "i1", type: "agent_message", text: "done" } },
+      { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+    await writeFile(
+      path.join(dir, "run"),
+      "for (const line of " + JSON.stringify(stream.map((l) => JSON.stringify(l))) + ") process.stdout.write(line + '\\n');",
+    );
+    const store = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const config = loadConfig({
+      NODE_ENV: "test",
+      CODEX_HOME: dir,
+      RUNTIME_PROVIDER: "container",
+      CONTAINER_ENGINE: process.execPath,
+      ARK_API_KEY: "test-key",
+      ARK_MODEL: "ep-test",
+    });
+    const runner = new ContainerCodexRunner(config, emitter);
+    const trace = { traceId: "trc_1", runId: "run-1", agentId: "agt-1", parentSpanId: "spn_svc" };
+    const logged: string[] = [];
+    const logger = {
+      info: (message: string) => logged.push("info " + message),
+      warn: (message: string) => logged.push("warn " + message),
+      error: (message: string) => logged.push("error " + message),
+    };
+    // Codex echoed the exact thread id it was asked to resume: the trace records resumed=true and the
+    // log line may honestly say "resumed".
+    const result = await runner.run({ agentId: "agt-1", workspacePath: dir, prompt: "p", threadId: "thread-123", trace, logger });
+    expect(result.output).toBe("done");
+    await emitter.flush();
+    const end = (await store.readRun("run-1")).find((e) => e.type === "runtime.codex.completed")!;
+    expect(end.attributes.resumed).toBe(true);
+    expect(end.attributes.sessionId).toBe("thread-123");
+    expect(logged).toContain("info Codex session resumed");
+    expect(logged.filter((line) => line.startsWith("error"))).toEqual([]);
   }, 30_000);
 
   it("resumes a thread inside the mounted Runtime workspace", () => {

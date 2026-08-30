@@ -12,6 +12,23 @@ export interface PendingMessage {
   queuedAt: string;
 }
 
+/** Per-Agent daily spend cap (#255). Enforced pre-run only: Codex reports usage at turn end, so a
+ * single Run can overshoot the cap — the gate refuses the next one. "Day" is a rolling 24 h window. */
+export interface AgentBudget {
+  maxTokensPerDay?: number | undefined;
+  maxEstimatedUsdPerDay?: number | undefined;
+}
+
+/** One workspace edit made through the browser (#66). `actor` is fixed to "operator" until the
+ * Bouncer track brings identity — the shared bearer token cannot distinguish people. */
+export interface WorkspaceHistoryEntry {
+  at: string;
+  action: "write" | "seed" | "delete" | "reset";
+  path: string;
+  bytes: number;
+  actor: string;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -24,9 +41,14 @@ export interface Agent {
   workspaceTemplate?: string | undefined;
   /** Operator-set shell command run in the workspace after every completed ordinary Run (#253); its exit code sets the Run's taskOutcome. */
   verifyCommand?: string | undefined;
+  /** Optional daily budget (#255); absent means no gate. No Database version bump — old files lack the key. */
+  budget?: AgentBudget | undefined;
   /** FIFO of messages accepted while busy (#254), capped at 10; absent means empty. No Database
    * version bump: old files simply lack the key, and old readers ignore it — the shape stays compatible. */
   pendingMessages?: PendingMessage[] | undefined;
+  /** Last 50 browser edits to the workspace, newest first (#66); absent means none. No version bump —
+   * old files simply lack the key. */
+  workspaceHistory?: WorkspaceHistoryEntry[] | undefined;
   codexThreadId: string | null;
   lastError: string | null;
   createdAt: string;
@@ -77,6 +99,9 @@ export interface AgentConfigSnapshot {
   capturePolicy: "metadata_only" | "safe_summary" | "reasoning_summary";
   /** sha256 of the Agent's verifyCommand (hashed like `instructions`); absent when none is set. */
   verifyCommand?: string | undefined;
+  /** Budget limits (#255) are plain numbers, not secrets; absent when unset so pre-budget hashes stay stable. */
+  budgetMaxTokensPerDay?: number | undefined;
+  budgetMaxEstimatedUsdPerDay?: number | undefined;
 }
 
 export interface AgentRun {
@@ -97,6 +122,28 @@ export interface AgentRun {
   configSnapshot?: AgentConfigSnapshot | undefined;
   /** Live activity observed from the runtime stream (#223); set best-effort while `running`, cleared on terminal states. */
   currentActivity?: RunActivity | undefined;
+}
+
+/** #96: allow-listed preview commands — the API accepts these two names, never a command line. */
+export type PreviewCommand = "vite" | "static";
+
+/** #96: one long-lived hardened container serving the Agent's workspace on a published loopback port.
+ * In-process state only (a restart removes the container), so it never enters the Database. */
+export interface WorkspacePreview {
+  previewId: string;
+  agentId: string;
+  command: PreviewCommand;
+  port: number;
+  url: string;
+  containerName: string;
+  startedAt: string;
+  expiresAt: string;
+}
+
+/** #335: what this workspace can currently serve — a local vite install and/or a built dist/. */
+export interface PreviewServability {
+  vite: boolean;
+  static: boolean;
 }
 
 export interface RegressionCase {
@@ -147,6 +194,7 @@ export interface CreateAgentInput {
   workspace?: string | undefined;
   template?: string | undefined;
   verifyCommand?: string | undefined;
+  budget?: AgentBudget | null | undefined;
 }
 
 export interface UpdateAgentInput {
@@ -156,6 +204,8 @@ export interface UpdateAgentInput {
   workspace?: string | undefined;
   /** Empty string clears the command. */
   verifyCommand?: string | undefined;
+  /** `null` (or a budget with no limits) clears the stored budget (#255). */
+  budget?: AgentBudget | null | undefined;
 }
 
 /** Bounded per-Run counters observed from the runtime stream; feeds the completion-summary log line (#232). */

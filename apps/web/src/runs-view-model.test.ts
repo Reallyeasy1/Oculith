@@ -2,7 +2,7 @@
 //   npx vitest run apps/web/src/runs-view-model.test.ts
 import { describe, expect, it } from "vitest";
 import type { RunListItem, TraceStatus } from "./types";
-import { ERROR_HEAD_CHARS, collapseRequestId, errorHead, evidenceBadges, formatCost, formatRunDuration, formatUsage, liveRuns, matchesFilter, matchesProvenance, matchesTaskOutcome, needsAttention, outlierLabel, pluralize, recoveredFailures, runOutlier, SESSION_INPUT_TOKENS_ADVISORY_THRESHOLD, sessionHealth, summarizeRuns, taskOutcomeChip, taskOutcomeProvenance, workspaceLabel, workspaceOptionLabel } from "./runs-view-model";
+import { ERROR_HEAD_CHARS, collapseRequestId, errorHead, evidenceBadges, formatCost, formatRunDuration, formatUsage, liveRuns, matchesFilter, matchesProvenance, matchesTaskOutcome, needsAttention, outlierLabel, pluralize, recoveredFailures, runDurationCell, runOutlier, runsColumns, SESSION_INPUT_TOKENS_ADVISORY_THRESHOLD, sessionHealth, summarizeRuns, taskOutcomeChip, taskOutcomeProvenance, workspaceLabel, workspaceOptionLabel } from "./runs-view-model";
 
 function run(status: TraceStatus, degraded = false, agentId = "a", agentName = "A", extra: Partial<RunListItem> = {}): RunListItem {
   return {
@@ -142,6 +142,39 @@ describe("runOutlier", () => {
 describe("formatRunDuration", () => {
   it("renders restart time as a lower bound and keeps the last evidence offset", () => {
     expect(formatRunDuration(52, "server_restart", 61_000)).toBe("≥ 1m 01s · interrupted (last evidence +52 ms)");
+  });
+});
+
+describe("runDurationCell (#338)", () => {
+  it("keeps an interrupted Run's cell to the width-stable lower bound and moves the story to title", () => {
+    expect(runDurationCell(52, "server_restart", 61_000)).toEqual({ text: "≥ 1m 01s", title: "≥ 1m 01s · interrupted (last evidence +52 ms)" });
+  });
+
+  it("is plain formatDuration with no title for an uninterrupted Run", () => {
+    expect(runDurationCell(1_500)).toEqual({ text: "1.5 s" });
+    expect(runDurationCell(undefined)).toEqual({ text: "—" });
+  });
+});
+
+describe("runsColumns (#338)", () => {
+  it("hides every optional column when all listed Runs render — there", () => {
+    expect(runsColumns([run("ok"), run("error")])).toEqual({ outcome: false, task: false, failStep: false, config: false, usage: false, cost: false });
+    expect(runsColumns([])).toEqual({ outcome: false, task: false, failStep: false, config: false, usage: false, cost: false });
+  });
+
+  it("shows a column as soon as one Run has a value for it", () => {
+    const runs = [
+      run("ok", false, "a", "A", { outcome: { text: "done", finalMessageBytes: 4, reportedFailure: false } }),
+      run("ok", false, "a", "A", { taskOutcome: "passed" }),
+      run("error", false, "a", "A", { firstFailingStep: "npm test" }),
+      run("ok", false, "a", "A", { configHash: "abc123", usage: { inputTokens: 10 }, estimatedCostUsd: 0.01 }),
+    ];
+    expect(runsColumns(runs)).toEqual({ outcome: true, task: true, failStep: true, config: true, usage: true, cost: true });
+  });
+
+  it("counts an agent-reported failure as outcome content, but taskOutcome unknown as none", () => {
+    expect(runsColumns([run("ok", false, "a", "A", { outcome: { finalMessageBytes: 4, reportedFailure: true } })]).outcome).toBe(true);
+    expect(runsColumns([run("ok", false, "a", "A", { taskOutcome: "unknown" })]).task).toBe(false);
   });
 });
 

@@ -1,5 +1,5 @@
 import { SCHEMA_VERSION, type CapturePolicy, type Category, type ObservationEvent, type TraceStatus } from "./schema.js";
-import { TERMINAL_EVENT_STATUS as TERMINAL, isEvictionMarker } from "./store.js";
+import { isEvictionMarker, terminalEventStatus } from "./store.js";
 
 export interface Span {
   spanId: string; parentSpanId?: string | undefined; name: string; category: Category; status: TraceStatus;
@@ -259,7 +259,11 @@ function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, stat
   const capability = unavailableLayers(events);
   const diagnosis = [
     kind === "denied"
-      ? `sandbox declined \`${String(first.attributes.program || first.name)}\``
+      // #255: name the actor the event actually recorded — a budget denial comes from the gate,
+      // not the sandbox, and the diagnosis must never claim an actor that wasn't observed.
+      ? first.attributes.decision === "budget_exceeded"
+        ? (first.name === "budget.queue_hold" ? "budget gate held the Agent's queued messages" : "budget gate refused the request") + ` (\`${first.name}\`)`
+        : `sandbox declined \`${String(first.attributes.program || first.name)}\``
       : isRestartCancel(first)
       ? `Run interrupted by a server restart after ${formatElapsed(interruptedAfterMs)}; last trace evidence was ${elapsed} after the Run started; ${open ? `the ${open.category} span ${open.name} never closed` : "no open span was recorded"}.`
       : `Run ${status} in ${first.source.component} after ${secs}. First actionable ${kind}: ${first.name}${target.message ? " — " + target.message : ""}.`,
@@ -292,8 +296,8 @@ export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: Cap
   const tree = buildTree(spans);
   const flat = flattenSpans(tree);
   const first = events[0];
-  const terminal = [...events].reverse().find((e) => TERMINAL[e.type] !== undefined);
-  const status: TraceStatus = terminal ? TERMINAL[terminal.type]! : events.length > 0 ? "running" : "unset";
+  const terminal = [...events].reverse().find((e) => terminalEventStatus(e) !== undefined);
+  const status: TraceStatus = terminal ? terminalEventStatus(terminal)! : events.length > 0 ? "running" : "unset";
   const startedAt = first?.timestamp;
   const endedAt = terminal?.timestamp ?? (status === "running" ? undefined : events.at(-1)?.timestamp);
   // Interrupted by a restart: endedAt keeps the restart-cancel timestamp (that IS when the Run was closed), but the

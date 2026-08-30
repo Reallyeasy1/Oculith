@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AppConfig } from "./config.js";
-import { isModelConfigured } from "./config.js";
+import { configuredModel, isModelConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
 import { createTraceContext, type TraceContext } from "./glassbox/context.js";
 import { describeFinalMessage } from "./glassbox/codex-observer.js";
@@ -11,12 +11,15 @@ import {
   type ObservationEmitter,
   type SpanHandle,
 } from "./glassbox/emitter.js";
+import { budgetWindowStart, describeBudgetDenial, evaluateBudget, normalizeBudget, usageInWindow, type BudgetDenial, type BudgetUsage } from "./glassbox/budget.js";
 import { redactText } from "./glassbox/redact.js";
 import { capturesSummaries, newId, type TraceStatus } from "./glassbox/schema.js";
+import type { RunSummaryStore } from "./glassbox/summary.js";
 import { PostCheckRunner } from "./postcheck-runner.js";
 import { JsonStore } from "./store.js";
 import type {
   Agent,
+  AgentBudget,
   AgentConfigSnapshot,
   AgentRun,
   Database,
@@ -28,15 +31,32 @@ import type {
   RegressionCase,
   RunActivity,
   UpdateAgentInput,
+  WorkspaceHistoryEntry,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import { browseWorkspace, readWorkspaceFileView, WorkspacePathError, type WorkspaceFileView, type WorkspaceListing } from "./workspace-browse.js";
+import { deleteWorkspaceFile, seedWorkspaceFiles, WorkspaceEditError, writeWorkspaceFile, type WorkspaceUpload, type WorkspaceWriteReceipt } from "./workspace-edit.js";
 import { LOG_SECRET_ASSIGNMENT, type RunLogStore } from "./run-log-store.js";
 import { boundedChangedPaths, diffWorkspace, snapshotWorkspace } from "./workspace-snapshot.js";
 
 const now = () => new Date().toISOString();
+
+/** #65/#66: a proven-unsafe or wrong-kind path (or a refused write — cap, managed file, credential)
+ * is the client's fault (400); a path that checks out but names nothing on disk is 404. Anything
+ * else (EPERM, EIO) stays a 500 for the error handler. */
+function mapWorkspaceBrowseError(error: unknown): unknown {
+  if (error instanceof WorkspacePathError || error instanceof WorkspaceEditError) return new HttpError(400, error.message);
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (code === "ENOENT" || code === "ENOTDIR") return new HttpError(404, "No such file or directory in this workspace");
+  return error;
+}
 const HEARTBEAT_INTERVAL_MS = 15_000;
 /** Max messages a busy Agent will queue (#254); beyond it the POST is refused with 429. */
 export const PENDING_MESSAGES_CAP = 10;
+/** Last N browser workspace edits kept on the Agent record (#66). */
+export const WORKSPACE_HISTORY_CAP = 50;
+/** #66: the shared bearer token cannot distinguish people; a real identity is the Bouncer track. */
+const WORKSPACE_EDIT_ACTOR = "operator";
 // ponytail: fixed 30s — the eval post_check default; make it per-Agent when someone needs more.
 const VERIFY_TIMEOUT_MS = 30_000;
 /** Set on a RunSummary whose taskOutcome came from the Agent's verifyCommand (#253). */
@@ -46,7 +66,7 @@ export interface VerifyOutcome { taskOutcome: "passed" | "failed"; source: strin
 export const serverHeartbeatPath = (dataDirectory: string) => path.join(dataDirectory, "server-heartbeat.json");
 
 interface AppLogger {
-  child(bindings: Record<string, unknown>): { info(message: string): void; warn?(message: string): void; error(error: unknown, message?: string): void };
+  child(bindings: Record<string, unknown>): { info(message: string): void; warn(message: string): void; error(error: unknown, message?: string): void };
 }
 
 type ExecutionOptions = {
@@ -69,7 +89,7 @@ export function configSnapshot(agent: Agent, config: AppConfig): AgentConfigSnap
   return {
     instructions: "sha256:" + createHash("sha256").update(agent.instructions).digest("hex"),
     modelProvider: config.modelProvider,
-    model: config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default",
+    model: configuredModel(config),
     codexSandboxMode: config.codexSandboxMode,
     runtimeProvider: config.runtimeProvider,
     containerRuntimeImage: config.containerRuntimeImage,
@@ -81,6 +101,10 @@ export function configSnapshot(agent: Agent, config: AppConfig): AgentConfigSnap
     ...(agent.verifyCommand
       ? { verifyCommand: "sha256:" + createHash("sha256").update(agent.verifyCommand).digest("hex") }
       : {}),
+    // #255: budget caps are behavior configuration — a changed cap is a config change. Spread only when
+    // set so every pre-budget snapshot keeps its hash.
+    ...(agent.budget?.maxTokensPerDay !== undefined ? { budgetMaxTokensPerDay: agent.budget.maxTokensPerDay } : {}),
+    ...(agent.budget?.maxEstimatedUsdPerDay !== undefined ? { budgetMaxEstimatedUsdPerDay: agent.budget.maxEstimatedUsdPerDay } : {}),
   };
 }
 
@@ -126,6 +150,8 @@ export class AgentService {
      * `verify` carries the verifyCommand verdict of a completed ordinary Run (#253) for the rollup to stamp. */
     private readonly onRunEnded?: ((runId: string, verify?: VerifyOutcome) => void) | undefined,
     private readonly runLogs?: RunLogStore | undefined,
+    /** Read model for the pre-run budget gate (#255); without it budgets are stored but not enforced. */
+    private readonly summaries?: RunSummaryStore | undefined,
   ) {}
 
   setLogger(logger: AppLogger): void { this.appLogger = logger; }
@@ -259,6 +285,7 @@ export class AgentService {
       workspaceManaged: input.workspace === undefined,
       ...(input.template ? { workspaceTemplate: input.template } : {}),
       ...(input.verifyCommand?.trim() ? { verifyCommand: input.verifyCommand.trim() } : {}),
+      ...(normalizeBudget(input.budget) ? { budget: normalizeBudget(input.budget) } : {}),
       codexThreadId: null,
       lastError: null,
       createdAt: timestamp,
@@ -297,6 +324,11 @@ export class AgentService {
         if (command) agent.verifyCommand = command;
         else delete agent.verifyCommand;
       }
+      if (input.budget !== undefined) {
+        const budget = normalizeBudget(input.budget);
+        if (budget) agent.budget = budget;
+        else delete agent.budget;
+      }
       if (input.workspace !== undefined && nextWorkspacePath !== undefined && nextWorkspacePath !== agent.workspacePath) {
         agent.workspacePath = nextWorkspacePath;
         agent.workspaceName = input.workspace.trim();
@@ -329,8 +361,103 @@ export class AgentService {
     return this.workspaces.list(this.store.snapshot().agents);
   }
 
+  // #65: read-only workspace browser. Path proof and reads live in workspace-browse.ts; this layer
+  // only resolves the Agent and maps the module's failures onto HTTP statuses.
+  async browseAgentWorkspace(id: string, requested: string): Promise<WorkspaceListing> {
+    const agent = this.getAgent(id);
+    try { return await browseWorkspace(agent.workspacePath, requested); }
+    catch (error) { throw mapWorkspaceBrowseError(error); }
+  }
+
+  async readAgentWorkspaceFile(id: string, requested: string): Promise<WorkspaceFileView> {
+    const agent = this.getAgent(id);
+    try { return await readWorkspaceFileView(agent.workspacePath, requested); }
+    catch (error) { throw mapWorkspaceBrowseError(error); }
+  }
+
   async listWorkspaceTemplates() {
     return this.workspaces.listTemplates();
+  }
+
+  // #66: browser edits to the workspace. Path proof, caps and the credential scan live in
+  // workspace-edit.ts; this layer resolves the Agent, refuses edits while the sandbox has the
+  // directory mounted (busy), and records a bounded history on the Agent record. The busy check
+  // has the same small pre-write window as updateAgent's writeInstructions — acceptable because
+  // a Run mounting mid-write sees a file, not a torn state (writes are single writeFile calls).
+  private assertWorkspaceEditable(agent: Agent): void {
+    if (agent.status === "busy") {
+      throw new HttpError(409, "A run is in progress — the workspace is mounted in the sandbox. Stop the run first.");
+    }
+  }
+
+  private async recordWorkspaceHistory(agentId: string, entries: Omit<WorkspaceHistoryEntry, "at" | "actor">[]): Promise<void> {
+    const at = now();
+    await this.store.mutate((database) => {
+      const agent = database.agents.find((item) => item.id === agentId);
+      if (!agent) return; // deleted mid-flight: the edit already happened on disk, nothing to record
+      agent.workspaceHistory = [
+        ...entries.map((entry) => ({ ...entry, at, actor: WORKSPACE_EDIT_ACTOR })),
+        ...(agent.workspaceHistory ?? []),
+      ].slice(0, WORKSPACE_HISTORY_CAP);
+      agent.updatedAt = at;
+    });
+  }
+
+  async writeAgentWorkspaceFile(id: string, upload: WorkspaceUpload): Promise<WorkspaceWriteReceipt> {
+    const agent = this.getAgent(id);
+    this.assertWorkspaceEditable(agent);
+    let receipt: WorkspaceWriteReceipt;
+    try { receipt = await writeWorkspaceFile(agent.workspacePath, upload); }
+    catch (error) { throw mapWorkspaceBrowseError(error); }
+    await this.recordWorkspaceHistory(id, [{ action: "write", path: receipt.path, bytes: receipt.bytes }]);
+    return receipt;
+  }
+
+  async seedAgentWorkspaceFiles(id: string, uploads: WorkspaceUpload[]): Promise<WorkspaceWriteReceipt[]> {
+    const agent = this.getAgent(id);
+    this.assertWorkspaceEditable(agent);
+    let receipts: WorkspaceWriteReceipt[];
+    try { receipts = await seedWorkspaceFiles(agent.workspacePath, uploads); }
+    catch (error) { throw mapWorkspaceBrowseError(error); }
+    await this.recordWorkspaceHistory(id, receipts.map((receipt) => ({ action: "seed" as const, path: receipt.path, bytes: receipt.bytes })));
+    return receipts;
+  }
+
+  async deleteAgentWorkspaceFile(id: string, requested: string): Promise<WorkspaceWriteReceipt> {
+    const agent = this.getAgent(id);
+    this.assertWorkspaceEditable(agent);
+    let receipt: WorkspaceWriteReceipt;
+    try { receipt = await deleteWorkspaceFile(agent.workspacePath, requested); }
+    catch (error) { throw mapWorkspaceBrowseError(error); }
+    await this.recordWorkspaceHistory(id, [{ action: "delete", path: receipt.path, bytes: receipt.bytes }]);
+    return receipt;
+  }
+
+  /** Archive the workspace to `.deleted/` and recreate the platform files. The template (if any) is
+   * NOT re-applied — reset means "empty", per #66; recreate the Agent for a fresh template copy. */
+  async resetAgentWorkspace(id: string, options: { forgetThread?: boolean | undefined } = {}): Promise<{ agent: Agent; archivedWorkspace: string }> {
+    const agent = this.getAgent(id);
+    this.assertWorkspaceEditable(agent);
+    const others = this.store.snapshot().agents.filter(
+      (item) => item.id !== id && path.resolve(item.workspacePath) === path.resolve(agent.workspacePath),
+    );
+    if (others.length > 0) {
+      throw new HttpError(409, "This workspace is shared with another Agent — detach it before resetting");
+    }
+    const archivedWorkspace = await this.workspaces.archive(agent);
+    await this.workspaces.create(agent);
+    const updated = await this.store.mutate((database) => {
+      const stored = database.agents.find((item) => item.id === id);
+      if (!stored) throw new HttpError(404, "Agent not found");
+      if (options.forgetThread) stored.codexThreadId = null;
+      stored.workspaceHistory = [
+        { at: now(), action: "reset" as const, path: "", bytes: 0, actor: WORKSPACE_EDIT_ACTOR },
+        ...(stored.workspaceHistory ?? []),
+      ].slice(0, WORKSPACE_HISTORY_CAP);
+      stored.updatedAt = now();
+      return structuredClone(stored);
+    });
+    return { agent: updated, archivedWorkspace };
   }
 
   async startAgent(id: string): Promise<Agent> {
@@ -445,6 +572,9 @@ export class AgentService {
     const timestamp = now();
     const runId = options.runId ?? randomUUID();
     const ctx = context ?? createTraceContext({}, this.emitter.capturePolicy);
+    // #255: the budget gate runs before the Run/queue mutation, so an over-budget Agent refuses
+    // (429) instead of queueing, and eval-isolated Runs are gated like ordinary ones.
+    await this.enforceBudget(agentId, ctx, runId, context !== undefined);
     const run: AgentRun = {
       id: runId,
       traceId: ctx.traceId,
@@ -575,6 +705,162 @@ export class AgentService {
       })
       .catch(() => undefined);
     return { run, message };
+  }
+
+  /** #255: live budget status for one Agent — the same rolling window and sums the pre-run gate enforces. */
+  async budgetStatus(agentId: string): Promise<{ budget: AgentBudget | null; usage: BudgetUsage; denial: BudgetDenial | undefined }> {
+    const agent = this.getAgent(agentId);
+    let summaries: import("./glassbox/summary.js").RunSummary[] = [];
+    const windowStart = budgetWindowStart();
+    try {
+      if (this.summaries) summaries = await this.summaries.query({ agentId, from: windowStart });
+    } catch {
+      // Fixed string: a store driver's error text (host, user, …) must never reach the client.
+      throw new HttpError(503, "Budget status unavailable: recorded usage could not be read");
+    }
+    const usage = usageInWindow(summaries, windowStart);
+    const denial = agent.budget && this.summaries ? evaluateBudget(agent.budget, usage) : undefined;
+    return { budget: agent.budget ?? null, usage, denial };
+  }
+
+  /**
+   * #255: one budget read for every gate site. `extraTokens` covers the just-finished Run whose own
+   * rollup lands asynchronously after the terminal mutation (its observed tokens are known locally;
+   * its USD cost is not, so the USD limit lags that one Run — documented, not estimated).
+   * `unavailable` = the summary store failed; callers fail closed with a fixed message, never the
+   * driver's error text.
+   */
+  private async budgetCheck(agentId: string, extraTokens = 0): Promise<
+    { state: "ok" } | { state: "unavailable" } | { state: "denied"; denial: BudgetDenial; usage: BudgetUsage }
+  > {
+    if (!this.summaries) return { state: "ok" };
+    const budget = this.store.snapshot().agents.find((item) => item.id === agentId)?.budget;
+    if (!budget) return { state: "ok" };
+    const windowStart = budgetWindowStart();
+    let usage: BudgetUsage;
+    try {
+      usage = usageInWindow(await this.summaries.query({ agentId, from: windowStart }), windowStart);
+    } catch (error) {
+      // The caller answers with a fixed string; this line is the only place the driver's error surfaces.
+      this.appLogger?.child({ agentId, component: "AgentService" }).error({}, "budget.check_unavailable: " + redactText(String(error)).text.slice(0, 200));
+      return { state: "unavailable" };
+    }
+    usage.totalTokens += extraTokens;
+    const denial = evaluateBudget(budget, usage);
+    return denial ? { state: "denied", denial, usage } : { state: "ok" };
+  }
+
+  /** #255: the queue drain was halted by the budget — recorded on the finishing Run's own trace
+   * (which terminates normally) instead of opening a new orphan trace per held message. */
+  private emitQueueHold(
+    ids: { traceId: string; runId: string; agentId: string; requestId?: string | undefined },
+    parentSpanId: string,
+    denial: BudgetDenial,
+    heldMessages: number,
+  ): void {
+    this.emitter.emit({
+      ...ids,
+      spanId: newId("spn"),
+      parentSpanId,
+      actorId: "server",
+      actorType: "service",
+      type: "policy.denied",
+      category: "policy",
+      status: "error",
+      name: "budget.queue_hold",
+      source: { component: "AgentService", observed: true },
+      attributes: {
+        decision: denial.decision,
+        limit: denial.limit,
+        limitValue: denial.limitValue,
+        used: Math.round(denial.used * 1_000_000) / 1_000_000,
+        windowHours: 24,
+        heldMessages,
+      },
+    });
+  }
+
+  /**
+   * #255: pre-run budget gate — the first ControlDecision from PRD §14's "observed usage → budgets"
+   * roadmap line. Pre-run only, honestly: Codex reports usage at turn end, so a Run already in
+   * flight is never preempted and a single Run can overshoot the cap. Enforced from stored
+   * RunSummary rollups; without a summary store budgets are stored but not enforced.
+   */
+  private async enforceBudget(agentId: string, ctx: TraceContext, runId: string, fromHttp: boolean): Promise<void> {
+    // A missing Agent keeps the store mutation's 404; the gate only ever answers "over budget".
+    const check = await this.budgetCheck(agentId);
+    if (check.state === "ok") return;
+    if (check.state === "unavailable") {
+      throw new HttpError(503, "Budget check unavailable: this Agent has a budget and recorded usage could not be read");
+    }
+    const { denial, usage } = check;
+    // The refusal is trace evidence: a real policy decision, recorded on the request's own trace.
+    // `runId` names the refused attempt — no Run row is ever created for it, so nothing reuses the id.
+    if (fromHttp) {
+      this.emitter.emit({
+        traceId: ctx.traceId,
+        spanId: ctx.rootSpanId,
+        runId,
+        agentId,
+        requestId: ctx.requestId,
+        actorId: ctx.actorId,
+        actorType: ctx.actorType,
+        type: "http.request.received",
+        category: "control",
+        phase: "start",
+        status: "running",
+        name: (ctx.method ?? "POST") + " /api/agents/:id/messages",
+        timestamp: ctx.receivedAt,
+        source: { component: "Fastify", observed: true },
+      });
+    }
+    this.emitter.emit({
+      traceId: ctx.traceId,
+      spanId: newId("spn"),
+      ...(fromHttp ? { parentSpanId: ctx.rootSpanId } : {}),
+      runId,
+      agentId,
+      requestId: ctx.requestId,
+      actorId: "server",
+      actorType: "service",
+      type: "policy.denied",
+      category: "policy",
+      status: "error",
+      name: "budget.pre_run_gate",
+      source: { component: "AgentService", observed: true },
+      attributes: {
+        decision: denial.decision,
+        limit: denial.limit,
+        limitValue: denial.limitValue,
+        used: Math.round(denial.used * 1_000_000) / 1_000_000,
+        windowHours: 24,
+        runsInWindow: usage.runs,
+      },
+    });
+    // Terminal marker: without it the refusal trace stays "running" in the index forever and
+    // retention can never evict it. Never paired with run.created, so rollups skip the trace.
+    this.emitter.emit({
+      traceId: ctx.traceId,
+      spanId: newId("spn"),
+      ...(fromHttp ? { parentSpanId: ctx.rootSpanId } : {}),
+      runId,
+      agentId,
+      requestId: ctx.requestId,
+      actorId: "server",
+      actorType: "service",
+      type: "run.refused",
+      category: "control",
+      status: "error",
+      name: "run.refused",
+      source: { component: "AgentService", observed: true },
+      attributes: { reason: denial.decision },
+    });
+    // Unlike other rejections, this one already has real events on the trace: publish the ids so the
+    // ingress onResponse hook closes it with the 429 http.request.completed instead of orphaning it.
+    ctx.runId = runId;
+    ctx.agentId = agentId;
+    // The trace id makes the stored refusal evidence reachable (GET /api/traces/:traceId).
+    throw new HttpError(429, describeBudgetDenial(denial) + " Refusal recorded as trace " + ctx.traceId + ".");
   }
 
   /**
@@ -758,6 +1044,9 @@ export class AgentService {
   private async dequeueAndStart(agentId: string, restartNote?: string): Promise<void> {
     // Without a configured model every dequeued Run would fail instantly and burn the queue; keep it queued.
     if (!isModelConfigured(this.config)) return;
+    // #255: resuming the queue is subject to the same gate as sendMessage (fail closed on a store error);
+    // the queue stays pending and the budget banner explains why.
+    if ((await this.budgetCheck(agentId)).state !== "ok") return;
     const ctx = createTraceContext({}, this.emitter.capturePolicy);
     const dequeued = await this.store.mutate((database) => {
       const agent = database.agents.find((item) => item.id === agentId);
@@ -892,7 +1181,7 @@ export class AgentService {
                   void runnerLogger?.info(message).catch(() => undefined);
                 },
                 warn: (message: string) => {
-                  pino?.warn?.(redactText(message, [LOG_SECRET_ASSIGNMENT]).text);
+                  pino?.warn(redactText(message, [LOG_SECRET_ASSIGNMENT]).text);
                   void runnerLogger?.warn(message).catch(() => undefined);
                 },
                 error: (message: string, error?: unknown) => {
@@ -950,6 +1239,10 @@ export class AgentService {
       pino?.info(summaryLine);
       await logger?.info(summaryLine).catch(() => undefined);
       const queueCtx = createTraceContext({}, this.emitter.capturePolicy);
+      // #255: the queue drain must pass the same gate as sendMessage, or queued messages walk straight
+      // past the cap. The finished Run's own rollup has not landed yet, so its observed tokens ride along.
+      const budgetAtEnd = await this.budgetCheck(agentAtStart.id, (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0));
+      let heldMessages = 0;
       const dequeued = await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
@@ -973,6 +1266,12 @@ export class AgentService {
         if (options.persistThread !== false) agent.codexThreadId = result.threadId;
         agent.lastError = null;
         agent.updatedAt = completedAt;
+        // #255: over budget (or the budget store is unreachable — fail closed) holds the queue;
+        // startAgent re-checks and resumes it once usage leaves the window or the cap is raised.
+        if (budgetAtEnd.state !== "ok") {
+          heldMessages = agent.pendingMessages?.length ?? 0;
+          return undefined;
+        }
         // #254: dequeue in the same mutation that freed the Agent — the one-active-Run invariant lives here.
         return this.dequeueNext(database, agent, queueCtx);
       });
@@ -1015,6 +1314,14 @@ export class AgentService {
           await runnerLogger?.error(line, detail).catch(() => undefined);
         }
       }
+      if (heldMessages > 0) {
+        const heldLine = "Budget " + (budgetAtEnd.state === "denied" ? "exceeded" : "check unavailable") + ": " + heldMessages + " queued message(s) held";
+        pino?.info(heldLine);
+        await logger?.info(heldLine).catch(() => undefined);
+      }
+      if (ids && service && heldMessages > 0 && budgetAtEnd.state === "denied") {
+        this.emitQueueHold(ids, service.spanId, budgetAtEnd.denial, heldMessages);
+      }
       if (ids && service) {
         const outcome = describeFinalMessage(result.output);
         this.emitter.emit({
@@ -1049,11 +1356,16 @@ export class AgentService {
         pino?.error({ detail }, logMessage);
         await runnerLogger?.error(logMessage, detail).catch(() => undefined);
       } else {
+        // #243: a cancel is a user gesture, not a failure — warn on BOTH sinks, so the run-log error
+        // filter doesn't surface stops as failures and the pino sibling tells the same story.
         const logMessage = "Run cancelled after " + durationSeconds() + "s";
-        pino?.info(logMessage);
-        await logger?.error(logMessage).catch(() => undefined);
+        pino?.warn(logMessage);
+        await logger?.warn(logMessage).catch(() => undefined);
       }
       const queueCtx = createTraceContext({}, this.emitter.capturePolicy);
+      // #255: same gate as the completed path. A failed Run reports no usage, so nothing rides along.
+      const budgetAtEnd = cancelled ? ({ state: "ok" } as const) : await this.budgetCheck(agentAtStart.id);
+      let heldMessages = 0;
       const dequeued = await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
@@ -1078,12 +1390,25 @@ export class AgentService {
           // would fight it (stopAgent sets `stopped` right after this settles), so the queue is kept
           // but not started; startAgent resumes it.
           if (!cancelled && agent.status !== "stopped") {
+            // #255: over budget (or budget store unreachable — fail closed) keeps the queue pending.
+            if (budgetAtEnd.state !== "ok") {
+              heldMessages = agent.pendingMessages?.length ?? 0;
+              return undefined;
+            }
             return this.dequeueNext(database, agent, queueCtx);
           }
         }
         return undefined;
       });
       if (dequeued) this.startDequeuedRun(dequeued);
+      if (heldMessages > 0) {
+        const heldLine = "Budget " + (budgetAtEnd.state === "denied" ? "exceeded" : "check unavailable") + ": " + heldMessages + " queued message(s) held";
+        pino?.info(heldLine);
+        await logger?.info(heldLine).catch(() => undefined);
+      }
+      if (ids && service && heldMessages > 0 && budgetAtEnd.state === "denied") {
+        this.emitQueueHold(ids, service.spanId, budgetAtEnd.denial, heldMessages);
+      }
       if (ids && service) {
         const status: TraceStatus = cancelled
           ? "cancelled"

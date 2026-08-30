@@ -55,6 +55,61 @@ describe("ObservationEmitter", () => {
     expect(events.filter((e) => e.type === "trace.truncated")).toHaveLength(1);
     expect(store.listRuns()[0]!.truncated).toBe(true);
   });
+  it("a span can only end once: the second end() is a no-op returning null", async () => {
+    const store = new MemoryTraceStore(); const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const span = em.startSpan({ ...base, type: "agent_service.run.started", name: "service" });
+    expect(span.end("ok", { type: "agent_service.run.completed" })).not.toBeNull();
+    expect(span.end("error", { type: "agent_service.run.failed" })).toBeNull();
+    await em.flush();
+    expect((await store.readRun("run-1")).map((e) => e.phase)).toEqual(["start", "end"]);
+  });
+  it("logs a duplicate drop instead of discarding it silently", async () => {
+    const logs: string[] = [];
+    const dup: TraceStore = { async initialize() {}, async append() { return { stored: false, reason: "duplicate" }; }, async readRun() { return []; }, runIdForTrace() { return undefined; }, listRuns() { return []; }, markTruncated() {}, async cleanup() { return { runs: 0, bytesBefore: 0, bytesAfter: 0, overCap: false, evicted: [] }; } };
+    const em = new ObservationEmitter({ store: dup, capturePolicy: "metadata_only", log: (m) => logs.push(m) });
+    em.emit(base);
+    await em.flush();
+    expect(logs).toContain("duplicate_dropped");
+  });
+  it("a throwing log callback never breaks emit or the queue (invariant 4)", async () => {
+    const bad: TraceStore = { async initialize() {}, async append() { throw new Error("EACCES"); }, async readRun() { return []; }, runIdForTrace() { return undefined; }, listRuns() { return []; }, markTruncated() {}, async cleanup() { return { runs: 0, bytesBefore: 0, bytesAfter: 0, overCap: false, evicted: [] }; } };
+    const em = new ObservationEmitter({ store: bad, capturePolicy: "metadata_only", log: () => { throw new Error("logger exploded"); } });
+    expect(() => em.emit(base)).not.toThrow();
+    await expect(em.flush()).resolves.toBeUndefined();
+    expect(em.isDegraded("run-1")).toBe(true);
+  });
+  it("evictRun frees a finished run's bookkeeping but keeps a degraded run's evidence (invariant 4)", async () => {
+    const em = new ObservationEmitter({ store: new MemoryTraceStore(), capturePolicy: "metadata_only" });
+    expect(em.emit(base)!.sequence).toBe(0);
+    expect(em.emit({ ...base, spanId: "spn_2" })!.sequence).toBe(1);
+    await em.flush();
+    em.evictRun("run-1");
+    // The trace's sequence counter is gone: a straggler restarts at 0 (nothing emits after rollup today).
+    expect(em.emit(base)!.sequence).toBe(0);
+    const bad: TraceStore = { async initialize() {}, async append() { throw new Error("EACCES"); }, async readRun() { return []; }, runIdForTrace() { return undefined; }, listRuns() { return []; }, markTruncated() {}, async cleanup() { return { runs: 0, bytesBefore: 0, bytesAfter: 0, overCap: false, evicted: [] }; } };
+    const degraded = new ObservationEmitter({ store: bad, capturePolicy: "metadata_only" });
+    degraded.emit(base);
+    await degraded.flush();
+    expect(degraded.isDegraded("run-1")).toBe(true);
+    degraded.evictRun("run-1");
+    expect(degraded.isDegraded("run-1")).toBe(true);
+  });
+  it("#40: onEvent fires after the append settles, with the redacted event, and a throwing hook never degrades the run", async () => {
+    const store = new MemoryTraceStore();
+    const seen: ObservationEvent[] = [];
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only", onEvent: (e) => seen.push(e) });
+    em.emit({ ...base, attributes: { token: "x" } });
+    expect(seen).toHaveLength(0); // not before the store append settles
+    await em.flush();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.runId).toBe("run-1");
+    expect(seen[0]!.attributes.token).toBeUndefined(); // the hook only ever sees redacted events
+
+    const em2 = new ObservationEmitter({ store, capturePolicy: "metadata_only", onEvent: () => { throw new Error("broken listener"); } });
+    em2.emit({ ...base, spanId: "spn_9" });
+    await em2.flush();
+    expect(em2.isDegraded("run-1")).toBe(false);
+  });
   it("seedSequence continues after a rebuild", () => {
     const em = createDefaultEmitter(); em.seedSequence("trc_1", 41);
     expect(em.emit(base)!.sequence).toBe(42);

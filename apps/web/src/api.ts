@@ -1,4 +1,4 @@
-import type { Agent, AgentRun, Assertion, AuditRow, CapturePolicy, EvalRun, EvaluationResult, EvaluatorDefinition, Message, QueuedMessageReceipt, RegressionCase, ReliabilityCompareReport, ReliabilityReport, RunListItem, RunLogLine, SystemInfo, TraceView, Workspace, WorkspaceTemplate } from "./types";
+import type { Agent, AgentRun, Assertion, AuditRow, CapturePolicy, EvalRun, EvaluationResult, EvaluatorDefinition, Message, PreviewCommand, PreviewServability, QueuedMessageReceipt, RegressionCase, ReliabilityCompareReport, ReliabilityReport, RunListItem, RunLogLine, SystemInfo, TraceView, Workspace, WorkspaceFile, WorkspaceListing, WorkspacePreview, WorkspaceTemplate } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -13,6 +13,11 @@ let authToken = "";
 
 export function setAuthToken(token: string): void {
   authToken = token.trim();
+}
+
+// #40: the SSE stream (live.ts) needs the token at connect time — EventSource cannot set headers.
+export function getAuthToken(): string {
+  return authToken;
 }
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -42,6 +47,8 @@ export const api = {
     instructions: string;
     workspace?: string;
     template?: string;
+    verifyCommand?: string;
+    budget?: import("./types").AgentBudget | null;
   }) =>
     request<{ agent: Agent }>("/api/agents", {
       method: "POST",
@@ -49,7 +56,7 @@ export const api = {
     }),
   updateAgent: (
     id: string,
-    body: { name: string; description: string; instructions: string; workspace?: string },
+    body: { name: string; description: string; instructions: string; workspace?: string; verifyCommand?: string; budget?: import("./types").AgentBudget | null },
   ) =>
     request<{ agent: Agent }>("/api/agents/" + id, {
       method: "PATCH",
@@ -60,6 +67,33 @@ export const api = {
       method: "DELETE",
     }),
   listWorkspaces: () => request<{ workspaces: Workspace[] }>("/api/workspaces"),
+  browseWorkspace: (id: string, path: string) =>
+    request<WorkspaceListing>("/api/agents/" + id + "/workspace?path=" + encodeURIComponent(path)),
+  readWorkspaceFile: (id: string, path: string) =>
+    request<WorkspaceFile>("/api/agents/" + id + "/workspace/file?path=" + encodeURIComponent(path)),
+  // #66: workspace editing. Uploads travel as base64/utf8 inside JSON; the server enforces the
+  // caps (1 MB per PUT file, 20 files / 8 MB per batch), refuses managed files and credential-
+  // looking content with 400, and refuses everything with 409 while a Run has the workspace mounted.
+  writeWorkspaceFile: (id: string, file: { path: string; content: string; encoding: "utf8" | "base64" }) =>
+    request<{ file: { path: string; bytes: number } }>("/api/agents/" + id + "/workspace/file", {
+      method: "PUT",
+      body: JSON.stringify(file),
+    }),
+  seedWorkspaceFiles: (id: string, files: { path: string; content: string; encoding: "utf8" | "base64" }[]) =>
+    request<{ files: { path: string; bytes: number }[] }>("/api/agents/" + id + "/workspace/files", {
+      method: "POST",
+      body: JSON.stringify({ files }),
+    }),
+  deleteWorkspaceFile: (id: string, path: string) =>
+    request<{ file: { path: string; bytes: number } }>(
+      "/api/agents/" + id + "/workspace/file?path=" + encodeURIComponent(path),
+      { method: "DELETE" },
+    ),
+  resetWorkspace: (id: string, forgetThread: boolean) =>
+    request<{ agent: Agent; archivedWorkspace: string }>("/api/agents/" + id + "/workspace/reset", {
+      method: "POST",
+      body: JSON.stringify({ forgetThread }),
+    }),
   listWorkspaceTemplates: () => request<{ templates: WorkspaceTemplate[] }>("/api/workspace-templates"),
   startAgent: (id: string) =>
     request<{ agent: Agent }>("/api/agents/" + id + "/start", {
@@ -69,12 +103,27 @@ export const api = {
     request<{ agent: Agent }>("/api/agents/" + id + "/stop", {
       method: "POST",
     }),
+  // #96/#335: workspace preview — one hardened container serving the workspace on a loopback
+  // port. Available whenever the engine probe passes (any runtime provider); an unavailable
+  // engine answers 409. `servable` says which commands would actually serve this workspace.
+  preview: (id: string) =>
+    request<{ preview: WorkspacePreview | null; servable: PreviewServability }>("/api/agents/" + id + "/preview"),
+  startPreview: (id: string, command: PreviewCommand = "vite") =>
+    request<{ preview: WorkspacePreview }>("/api/agents/" + id + "/preview", {
+      method: "POST",
+      body: JSON.stringify({ command }),
+    }),
+  stopPreview: (id: string) =>
+    request<{ preview: WorkspacePreview }>("/api/agents/" + id + "/preview", { method: "DELETE" }),
   messages: (id: string) =>
     request<{ messages: Message[] }>("/api/agents/" + id + "/messages"),
   runs: (id: string) =>
     request<{ runs: AgentRun[] }>("/api/agents/" + id + "/runs"),
   runBaseline: (id: string) =>
     request<{ baseline: import("./types").AgentRunBaseline }>("/api/agents/" + id + "/runs/baseline"),
+  // #255: live budget status for the Agent banner — the rolling 24 h window the pre-run gate enforces.
+  agentBudget: (id: string) =>
+    request<import("./types").AgentBudgetReport>("/api/agents/" + id + "/budget"),
   // rerunOf (#256): id of the Run this prompt re-dispatches; stamped on run.created for lineage.
   // #254: a busy Agent answers with a QueuedMessageReceipt instead of a started Run.
   sendMessage: (id: string, content: string, rerunOf?: string) =>

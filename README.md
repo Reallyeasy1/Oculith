@@ -194,6 +194,16 @@ semantics for the dashboard, so the two APIs can never disagree on the same wind
   `telemetry.degraded`; after a server restart, in-flight Runs show as cancelled with open spans marked
   `endedReason=server_restart` — never silently closed. On redactor error the event is persisted as
   metadata only (`privacy.reason=redaction_failed_closed`).
+- **Budgets (#255, the first ControlDecision):** an Agent can carry `budget.maxTokensPerDay` /
+  `budget.maxEstimatedUsdPerDay` (set in Agent settings; part of the config snapshot, so a changed cap
+  is a config change). `POST …/messages` refuses with **429** once observed usage in the rolling 24 h
+  window has reached a limit, records the refusal as a `policy.denied` event
+  (`decision=budget_exceeded`) on the request's own trace, and `GET /api/agents/:id/budget` drives the
+  Playground banner. **Honesty constraint:** Codex reports usage only at turn end, so the gate is
+  pre-run only — a Run that already started can overshoot the cap; enforcement counts terminal Runs'
+  stored rollups (keyed on Run *start* time, so a Run that started just outside the window counts
+  zero), nothing is estimated mid-run. Queued messages (#254) are held, not dropped, while over
+  budget; `startAgent` resumes them once usage leaves the window.
 
 ## Regression workflow (Verify)
 
@@ -304,12 +314,13 @@ Not covered — know this before putting anything sensitive near it:
 | `RUNTIME_PROVIDER` | `local-process` | `container` for disposable Runtime containers (`npm run poc` sets this) |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox; falls back to `danger-full-access` without Landlock |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn |
+| `PREVIEW_PORT_RANGE` / `PREVIEW_TTL_MS` | `5180-5189` / `1800000` | Workspace preview (needs a reachable container engine and the built runtime image, in any `RUNTIME_PROVIDER` mode): loopback host ports it may publish on, and the lifetime cap before the container is removed automatically |
 | `GLASSBOX_CAPTURE_POLICY` | `metadata_only` | Or `safe_summary` (bounded, redacted summaries + the Outcome column — the demo sets it), or `reasoning_summary` (safe_summary plus 240-char redacted reasoning summaries, #259); raw capture is not implemented. Summaries already persisted stay on disk and are served after a policy downgrade — mind that when lowering the tier |
 | `GLASSBOX_DEMO_FAILURE` | `off` | `timeout` forces the 3 s demo failure through the real Run path |
 | `GLASSBOX_TRACE_DIR` | `$APP_DATA_DIR/traces` | Per-Run NDJSON trace files |
 | `GLASSBOX_RETENTION_DAYS` / `GLASSBOX_MAX_DISK_MB` | `7` / `200` | Startup-only compaction of finished Runs to terminal events + tombstone; `0` disables |
 | `GLASSBOX_LOG_MAX_MB` | `50` | Run-correlated, redacted server log rotation (3 files kept) |
-| `GLASSBOX_STORE` / `DATABASE_URL` | `json` / — | `postgres` keeps traces and Run summaries in PostgreSQL (`docker compose --profile postgres up`); the default keeps NDJSON + `db.json` |
+| `GLASSBOX_STORE` / `DATABASE_URL` | `json` / — | `postgres` keeps traces and Run summaries in PostgreSQL (`docker compose --profile postgres up`); the default keeps NDJSON + `db.json`. Dev-only: the store conformance tests run their Postgres cases only when `TEST_DATABASE_URL` points at a **throwaway** database — they empty its tables between cases, which is why they never read `DATABASE_URL` (#216) |
 | `GLASSBOX_PRICE_PER_MTOK_INPUT` / `_CACHED_INPUT` / `_OUTPUT` | — | Optional cost estimates; cached input defaults to the input rate |
 | `GLASSBOX_POSTCHECK_ALLOWLIST` | `npm test` | Comma-separated commands `post_check` assertions may run in eval workspaces; anything else fails closed |
 

@@ -1,11 +1,12 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { HttpError } from "./errors.js";
-import type { AgentService } from "./agent-service.js";
+import { AgentService as RealAgentService, type AgentService } from "./agent-service.js";
+import { WorkspaceManager } from "./workspace.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
 import type { EvaluationStore } from "./glassbox/evaluation.js";
 import { JsonEvaluationStore } from "./glassbox/evaluation.js";
@@ -101,7 +102,8 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     const app = await createApp(config(), svc, { emitter, store });
     const res = await app.inject({
       method: "POST",
-      url: "/api/agents/2c1b9f8e-3b7e-4b9d-9d3a-1c2d3e4f5a6b/messages",
+      // #54: a query string must not bypass the ingress hook (it used to regex-match request.url).
+      url: "/api/agents/2c1b9f8e-3b7e-4b9d-9d3a-1c2d3e4f5a6b/messages?client=vitest",
       headers: auth,
       payload: { content: "hi" },
     });
@@ -139,6 +141,37 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     expect(res.statusCode).toBe(409);
     await emitter.flush();
     expect(store.listRuns()).toEqual([]);
+    await app.close();
+  });
+
+  it("serves budget status and validates budget input at the boundary (#255)", async () => {
+    const svc = {
+      ...service,
+      budgetStatus: async () => ({
+        budget: { maxTokensPerDay: 100 },
+        usage: { totalTokens: 110, estimatedCostUsd: 0, runs: 1, windowStart: "2026-08-28T12:00:00.000Z" },
+        denial: { decision: "budget_exceeded", limit: "maxTokensPerDay", limitValue: 100, used: 110 },
+      }),
+      createAgent: async (input: unknown) => input,
+    } as unknown as AgentService;
+    const app = await createApp(config(), svc);
+    const status = await app.inject({ method: "GET", url: "/api/agents/2c1b9f8e-3b7e-4b9d-9d3a-1c2d3e4f5a6b/budget", headers: auth });
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({
+      budget: { maxTokensPerDay: 100 }, exceeded: true,
+      usage: { totalTokens: 110, runs: 1 }, denial: { decision: "budget_exceeded", limit: "maxTokensPerDay" },
+    });
+
+    const create = (budget: unknown) => app.inject({
+      method: "POST", url: "/api/agents",
+      headers: { ...auth, "content-type": "application/json" },
+      payload: { name: "budgeted", budget },
+    });
+    expect((await create({ maxTokensPerDay: 10 })).statusCode).toBe(201);
+    expect((await create(null)).statusCode).toBe(201);
+    expect((await create({ maxTokensPerDay: 0 })).statusCode).toBe(400);
+    expect((await create({ maxEstimatedUsdPerDay: -1 })).statusCode).toBe(400);
+    expect((await create({ maxTokensPerDay: 1.5 })).statusCode).toBe(400);
     await app.close();
   });
 
@@ -213,6 +246,149 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     expect((await get("/api/runs/nope/logs")).statusCode).toBe(404);
     await app.close();
     await rm(dir, { recursive: true, force: true });
+  });
+
+  it("serves the read-only workspace browser: auth, listing, file preview, 400/404 (#65)", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "workspace-api-"));
+    try {
+      const cfg = config({
+        APP_DATA_DIR: path.join(root, "data"),
+        AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+        CODEX_HOME: path.join(root, "codex"),
+        ARK_API_KEY: "test-key",
+        ARK_MODEL: "ep-test",
+      });
+      const runner = { run: async () => ({ output: "", threadId: "t" }), cancel: async () => false, isAvailable: async () => true };
+      const svc = new RealAgentService(cfg, new JsonStore(path.join(root, "data", "db.json")), new WorkspaceManager(path.join(root, "workspaces")), runner);
+      await svc.initialize();
+      const agent = await svc.createAgent({ name: "Browser" });
+      await mkdir(path.join(agent.workspacePath, "src"));
+      await writeFile(path.join(agent.workspacePath, "src", "index.ts"), "export {};\n", "utf8");
+      await writeFile(path.join(agent.workspacePath, "blob.bin"), Buffer.from([1, 0, 2]));
+      const app = await createApp(cfg, svc);
+      const base = "/api/agents/" + agent.id;
+      expect((await app.inject({ method: "GET", url: base + "/workspace" })).statusCode).toBe(401);
+      expect((await app.inject({ method: "GET", url: base + "/workspace/file?path=AGENTS.md" })).statusCode).toBe(401);
+      const get = (url: string) => app.inject({ method: "GET", url, headers: auth });
+
+      const listing = (await get(base + "/workspace")).json();
+      expect(listing.truncated).toBe(false);
+      expect(listing.entries[0]).toMatchObject({ name: "src", kind: "dir" });
+      expect(listing.entries.map((entry: { name: string }) => entry.name)).toEqual(
+        expect.arrayContaining(["AGENTS.md", "README.md", ".gitignore", "blob.bin"]),
+      );
+      const nested = (await get(base + "/workspace?path=src")).json();
+      expect(nested).toMatchObject({ path: "src", truncated: false });
+      expect(nested.entries).toEqual([{ name: "index.ts", kind: "file", size: 11, mtime: expect.any(String) }]);
+
+      const instructions = (await get(base + "/workspace/file?path=AGENTS.md")).json();
+      expect(instructions).toMatchObject({ path: "AGENTS.md", encoding: "utf8", managed: true });
+      expect(instructions.content).toContain("Platform-managed Agent instructions");
+      const binary = (await get(base + "/workspace/file?path=blob.bin")).json();
+      expect(binary).toMatchObject({ path: "blob.bin", encoding: "binary", managed: false, size: 3 });
+      expect(binary.content).toBeUndefined();
+
+      expect((await get(base + "/workspace?path=" + encodeURIComponent("../"))).statusCode).toBe(400);
+      expect((await get(base + "/workspace/file?path=" + encodeURIComponent("..\\..\\etc\\passwd"))).statusCode).toBe(400);
+      expect((await get(base + "/workspace/file?path=" + encodeURIComponent("/etc/passwd"))).statusCode).toBe(400);
+      expect((await get(base + "/workspace/file?path=src")).statusCode).toBe(400);
+      expect((await get(base + "/workspace?path=missing")).statusCode).toBe(404);
+      expect((await get(base + "/workspace/file?path=missing.txt")).statusCode).toBe(404);
+      expect((await get("/api/agents/2c1b9f8e-3b7e-4b9d-9d3a-1c2d3e4f5a6b/workspace")).statusCode).toBe(404);
+      expect((await get(base + "/workspace?path=" + encodeURIComponent("x".repeat(2_000)))).statusCode).toBe(400);
+      await app.close();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("serves workspace editing: write, seed, delete, reset, history and refusals (#66)", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "workspace-edit-api-"));
+    try {
+      const cfg = config({
+        APP_DATA_DIR: path.join(root, "data"),
+        AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+        CODEX_HOME: path.join(root, "codex"),
+        ARK_API_KEY: "test-key",
+        ARK_MODEL: "ep-test",
+      });
+      const runner = { run: async () => ({ output: "", threadId: "t" }), cancel: async () => false, isAvailable: async () => true };
+      const svc = new RealAgentService(cfg, new JsonStore(path.join(root, "data", "db.json")), new WorkspaceManager(path.join(root, "workspaces")), runner);
+      await svc.initialize();
+      const agent = await svc.createAgent({ name: "Editable" });
+      const app = await createApp(cfg, svc);
+      const base = "/api/agents/" + agent.id;
+      const call = (method: "PUT" | "POST" | "DELETE", url: string, payload?: unknown) =>
+        app.inject({ method, url, headers: auth, ...(payload !== undefined ? { payload } : {}) });
+
+      expect((await app.inject({ method: "PUT", url: base + "/workspace/file", payload: { path: "x", content: "" } })).statusCode).toBe(401);
+
+      const written = await call("PUT", base + "/workspace/file", { path: "src/app.ts", content: "export {};\n" });
+      expect(written.statusCode).toBe(200);
+      expect(written.json()).toEqual({ file: { path: "src/app.ts", bytes: 11 } });
+      expect(await readFile(path.join(agent.workspacePath, "src", "app.ts"), "utf8")).toBe("export {};\n");
+
+      const seeded = await call("POST", base + "/workspace/files", {
+        files: [
+          { path: "data/a.json", content: "{}" },
+          { path: "logo.bin", content: Buffer.from([9, 9]).toString("base64"), encoding: "base64" },
+        ],
+      });
+      expect(seeded.statusCode).toBe(200);
+      expect(seeded.json().files).toHaveLength(2);
+
+      expect((await call("DELETE", base + "/workspace/file?path=" + encodeURIComponent("data/a.json"))).json())
+        .toEqual({ file: { path: "data/a.json", bytes: 2 } });
+
+      // Refusals carry the reason: managed file, credential-looking content, invalid body shapes.
+      const managed = await call("PUT", base + "/workspace/file", { path: "AGENTS.md", content: "x" });
+      expect(managed.statusCode).toBe(400);
+      expect(managed.json().error).toContain("platform-managed");
+      const leaky = await call("PUT", base + "/workspace/file", { path: ".env", content: "MY_API_KEY=abcdef012345" });
+      expect(leaky.statusCode).toBe(400);
+      expect(leaky.json().error).toContain("credential");
+      expect((await call("PUT", base + "/workspace/file", { path: "", content: "x" })).statusCode).toBe(400);
+      expect((await call("POST", base + "/workspace/files", { files: [] })).statusCode).toBe(400);
+      expect((await call("POST", base + "/workspace/files", {
+        files: Array.from({ length: 21 }, (_, i) => ({ path: "f" + i, content: "" })),
+      })).statusCode).toBe(400);
+      expect((await call("DELETE", base + "/workspace/file?path=")).statusCode).toBe(400);
+
+      // History is on the Agent record, newest first; reset archives and can forget the thread.
+      const history = (await app.inject({ method: "GET", url: base, headers: auth })).json().agent.workspaceHistory;
+      expect(history.map((entry: { action: string; path: string }) => [entry.action, entry.path])).toEqual([
+        ["delete", "data/a.json"],
+        ["seed", "data/a.json"],
+        ["seed", "logo.bin"],
+        ["write", "src/app.ts"],
+      ]);
+
+      const reset = await call("POST", base + "/workspace/reset", { forgetThread: true });
+      expect(reset.statusCode).toBe(200);
+      expect(reset.json().archivedWorkspace).toContain(".deleted");
+      expect(reset.json().agent.codexThreadId).toBeNull();
+      expect(reset.json().agent.workspaceHistory[0]).toMatchObject({ action: "reset", path: "" });
+      await expect(readFile(path.join(agent.workspacePath, "src", "app.ts"), "utf8")).rejects.toThrowError();
+      expect(await readFile(path.join(agent.workspacePath, "AGENTS.md"), "utf8")).toContain("Editable");
+      await app.close();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("trace events q also searches summary text, and an unknown traceId is 404 (#54)", async () => {
+    const store = new MemoryTraceStore(); const emitter = new ObservationEmitter({ store, capturePolicy: "safe_summary" });
+    const ids = { traceId: "trc_q", runId: "run-q", agentId: "agt-q" };
+    emitter.emit({ ...ids, spanId: "a", type: "run.created", category: "control", name: "run.created", status: "ok", summary: { text: "deploy the pelican service", policy: "safe_summary" }, source: { component: "AgentService", observed: true } });
+    emitter.emit({ ...ids, spanId: "b", type: "run.completed", category: "control", name: "run.completed", status: "ok", source: { component: "AgentService", observed: true } });
+    await emitter.flush();
+    const app = await createApp(config(), service, { emitter, store });
+    const get = (url: string) => app.inject({ method: "GET", url, headers: auth });
+    const hit = (await get("/api/traces/trc_q/events?q=pelican")).json();
+    expect(hit.events.map((e: { spanId: string }) => e.spanId)).toEqual(["a"]);
+    expect((await get("/api/traces/trc_q/events?q=albatross")).json().events).toEqual([]);
+    expect((await get("/api/traces/nope")).statusCode).toBe(404);
+    await app.close();
   });
 
   it("lists runs and serves a trace with schemaVersion and capturePolicy", async () => {
@@ -573,8 +749,10 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     expect(leakyName.json().evaluator.id).not.toContain(mangled);
     expect((await readFile(path.join(dir, "launchpad.json"), "utf8")).includes(mangled)).toBe(false);
 
-    // The seeded judge id is reserved: an innocent "Task Completion" must not shadow task_completion@1.
+    // Every seeded judge id is reserved: an innocent "Task Completion" must not shadow task_completion@1,
+    // and a user-authored recovery_quality@2 must not reach that id's runtime with its own setsTaskOutcome (#177).
     expect((await post({ ...body, name: "Task Completion" })).statusCode).toBe(409);
+    expect((await post({ ...body, name: "Recovery Quality", setsTaskOutcome: true })).statusCode).toBe(409);
     await app.close();
 
     // without the evaluation store wired, the endpoint does not exist

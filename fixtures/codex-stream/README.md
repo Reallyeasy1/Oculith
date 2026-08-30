@@ -16,6 +16,10 @@ Capture commands are in `.superpowers/sdd/2026-08-26-glassbox-sprint1-observatio
 Host captures used `--sandbox danger-full-access` (except the `-sandbox-denied` one) because
 `workspace-write` degrades to read-only on Windows.
 
+The captures contain raw `reasoning` items and that is fine: fixtures are *input* to the mapper, and
+invariant 5 governs what the observer stores, not what Codex emits — the tests assert the reasoning
+text never reaches the store.
+
 ## Scrubbing
 
 Applied to every file before committing:

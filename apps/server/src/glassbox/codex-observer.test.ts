@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { CodexStreamObserver, commandIdentity, describeFinalMessage } from "./codex-observer.js";
 import { ObservationEmitter } from "./emitter.js";
+import { buildTrace } from "./query.js";
 import { MemoryTraceStore } from "./store.js";
 import { parseCodexEventLine, type ParsedEvents } from "../codex-runner.js";
 
@@ -163,6 +164,47 @@ describe("CodexStreamObserver", () => {
     expect(ends[0]!.attributes.modelCallsObserved).toBe(1);
     // The second turn produced no item evidence: no fabricated count.
     expect(ends[1]!.attributes).not.toHaveProperty("modelCallsObserved");
+  });
+
+  it("#243: completion-summary modelCalls equals buildTrace's count when a turn is abandoned mid-run", async () => {
+    const store = new MemoryTraceStore();
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner");
+    const p = parsed();
+    // First turn dies without turn.completed (E12 turn.failed → retry); the retry turn succeeds. The
+    // abandoned turn's item count was never stamped on its span, so BOTH sides drop the count and
+    // keep the one-call floor — the log summary and the trace rollup must agree.
+    for (const line of [
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "i1", type: "reasoning", text: "STEP ONE" } },
+      { type: "item.completed", item: { id: "i2", type: "reasoning", text: "STEP TWO" } },
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "i3", type: "agent_message", text: "Done" } },
+      { type: "turn.completed", usage: { input_tokens: 5, output_tokens: 1 } },
+    ]) parseCodexEventLine(JSON.stringify(line), p, obs);
+    obs.finish();
+    await em.flush();
+    const events = await store.readRun("run-1");
+    const view = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(view.summary.metrics.modelCalls).toBe(2);
+    expect(obs.stats().modelCalls).toBe(view.summary.metrics.modelCalls);
+  });
+
+  it("#243: a turn still open when the stream ends is folded into the stats at the same floor", async () => {
+    const store = new MemoryTraceStore();
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner");
+    const p = parsed();
+    for (const line of [
+      { type: "turn.started" },
+      { type: "turn.completed", usage: { input_tokens: 5, output_tokens: 1 } },
+      { type: "turn.started" },
+    ]) parseCodexEventLine(JSON.stringify(line), p, obs);
+    obs.finish("cancelled");
+    await em.flush();
+    const view = buildTrace(await store.readRun("run-1"), { capturePolicy: "metadata_only" });
+    expect(view.summary.metrics.modelCalls).toBe(2);
+    expect(obs.stats().modelCalls).toBe(view.summary.metrics.modelCalls);
   });
 
   it.each(["safe_summary", "metadata_only"] as const)(
@@ -590,7 +632,7 @@ describe("CodexStreamObserver run-log lines (#232)", () => {
       },
     };
   };
-  const make = (options: { resume?: boolean } = {}) => {
+  const make = (options: { resumeThreadId?: string } = {}) => {
     const { entries, log } = collect();
     const em = new ObservationEmitter({ store: new MemoryTraceStore(), capturePolicy: "metadata_only" });
     const obs = new CodexStreamObserver(em, trace, "spn_rt", "CodexRunner", { log, ...options });
@@ -632,15 +674,21 @@ describe("CodexStreamObserver run-log lines (#232)", () => {
     expect(joined).not.toContain("--token");
   });
 
-  it("logs resume vs new session once when the thread id resolves", () => {
-    const resumed = make({ resume: true });
+  it("logs resume vs new session once, verified against the echoed thread id", () => {
+    const resumed = make({ resumeThreadId: "thr-1" });
     parseCodexEventLine(lines[0]!, parsed(), resumed.obs);
     parseCodexEventLine(lines[0]!, parsed(), resumed.obs);
     expect(resumed.entries).toEqual(["info Codex session resumed"]);
 
-    const fresh = make({ resume: false });
+    const fresh = make();
     parseCodexEventLine(lines[0]!, parsed(), fresh.obs);
     expect(fresh.entries).toEqual(["info New Codex session started"]);
+  });
+
+  it("#243: never claims a resume Codex did not echo — a silently fresh thread is a warn, not 'resumed'", () => {
+    const mismatched = make({ resumeThreadId: "thr-previous" });
+    parseCodexEventLine(lines[0]!, parsed(), mismatched.obs);
+    expect(mismatched.entries).toEqual(["warn Codex resume requested but a new session was started"]);
   });
 
   it("logs the stream retry notice at most once and never the raw provider message", () => {
@@ -690,9 +738,14 @@ const feed = async (
 };
 
 describe.skipIf(!existsSync(fixtureDir))("CodexStreamObserver against real captures", () => {
-  it.each(["codex-0.111.jsonl", "codex-0.142.jsonl"])(
+  // Each fixture's reasoning text opens with its own phrase (#54: the 0.111 phrase asserted against
+  // 0.142 was vacuously absent) — grep the fixture before changing a phrase here.
+  it.each([
+    ["codex-0.111.jsonl", "The task is simple"],
+    ["codex-0.142.jsonl", "The user wants me to create"],
+  ])(
     "%s maps one shell tool call and the turn usage",
-    async (name) => {
+    async (name, reasoningPhrase) => {
       const { events, obs } = await feed(name, "safe_summary");
       const types = events.map((e) => e.type);
       expect(obs.sessionId).toBeTruthy();
@@ -702,7 +755,7 @@ describe.skipIf(!existsSync(fixtureDir))("CodexStreamObserver against real captu
       // Each capture is reasoning → command → message: the post-tool message is a second call (#230).
       expect(events.find((e) => e.type === "model.completed")!.attributes.modelCallsObserved).toBe(2);
       // E7/E8: reasoning text and the non-fatal notice never reach the store.
-      expect(JSON.stringify(events)).not.toContain("The task is simple");
+      expect(JSON.stringify(events)).not.toContain(reasoningPhrase);
       expect(JSON.stringify(events)).not.toContain("Model metadata");
       // No file_change was ever observed, so no workspace event may be invented.
       expect(types).not.toContain("workspace.changed");

@@ -1,14 +1,18 @@
 import path from "node:path";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
-import { isModelConfigured, loadConfig, writeCodexConfig } from "./config.js";
+import { configuredModel, isModelConfigured, loadConfig, writeCodexConfig } from "./config.js";
 import { ObservationEmitter } from "./glassbox/emitter.js";
+import { LiveNotifier } from "./glassbox/live.js";
 import { JsonEvaluationStore } from "./glassbox/evaluation.js";
 import { builtinRunEvaluators, EvaluationJobWorker, JsonEvaluationJobStore } from "./glassbox/jobs.js";
 import { ArkTaskCompletionJudge, FakeTaskCompletionJudge, JsonTaskCompletionSource, TaskCompletionEvaluator } from "./glassbox/task-completion.js";
+import { RecoveryQualityEvaluator } from "./glassbox/recovery-quality.js";
+import { SafetyEvaluator } from "./glassbox/safety.js";
 import { openSummaryStore } from "./glassbox/postgres-summary.js";
 import { openTraceStore } from "./glassbox/postgres-trace.js";
 import { scheduleRollup } from "./glassbox/summary.js";
+import { PreviewManager } from "./preview.js";
 import { createRunner } from "./runner-factory.js";
 import { JsonStore } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -37,10 +41,14 @@ try {
 } catch (error) {
   glassboxLog("retention.failed", { error: String(error).slice(0, 200) });
 }
+// #40: live updates — every stored observation event becomes a lightweight SSE nudge; the web
+// client refetches through the ordinary REST endpoints (polling remains the fallback).
+const live = new LiveNotifier();
 const emitter = new ObservationEmitter({
   store: traceStore,
   capturePolicy: config.glassboxCapturePolicy,
   log: glassboxLog,
+  onEvent: (event) => live.publish({ type: "run.updated", runId: event.runId, agentId: event.agentId, status: event.status, ts: event.timestamp }),
 });
 // Resume sequence numbering across a restart so a trace file stays monotonic.
 for (const entry of traceStore.listRuns()) emitter.seedSequence(entry.traceId, entry.lastSequence);
@@ -48,8 +56,7 @@ for (const entry of traceStore.listRuns()) emitter.seedSequence(entry.traceId, e
 const runner = createRunner(config, emitter);
 // Per-Run summaries (#168): rolled up after each terminal event, off the Run's path; the list route reads them.
 const summaries = await openSummaryStore(config, store);
-const configuredModel = config.modelProvider === "ark" ? config.arkModel : config.openaiModel || "openai-default";
-const evaluations = new JsonEvaluationStore(store, summaries, undefined, configuredModel);
+const evaluations = new JsonEvaluationStore(store, summaries, undefined, configuredModel(config));
 await evaluations.initialize();
 // Evaluation jobs (#170): background worker over stored summaries; restart honesty first, then the
 // loop picks up whatever was queued. The real task-completion judge is Ark-only; the deterministic
@@ -59,10 +66,15 @@ const taskCompletionJudge = config.taskCompletionJudge === "fake"
   : config.modelProvider === "ark" && isModelConfigured(config)
     ? new ArkTaskCompletionJudge({ apiKey: config.arkApiKey, baseUrl: config.arkBaseUrl, model: config.arkModel })
     : undefined;
+const evaluationSource = new JsonTaskCompletionSource(store, traceStore);
 const taskCompletion = taskCompletionJudge
-  ? new TaskCompletionEvaluator(new JsonTaskCompletionSource(store, traceStore), taskCompletionJudge)
+  ? new TaskCompletionEvaluator(evaluationSource, taskCompletionJudge)
   : undefined;
-const evaluationJobs = new EvaluationJobWorker({ jobs: new JsonEvaluationJobStore(store), summaries, evaluations, evaluators: builtinRunEvaluators(taskCompletion), log: glassboxLog });
+// recovery_quality (#177) shares the evaluation view, source adapter and judge with task_completion.
+const recoveryQuality = taskCompletionJudge
+  ? new RecoveryQualityEvaluator(evaluationSource, taskCompletionJudge)
+  : undefined;
+const evaluationJobs = new EvaluationJobWorker({ jobs: new JsonEvaluationJobStore(store), summaries, evaluations, evaluators: builtinRunEvaluators(taskCompletion, new SafetyEvaluator(traceStore), recoveryQuality), log: glassboxLog });
 await evaluationJobs.initialize();
 evaluationJobs.start();
 const rollup = { traces: traceStore, emitter, summaries, log: glassboxLog, pricing: {
@@ -70,11 +82,19 @@ const rollup = { traces: traceStore, emitter, summaries, log: glassboxLog, prici
   cachedInputPerMillion: config.glassboxPricePerMtokCachedInput,
   outputPerMillion: config.glassboxPricePerMtokOutput,
 } };
-const service = new AgentService(config, store, workspaces, runner, emitter, (runId, verify) => void scheduleRollup(rollup, runId, verify), runLogs);
+// evictRun after the rollup (which reads isDegraded): frees the emitter's per-run bookkeeping (#54).
+const service = new AgentService(config, store, workspaces, runner, emitter, (runId, verify) => void scheduleRollup(rollup, runId, verify).then(() => emitter.evictRun(runId)), runLogs, summaries);
 await service.initialize();
 await service.startHeartbeat();
 
-const app = await createApp(config, service, { emitter, store: traceStore, summaries, evaluations, jobs: evaluationJobs, logs: runLogs });
+// #96: workspace preview. Created after the emitter is seeded so a stale preview's terminal event
+// continues its trace's sequence; previews never survive a restart, so sweep leftovers now. The
+// trace index rides along so preview traces whose container already self-removed get closed too.
+const previews = new PreviewManager(config, emitter);
+const stalePreviews = await previews.cleanupStale(traceStore.listRuns());
+if (stalePreviews.length > 0) glassboxLog("preview.stale_cleanup", { removed: stalePreviews });
+
+const app = await createApp(config, service, { emitter, store: traceStore, summaries, evaluations, jobs: evaluationJobs, logs: runLogs, live }, previews);
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");

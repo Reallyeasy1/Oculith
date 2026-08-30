@@ -10,6 +10,30 @@ export interface PendingMessage {
   queuedAt: string;
 }
 
+/** Per-Agent daily spend cap (#255). Enforced pre-run only — a single Run can overshoot; "day" is a rolling 24 h window. */
+export interface AgentBudget {
+  maxTokensPerDay?: number;
+  maxEstimatedUsdPerDay?: number;
+}
+
+/** GET /api/agents/:id/budget — live status behind the budget banner (#255). */
+export interface AgentBudgetReport {
+  budget: AgentBudget | null;
+  usage: { totalTokens: number; estimatedCostUsd: number; runs: number; windowStart: string };
+  exceeded: boolean;
+  denial?: { decision: "budget_exceeded"; limit: "maxTokensPerDay" | "maxEstimatedUsdPerDay"; limitValue: number; used: number };
+}
+
+/** One browser edit to the workspace (#66) — mirrors apps/server/src/types.ts. `actor` is fixed
+ * to "operator" until the Bouncer track brings identity. */
+export interface WorkspaceHistoryEntry {
+  at: string;
+  action: "write" | "seed" | "delete" | "reset";
+  path: string;
+  bytes: number;
+  actor: string;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -22,8 +46,12 @@ export interface Agent {
   workspaceTemplate?: string;
   /** Operator-set command run in the workspace after every completed Run (#253); its exit code sets the Run's taskOutcome. */
   verifyCommand?: string;
+  /** Optional daily budget (#255); absent means no gate. */
+  budget?: AgentBudget;
   /** FIFO of messages accepted while busy (#254), capped at 10; absent means empty. */
   pendingMessages?: PendingMessage[];
+  /** Last 50 browser edits to the workspace, newest first (#66); absent means none. */
+  workspaceHistory?: WorkspaceHistoryEntry[];
   codexThreadId: string | null;
   lastError: string | null;
   createdAt: string;
@@ -45,6 +73,29 @@ export interface Workspace {
   fileCount: number;
   lastModified: string;
   managed: boolean;
+}
+
+// #65: read-only workspace browser — mirrors apps/server/src/workspace-browse.ts.
+export interface WorkspaceEntry {
+  name: string;
+  kind: "file" | "dir" | "symlink";
+  size: number;
+  mtime: string;
+}
+
+export interface WorkspaceListing {
+  path: string;
+  entries: WorkspaceEntry[];
+  truncated: boolean;
+}
+
+export interface WorkspaceFile {
+  path: string;
+  size: number;
+  mtime: string;
+  encoding: "utf8" | "binary";
+  managed: boolean;
+  content?: string;
 }
 
 export interface Message {
@@ -95,6 +146,9 @@ export interface AgentConfigSnapshot {
   capturePolicy: CapturePolicy;
   /** sha256 of the Agent's verifyCommand; absent when none is set. */
   verifyCommand?: string;
+  /** Budget limits (#255); absent when unset. */
+  budgetMaxTokensPerDay?: number;
+  budgetMaxEstimatedUsdPerDay?: number;
 }
 
 // --- GlassBox query types (mirrors apps/server/src/glassbox/{schema,query}.ts) ---
@@ -323,6 +377,27 @@ export interface RunLogLine {
   err?: string;
 }
 
+/** #96: allow-listed preview commands — the API accepts these two names, never a command line. */
+export type PreviewCommand = "vite" | "static";
+
+/** #96: one long-lived hardened container serving the Agent's workspace on a published loopback port. */
+export interface WorkspacePreview {
+  previewId: string;
+  agentId: string;
+  command: PreviewCommand;
+  port: number;
+  url: string;
+  containerName: string;
+  startedAt: string;
+  expiresAt: string;
+}
+
+/** #335: what this workspace can currently serve — a local vite install and/or a built dist/. */
+export interface PreviewServability {
+  vite: boolean;
+  static: boolean;
+}
+
 export interface SystemInfo {
   modelConfigured: boolean;
   modelProvider: "ark" | "openai";
@@ -333,6 +408,8 @@ export interface SystemInfo {
   runtimeProvider: "local-process" | "container";
   containerEngine: string | null;
   runtime: string;
+  /** #335: probed per request — engine daemon reachable and the runtime image present. */
+  previewAvailable: boolean;
 }
 
 export type Assertion =
@@ -358,7 +435,8 @@ export interface EvalRun {
   status: "running" | "completed" | "failed"; templateHashes?: Record<string, string>; templateHashMismatch?: boolean; createdAt: string; completedAt?: string;
 }
 export interface EvalComparison {
-  cases: { caseId: string; assertions: { type: string; baseline?: EvalResult; candidate?: EvalResult; delta?: number; regression: boolean }[]; regression: boolean; traceLinks: { baseline?: string; candidate?: string } }[];
+  // `message` mirrors apps/server/src/eval/compare.ts: set only when the candidate result is missing (case crashed).
+  cases: { caseId: string; assertions: { type: string; baseline?: EvalResult; candidate?: EvalResult; delta?: number; regression: boolean; message?: string }[]; regression: boolean; traceLinks: { baseline?: string; candidate?: string } }[];
   regressions: number; templateMismatch?: boolean;
 }
 
@@ -411,3 +489,13 @@ export interface ReliabilityCompareReport {
 
 // Mirrors WorkspaceManager.listTemplates(): a bad template (symlink, over limits) is reported, not a 500.
 export type WorkspaceTemplate = { name: string; fileCount: number; bytes: number } | { name: string; error: string };
+
+// #40: mirrors apps/server/src/glassbox/live.ts — the SSE frame from GET /api/events/stream.
+// Ids and enums only; the client refetches through the REST endpoints above.
+export interface LiveNotification {
+  type: "run.updated";
+  runId: string;
+  agentId: string;
+  status: TraceStatus;
+  ts: string;
+}

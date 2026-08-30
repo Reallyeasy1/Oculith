@@ -1,0 +1,226 @@
+{
+  "cases": [
+    {
+      "name": "uat-round-3-s1-two-failures-recovered",
+      "capturePolicy": "safe_summary",
+      "userRequest": "Fix the failing unit test and make the suite pass.",
+      "finalResponse": "Fixed the off-by-one in src/fees.js after two failing test runs; npm test now passes.",
+      "events": [
+        {
+          "schemaVersion": "1.0",
+          "eventId": "evt_s1_created",
+          "sequence": 1,
+          "traceId": "trc_s1",
+          "spanId": "spn_s1_created",
+          "runId": "run-s1",
+          "agentId": "agent-s1",
+          "actorId": "local-user",
+          "actorType": "human",
+          "attempt": 1,
+          "timestamp": "2026-08-27T12:00:00.000Z",
+          "type": "run.created",
+          "category": "control",
+          "phase": "instant",
+          "status": "unset",
+          "name": "run.created",
+          "source": {
+            "component": "AgentService",
+            "observed": true
+          },
+          "attributes": {},
+          "privacy": {
+            "redacted": false,
+            "rulesetVersion": "1"
+          }
+        },
+        {
+          "schemaVersion": "1.0",
+          "eventId": "evt_s1_fail1",
+          "sequence": 2,
+          "traceId": "trc_s1",
+          "spanId": "spn_s1_fail1",
+          "runId": "run-s1",
+          "agentId": "agent-s1",
+          "actorId": "agent-s1",
+          "actorType": "agent",
+          "attempt": 1,
+          "timestamp": "2026-08-27T12:00:01.000Z",
+          "type": "tool.call.failed",
+          "category": "tool",
+          "phase": "end",
+          "status": "error",
+          "name": "shell:npm",
+          "source": {
+            "component": "AgentRunner",
+            "adapter": "ContainerCodexRunner",
+            "observed": true
+          },
+          "attributes": {
+            "program": "npm",
+            "argument0": "test",
+            "exitCode": 1,
+            "commandBytes": 8,
+            "outputBytes": 512
+          },
+          "summary": {
+            "text": "npm test",
+            "policy": "safe_summary"
+          },
+          "error": {
+            "type": "exit_code",
+            "message": "exit code 1"
+          },
+          "privacy": {
+            "redacted": false,
+            "rulesetVersion": "1"
+          }
+        },
+        {
+          "schemaVersion": "1.0",
+          "eventId": "evt_s1_fail2",
+          "sequence": 3,
+          "traceId": "trc_s1",
+          "spanId": "spn_s1_fail2",
+          "runId": "run-s1",
+          "agentId": "agent-s1",
+          "actorId": "agent-s1",
+          "actorType": "agent",
+          "attempt": 1,
+          "timestamp": "2026-08-27T12:00:05.000Z",
+          "type": "tool.call.failed",
+          "category": "tool",
+          "phase": "end",
+          "status": "error",
+          "name": "shell:npm",
+          "source": {
+            "component": "AgentRunner",
+            "adapter": "ContainerCodexRunner",
+            "observed": true
+          },
+          "attributes": {
+            "program": "npm",
+            "argument0": "test",
+            "exitCode": 1,
+            "commandBytes": 8,
+            "outputBytes": 498
+          },
+          "summary": {
+            "text": "npm test",
+            "policy": "safe_summary"
+          },
+          "error": {
+            "type": "exit_code",
+            "message": "exit code 1"
+          },
+          "privacy": {
+            "redacted": false,
+            "rulesetVersion": "1"
+          }
+        },
+        {
+          "schemaVersion": "1.0",
+          "eventId": "evt_s1_fix",
+          "sequence": 4,
+          "traceId": "trc_s1",
+          "spanId": "spn_s1_fix",
+          "runId": "run-s1",
+          "agentId": "agent-s1",
+          "actorId": "agent-s1",
+          "actorType": "agent",
+          "attempt": 1,
+          "timestamp": "2026-08-27T12:00:09.000Z",
+          "type": "workspace.changed",
+          "category": "workspace",
+          "phase": "instant",
+          "status": "ok",
+          "name": "workspace.changed",
+          "source": {
+            "component": "AgentService",
+            "adapter": "WorkspaceSnapshot",
+            "observed": true
+          },
+          "attributes": {
+            "added": 0,
+            "modified": 1,
+            "removed": 0,
+            "bytesDelta": 42,
+            "truncated": false,
+            "paths": "src/fees.js"
+          },
+          "privacy": {
+            "redacted": false,
+            "rulesetVersion": "1"
+          }
+        },
+        {
+          "schemaVersion": "1.0",
+          "eventId": "evt_s1_retry",
+          "sequence": 5,
+          "traceId": "trc_s1",
+          "spanId": "spn_s1_retry",
+          "runId": "run-s1",
+          "agentId": "agent-s1",
+          "actorId": "agent-s1",
+          "actorType": "agent",
+          "attempt": 1,
+          "timestamp": "2026-08-27T12:00:12.000Z",
+          "type": "tool.call.completed",
+          "category": "tool",
+          "phase": "end",
+          "status": "ok",
+          "name": "shell:npm",
+          "source": {
+            "component": "AgentRunner",
+            "adapter": "ContainerCodexRunner",
+            "observed": true
+          },
+          "attributes": {
+            "program": "npm",
+            "argument0": "test",
+            "exitCode": 0,
+            "commandBytes": 8,
+            "outputBytes": 366
+          },
+          "summary": {
+            "text": "npm test",
+            "policy": "safe_summary"
+          },
+          "privacy": {
+            "redacted": false,
+            "rulesetVersion": "1"
+          }
+        },
+        {
+          "schemaVersion": "1.0",
+          "eventId": "evt_s1_done",
+          "sequence": 6,
+          "traceId": "trc_s1",
+          "spanId": "spn_s1_done",
+          "runId": "run-s1",
+          "agentId": "agent-s1",
+          "actorId": "agent-s1",
+          "actorType": "agent",
+          "attempt": 1,
+          "timestamp": "2026-08-27T12:00:13.000Z",
+          "type": "run.completed",
+          "category": "control",
+          "phase": "instant",
+          "status": "ok",
+          "name": "run.completed",
+          "source": {
+            "component": "AgentService",
+            "observed": true
+          },
+          "attributes": {
+            "finalMessageBytes": 85,
+            "reportedFailure": false
+          },
+          "privacy": {
+            "redacted": false,
+            "rulesetVersion": "1"
+          }
+        }
+      ]
+    }
+  ]
+}
