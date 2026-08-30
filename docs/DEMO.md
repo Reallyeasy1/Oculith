@@ -9,7 +9,8 @@ from any step; it reuses whatever already exists and never prints secrets). Targ
 > judged Docker path has run steps 1–7 green from a clean root (29 Aug — steps 1–4 in 92 s,
 > `post_check` executed for real). That rehearsal is what proved instruction-rigging alone
 > could not regress step 9 and led to the `fee-ledger` knowledge gate (#298), which merged
-> after it. **AC met:** the two timed judged-path (`npm run poc`) rehearsals are done — two
+> after it. **AC met:** the two consecutive clean-root rehearsals of the judged path
+> (`npm run poc`) are done — two
 > consecutive clean-root cycles on `fee-ledger` in the Docker container runtime finished in
 > **171 s** and **168 s**, both under the 3:00 budget (logged on #92).
 
@@ -101,8 +102,8 @@ renders), and `redactedEvents > 0`. The exclusive temporary name cannot overwrit
 workspace file, and an exit/signal trap removes it after success, failure, or interruption.
 When an ok baseline already exists, opting in intentionally sends a fresh redaction Run; repeated
 opt-in rehearsals each use and clean up a different temporary file. Say the
-honest line out loud: *"that's a seeded fake credential — the redactor caught it before
-anything reached disk."* It adds ~10–20 s to step 3, and with the flag unset the script's
+honest line out loud: *"that's a seeded fake credential — the redactor caught it before it
+reached persisted trace data."* It adds ~10–20 s to step 3, and with the flag unset the script's
 behavior is unchanged (the #92 timings stand) — skip the beat when tight on time.
 
 ## Resuming mid-demo
