@@ -1,6 +1,6 @@
 # UAT coverage record
 
-_What has been tested, how, and what has not. Last updated 29 August 2026 (main `9ed61b6`). Automated coverage comes from `npm run check` (unit tests, guard self-test, build) and the E2E lane (`npm run test:e2e`); manual coverage comes from the eight UAT rounds below. This record is updated at the end of every UAT round._
+_What has been tested, how, and what has not. Last updated 30 August 2026 (main `620f609`). Automated coverage comes from `npm run check` (unit tests, guard self-test, build) and the E2E lane (`npm run test:e2e`); manual coverage comes from the nine UAT rounds below. This record is updated at the end of every UAT round._
 
 ## 1. UAT rounds
 
@@ -14,6 +14,7 @@ _What has been tested, how, and what has not. Last updated 29 August 2026 (main 
 | 6 | 28 Aug, 13:45–14:10 | The 17 PRs merged after round 5 (tool/model spans, outcome line, restart honesty, exit hints, evidence chips, workspace picker, export link, drawer docking, keyboard, badges, prefill draft, run logs, baselines, evaluation store) plus the #210 restart-wipe hotfix | Playwright + API against a production build on the container runtime; 2 live Runs; 14 screenshots | 60 checks: 47 pass, 0 fail, 13 not reachable. Findings: the Outcome line is invisible under the default capture policy (runbook note added), the Logs panel carries only two lines per Run (#214), a shared managed workspace showed a raw UUID, exit 128/134/139/143 had no hint — all fixed or filed |
 | 7 | 28 Aug, 18:40–19:20 | Post-merge verification of #224/#225/#227/#231 on the dev runtime (`local-process`, Windows, real Ark model), driven end to end through the browser | Playwright MCP against `npm run dev` (:5173 → :3000), `APP_AUTH_TOKEN` set; 3 live Runs (3m13s / 2m49s / 3m59s, 300–470k tokens each), 2 EvalRuns, 1 comparison; 4 screenshots | `modelCallsObserved` verified against production evidence (22 calls on a 321k-token single-turn Run — pre-#231 this read 1); per-layer Evidence badges ("model observed · tool observed"); EvalRun template-hash provenance on the case row; comparison view (No-regression branch, deltas, evidence links); Live strip during all runs; **real `policy.denied` evidence at last** (Windows local-process sandbox resolves to read-only → 20–25 denials/Run, first-denial focus card correct) — the round-4 "not demonstrable" note was container-path-specific. Findings: Logs panel carries only 2 lines/Run → #232 (fixed same day: #199 table containment, #200 cold-load flash, #233 favicon, #234 comparison mismatch banner all merged); runtime card label says "application container" while Runs say `local-process`; #202 noise confirmed (all ok Runs "Needs attention" via recovered chips) |
 | 8 | 29 Aug, 15:22–15:24 | Current-main deterministic verification of three previously unreachable round-8 paths, without model inference | Isolated production build on `9ed61b6`, Fastify + real AgentService/CodexRunner parsing + JSON trace store, deterministic JSONL Codex executable, `safe_summary`, API on :3213; server container killed and restarted against the same data root | **PASS, no defects.** Exit codes 2/126/127/130/137 each persisted raw `exit code N` evidence and the correct operator hint in the reconstructed tool span. A safe-summary Run stored two bounded `model.message` events, used the final response for `summary.outcome.text`, redacted a seeded bearer canary in the command/output summary, and returned no raw canary from the trace API. A deliberately running Run survived an abrupt server-container kill as persisted `cancelled`; after restart the trace was `cancelled`, `/api/runs` reported `endedReason: server_restart`, `interruptedAfterMs: 5422`, and `firstFailingStep: codex exec`. UI rendering was not exercised; zero Ark calls. |
+| 9 | 30 Aug, 23:35–23:41 | Browser presentation of the three API-only round-8 paths, plus the metadata-only reported-failure fallback | Isolated production build of PR #352 head `75602bb` on :3214; real AgentService/CodexRunner parsing and JSON stores; deterministic local JSONL executable; `safe_summary` and `metadata_only`; abrupt server-process kill and restart against the same state root; in-app browser | **PASS, no defects; zero Ark calls.** Run `f9d3865b-d534-4a5b-bfe3-09f171977a38` rendered `exit code 127 — command not found — the program is missing from the runtime image` on `shell:missing-uat-command`. Run `441deee6-0758-4851-9a85-8df05d7e4489` rendered `cancelled`, duration `≥ 20.3 s`, three incomplete spans, `tool: no evidence`, first actionable `codex exec`, and the server-restart diagnosis. Safe-summary Run `23688573-528a-418f-ad36-00d1705c1b0e` rendered the bounded 240-character Outcome with the same 240-character `title`; its `model.message` drawer showed `Checking [REDACTED:bearer] before continuing.` and no raw canary. Metadata-only Run `eae28bd5-b303-4488-805a-2303404fb764` rendered the `agent reported failure` chip and its derived-not-judgement tooltip. |
 
 Scenarios driven in round 3 (all on the container runtime with deepseek-v4-flash): hello-world file + run (177 s, 9 tool calls, 2 failed); `curl` a URL in an image without `curl` (task failed, Run `ok`); run a missing script then create it (tool failure + recovery); a long task stopped after 12 s (cancel evidence); yesterday's restart-cut Run (forensic). Round 4 additionally created an Agent from the `node-lib-with-failing-test` template and had it fix the failing test (39 s, 5 tool calls, 1 recovered), then saved the Run as a Regression Case through the API.
 
@@ -26,7 +27,7 @@ Legend — **Unit**: vitest in `apps/server` / `apps/web`; **E2E**: step of `scr
 | Observation schema, IDs, sequencing (#21) | schema, emitter, store tests | [2] shapes, [3] export = trace | 1–4 | ok |
 | Trace store, index rebuild, duplicates (#22, #33) | store + integration tests | [5] restart | 3 (forensic), 4 | ok |
 | Non-blocking emitter, degraded mode (#23) | emitter test (store throws) | — | — | **not exercised manually** |
-| Redaction before persistence, fail closed (#29, #11) | redact tests with seeded fakes | [7] privacy sweep (files, API, export, log, DOM) | 8 (seeded bearer canary absent from trace API) | ok (automated + isolated current-main UAT) |
+| Redaction before persistence, fail closed (#29, #11) | redact tests with seeded fakes | [7] privacy sweep (files, API, export, log, DOM) | 8 (seeded bearer canary absent from trace API), 9 (redacted drawer; raw canary absent from DOM) | ok (automated + isolated current-main UAT) |
 | Retention and eviction (#39) | store retention test | — | — | **not exercised manually** |
 | Output cap `limit.exceeded` (#28) | runner test | — | — | **not exercised manually** |
 | Trace context at the Fastify boundary (#25) | app tests | [2] | 3, 4 | ok |
@@ -37,7 +38,7 @@ Legend — **Unit**: vitest in `apps/server` / `apps/web`; **E2E**: step of `scr
 | Query API, filters, export (#27, #38) | query + app tests | [2], [3], [6] | 3, 4 | ok; export has no UI link → #154 |
 | Runs view, filters, first failing step (#31, #70) | view-model tests | [4], [4b] | 2, 3, 4 | ok |
 | Trace detail: tree, timeline, drawer, filters, Jump (#32, #72, #73) | view-model tests | [4], [6] | 2, 3, 4 | ok; drawer overlap → #138 |
-| Restart / incomplete spans (#33, #101) | agent-service + integration AC-06 (wait-for-runner) | [5] | 3 (forensic), 8 (deterministic API restart) | API persistence/recovery honest; UI presentation still not re-driven; duration semantics → #136 |
+| Restart / incomplete spans (#33, #101) | agent-service + integration AC-06 (wait-for-runner) | [5] | 3 (forensic), 8 (deterministic API restart), 9 (browser) | API and UI show honest persisted cancellation, interrupted duration, incomplete spans and restart diagnosis; duration semantics → #136 |
 | Timeline axis and open-ended bars (#73) | view-model tests | — | 3, 4 | ok |
 | configHash (#79) | agent-service + query tests | [2] export/summary | 3, 4 | ok |
 | Per-Run metrics (#74) | query tests | [2] counts equal trace | 3, 4 | ok; `modelCalls` per-call via observed reasoning/message items (#207) |
@@ -48,7 +49,7 @@ Legend — **Unit**: vitest in `apps/server` / `apps/web`; **E2E**: step of `scr
 | Sandbox briefing `AGENTS.md` (#97) | agent-service test | — | 4 (on disk) | ok |
 | Live refresh, first load (#98, #99) | view-model tests | [4b] | 2, 3, 4 | ok |
 | Attention rule, recovered chips, Live strip (#131) | view-model tests | [4b] identities, strip present iff running | 4 | ok |
-| Exit-code hints (#133) | query tests | — | 4, 8 (2/126/127/130/137 through HTTP + stored trace reconstruction) | all listed codes format correctly in the trace API; browser drawer still not re-driven |
+| Exit-code hints (#133) | query tests | — | 4, 8 (2/126/127/130/137 through HTTP + stored trace reconstruction), 9 (127 in browser) | all listed codes format correctly in the trace API; exit 127 hint verified in the browser tree |
 | Selectable workspaces (#64) | workspace + agent-service tests | [2b] create on shared name, 409, switch, `AGENTS.md`, `run.created.workspace` | 4 (Create/Settings fields, column) | ok; UUID label / free text → #155 |
 | Workspace templates (#68) | workspace tests (wx writes, bad template) | — | 4 (form select; Agent created via API) | ok; **form submission with a template not driven through the UI** |
 | Isolated eval Run (#105), EvalRun execution (#85) | agent-service + runner tests | — | 5 ("Run against" from the overview: running → 4/4 passed, `templateHashes` on the EvalRun) | ok |
@@ -56,7 +57,7 @@ Legend — **Unit**: vitest in `apps/server` / `apps/web`; **E2E**: step of `scr
 | Evaluators (#83), post-check runner (#80) | evaluator + post-check tests | — | 5 (4 inferred assertions evaluated on two EvalRuns) | ok |
 | Regression case UI (#88), comparison UI (#89) | app test (derive with name/assertions); web view tests | [4] save dialog → case created | 5 (dialog assertions, overview case row, Compare banner vs tinted rows, evidence deep links into another and the open trace) | ok; modal a11y fixed; only the no-regression banner branch observed |
 | Template content hash (#176) | agent-service tests (edit, rename, force, legacy, missing → 400) | — | 5 (hash recorded on the case and the EvalRun; unknown template → 400) | ok; **mismatch 409 not driven live** (needs an edited template) |
-| RunSummary store, `executionStatus` / `taskOutcome` (#168, #191) | summary tests on JSON + PostgreSQL | [4b] | 5 (`/api/runs` rows: running/unknown → completed/unknown) | ok; Postgres backend booted and tested, not used in UAT |
+| RunSummary store, `executionStatus` / `taskOutcome` (#168, #191) | summary tests on JSON + PostgreSQL | [4b] | 5 (`/api/runs` rows: running/unknown → completed/unknown), 9 (bounded Outcome + metadata-only failure chip) | ok; 240-character Outcome/title and derived reported-failure fallback verified; Postgres backend booted and tested, not used in UAT |
 | Trace deep links (#102) | view-model tests | — | 5 (`?run=` sync, reload reopens the trace, stale id falls back with no banner) | ok |
 | Laptop layouts (#100) | — | — | 5 (1366/1024/800 screenshots) | partial: internal scroll + hint works, table still 1527 px → #199, page scroll below 1366 → #201 |
 | OTLP mapping adapter (#41) | otlp tests | — | — | library only, deferred |
@@ -82,12 +83,9 @@ Last green run: **180 checks** on `main` `3c99341` (28 Aug, after the 25-PR merg
 
 Round 7 additionally cleared several items from this list: `RUNTIME_PROVIDER=local-process` (the whole round ran on it), the browser flow with `APP_AUTH_TOKEN` set, Create-Agent-from-template through the form, sandbox denials as real product evidence, and the comparison UI's no-regression branch with live EvalRuns.
 
-## 4. Not yet tested (proposed round 8 — the paths rounds 6–7 could not reach)
+## 4. Not yet tested (remaining after round 9)
 
 - Template-hash mismatch 409 and `force` through the API (needs a copy of a template edited after the case was recorded); the dashboard cannot send `force` yet (#215).
-- Restart honesty in the UI (#136): round 8 proved the persisted Run/trace/list API state after a real process restart; the browser presentation still needs to be driven.
-- Hinted exit codes in the browser drawer (#156): round 8 proved 2/126/127/130/137 through the HTTP, runner-observer, store and query path; visual rendering still needs a browser pass.
-- The Outcome line's rendering (ellipsis, `title`, 240-char bound, reported-failure chip): round 8 proved the stored `summary.outcome.text` under `safe_summary`; the UI rendering remains untested.
 - `task_completion` (llm_judge) and `post_check` evaluators; `setsTaskOutcome` writing `taskOutcome`.
 - The ≤ 800 px span-drawer overlay branch (round 6 measured 1920/1366/1024).
 - The `REGRESSION · n assertions regressed` branch of the comparison banner (both round-5 EvalRuns passed 4/4) and the Jump-to-failing-span flow on a failed Run (E2E [6] covers it).
@@ -96,7 +94,6 @@ Round 7 additionally cleared several items from this list: `RUNTIME_PROVIDER=loc
 - Degraded trace store mid-Run (`telemetry.degraded`, `degraded` chip).
 - Retention/eviction with a small `GLASSBOX_MAX_DISK_MB`; the `evicted` chip.
 - Output cap (`CODEX_MAX_OUTPUT_BYTES`) → `limit.exceeded`; the real 600 s timeout.
-- `GLASSBOX_CAPTURE_POLICY=safe_summary`: round 8 proved redacted command/output summaries and raw-canary absence through the trace API; the drawer rendering remains untested.
 - UI-driven flows: workspace switch from Settings, delete an Agent that has Runs, the Playground chat error states.
 - Docker Compose profile (`docs/DEPLOYMENT.md`) up/down.
 - Large traces (event cap, `trace.truncated`) and the tree's default expansion above 40 spans.
