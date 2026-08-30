@@ -3,7 +3,7 @@
 // (vitest is hoisted from the server workspace — no new dependency.)
 import { describe, expect, it } from "vitest";
 import type { Span, TraceView } from "./types";
-import { ACTORS_TOOLTIP, EMPTY_FILTER, barGeometry, capabilityBadgeLabel, capabilityCopy, coalesceErrorRows, defaultExpanded, firstFailedSpanId, formatActors, formatAuditActor, formatReasoningTokens, interruptedSpanDurationMs, matchesSpan, refreshIntervalMs, spanArgument, spanStatusLabel, timelineTicks, trimDiagnosis, visibleRows, type VisibleRow } from "./trace-view-model";
+import { ACTORS_TOOLTIP, EMPTY_FILTER, barGeometry, capabilityBadgeLabel, capabilityCopy, coalesceErrorRows, defaultExpanded, firstFailedSpanId, formatActors, formatAuditActor, formatReasoningTokens, interruptedSpanDurationMs, matchesSpan, refreshIntervalMs, spanArgument, spanFillStatus, spanStatusLabel, timelineTicks, trimDiagnosis, visibleRows, type VisibleRow } from "./trace-view-model";
 
 const t0 = "2026-08-26T10:00:00.000Z";
 const at = (ms: number) => new Date(Date.parse(t0) + ms).toISOString();
@@ -128,6 +128,13 @@ describe("trace-view-model", () => {
       expect(spanStatusLabel({ status: "running", incomplete: true }, { status })).toBe("never closed");
     }
     expect(spanStatusLabel({ status: "ok", incomplete: false }, { status: "error" })).toBe("ok");
+  });
+
+  it("styles interrupted spans amber like never-closed ones, never RUNNING-blue (#368)", () => {
+    expect(spanFillStatus("interrupted", "running")).toBe("timeout");
+    expect(spanFillStatus("never closed", "running")).toBe("timeout");
+    expect(spanFillStatus("running", "running")).toBe("running");
+    expect(spanFillStatus("ok", "ok")).toBe("ok");
   });
 
   it("surfaces argument0 as the discriminator for identically named tool rows (#341)", () => {

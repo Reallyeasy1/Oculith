@@ -6,6 +6,7 @@ import {
   describeHistoryEntry,
   flattenWorkspaceTree,
   formatBytes,
+  listedFileExists,
   parentPath,
   workspaceSummaryLine,
 } from "./workspace-view-model";
@@ -77,6 +78,24 @@ describe("path helpers", () => {
     expect(childPath("src", "lib")).toBe("src/lib");
     expect(parentPath("src/lib")).toBe("src");
     expect(parentPath("src")).toBe("");
+  });
+});
+
+describe("listedFileExists (#368)", () => {
+  const listings = new Map([
+    listing("", [entry("src", "dir"), entry("notes.md")]),
+    listing("src", [entry("index.ts")]),
+  ]);
+  it("answers from a loaded parent listing without a network probe", () => {
+    expect(listedFileExists(listings, "notes.md")).toBe(true);
+    expect(listedFileExists(listings, "fresh.md")).toBe(false);
+    expect(listedFileExists(listings, "src/index.ts")).toBe(true);
+    expect(listedFileExists(listings, "src/new.ts")).toBe(false);
+  });
+  it("returns undefined (caller must probe) when the listing cannot answer", () => {
+    expect(listedFileExists(listings, "docs/new.md")).toBeUndefined(); // parent never loaded
+    expect(listedFileExists(new Map([["", { path: "", entries: [], truncated: true }]]), "a.txt")).toBeUndefined();
+    expect(listedFileExists(listings, "src\\index.ts")).toBeUndefined(); // backslash paths don't key listings
   });
 });
 
