@@ -17,3 +17,5 @@ deploy/volcengine/terraform.tfvars
 .claude/settings.local.json
 fixtures/protected/.pristine/
 .superpowers/
+# Session crawl/UAT artifacts (screenshots, probe scripts with test tokens) — never commit.
+scratchpad/
