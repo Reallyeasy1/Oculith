@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ObservationEmitter, createDefaultEmitter } from "./emitter.js";
+import { buildTrace } from "./query.js";
 import { MemoryTraceStore, type TraceStore } from "./store.js";
 import type { ObservationEvent } from "./schema.js";
 
@@ -84,8 +85,8 @@ describe("ObservationEmitter", () => {
     expect(em.emit({ ...base, spanId: "spn_2" })!.sequence).toBe(1);
     await em.flush();
     em.evictRun("run-1");
-    // The trace's sequence counter is gone: a straggler restarts at 0 (nothing emits after rollup today).
-    expect(em.emit(base)!.sequence).toBe(0);
+    // #367: the evicted counter reseeds from the store index — a straggler continues, it never restarts at 0.
+    expect(em.emit(base)!.sequence).toBe(2);
     const bad: TraceStore = { async initialize() {}, async append() { throw new Error("EACCES"); }, async readRun() { return []; }, runIdForTrace() { return undefined; }, listRuns() { return []; }, markTruncated() {}, async cleanup() { return { runs: 0, bytesBefore: 0, bytesAfter: 0, overCap: false, evicted: [] }; } };
     const degraded = new ObservationEmitter({ store: bad, capturePolicy: "metadata_only" });
     degraded.emit(base);
@@ -244,6 +245,22 @@ describe("ObservationEmitter", () => {
     const restarted = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
     for (const entry of store.listRuns()) restarted.seedSequence(entry.traceId, entry.lastSequence);
     expect(restarted.emit(base)!.sequence).toBe(2);
+  });
+  it("#367: a straggler emitted after rollup+evictRun continues the stored sequence and serves last", async () => {
+    const store = new MemoryTraceStore();
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    em.emit(base); // seq 0
+    em.emit({ ...base, spanId: "spn_2", type: "run.timed_out", status: "timeout" }); // seq 1 — terminal, rollup runs on it
+    await em.flush();
+    em.evictRun("run-1"); // index.ts evicts after the rollup; the eval post_check has not emitted yet
+    const straggler = em.emit({ ...base, spanId: "spn_3", type: "runtime.postcheck.failed", category: "runtime", name: "post-check", status: "error" })!;
+    expect(straggler.sequence).toBe(2); // continues from the store index, not 0
+    await em.flush();
+    const stored = await store.readRun("run-1");
+    expect(stored.map((e) => e.sequence)).toEqual([0, 1, 2]);
+    // The served timeline sorts sequence-first: the straggler stays last, not pinned at the top.
+    const view = buildTrace(stored, { capturePolicy: "metadata_only" });
+    expect(view.events.at(-1)!.spanId).toBe("spn_3");
   });
   it("keeps processing the queue after a rejected append", async () => {
     const inner = new MemoryTraceStore();
