@@ -19,16 +19,12 @@ describe("showLastErrorHint (#266)", () => {
   });
 });
 
-describe("preferredPreviewCommand (#370)", () => {
-  it("prefers static whenever a built dist exists — even with vite installed (host-platform node_modules cannot boot in the Linux container)", () => {
-    expect(preferredPreviewCommand({ vite: true, static: true })).toBe("static");
-    expect(preferredPreviewCommand({ vite: false, static: true })).toBe("static");
-  });
-  it("falls back to vite only when vite is the sole servable command", () => {
-    expect(preferredPreviewCommand({ vite: true, static: false })).toBe("vite");
+describe("preferredPreviewCommand (#370, #375)", () => {
+  it("starts the static preview when the workspace has a built dist", () => {
+    expect(preferredPreviewCommand({ static: true })).toBe("static");
   });
   it("returns null when nothing is servable — the Preview button stays hidden", () => {
-    expect(preferredPreviewCommand({ vite: false, static: false })).toBeNull();
+    expect(preferredPreviewCommand({ static: false })).toBeNull();
     expect(preferredPreviewCommand(null)).toBeNull();
   });
 });

@@ -10,16 +10,9 @@ export function showLastErrorHint(lastError: string | null, activeRunStatus: Run
 }
 
 /**
- * #370: which preview command the UI starts. Static wins whenever a built dist/index.html exists:
- * the platform's vite command is `vite preview`, which serves that same dist/ — but through the
- * workspace's node_modules, whose native rollup/esbuild bindings only exist for the platform that
- * ran `npm install` (a host install boots nothing inside the Linux preview container), and vite 5
- * cannot even load its config on the read-only workspace mount (EROFS on its temp file). The
- * stdlib static server has neither failure mode and serves identical content. Vite is only picked
- * when it is the sole servable command; null = nothing servable, the Preview button stays hidden.
+ * #370/#375: which preview command the UI starts — static (the only command since vite's
+ * retirement) when the workspace has a built dist/index.html; null keeps the Preview button hidden.
  */
 export function preferredPreviewCommand(servable: PreviewServability | null): PreviewCommand | null {
-  if (servable?.static) return "static";
-  if (servable?.vite) return "vite";
-  return null;
+  return servable?.static ? "static" : null;
 }
