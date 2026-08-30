@@ -74,6 +74,12 @@ describe("Container Codex runner", () => {
     const runner = new ContainerCodexRunner(config, emitter);
     const trace = { traceId: "trc_1", runId: "run-1", agentId: "agt-1", parentSpanId: "spn_svc" };
     const pending = runner.run({ agentId: "agt-1", workspacePath: dir, prompt: "p", threadId: null, trace });
+    // Cancellation is intentionally exercised after output reaches the observer. Without this
+    // synchronization the test races process startup: a fast CI worker can terminate the child
+    // before stdout is delivered, making the unrelated first-output assertion intermittent.
+    await expect.poll(async () =>
+      (await store.readRun("run-1")).filter((event) => event.type === "runtime.codex.first_output").length,
+    ).toBe(1);
     expect(await runner.cancel("agt-1")).toBe(true);
     await expect(pending).rejects.toBeInstanceOf(RunCancelledError);
     await emitter.flush();
