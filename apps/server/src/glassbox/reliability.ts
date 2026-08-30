@@ -57,6 +57,8 @@ export interface TaskCompletionRate {
  * - `latency`: nearest-rank percentiles over Runs with an observed `durationMs` (`sampled` counts them) —
  *   the returned value is always a duration some Run actually exhibited.
  * - `denialRate`: Runs with ≥ 1 denial / all window Runs.
+ * - `cost` (#369): USD over Runs with a persisted `estimatedCostUsd` (`sampled` counts them); a Run
+ *   without a cost estimate joins no side — the sum is only over observed estimates, never a total claim.
  */
 export interface ReliabilityNumbers {
   runs: number;
@@ -67,6 +69,7 @@ export interface ReliabilityNumbers {
   tokens: { avgInput: number | null; avgOutput: number | null; sum: number | null; sampled: number };
   latency: { p50: number | null; p95: number | null; sampled: number };
   denialRate: number | null;
+  cost: { avg: number | null; sum: number | null; sampled: number };
 }
 
 export interface ReliabilitySeriesPoint extends ReliabilityNumbers { bucket: string }
@@ -93,6 +96,11 @@ export interface ReliabilityReport extends ReliabilityBlock {
   agentId: string;
 }
 
+/** #369: the agent-optional GET /api/reliability variant — one block over every Agent's Runs. */
+export interface ReliabilityOverviewReport extends ReliabilityBlock {
+  schemaVersion: typeof SCHEMA_VERSION;
+}
+
 /** Per-number deltas, `b − a`; `null` whenever either side observed nothing (a delta from null is a guess). */
 export interface ReliabilityDeltas {
   runs: number;
@@ -103,6 +111,7 @@ export interface ReliabilityDeltas {
   tokens: { avgInput: number | null; avgOutput: number | null; sum: number | null };
   latency: { p50: number | null; p95: number | null };
   denialRate: number | null;
+  cost: { avg: number | null; sum: number | null };
 }
 
 export interface ReliabilityCompareReport {
@@ -127,6 +136,7 @@ export function reliabilityNumbers(rows: readonly RunSummary[], verdicts: Readon
   const outputs = rows.map((row) => tokensOf(row, "output")).filter(observed);
   const totals = rows.map((row) => tokensOf(row, "total")).filter(observed);
   const durations = rows.map((row) => row.durationMs).filter(observed).sort((a, b) => a - b);
+  const costs = rows.map((row) => row.estimatedCostUsd).filter(observed);
   const evaluated = rows.filter((row) => verdicts.has(row.runId));
   const passed = evaluated.filter((row) => verdicts.get(row.runId)).length;
   const denied = rows.filter((row) => row.denials > 0).length;
@@ -139,6 +149,7 @@ export function reliabilityNumbers(rows: readonly RunSummary[], verdicts: Readon
     tokens: { avgInput: ratio(sum(inputs), inputs.length), avgOutput: ratio(sum(outputs), outputs.length), sum: totals.length === 0 ? null : sum(totals), sampled: totals.length },
     latency: { p50: percentile(durations, 0.5), p95: percentile(durations, 0.95), sampled: durations.length },
     denialRate: ratio(denied, rows.length),
+    cost: { avg: ratio(sum(costs), costs.length), sum: costs.length === 0 ? null : sum(costs), sampled: costs.length },
   };
 }
 
@@ -175,6 +186,7 @@ export function reliabilityDeltas(a: ReliabilityNumbers, b: ReliabilityNumbers):
     tokens: { avgInput: diff(a.tokens.avgInput, b.tokens.avgInput), avgOutput: diff(a.tokens.avgOutput, b.tokens.avgOutput), sum: diff(a.tokens.sum, b.tokens.sum) },
     latency: { p50: diff(a.latency.p50, b.latency.p50), p95: diff(a.latency.p95, b.latency.p95) },
     denialRate: diff(a.denialRate, b.denialRate),
+    cost: { avg: diff(a.cost.avg, b.cost.avg), sum: diff(a.cost.sum, b.cost.sum) },
   };
 }
 
@@ -210,6 +222,19 @@ export class ReliabilityService {
     };
     const rows = await this.summaries.query(filter);
     return { schemaVersion: SCHEMA_VERSION, agentId, ...buildReliabilityBlock(rows, verdicts, evaluator, query.bucket, filter) };
+  }
+
+  /** #369: same window semantics with no Agent bound — `ReliabilityFilter.agentId` simply stays unset. */
+  async forAll(query: ReliabilityQuery): Promise<ReliabilityOverviewReport> {
+    const evaluator = await this.resolveEvaluator(query.evaluatorId, query.evaluatorVersion);
+    const verdicts = await this.verdicts(evaluator);
+    const filter: ReliabilityFilter = {
+      ...(query.configHash !== undefined ? { configHash: query.configHash } : {}),
+      ...(query.from !== undefined ? { from: query.from } : {}),
+      ...(query.to !== undefined ? { to: query.to } : {}),
+    };
+    const rows = await this.summaries.query(filter);
+    return { schemaVersion: SCHEMA_VERSION, ...buildReliabilityBlock(rows, verdicts, evaluator, query.bucket, filter) };
   }
 
   async compare(query: ReliabilityCompareQuery): Promise<ReliabilityCompareReport> {

@@ -191,6 +191,15 @@ export const api = {
     }).toString();
     return request<ReliabilityReport>("/api/agents/" + agentId + "/reliability" + (query ? "?" + query : ""));
   },
+  // #369: the agent-optional all-runs variant behind the Overview dashboard.
+  reliabilityAll: (opts: { bucket?: "hour" | "day"; from?: string; to?: string } = {}) => {
+    const query = new URLSearchParams({
+      ...(opts.bucket ? { bucket: opts.bucket } : {}),
+      ...(opts.from ? { from: opts.from } : {}),
+      ...(opts.to ? { to: opts.to } : {}),
+    }).toString();
+    return request<import("./types").ReliabilityOverviewReport>("/api/reliability" + (query ? "?" + query : ""));
+  },
   // #192: the evaluator catalogue and the user-defined llm_judge create form.
   listEvaluators: () => request<{ evaluators: EvaluatorDefinition[] }>("/api/evaluators"),
   createEvaluator: (body: { name: string; rubric: string; minScore: number; maxScore: number; passThreshold: number; setsTaskOutcome?: boolean }) =>
@@ -199,7 +208,8 @@ export const api = {
       body: JSON.stringify(body),
     }),
   // #174: historical quality deltas for two behavior configurations of one Agent.
-  compareReliability: (agentId: string, a: string, b: string, window: { from?: string; to?: string } = {}) =>
+  // #369: optional bucket for the charts overlay — omitted, the server defaults to daily buckets.
+  compareReliability: (agentId: string, a: string, b: string, window: { from?: string; to?: string; bucket?: "hour" | "day" } = {}) =>
     request<ReliabilityCompareReport>("/api/reliability/compare?" + new URLSearchParams({ agentId, a, b, ...window })),
   // #173: stored evaluation results for one Run, shown in the trace detail.
   runEvaluations: (runId: string) =>

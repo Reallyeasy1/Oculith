@@ -13,6 +13,7 @@ const emptyNumbers: ReliabilityNumbers = {
   tokens: { avgInput: null, avgOutput: null, sum: null, sampled: 0 },
   latency: { p50: null, p95: null, sampled: 0 },
   denialRate: null,
+  cost: { avg: null, sum: null, sampled: 0 },
 };
 
 function report(overrides: Partial<ReliabilityReport> = {}): ReliabilityReport {

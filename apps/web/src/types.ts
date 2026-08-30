@@ -462,6 +462,8 @@ export interface ReliabilityNumbers {
   tokens: { avgInput: number | null; avgOutput: number | null; sum: number | null; sampled: number };
   latency: { p50: number | null; p95: number | null; sampled: number };
   denialRate: number | null;
+  /** #369: USD over Runs with a persisted estimate; `sampled` counts them. */
+  cost: { avg: number | null; sum: number | null; sampled: number };
 }
 export interface ReliabilitySeriesPoint extends ReliabilityNumbers { bucket: string }
 export interface ReliabilityProvenance {
@@ -470,6 +472,8 @@ export interface ReliabilityProvenance {
 }
 export interface ReliabilityBlock extends ReliabilityNumbers { series: ReliabilitySeriesPoint[]; provenance: ReliabilityProvenance }
 export interface ReliabilityReport extends ReliabilityBlock { schemaVersion: string; capturePolicy: CapturePolicy; agentId: string }
+/** #369: GET /api/reliability — the agent-optional all-runs variant behind the Overview dashboard. */
+export interface ReliabilityOverviewReport extends ReliabilityBlock { schemaVersion: string; capturePolicy: CapturePolicy }
 export interface ReliabilityDeltas {
   runs: number;
   executionCompletionRate: number | null;
@@ -479,6 +483,7 @@ export interface ReliabilityDeltas {
   tokens: { avgInput: number | null; avgOutput: number | null; sum: number | null };
   latency: { p50: number | null; p95: number | null };
   denialRate: number | null;
+  cost: { avg: number | null; sum: number | null };
 }
 export interface ReliabilityCompareReport {
   schemaVersion: string; capturePolicy: CapturePolicy; agentId: string;
