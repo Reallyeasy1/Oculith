@@ -93,7 +93,14 @@ export function listedFileExists(
   const listing = listings.get(parentPath(path));
   if (!listing || listing.truncated) return undefined;
   const name = path.slice(path.lastIndexOf("/") + 1);
-  return listing.entries.some((entry) => entry.name === name);
+  if (listing.entries.some((entry) => entry.name === name)) return true;
+  // #372 review: on a case-insensitive filesystem (this project's own Windows host included) a
+  // case-variant name resolves to the SAME file server-side — an exact-only "false" here would skip
+  // the probe and let the write truncate it. Case-insensitive-only match → undefined: the network
+  // probe decides per-filesystem, exactly like before the listing short-cut existed.
+  const lower = name.toLowerCase();
+  if (listing.entries.some((entry) => entry.name.toLowerCase() === lower)) return undefined;
+  return false;
 }
 
 /** Client-side pre-check for "New file": the server proves the path, this only catches obvious

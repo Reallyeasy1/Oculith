@@ -92,6 +92,10 @@ describe("listedFileExists (#368)", () => {
     expect(listedFileExists(listings, "src/index.ts")).toBe(true);
     expect(listedFileExists(listings, "src/new.ts")).toBe(false);
   });
+  it("defers a case-variant match to the network probe — case-insensitive filesystems resolve it to the same file (#372 review)", () => {
+    expect(listedFileExists(listings, "Notes.MD")).toBeUndefined();
+    expect(listedFileExists(listings, "src/INDEX.ts")).toBeUndefined();
+  });
   it("returns undefined (caller must probe) when the listing cannot answer", () => {
     expect(listedFileExists(listings, "docs/new.md")).toBeUndefined(); // parent never loaded
     expect(listedFileExists(new Map([["", { path: "", entries: [], truncated: true }]]), "a.txt")).toBeUndefined();
