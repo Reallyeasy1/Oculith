@@ -121,6 +121,7 @@ function ChartCard({ spec, axis, bucket }: { spec: ChartSpec; axis: AxisBucket[]
         </div>
         <div
           className="chart-plot"
+          role="img"
           tabIndex={0}
           aria-label={label + ". Arrow keys step through the buckets."}
           onPointerMove={onPointerMove}

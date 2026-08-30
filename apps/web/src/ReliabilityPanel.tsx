@@ -28,6 +28,10 @@ export default function ReliabilityPanel({ report, agentId, onDrill }: Props) {
   const [hourError, setHourError] = useState<string | null>(null);
   const [hourLoading, setHourLoading] = useState(false);
 
+  // #342 review: drop the cached hourly series on agent switch so the previous
+  // agent's charts never flash under the new agent while its report is in flight.
+  useEffect(() => { setHourly(null); setHourError(null); }, [agentId]);
+
   useEffect(() => {
     if (!showCharts || bucket !== "hour" || !agentId || !report || hourly?.for === report) return;
     let stale = false;

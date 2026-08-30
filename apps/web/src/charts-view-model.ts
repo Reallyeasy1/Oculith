@@ -106,7 +106,7 @@ export function emptyStateMessage(series: readonly ReliabilitySeriesPoint[], buc
   if (series.length >= 2) return null;
   if (bucket === "hour") return "Charts appear once Runs span two time buckets.";
   const runs = series.reduce((sum, point) => sum + point.runs, 0);
-  return `All ${runs} Runs fall in a single daily bucket — hourly buckets show the shape of one day`;
+  return `All ${runs} ${runs === 1 ? "Run falls" : "Runs fall"} in a single daily bucket — hourly buckets show the shape of one day`;
 }
 
 export interface ReadoutLine {
