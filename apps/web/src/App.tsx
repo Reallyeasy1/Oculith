@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, getAuthToken, setAuthToken } from "./api";
 import { connectLive } from "./live";
 import { agentPayload, budgetFormError } from "./agent-form";
-import { showLastErrorHint } from "./agent-view-model";
+import { preferredPreviewCommand, showLastErrorHint } from "./agent-view-model";
 import { budgetBanner } from "./budget-view-model";
 import type { Agent, AgentBudgetReport, AgentRun, AgentRunBaseline, EvalRun, Message, PreviewServability, RegressionCase, ReliabilityReport, RunListItem, SystemInfo, TraceView, Workspace, WorkspacePreview, WorkspaceTemplate } from "./types";
 import RunsView from "./RunsView";
@@ -423,9 +423,11 @@ export default function App() {
         await api.stopPreview(selected.id);
         setPreview(null);
       } else {
-        // #335: serve what the workspace actually has — vite when installed, else the built dist/.
+        // #370/#375: static is the only command; the helper gates on a built dist/index.html.
         const agentId = selected.id;
-        setPreview((await api.startPreview(agentId, previewServable?.vite ? "vite" : "static")).preview);
+        const command = preferredPreviewCommand(previewServable);
+        if (!command) return;
+        setPreview((await api.startPreview(agentId, command)).preview);
         // A container can die right after start (--rm erases it); re-check shortly so a dead
         // preview never keeps a "running" header. The server closes it honestly on observation.
         window.setTimeout(() => {
@@ -873,7 +875,7 @@ export default function App() {
                     Collapse Playground
                   </button>
                 )}
-                {previewSupported && !preview && (previewServable?.vite || previewServable?.static) && (
+                {previewSupported && !preview && preferredPreviewCommand(previewServable) !== null && (
                   <button
                     className="button button-ghost"
                     onClick={togglePreview}
