@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -15,6 +16,7 @@ import {
   PreviewManager,
   previewContainerName,
   PREVIEW_COMMANDS,
+  STATIC_SERVER_SCRIPT,
   type PreviewEngine,
 } from "./preview.js";
 
@@ -84,6 +86,15 @@ function makeConfig(root: string, env: Record<string, string> = {}): AppConfig {
   });
 }
 
+/** #375: every start is `static` now, and start() refuses a workspace without dist/index.html —
+ * lifecycle tests get a real servable workspace instead of a fake path. */
+async function servableWorkspace(root: string, name: string): Promise<string> {
+  const workspace = path.join(root, "workspaces", name);
+  await mkdir(path.join(workspace, "dist"), { recursive: true });
+  await writeFile(path.join(workspace, "dist", "index.html"), "<!doctype html>\n");
+  return workspace;
+}
+
 async function makeHarness(env: Record<string, string> = {}) {
   const root = await makeRoot();
   const config = makeConfig(root, env);
@@ -109,7 +120,7 @@ describe("preview container arguments", () => {
       agentId: "agent-1",
       workspacePath: "/ws/agent-1",
       port: 5180,
-      command: "vite",
+      command: "static",
       previewId: "prv-1",
       traceId: "trc-1",
       spanId: "spn-1",
@@ -128,7 +139,7 @@ describe("preview container arguments", () => {
     expect(joined).not.toContain("ARK_API_KEY");
     expect(joined).not.toContain("OPENAI_API_KEY");
     expect(joined).not.toContain("codex-home");
-    expect(args.slice(args.indexOf(config.containerRuntimeImage) + 1)).toEqual(PREVIEW_COMMANDS.vite);
+    expect(args.slice(args.indexOf(config.containerRuntimeImage) + 1)).toEqual(PREVIEW_COMMANDS.static);
   });
 
   it("names preview containers by instance and agent, sanitized", () => {
@@ -138,13 +149,14 @@ describe("preview container arguments", () => {
 
 describe("PreviewManager lifecycle", () => {
   it("starts one preview per Agent, reports it, refuses a second, and stops it", async () => {
-    const { previews, engine, emitter, store } = await makeHarness();
-    const preview = await previews.start({ id: "agent-1", workspacePath: "/ws/agent-1" }, "vite");
-    expect(preview).toMatchObject({ agentId: "agent-1", command: "vite", port: 5180, url: "http://localhost:5180" });
+    const { previews, engine, emitter, store, root } = await makeHarness();
+    const workspace = await servableWorkspace(root, "ws-agent-1");
+    const preview = await previews.start({ id: "agent-1", workspacePath: workspace }, "static");
+    expect(preview).toMatchObject({ agentId: "agent-1", command: "static", port: 5180, url: "http://localhost:5180" });
     expect(Date.parse(preview.expiresAt)).toBeGreaterThan(Date.parse(preview.startedAt));
     expect(previews.get("agent-1")).toMatchObject({ port: 5180 });
 
-    await expect(previews.start({ id: "agent-1", workspacePath: "/ws/agent-1" }, "vite")).rejects.toMatchObject({ statusCode: 409 });
+    await expect(previews.start({ id: "agent-1", workspacePath: workspace }, "static")).rejects.toMatchObject({ statusCode: 409 });
 
     const stopped = await previews.stop("agent-1");
     expect(stopped?.port).toBe(5180);
@@ -156,7 +168,7 @@ describe("PreviewManager lifecycle", () => {
     const started = events.find((event) => event.type === "runtime.preview.started");
     const ended = events.find((event) => event.type === "runtime.preview.stopped");
     expect(started).toMatchObject({ status: "running", phase: "start", category: "infrastructure" });
-    expect(started?.attributes).toMatchObject({ port: 5180, command: "vite" });
+    expect(started?.attributes).toMatchObject({ port: 5180, command: "static" });
     expect(ended).toMatchObject({ status: "ok", phase: "end", spanId: started?.spanId });
     expect(ended?.attributes).toMatchObject({ reason: "user_request" });
     // The lifecycle trace is terminal once stopped, so retention can evict it (run.refused precedent).
@@ -164,28 +176,28 @@ describe("PreviewManager lifecycle", () => {
   });
 
   it("allocates distinct ports across Agents and skips externally busy ports", async () => {
-    const { previews, engine } = await makeHarness();
+    const { previews, engine, root } = await makeHarness();
     engine.onRun = (args) => {
       if (args.join(" ").includes("127.0.0.1:5181:")) throw new Error("driver failed: port is already allocated");
     };
-    await previews.start({ id: "agent-1", workspacePath: "/ws/1" }, "vite");
-    const second = await previews.start({ id: "agent-2", workspacePath: "/ws/2" }, "vite");
+    await previews.start({ id: "agent-1", workspacePath: await servableWorkspace(root, "ws-1") }, "static");
+    const second = await previews.start({ id: "agent-2", workspacePath: await servableWorkspace(root, "ws-2") }, "static");
     expect(second.port).toBe(5182); // 5180 in use by agent-1, 5181 busy on the host
   });
 
   it("refuses when every port in the range is taken", async () => {
-    const { previews } = await makeHarness({ PREVIEW_PORT_RANGE: "5180-5181" });
-    await previews.start({ id: "agent-1", workspacePath: "/ws/1" }, "vite");
-    await previews.start({ id: "agent-2", workspacePath: "/ws/2" }, "vite");
-    await expect(previews.start({ id: "agent-3", workspacePath: "/ws/3" }, "vite")).rejects.toMatchObject({ statusCode: 409 });
+    const { previews, root } = await makeHarness({ PREVIEW_PORT_RANGE: "5180-5181" });
+    await previews.start({ id: "agent-1", workspacePath: await servableWorkspace(root, "ws-1") }, "static");
+    await previews.start({ id: "agent-2", workspacePath: await servableWorkspace(root, "ws-2") }, "static");
+    await expect(previews.start({ id: "agent-3", workspacePath: await servableWorkspace(root, "ws-3") }, "static")).rejects.toMatchObject({ statusCode: 409 });
   });
 
   it("surfaces an engine failure as a 502 without retrying other ports", async () => {
-    const { previews, engine } = await makeHarness();
+    const { previews, engine, root } = await makeHarness();
     engine.onRun = () => {
       throw new Error("Cannot connect to the Docker daemon");
     };
-    await expect(previews.start({ id: "agent-1", workspacePath: "/ws/1" }, "vite")).rejects.toMatchObject({ statusCode: 502 });
+    await expect(previews.start({ id: "agent-1", workspacePath: await servableWorkspace(root, "ws-1") }, "static")).rejects.toMatchObject({ statusCode: 502 });
     expect(engine.runsFor("run")).toHaveLength(1);
     expect(previews.get("agent-1")).toBeUndefined();
   });
@@ -202,9 +214,10 @@ describe("PreviewManager lifecycle", () => {
   });
 
   it("stops the container when the TTL expires and records the reason", async () => {
+    const { previews, engine, emitter, store, root } = await makeHarness({ PREVIEW_TTL_MS: "10000" });
+    const workspace = await servableWorkspace(root, "ws-1");
     vi.useFakeTimers();
-    const { previews, engine, emitter, store } = await makeHarness({ PREVIEW_TTL_MS: "10000" });
-    const preview = await previews.start({ id: "agent-1", workspacePath: "/ws/1" }, "vite");
+    const preview = await previews.start({ id: "agent-1", workspacePath: workspace }, "static");
     await vi.advanceTimersByTimeAsync(10_050);
     expect(previews.get("agent-1")).toBeUndefined();
     expect(engine.runsFor("rm").length).toBe(1);
@@ -231,7 +244,8 @@ describe("PreviewManager lifecycle", () => {
   });
 
   it("refuses a second start racing the first (no engine-name-conflict 502)", async () => {
-    const { previews, engine } = await makeHarness();
+    const { previews, engine, root } = await makeHarness();
+    const workspace = await servableWorkspace(root, "ws-1");
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const exec = engine.exec.bind(engine);
@@ -239,15 +253,15 @@ describe("PreviewManager lifecycle", () => {
       if (args[0] === "run") await gate;
       return exec(args);
     };
-    const first = previews.start({ id: "agent-1", workspacePath: "/ws/1" }, "vite");
-    await expect(previews.start({ id: "agent-1", workspacePath: "/ws/1" }, "vite")).rejects.toMatchObject({ statusCode: 409 });
+    const first = previews.start({ id: "agent-1", workspacePath: workspace }, "static");
+    await expect(previews.start({ id: "agent-1", workspacePath: workspace }, "static")).rejects.toMatchObject({ statusCode: 409 });
     release();
     await expect(first).resolves.toMatchObject({ port: 5180 });
   });
 
   it("never records a stop the engine did not confirm; the retry emits it exactly once", async () => {
-    const { previews, engine, emitter, store } = await makeHarness();
-    const preview = await previews.start({ id: "agent-1", workspacePath: "/ws/1" }, "vite");
+    const { previews, engine, emitter, store, root } = await makeHarness();
+    const preview = await previews.start({ id: "agent-1", workspacePath: await servableWorkspace(root, "ws-1") }, "static");
     engine.failRm = new Error("Cannot connect to the Docker daemon");
     await expect(previews.stop("agent-1")).rejects.toMatchObject({ statusCode: 502 });
     // Still tracked and the trace still open: the container may still be serving the port.
@@ -264,16 +278,16 @@ describe("PreviewManager lifecycle", () => {
   });
 
   it("treats 'no such container' as a confirmed removal", async () => {
-    const { previews, engine } = await makeHarness();
-    await previews.start({ id: "agent-1", workspacePath: "/ws/1" }, "vite");
+    const { previews, engine, root } = await makeHarness();
+    await previews.start({ id: "agent-1", workspacePath: await servableWorkspace(root, "ws-1") }, "static");
     engine.failRm = new Error("Error response from daemon: No such container: launchpad-preview-default-agent-1");
     await expect(previews.stop("agent-1")).resolves.toMatchObject({ port: 5180 });
     expect(previews.get("agent-1")).toBeUndefined();
   });
 
   it("status(): an unreachable engine is not an observed exit; an observed exit closes as error", async () => {
-    const { previews, engine, emitter, store } = await makeHarness();
-    const preview = await previews.start({ id: "agent-1", workspacePath: "/ws/1" }, "vite");
+    const { previews, engine, emitter, store, root } = await makeHarness();
+    const preview = await previews.start({ id: "agent-1", workspacePath: await servableWorkspace(root, "ws-1") }, "static");
 
     const exec = engine.exec.bind(engine);
     engine.exec = async (args) => {
@@ -312,8 +326,8 @@ describe("PreviewManager lifecycle", () => {
   });
 
   it("rollupRun never summarizes a preview trace (baseline stays Runs-only)", async () => {
-    const { previews, emitter, store } = await makeHarness();
-    const preview = await previews.start({ id: "agent-1", workspacePath: "/ws/1" }, "vite");
+    const { previews, emitter, store, root } = await makeHarness();
+    const preview = await previews.start({ id: "agent-1", workspacePath: await servableWorkspace(root, "ws-1") }, "static");
     await previews.stop("agent-1");
     await emitter.flush();
     const { rollupRun } = await import("./glassbox/summary.js");
@@ -338,6 +352,9 @@ describe("PreviewManager lifecycle", () => {
 describe("preview routes", () => {
   const startedAgent = async (harness: Awaited<ReturnType<typeof makeHarness>>) => {
     const agent = await harness.service.createAgent({ name: "Previewed" });
+    // #375: the only command serves dist/, so route tests build one into the agent's workspace.
+    await mkdir(path.join(agent.workspacePath, "dist"), { recursive: true });
+    await writeFile(path.join(agent.workspacePath, "dist", "index.html"), "<!doctype html>\n");
     return agent;
   };
 
@@ -348,11 +365,11 @@ describe("preview routes", () => {
 
     const missing = await app.inject({ method: "GET", url: "/api/agents/" + agent.id + "/preview" });
     expect(missing.statusCode).toBe(200);
-    expect(missing.json()).toEqual({ preview: null, servable: { vite: false, static: false } });
+    expect(missing.json()).toEqual({ preview: null, servable: { static: true } });
 
     const created = await app.inject({ method: "POST", url: "/api/agents/" + agent.id + "/preview", payload: {} });
     expect(created.statusCode).toBe(201);
-    expect(created.json().preview).toMatchObject({ command: "vite", port: 5180, url: "http://localhost:5180" });
+    expect(created.json().preview).toMatchObject({ command: "static", port: 5180, url: "http://localhost:5180" });
 
     const dup = await app.inject({ method: "POST", url: "/api/agents/" + agent.id + "/preview", payload: {} });
     expect(dup.statusCode).toBe(409);
@@ -374,6 +391,9 @@ describe("preview routes", () => {
     const agent = await startedAgent(harness);
     const bad = await app.inject({ method: "POST", url: "/api/agents/" + agent.id + "/preview", payload: { command: "bash" } });
     expect(bad.statusCode).toBe(400);
+    // #375: vite is retired — a stale client naming it gets the same contract 400, never a container.
+    const retired = await app.inject({ method: "POST", url: "/api/agents/" + agent.id + "/preview", payload: { command: "vite" } });
+    expect(retired.statusCode).toBe(400);
     await app.close();
 
     // #335: availability is about the engine, not the Codex provider — a broken engine is a 409
@@ -390,10 +410,10 @@ describe("preview routes", () => {
     // …and a healthy engine serves previews even when Codex itself runs as a local process.
     const local = await makeHarness({ RUNTIME_PROVIDER: "local-process" });
     const localApp = await createApp(local.config, local.service, undefined, local.previews);
-    const localAgent = await local.service.createAgent({ name: "Local" });
+    const localAgent = await startedAgent(local);
     const created = await localApp.inject({ method: "POST", url: "/api/agents/" + localAgent.id + "/preview", payload: {} });
     expect(created.statusCode).toBe(201);
-    expect(created.json().preview).toMatchObject({ command: "vite", port: 5180 });
+    expect(created.json().preview).toMatchObject({ command: "static", port: 5180 });
     await localApp.close();
   });
 
@@ -446,51 +466,41 @@ describe("preview routes", () => {
   });
 });
 
-describe("preview servability (#335)", () => {
-  it("reports what the workspace can serve: local vite install and a built web dist/", async () => {
+describe("preview servability (#335, #375)", () => {
+  it("reports whether the workspace has a built web dist/", async () => {
     const { previews, root } = await makeHarness();
-    const { writeFile: write } = await import("node:fs/promises");
     const workspace = path.join(root, "workspaces", "servable-ws");
     await mkdir(workspace, { recursive: true });
-    await expect(previews.servable(workspace)).resolves.toEqual({ vite: false, static: false });
+    await expect(previews.servable(workspace)).resolves.toEqual({ static: false });
 
     // A dist/ of compiled JS (a Node CLI's tsc output) is not a servable page — the static
     // server would answer "Not found" at /. Only dist/index.html makes it a site.
     await mkdir(path.join(workspace, "dist"), { recursive: true });
-    await write(path.join(workspace, "dist", "main.js"), "console.log(1)\n");
-    await expect(previews.servable(workspace)).resolves.toEqual({ vite: false, static: false });
+    await writeFile(path.join(workspace, "dist", "main.js"), "console.log(1)\n");
+    await expect(previews.servable(workspace)).resolves.toEqual({ static: false });
 
-    await write(path.join(workspace, "dist", "index.html"), "<!doctype html>\n");
-    await expect(previews.servable(workspace)).resolves.toEqual({ vite: false, static: true });
-
-    await mkdir(path.join(workspace, "node_modules", ".bin"), { recursive: true });
-    const { writeFile } = await import("node:fs/promises");
-    await writeFile(path.join(workspace, "node_modules", ".bin", "vite"), "#!/bin/sh\n");
-    await expect(previews.servable(workspace)).resolves.toEqual({ vite: true, static: true });
+    await writeFile(path.join(workspace, "dist", "index.html"), "<!doctype html>\n");
+    await expect(previews.servable(workspace)).resolves.toEqual({ static: true });
   });
 
   it("does not count symlinks escaping the workspace — the container mount cannot follow them", async () => {
     const { previews, root } = await makeHarness();
     const outside = path.join(root, "outside");
     const workspace = path.join(root, "workspaces", "symlinked-ws");
-    await mkdir(path.join(outside, ".bin"), { recursive: true });
     await mkdir(path.join(outside, "dist"), { recursive: true });
-    await mkdir(path.join(workspace, "node_modules", ".bin"), { recursive: true });
-    const { writeFile, symlink } = await import("node:fs/promises");
+    await mkdir(workspace, { recursive: true });
+    const { symlink } = await import("node:fs/promises");
     await writeFile(path.join(outside, "dist", "index.html"), "<!doctype html>\n");
-    await writeFile(path.join(outside, ".bin", "vite"), "#!/bin/sh\n");
-    // The failure seen live: an agent "installed" vite by symlinking a parent repo's binary.
-    await symlink(path.join(outside, ".bin", "vite"), path.join(workspace, "node_modules", ".bin", "vite"));
+    // The failure class seen live: content "provided" by symlinking outside the mount.
     await symlink(path.join(outside, "dist"), path.join(workspace, "dist"));
-    await expect(previews.servable(workspace)).resolves.toEqual({ vite: false, static: false });
+    await expect(previews.servable(workspace)).resolves.toEqual({ static: false });
 
-    // A relative symlink staying inside the workspace (npm's own layout) still counts.
-    const npmWorkspace = path.join(root, "workspaces", "npm-ws");
-    await mkdir(path.join(npmWorkspace, "node_modules", "vite", "bin"), { recursive: true });
-    await mkdir(path.join(npmWorkspace, "node_modules", ".bin"), { recursive: true });
-    await writeFile(path.join(npmWorkspace, "node_modules", "vite", "bin", "vite.js"), "// cli\n");
-    await symlink(path.join("..", "vite", "bin", "vite.js"), path.join(npmWorkspace, "node_modules", ".bin", "vite"));
-    await expect(previews.servable(npmWorkspace)).resolves.toEqual({ vite: true, static: false });
+    // A relative symlink staying inside the workspace still counts.
+    const linkedWorkspace = path.join(root, "workspaces", "linked-ws");
+    await mkdir(path.join(linkedWorkspace, "build"), { recursive: true });
+    await writeFile(path.join(linkedWorkspace, "build", "index.html"), "<!doctype html>\n");
+    await symlink("build", path.join(linkedWorkspace, "dist"));
+    await expect(previews.servable(linkedWorkspace)).resolves.toEqual({ static: true });
   });
 
   it("GET /api/agents/:id/preview carries servability so the UI only offers what can serve", async () => {
@@ -499,14 +509,73 @@ describe("preview servability (#335)", () => {
     const agent = await harness.service.createAgent({ name: "Fresh" });
 
     const fresh = await app.inject({ method: "GET", url: "/api/agents/" + agent.id + "/preview" });
-    expect(fresh.json()).toEqual({ preview: null, servable: { vite: false, static: false } });
+    expect(fresh.json()).toEqual({ preview: null, servable: { static: false } });
 
     await mkdir(path.join(agent.workspacePath, "dist"), { recursive: true });
-    const { writeFile } = await import("node:fs/promises");
     await writeFile(path.join(agent.workspacePath, "dist", "index.html"), "<!doctype html>\n");
     const built = await app.inject({ method: "GET", url: "/api/agents/" + agent.id + "/preview" });
-    expect(built.json().servable).toEqual({ vite: false, static: true });
+    expect(built.json().servable).toEqual({ static: true });
     await app.close();
+  });
+});
+
+describe("static server script (#375)", () => {
+  it("serves the built dist with real MIME types, SPA fallback for extension-less misses, and 404 for asset misses", async () => {
+    const root = await makeRoot();
+    const dist = path.join(root, "dist");
+    await mkdir(path.join(dist, "assets"), { recursive: true });
+    await writeFile(path.join(dist, "index.html"), "<!doctype html><title>spa</title>\n");
+    await writeFile(path.join(dist, "assets", "app.js"), "console.log(1)\n");
+    await writeFile(path.join(dist, "assets", "game.wasm"), Buffer.from([0x00, 0x61, 0x73, 0x6d]));
+
+    // The exact script the container runs; root/port env overrides exist only for this test —
+    // the hardened container passes neither, keeping /workspace/dist on the fixed port.
+    const child = spawn(process.execPath, ["-e", STATIC_SERVER_SCRIPT], {
+      env: { PREVIEW_STATIC_ROOT: dist, PREVIEW_STATIC_PORT: "0" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    try {
+      const port = await new Promise<number>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("static server never reported its port")), 5_000);
+        let seen = "";
+        child.stdout.on("data", (chunk: Buffer) => {
+          seen += chunk.toString();
+          const match = seen.match(/listening on (\d+)/);
+          if (match) { clearTimeout(timer); resolve(Number(match[1])); }
+        });
+        child.on("exit", (code) => { clearTimeout(timer); reject(new Error("static server exited with " + code)); });
+      });
+      const get = (route: string) => fetch("http://127.0.0.1:" + port + route);
+
+      const index = await get("/");
+      expect(index.status).toBe(200);
+      expect(index.headers.get("content-type")).toBe("text/html");
+      expect(await index.text()).toContain("spa");
+
+      const script = await get("/assets/app.js");
+      expect(script.status).toBe(200);
+      expect(script.headers.get("content-type")).toBe("text/javascript");
+
+      // instantiateStreaming requires the real MIME type — the reason .wasm is in the table.
+      const wasm = await get("/assets/game.wasm");
+      expect(wasm.status).toBe(200);
+      expect(wasm.headers.get("content-type")).toBe("application/wasm");
+
+      // SPA history fallback: a client-side route survives a refresh…
+      const route = await get("/scores/weekly");
+      expect(route.status).toBe(200);
+      expect(await route.text()).toContain("spa");
+
+      // …but a missing asset stays an honest 404, and traversal stays refused.
+      expect((await get("/assets/missing.js")).status).toBe(404);
+      expect((await get("/..%2f..%2fetc%2fpasswd")).status).toBe(403);
+
+      // Malformed percent-encoding must be a 400, never an uncaught URIError that kills the server.
+      expect((await get("/%zz")).status).toBe(400);
+      expect((await get("/")).status).toBe(200);
+    } finally {
+      child.kill("SIGKILL");
+    }
   });
 });
 

@@ -126,7 +126,7 @@ export const api = {
   // engine answers 409. `servable` says which commands would actually serve this workspace.
   preview: (id: string) =>
     request<{ preview: WorkspacePreview | null; servable: PreviewServability }>("/api/agents/" + id + "/preview"),
-  startPreview: (id: string, command: PreviewCommand = "vite") =>
+  startPreview: (id: string, command: PreviewCommand = "static") =>
     request<{ preview: WorkspacePreview }>("/api/agents/" + id + "/preview", {
       method: "POST",
       body: JSON.stringify({ command }),
