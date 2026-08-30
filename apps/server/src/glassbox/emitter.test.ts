@@ -162,6 +162,89 @@ describe("ObservationEmitter", () => {
     expect(em.isDegraded("run-1")).toBe(true);
     expect(logs.filter((l) => l === "telemetry.degraded")).toHaveLength(1);
   });
+  it("#358: emit(null)/emit(undefined) degrade instead of throwing to the caller (invariant 4)", async () => {
+    const store = new MemoryTraceStore();
+    const logs: string[] = [];
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only", log: (m) => logs.push(m) });
+    expect(() => em.emit(null as never)).not.toThrow();
+    expect(em.emit(undefined as never)).toBeNull();
+    await em.flush();
+    expect(logs).toContain("quarantine_dropped");
+  });
+  it("#358: a non-finite/non-integer seedSequence is ignored instead of poisoning every later emit for the trace", () => {
+    const em = createDefaultEmitter();
+    em.seedSequence("trc_1", Number.NaN);
+    em.seedSequence("trc_1", 1.5);
+    const out = em.emit(base);
+    expect(out).not.toBeNull();
+    expect(out!.sequence).toBe(0);
+  });
+  it("#358: drops events beyond the per-run queue depth cap and degrades the run, logging once", async () => {
+    const hanging: TraceStore = { async initialize() {}, append: () => new Promise(() => {}), async readRun() { return []; }, runIdForTrace() { return undefined; }, listRuns() { return []; }, markTruncated() {} };
+    const logs: string[] = [];
+    const em = new ObservationEmitter({ store: hanging, capturePolicy: "metadata_only", log: (m) => logs.push(m), maxQueueDepth: 2, appendTimeoutMs: 10 });
+    for (let i = 0; i < 4; i++) em.emit({ ...base, spanId: "s" + i });
+    // Events 3 and 4 exceeded the depth cap synchronously: dropped, run degraded, logged exactly once.
+    expect(em.isDegraded("run-1")).toBe(true);
+    expect(logs.filter((l) => l === "telemetry.degraded")).toHaveLength(1);
+    await em.flush();
+  });
+  it("#358: an append that never settles degrades the run after the settle timeout without wedging the chain", async () => {
+    const inner = new MemoryTraceStore();
+    let calls = 0;
+    const store: TraceStore = {
+      initialize: () => inner.initialize(),
+      append: (event) => (calls++ === 0 ? new Promise(() => {}) : inner.append(event)), // first append hangs forever
+      readRun: (runId) => inner.readRun(runId),
+      runIdForTrace: (traceId) => inner.runIdForTrace(traceId),
+      listRuns: () => inner.listRuns(),
+      markTruncated: (runId) => inner.markTruncated(runId),
+    };
+    const logs: string[] = [];
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only", log: (m) => logs.push(m), appendTimeoutMs: 20 });
+    em.emit(base);
+    em.emit({ ...base, spanId: "spn_2" });
+    await em.flush(); // resolves: the timed-out append must not wedge the chain
+    expect(em.isDegraded("run-1")).toBe(true);
+    expect(logs.filter((l) => l === "telemetry.degraded")).toHaveLength(1);
+    // The chain moved on past the hung append: the second event reached the store.
+    expect((await inner.readRun("run-1")).some((e) => e.spanId === "spn_2")).toBe(true);
+  });
+  it("#358: a late rejection from a timed-out append is observed, never an unhandled rejection", async () => {
+    const store: TraceStore = {
+      async initialize() {},
+      append: () => new Promise((_, reject) => setTimeout(() => reject(new Error("late failure")), 40)),
+      async readRun() { return []; }, runIdForTrace() { return undefined; }, listRuns() { return []; }, markTruncated() {},
+    };
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only", appendTimeoutMs: 5 });
+    em.emit(base);
+    await em.flush();
+    expect(em.isDegraded("run-1")).toBe(true);
+    // Let the losing promises reject now; vitest fails the run on an unhandled rejection.
+    await new Promise((r) => setTimeout(r, 80));
+  });
+  it("#358: the second end() of a span is logged as a duplicate drop, not silently discarded", async () => {
+    const logs: Array<{ message: string; meta: Record<string, unknown> }> = [];
+    const em = new ObservationEmitter({ store: new MemoryTraceStore(), capturePolicy: "metadata_only", log: (message, meta) => logs.push({ message, meta }) });
+    const span = em.startSpan({ ...base, type: "agent_service.run.started", name: "service" });
+    expect(span.end("ok", { type: "agent_service.run.completed" })).not.toBeNull();
+    expect(span.end("error", { type: "agent_service.run.failed" })).toBeNull();
+    await em.flush();
+    const drops = logs.filter((l) => l.message === "duplicate_dropped");
+    expect(drops).toHaveLength(1);
+    expect(drops[0]!.meta.spanId).toBe(span.spanId);
+  });
+  it("#358: reseeding from the store index after a restart keeps the trace sequence monotonic (index.ts wiring)", async () => {
+    const store = new MemoryTraceStore();
+    const em = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    em.emit(base);
+    em.emit({ ...base, spanId: "spn_2" });
+    await em.flush();
+    // Same loop index.ts runs on boot: seed every trace from the rebuilt store index.
+    const restarted = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    for (const entry of store.listRuns()) restarted.seedSequence(entry.traceId, entry.lastSequence);
+    expect(restarted.emit(base)!.sequence).toBe(2);
+  });
   it("keeps processing the queue after a rejected append", async () => {
     const inner = new MemoryTraceStore();
     let first = true;
