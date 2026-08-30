@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 export const SCHEMA_VERSION = "1.0" as const; // additive event types do not bump the version: a bump would make every stored 1.0 line unreadable
-export const REDACTION_RULESET_VERSION = "1" as const;
+// "2" (#359): env_assignment catches bare TOKEN=/SECRET=, openai_key gains a left word boundary,
+// credential_url allows "/" in the password, agentId/runId are scanned, and summary truncation is
+// recorded as reason:"summary_truncated" instead of a "truncated" rule. Bump whenever what the rules
+// match (or what privacy.rules/redacted mean) changes, so stored events say which ruleset judged them.
+export const REDACTION_RULESET_VERSION = "2" as const;
 
 export const STATUSES = ["running", "ok", "error", "cancelled", "timeout", "unset"] as const;
 export const CATEGORIES = [
