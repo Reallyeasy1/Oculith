@@ -1,4 +1,5 @@
 import type { WorkspaceHistoryEntry, WorkspaceListing } from "./types";
+import { formatClock } from "./runs-view-model";
 
 /** One visible row of the workspace tree: a loaded listing entry at a depth, expandable when a dir. */
 export interface WorkspaceRow {
@@ -51,15 +52,15 @@ export function flattenWorkspaceTree(
   return rows;
 }
 
-/** Header line of the Workspace panel: "N files · last change hh:mm" (from GET /api/workspaces). */
+/** Header line of the Workspace panel: "N files · last change <clock>" (from GET /api/workspaces).
+ * #341: one clock format across the screen — reuses formatClock from runs-view-model. */
 export function workspaceSummaryLine(fileCount?: number, lastModified?: string): string {
   if (fileCount === undefined) return "";
   const files = fileCount === 1 ? "1 file" : fileCount + " files";
   if (!lastModified) return files;
   const at = new Date(lastModified);
   if (Number.isNaN(at.getTime())) return files;
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return files + " · last change " + pad(at.getHours()) + ":" + pad(at.getMinutes());
+  return files + " · last change " + formatClock(lastModified);
 }
 
 export function formatBytes(size: number): string {
@@ -71,8 +72,7 @@ export function formatBytes(size: number): string {
 /** One "Recent changes" line (#66): "18:04 · added src/app.ts (11 B)". Reset has no path or size. */
 export function describeHistoryEntry(entry: WorkspaceHistoryEntry): string {
   const at = new Date(entry.at);
-  const pad = (value: number) => String(value).padStart(2, "0");
-  const time = Number.isNaN(at.getTime()) ? "" : pad(at.getHours()) + ":" + pad(at.getMinutes()) + " · ";
+  const time = Number.isNaN(at.getTime()) ? "" : formatClock(entry.at) + " · ";
   const verb = { write: "edited", seed: "added", delete: "deleted", reset: "reset the workspace" }[entry.action];
   if (entry.action === "reset") return time + verb;
   const size = entry.action === "delete" ? "" : " (" + formatBytes(entry.bytes) + ")";

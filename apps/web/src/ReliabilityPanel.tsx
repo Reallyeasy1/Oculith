@@ -39,7 +39,7 @@ export default function ReliabilityPanel({ report, onDrill }: Props) {
 }
 
 function Tile({ tile, onDrill }: { tile: ReliabilityTile; onDrill?: (drill: ReliabilityDrill) => void }) {
-  const heights = sparklineHeights(tile.series);
+  const heights = sparklineHeights(tile.series, tile.sparklineMax);
   const drill = tile.drill;
   return (
     <div title={tile.kind === "evaluation" ? "Evaluation metric: computed from stored evaluator verdicts." : "Telemetry metric: computed from observed Run summaries."}>

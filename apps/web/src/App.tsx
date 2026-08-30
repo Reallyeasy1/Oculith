@@ -37,6 +37,13 @@ const emptyForm = {
   maxEstimatedUsdPerDay: "",
 };
 
+// #341: humanize the raw Codex --sandbox token in the composer footer (raw value stays in the title).
+const sandboxLabels: Record<string, string> = {
+  "read-only": "sandbox: read-only",
+  "workspace-write": "sandbox: workspace write",
+  "danger-full-access": "sandbox: full access",
+};
+
 function formatTime(value: string): string {
   return new Intl.DateTimeFormat(undefined, {
     hour: "2-digit",
@@ -818,7 +825,7 @@ export default function App() {
         )}
 
         {view === "overview" ? (
-          <><Overview runs={runs} cases={regressionCases} evalRuns={evalRuns} selectedAgent={selected} onRunCase={startEvaluation} onDeleteCase={deleteRegressionCase} /><CompareView evalRuns={evalRuns} selection={evalComparisonSelection} onOpenEvidence={(runId, eventId) => { setFocusEventId(eventId ?? null); openTrace(runId); }} /><EvaluatorsPanel /></>
+          <><Overview runs={runs} cases={regressionCases} evalRuns={evalRuns} selectedAgent={selected} onRunCase={startEvaluation} onDeleteCase={deleteRegressionCase} onDrill={(drill) => setRunsDrill({ ...drill })} /><CompareView evalRuns={evalRuns} selection={evalComparisonSelection} onOpenEvidence={(runId, eventId) => { setFocusEventId(eventId ?? null); openTrace(runId); }} /><EvaluatorsPanel /></>
         ) : selected ? playgroundCollapsed ? (
           <div className="playground-bar">
             <div className="header-title-row">
@@ -843,10 +850,9 @@ export default function App() {
                   <StatusPill status={selected.status} />
                 </div>
                 <p>{selected.description || "A Codex coding Agent in an isolated workspace."}</p>
-                <p>
-                  Workspace <strong>{selected.workspaceName ?? selected.workspacePath.split(/[\\/]/).at(-1)}</strong>{" "}
-                  <code>{selected.workspacePath}</code>{" "}
-                  <button type="button" className="button button-ghost" onClick={() => void navigator.clipboard.writeText(selected.workspacePath)}>Copy path</button>
+                {/* #341: full path + Copy live in the Files panel below — header keeps the short name only. */}
+                <p title={selected.workspacePath}>
+                  Workspace <strong>{selected.workspaceName ?? selected.workspacePath.split(/[\\/]/).at(-1)}</strong>
                 </p>
                 {previewSupported && preview && (
                   <p>
@@ -936,7 +942,7 @@ export default function App() {
                     aria-describedby="workspace-help-settings"
                     value={form.workspace}
                     onChange={(event) => setForm({ ...form, workspace: event.target.value })}
-                    pattern="[a-z0-9][a-z0-9._-]{0,63}"
+                    pattern="[a-z0-9][a-z0-9._\-]{0,63}"
                     required
                   />
                 </label>
@@ -1048,7 +1054,7 @@ export default function App() {
                         className={"session-health" + (health.advisory ? " session-health-warn" : "")}
                         title={health.advisory ? LONG_SESSION_HINT : undefined}
                       >
-                        Session: {health.turns} {health.turns === 1 ? "turn" : "turns"} · {formatCount(health.inputTokens)} tokens in
+                        {health.turns} {health.turns === 1 ? "turn" : "turns"} · {formatCount(health.inputTokens)} tokens in
                       </span>
                     );
                   })()}
@@ -1175,7 +1181,10 @@ export default function App() {
                 />
                 <div className="composer-footer">
                   <span>
-                    Enter to send · Shift + Enter for newline · {system?.codexSandboxMode ?? "checking sandbox"}
+                    Enter to send · Shift + Enter for newline ·{" "}
+                    <span title={system?.codexSandboxMode}>
+                      {system ? sandboxLabels[system.codexSandboxMode] ?? system.codexSandboxMode : "checking sandbox"}
+                    </span>
                     {pendingMessages.length > 0 && (
                       <> · queued, {pendingMessages.length} ahead</>
                     )}
@@ -1284,7 +1293,7 @@ export default function App() {
                 placeholder="Leave blank for a managed workspace"
                 value={form.workspace}
                 onChange={(event) => setForm({ ...form, workspace: event.target.value })}
-                pattern="[a-z0-9][a-z0-9._-]{0,63}"
+                pattern="[a-z0-9][a-z0-9._\-]{0,63}"
               />
             </label>
             <datalist id="workspace-names-create">

@@ -9,6 +9,7 @@ import {
   parentPath,
   workspaceSummaryLine,
 } from "./workspace-view-model";
+import { formatClock } from "./runs-view-model";
 
 const entry = (name: string, kind: WorkspaceEntry["kind"] = "file"): WorkspaceEntry => ({
   name,
@@ -80,10 +81,12 @@ describe("path helpers", () => {
 });
 
 describe("workspaceSummaryLine", () => {
-  it("formats count and local hh:mm, singular and plural", () => {
+  it("formats count and the shared formatClock time, singular and plural (#341)", () => {
     const stamp = new Date(2026, 7, 29, 9, 5).toISOString();
-    expect(workspaceSummaryLine(1, stamp)).toBe("1 file · last change 09:05");
-    expect(workspaceSummaryLine(12, stamp)).toBe("12 files · last change 09:05");
+    const clock = formatClock(stamp);
+    expect(clock).not.toBe("—");
+    expect(workspaceSummaryLine(1, stamp)).toBe("1 file · last change " + clock);
+    expect(workspaceSummaryLine(12, stamp)).toBe("12 files · last change " + clock);
   });
 
   it("degrades to just the count without a usable timestamp, and to nothing without a count", () => {
@@ -108,10 +111,7 @@ describe("formatBytes", () => {
 describe("describeHistoryEntry (#66)", () => {
   const base = { at: "2026-08-29T18:04:00.000Z", actor: "operator" };
   it("describes each action with local time, path and size", () => {
-    const time = (iso: string) => {
-      const d = new Date(iso);
-      return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
-    };
+    const time = (iso: string) => formatClock(iso);
     const t = time(base.at);
     expect(describeHistoryEntry({ ...base, action: "seed", path: "src/app.ts", bytes: 11 })).toBe(t + " · added src/app.ts (11 B)");
     expect(describeHistoryEntry({ ...base, action: "write", path: "a.md", bytes: 2048 })).toBe(t + " · edited a.md (2.0 KB)");
