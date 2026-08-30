@@ -374,7 +374,8 @@ export async function createApp(
   // port from PREVIEW_PORT_RANGE. Started/stopped edges are observed as runtime.preview.* events;
   // the manager enforces the command allow-list, the port range and the TTL.
   if (previews) {
-    const previewBody = z.strictObject({ command: z.enum(["vite", "static"]).default("vite") });
+    // #375: static is the only command (vite retired); a stale client sending "vite" gets a 400.
+    const previewBody = z.strictObject({ command: z.enum(["static"]).default("static") });
     app.post("/api/agents/:id/preview", async (request, reply) => {
       const { id } = agentIdParams.parse(request.params);
       const body = previewBody.parse(request.body ?? {});
@@ -400,8 +401,8 @@ export async function createApp(
     app.get("/api/agents/:id/preview", async (request) => {
       const { id } = agentIdParams.parse(request.params);
       const agent = service.getAgent(id);
-      // #335: servability rides along so the UI offers Preview only when the workspace has
-      // something to serve (local vite install or a built dist/).
+      // #335/#375: servability rides along so the UI offers Preview only when the workspace has
+      // something to serve (a built dist/index.html).
       return {
         preview: (await previews.status(id)) ?? null,
         servable: await previews.servable(agent.workspacePath),

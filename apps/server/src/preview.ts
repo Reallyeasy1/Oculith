@@ -16,25 +16,35 @@ const execFileAsync = promisify(execFile);
 /** Fixed port inside the container; the host side comes from PREVIEW_PORT_RANGE. */
 export const PREVIEW_CONTAINER_PORT = 5173;
 
-// No package install at start time: a workspace without a local vite fails fast instead of pulling
-// from the network, and the static server is a stdlib one-liner so it needs nothing at all.
-const STATIC_SERVER_SCRIPT = [
+// The stdlib one-liner is the whole runtime: nothing to install, no native bindings, no writes.
+// (#375 retired the vite command: `vite preview` served the same dist/ but could not boot on
+// host-platform node_modules — missing linux rollup/esbuild bindings — and vite 5's config loader
+// needs to write next to vite.config.* on the read-only workspace mount.)
+// #375: SPA history fallback — an extension-less miss serves dist/index.html so client-side routes
+// survive a refresh, matching what `vite preview` did. Asset misses (with an extension) stay 404.
+// Root/port read env overrides so tests can run the script against a temp dir; the hardened
+// container passes neither, so production always serves /workspace/dist on the fixed port.
+export const STATIC_SERVER_SCRIPT = [
   'const http=require("http"),fs=require("fs"),path=require("path");',
-  'const root=path.resolve("/workspace/dist");',
-  'const types={".html":"text/html",".js":"text/javascript",".mjs":"text/javascript",".css":"text/css",".json":"application/json",".map":"application/json",".svg":"image/svg+xml",".png":"image/png",".jpg":"image/jpeg",".ico":"image/x-icon",".txt":"text/plain",".woff2":"font/woff2"};',
-  "http.createServer((req,res)=>{",
-  'let file=path.normalize(path.join(root,decodeURIComponent((req.url||"/").split("?")[0])));',
+  'const root=path.resolve(process.env.PREVIEW_STATIC_ROOT||"/workspace/dist");',
+  `const port=Number(process.env.PREVIEW_STATIC_PORT||${PREVIEW_CONTAINER_PORT});`,
+  'const types={".html":"text/html",".js":"text/javascript",".mjs":"text/javascript",".css":"text/css",".json":"application/json",".map":"application/json",".svg":"image/svg+xml",".png":"image/png",".jpg":"image/jpeg",".ico":"image/x-icon",".txt":"text/plain",".woff2":"font/woff2",".woff":"font/woff",".ttf":"font/ttf",".otf":"font/otf",".wasm":"application/wasm",".webp":"image/webp",".gif":"image/gif",".mp3":"audio/mpeg",".ogg":"audio/ogg",".wav":"audio/wav",".mp4":"video/mp4",".webm":"video/webm",".webmanifest":"application/manifest+json"};',
+  'const send=(res,file,data)=>{res.writeHead(200,{"content-type":types[path.extname(file).toLowerCase()]||"application/octet-stream"});res.end(data)};',
+  "const server=http.createServer((req,res)=>{",
+  // decodeURIComponent throws on malformed %-sequences; uncaught it would kill the whole server.
+  'let decoded;try{decoded=decodeURIComponent((req.url||"/").split("?")[0])}catch{res.writeHead(400);res.end("Bad request");return}',
+  "let file=path.normalize(path.join(root,decoded));",
   "if(file!==root&&!file.startsWith(root+path.sep)){res.writeHead(403);res.end();return}",
   'try{if(fs.statSync(file).isDirectory())file=path.join(file,"index.html")}catch{}',
   "fs.readFile(file,(err,data)=>{",
-  'if(err){res.writeHead(404);res.end("Not found");return}',
-  'res.writeHead(200,{"content-type":types[path.extname(file).toLowerCase()]||"application/octet-stream"});',
-  "res.end(data)})",
-  `}).listen(${PREVIEW_CONTAINER_PORT},"0.0.0.0");`,
+  "if(!err){send(res,file,data);return}",
+  'if(path.extname(file)===""){const index=path.join(root,"index.html");fs.readFile(index,(fallbackErr,indexData)=>{if(fallbackErr){res.writeHead(404);res.end("Not found")}else send(res,index,indexData)});return}',
+  'res.writeHead(404);res.end("Not found")})',
+  '});',
+  'server.listen(port,"0.0.0.0",()=>console.log("static preview listening on "+server.address().port));',
 ].join("");
 
 export const PREVIEW_COMMANDS: Record<PreviewCommand, string[]> = {
-  vite: ["npx", "--no-install", "vite", "preview", "--host", "0.0.0.0", "--port", String(PREVIEW_CONTAINER_PORT), "--strictPort"],
   static: ["node", "-e", STATIC_SERVER_SCRIPT],
 };
 
@@ -133,11 +143,11 @@ export class PreviewManager {
     return this.active.get(agentId)?.view;
   }
 
-  /** #335: what this Agent's workspace can serve right now — the same checks the commands
-   * themselves make (`npx --no-install vite` needs a local install; the static server needs
-   * `dist/`), so the UI can offer only start actions that would not die on boot. Only files
-   * whose real path stays inside the workspace count: the container mounts the workspace
-   * alone, so a symlink escaping it (e.g. into a parent repo's node_modules) dangles there. */
+  /** #335/#375: what this Agent's workspace can serve right now — the same check the static
+   * server makes (a built dist/index.html; dist/ alone is not enough, a Node project's
+   * compiled-JS dist would answer "Not found" at /), so the UI offers Preview only when a start
+   * would not die on boot. Only files whose real path stays inside the workspace count: the
+   * container mounts the workspace alone, so a symlink escaping it dangles there. */
   async servable(workspacePath: string): Promise<PreviewServability> {
     const servesFromMount = async (target: string, wantDirectory: boolean): Promise<boolean> => {
       try {
@@ -148,13 +158,7 @@ export class PreviewManager {
         return false;
       }
     };
-    const [vite, dist] = await Promise.all([
-      servesFromMount(path.join(workspacePath, "node_modules", ".bin", "vite"), false),
-      // dist/index.html, not dist/ alone: a Node project's compiled-JS dist is a directory
-      // too, but the static server would answer "Not found" at / for it.
-      servesFromMount(path.join(workspacePath, "dist", "index.html"), false),
-    ]);
-    return { vite, static: dist };
+    return { static: await servesFromMount(path.join(workspacePath, "dist", "index.html"), false) };
   }
 
   /** #335: previews need a reachable engine daemon and the runtime image they run (`preview.ts`
@@ -204,7 +208,7 @@ export class PreviewManager {
       throw new HttpError(400, "Unknown preview command");
     }
     if (command === "static" && !(await this.servable(agent.workspacePath)).static) {
-      throw new HttpError(400, "The static preview serves dist/ and this workspace has no dist/index.html — build a web app first or use the vite command");
+      throw new HttpError(400, "The preview serves dist/ and this workspace has no dist/index.html — build the web app first");
     }
     const previewId = "prv-" + randomUUID();
     const traceId = newId("trc");

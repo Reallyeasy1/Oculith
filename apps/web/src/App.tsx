@@ -423,8 +423,7 @@ export default function App() {
         await api.stopPreview(selected.id);
         setPreview(null);
       } else {
-        // #370: static wins when a built dist/ exists — vite preview would serve the same dist/,
-        // but dies in the Linux container when node_modules were installed on the host.
+        // #370/#375: static is the only command; the helper gates on a built dist/index.html.
         const agentId = selected.id;
         const command = preferredPreviewCommand(previewServable);
         if (!command) return;
