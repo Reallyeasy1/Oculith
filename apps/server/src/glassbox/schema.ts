@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 export const SCHEMA_VERSION = "1.0" as const; // additive event types do not bump the version: a bump would make every stored 1.0 line unreadable
-export const REDACTION_RULESET_VERSION = "1" as const;
+// "2" (#359): env_assignment catches bare TOKEN=/SECRET=, openai_key gains a left word boundary,
+// credential_url allows "/" in the password, agentId/runId are scanned, and summary truncation is
+// recorded as reason:"summary_truncated" instead of a "truncated" rule. Bump whenever what the rules
+// match (or what privacy.rules/redacted mean) changes, so stored events say which ruleset judged them.
+export const REDACTION_RULESET_VERSION = "2" as const;
 
 export const STATUSES = ["running", "ok", "error", "cancelled", "timeout", "unset"] as const;
 export const CATEGORIES = [
@@ -22,10 +26,13 @@ export const EVENT_TYPES = [
   "runtime.preview.started", "runtime.preview.stopped",
   "model.request", "model.completed", "model.message", "model.reasoning",
   "tool.call.started", "tool.call.completed", "tool.call.failed",
-  "workspace.changed", "policy.denied", "redaction.applied", "limit.exceeded",
+  // No "redaction.applied" here: redaction is not an event — every event records its own outcome
+  // inline on its `privacy` block (PRD §"Redaction is not an event"), so nothing ever emitted it.
+  "workspace.changed", "policy.denied", "limit.exceeded",
   "error.recorded", "telemetry.degraded", "trace.truncated", "capability.unavailable",
 ] as const;
 export const CAPTURE_POLICIES = ["metadata_only", "safe_summary", "reasoning_summary"] as const;
+export const ACTOR_TYPES = ["human", "service", "agent", "controller"] as const;
 
 /** #259: `reasoning_summary` is a strict superset of `safe_summary` (everything it captures, plus bounded
  * redacted reasoning summaries). Every "does this policy store summary text?" gate goes through here —
@@ -54,9 +61,9 @@ export const observationEventSchema = z.object({
   sessionId: id.optional(),
   requestId: id.optional(),
   actorId: id.default("local-user"),
-  actorType: z.enum(["human", "service", "agent", "controller"]).default("human"),
+  actorType: z.enum(ACTOR_TYPES).default("human"),
   attempt: z.number().int().positive().default(1),
-  timestamp: z.string().datetime(),
+  timestamp: z.iso.datetime(),
   type: eventTypeSchema,
   category: categorySchema,
   phase: z.enum(["start", "end", "instant"]).default("instant"),
@@ -83,9 +90,10 @@ export const observationEventSchema = z.object({
 
 export const eventInputSchema = observationEventSchema.omit({
   schemaVersion: true, eventId: true, sequence: true, timestamp: true, privacy: true,
-}).extend({ timestamp: z.string().datetime().optional() });
+}).extend({ timestamp: z.iso.datetime().optional() });
 
 export type ObservationEvent = z.infer<typeof observationEventSchema>;
+export type ActorType = (typeof ACTOR_TYPES)[number];
 export type EventInput = z.input<typeof eventInputSchema>;
 export type TraceStatus = z.infer<typeof statusSchema>;
 export type Category = z.infer<typeof categorySchema>;

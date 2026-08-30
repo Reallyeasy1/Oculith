@@ -22,14 +22,27 @@ const PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
   // falling back to end-of-string keeps the body from shipping in cleartext.
   ["private_key", /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g],
   ["bearer", /Bearer\s+[A-Za-z0-9._~+/-]{16,}=*/gi],
-  ["openai_key", /sk-(?:proj-)?[A-Za-z0-9_-]{20,}/g],
+  // Left boundary (#359, review #47): a preceding LETTER means "sk-" is a fragment of a longer word
+  // ("task-management-…" starts with "ta" + "sk-"), so only reject [A-Za-z] on the left — digits and
+  // underscore still count as boundaries ("v2sk-…", "backup_sk-…" stay caught; privacy review #363). A preceding
+  // hyphen or any punctuation still counts as a boundary, so keys glued after "-", "=", quotes, "/" (URLs)
+  // or JSON syntax stay caught — this is the narrowest reduction that kills the hyphenated-word FP.
+  ["openai_key", /(?<![A-Za-z])sk-(?:proj-)?[A-Za-z0-9_-]{20,}/g],
   ["ark_key", /ark-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:-[0-9a-f]+)?/gi],
   ["volc_ak", /AKLT[A-Za-z0-9]{20,}/g],
   // Matches the whole credentialed URL (scheme://user:pass@host/path), not just the userinfo — the host can be
   // sensitive too. Tail is bounded to quote/whitespace/angle-bracket delimiters so it doesn't swallow whatever
   // follows the URL inside JSON or markup (e.g. a sibling `"runId":"r_42"` key).
-  ["credential_url", /\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:[^\s/@]+@[^\s"'<>]*/gi],
-  ["env_assignment", /\b[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)\s*=\s*\S{6,}/g],
+  // Password segment allows an unencoded "/" (#359: `scheme://user:pa/ss@host` must redact) — a strict
+  // widening of the old [^\s/@] class. Known over-match (safe direction): in a whitespace-free run with no
+  // "@" in the URL itself but one later (e.g. `…:8080/x?to=a@b`), the greedy password can reach that "@".
+  ["credential_url", /\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:[^\s@]+@[^\s"'<>]*/gi],
+  // Prefix word is optional (#359) so bare `TOKEN=…`/`SECRET=…` assignments are caught, not only
+  // `OPENAI_API_KEY=…`. False-positive rule: the value must be 6+ non-space chars, so short numerics that
+  // read as counts (`TOKENS=5`, `TOKEN=12345`) survive, while a 6+ char value redacts even when numeric —
+  // a long digit string is plausibly a PIN/OTP, and over-redacting a count is the safe direction. Plurals
+  // (`MAX_TOKENS=100000`) never match: the word must END with the sensitive suffix, right before "=".
+  ["env_assignment", /\b(?:[A-Z][A-Z0-9_]*)?(?:KEY|TOKEN|SECRET|PASSWORD)\s*=\s*\S{6,}/g],
   // ponytail: no volc_sk rule — Volcengine SKs are unanchored base64 (a pattern would false-positive on
   // ordinary output); add one when a real shape appears. A key split across attribute values stays a known ceiling.
 ];
@@ -79,6 +92,14 @@ export function redactEvent(event: ObservationEvent, options: RedactOptions): Ob
     requestResult.rules.forEach((x) => rules.add(x));
     out.requestId = requestResult.text.slice(0, 128);
   }
+  // agentId/runId are server-generated today, but scan them anyway (#359, cheap defense-in-depth like
+  // requestId): a future adapter could thread an outside value through, and ids render verbatim in the UI.
+  const agentResult = redactText(event.agentId, extra);
+  agentResult.rules.forEach((x) => rules.add(x));
+  out.agentId = agentResult.text.slice(0, 128);
+  const runResult = redactText(event.runId, extra);
+  runResult.rules.forEach((x) => rules.add(x));
+  out.runId = runResult.text.slice(0, 128);
 
   if (event.error) {
     const r = redactText(event.error.message, extra); r.rules.forEach((x) => rules.add(x));
@@ -87,6 +108,7 @@ export function redactEvent(event: ObservationEvent, options: RedactOptions): Ob
 
   let originalBytes: number | undefined;
   let storedBytes: number | undefined;
+  let summaryTruncated = false;
   if (event.summary) {
     if (!capturesSummaries(options.policy)) { delete out.summary; rules.add("policy_drop_summary"); }
     else {
@@ -94,7 +116,9 @@ export function redactEvent(event: ObservationEvent, options: RedactOptions): Ob
       const r = redactText(event.summary.text, extra); r.rules.forEach((x) => rules.add(x));
       originalBytes = Buffer.byteLength(event.summary.text, "utf8");
       const text = r.text.length > max ? r.text.slice(0, max) : r.text;
-      if (text.length < r.text.length) rules.add("truncated");
+      // A size cap is a truncation, not a redaction (#356, same ruling as store.ts shrinkToCap): record it
+      // as `reason`, never in `rules`, so `redacted` / the UI badge only ever report genuine rule hits.
+      if (text.length < r.text.length) summaryTruncated = true;
       out.summary = { text, policy: "safe_summary" };
       storedBytes = Buffer.byteLength(text, "utf8");
     }
@@ -105,6 +129,7 @@ export function redactEvent(event: ObservationEvent, options: RedactOptions): Ob
     redacted: rules.size > 0,
     rulesetVersion: REDACTION_RULESET_VERSION,
     ...(rules.size > 0 ? { rules: [...rules] } : {}),
+    ...(summaryTruncated ? { reason: "summary_truncated" } : {}),
     ...(originalBytes !== undefined ? { originalBytes } : {}),
     ...(storedBytes !== undefined ? { storedBytes } : {}),
   };

@@ -42,6 +42,15 @@ async function prepareUpload(
 ): Promise<{ relative: string; absolute: string; buffer: Buffer }> {
   const { relative, absolute } = await resolveWorkspacePath(root, upload.path);
   if (relative === "") throw new WorkspaceEditError("Path names the workspace root, not a file");
+  // resolveWorkspacePath silently collapses "a//b", "dir/" and "   " — fine for reads, but a write
+  // must not invent a file the client didn't clearly name (#344). Checked after the path proof so
+  // absolute/`..` inputs keep their WorkspacePathError.
+  if (/[\\/]\s*$/.test(upload.path)) {
+    throw new WorkspaceEditError("Path must not end with a slash — it names a file, not a directory");
+  }
+  if (upload.path.split(/[\\/]/).some((segment) => segment.trim() === "")) {
+    throw new WorkspaceEditError("Path contains an empty or whitespace-only segment");
+  }
   if (isPlatformFile(relative)) {
     throw new WorkspaceEditError(relative + " is platform-managed — edit the Agent instead");
   }
@@ -80,7 +89,17 @@ async function writePrepared(prepared: { relative: string; absolute: string; buf
     if (error instanceof WorkspaceEditError) throw error;
     // ENOENT: new file — fine. Anything else surfaces from writeFile below with a real path attached.
   }
-  await mkdir(path.dirname(prepared.absolute), { recursive: true });
+  try {
+    await mkdir(path.dirname(prepared.absolute), { recursive: true });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    // A parent segment is an existing file — EEXIST on Windows, ENOTDIR on Linux. Name the relative
+    // path; the raw errno message would leak the server's absolute workspace path (#344).
+    if (code === "EEXIST" || code === "ENOTDIR") {
+      throw new WorkspaceEditError(path.posix.dirname(prepared.relative) + " is not a directory");
+    }
+    throw error;
+  }
   await writeFile(prepared.absolute, prepared.buffer);
   return { path: prepared.relative, bytes: prepared.buffer.length };
 }
@@ -90,9 +109,12 @@ export async function writeWorkspaceFile(root: string, upload: WorkspaceUpload):
 }
 
 /**
- * Batch seed: everything is validated (paths, caps, credential scan, duplicates) before the first
- * byte is written, so a refused batch leaves the workspace untouched. Per-file size is bounded only
- * by the batch cap — browser uploads of a single large asset stay possible (#66).
+ * Batch seed: everything validable up front (paths, caps, credential scan, duplicates) is checked
+ * before the first byte is written, so a batch refused there leaves the workspace untouched. A
+ * write that fails mid-batch (e.g. "x.txt" then "x.txt/y.txt") sweeps the files this batch
+ * created; a file the batch had already overwritten keeps the batch's content (#350). Per-file
+ * size is bounded only by the batch cap — browser uploads of a single large asset stay
+ * possible (#66).
  */
 export async function seedWorkspaceFiles(root: string, uploads: WorkspaceUpload[]): Promise<WorkspaceWriteReceipt[]> {
   if (uploads.length > MAX_SEED_FILES) {
@@ -113,8 +135,20 @@ export async function seedWorkspaceFiles(root: string, uploads: WorkspaceUpload[
     }
     prepared.push(item);
   }
-  const receipts = [];
-  for (const item of prepared) receipts.push(await writePrepared(item));
+  const receipts: WorkspaceWriteReceipt[] = [];
+  const created: string[] = [];
+  try {
+    for (const item of prepared) {
+      const existed = await lstat(item.absolute).then(() => true, () => false);
+      receipts.push(await writePrepared(item));
+      if (!existed) created.push(item.absolute);
+    }
+  } catch (error) {
+    // ponytail: best-effort sweep of the files this batch created (bounded by MAX_SEED_FILES) —
+    // a true rollback of overwritten files would need an undo log nothing here warrants.
+    for (const absolute of created) await unlink(absolute).catch(() => undefined);
+    throw error;
+  }
   return receipts;
 }
 

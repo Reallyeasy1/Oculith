@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, getAuthToken, setAuthToken } from "./api";
 import { connectLive } from "./live";
 import { agentPayload, budgetFormError } from "./agent-form";
-import { showLastErrorHint } from "./agent-view-model";
+import { preferredPreviewCommand, showLastErrorHint } from "./agent-view-model";
 import { budgetBanner } from "./budget-view-model";
 import type { Agent, AgentBudgetReport, AgentRun, AgentRunBaseline, EvalRun, Message, PreviewServability, RegressionCase, ReliabilityReport, RunListItem, SystemInfo, TraceView, Workspace, WorkspacePreview, WorkspaceTemplate } from "./types";
 import RunsView from "./RunsView";
@@ -35,6 +35,13 @@ const emptyForm = {
   verifyCommand: "",
   maxTokensPerDay: "",
   maxEstimatedUsdPerDay: "",
+};
+
+// #341: humanize the raw Codex --sandbox token in the composer footer (raw value stays in the title).
+const sandboxLabels: Record<string, string> = {
+  "read-only": "sandbox: read-only",
+  "workspace-write": "sandbox: workspace write",
+  "danger-full-access": "sandbox: full access",
 };
 
 function formatTime(value: string): string {
@@ -416,9 +423,11 @@ export default function App() {
         await api.stopPreview(selected.id);
         setPreview(null);
       } else {
-        // #335: serve what the workspace actually has — vite when installed, else the built dist/.
+        // #370/#375: static is the only command; the helper gates on a built dist/index.html.
         const agentId = selected.id;
-        setPreview((await api.startPreview(agentId, previewServable?.vite ? "vite" : "static")).preview);
+        const command = preferredPreviewCommand(previewServable);
+        if (!command) return;
+        setPreview((await api.startPreview(agentId, command)).preview);
         // A container can die right after start (--rm erases it); re-check shortly so a dead
         // preview never keeps a "running" header. The server closes it honestly on observation.
         window.setTimeout(() => {
@@ -488,7 +497,8 @@ export default function App() {
         const { evalRun } = await api.evalRun(evalRunId);
         if (!mountedRef.current) return;
         setEvalRuns((current) => [evalRun, ...current.filter((item) => item.id !== evalRun.id)]);
-        await refreshRuns();
+        // #217: no per-tick refreshRuns — the dashboard timer (#98) already covers the Runs table
+        // while an evaluation runs; only the terminal transition below refreshes it explicitly.
         if (evalRun.status !== "running") {
           await Promise.all([refreshEvalRuns(), refreshRuns()]);
           return;
@@ -818,7 +828,7 @@ export default function App() {
         )}
 
         {view === "overview" ? (
-          <><Overview runs={runs} cases={regressionCases} evalRuns={evalRuns} selectedAgent={selected} onRunCase={startEvaluation} onDeleteCase={deleteRegressionCase} /><CompareView evalRuns={evalRuns} selection={evalComparisonSelection} onOpenEvidence={(runId, eventId) => { setFocusEventId(eventId ?? null); openTrace(runId); }} /><EvaluatorsPanel /></>
+          <><Overview runs={runs} cases={regressionCases} evalRuns={evalRuns} selectedAgent={selected} onRunCase={startEvaluation} onDeleteCase={deleteRegressionCase} onDrill={(drill) => setRunsDrill({ ...drill })} /><CompareView evalRuns={evalRuns} selection={evalComparisonSelection} onOpenEvidence={(runId, eventId) => { setFocusEventId(eventId ?? null); openTrace(runId); }} /><EvaluatorsPanel /></>
         ) : selected ? playgroundCollapsed ? (
           <div className="playground-bar">
             <div className="header-title-row">
@@ -843,10 +853,9 @@ export default function App() {
                   <StatusPill status={selected.status} />
                 </div>
                 <p>{selected.description || "A Codex coding Agent in an isolated workspace."}</p>
-                <p>
-                  Workspace <strong>{selected.workspaceName ?? selected.workspacePath.split(/[\\/]/).at(-1)}</strong>{" "}
-                  <code>{selected.workspacePath}</code>{" "}
-                  <button type="button" className="button button-ghost" onClick={() => void navigator.clipboard.writeText(selected.workspacePath)}>Copy path</button>
+                {/* #341: full path + Copy live in the Files panel below — header keeps the short name only. */}
+                <p title={selected.workspacePath}>
+                  Workspace <strong>{selected.workspaceName ?? selected.workspacePath.split(/[\\/]/).at(-1)}</strong>
                 </p>
                 {previewSupported && preview && (
                   <p>
@@ -866,7 +875,7 @@ export default function App() {
                     Collapse Playground
                   </button>
                 )}
-                {previewSupported && !preview && (previewServable?.vite || previewServable?.static) && (
+                {previewSupported && !preview && preferredPreviewCommand(previewServable) !== null && (
                   <button
                     className="button button-ghost"
                     onClick={togglePreview}
@@ -936,7 +945,7 @@ export default function App() {
                     aria-describedby="workspace-help-settings"
                     value={form.workspace}
                     onChange={(event) => setForm({ ...form, workspace: event.target.value })}
-                    pattern="[a-z0-9][a-z0-9._-]{0,63}"
+                    pattern="[a-z0-9][a-z0-9._\-]{0,63}"
                     required
                   />
                 </label>
@@ -1048,7 +1057,7 @@ export default function App() {
                         className={"session-health" + (health.advisory ? " session-health-warn" : "")}
                         title={health.advisory ? LONG_SESSION_HINT : undefined}
                       >
-                        Session: {health.turns} {health.turns === 1 ? "turn" : "turns"} · {formatCount(health.inputTokens)} tokens in
+                        {health.turns} {health.turns === 1 ? "turn" : "turns"} · {formatCount(health.inputTokens)} tokens in
                       </span>
                     );
                   })()}
@@ -1175,7 +1184,10 @@ export default function App() {
                 />
                 <div className="composer-footer">
                   <span>
-                    Enter to send · Shift + Enter for newline · {system?.codexSandboxMode ?? "checking sandbox"}
+                    Enter to send · Shift + Enter for newline ·{" "}
+                    <span title={system?.codexSandboxMode}>
+                      {system ? sandboxLabels[system.codexSandboxMode] ?? system.codexSandboxMode : "checking sandbox"}
+                    </span>
                     {pendingMessages.length > 0 && (
                       <> · queued, {pendingMessages.length} ahead</>
                     )}
@@ -1209,7 +1221,7 @@ export default function App() {
           </div>
         )}
 
-        {view === "agent" && selected && <ReliabilityPanel report={reliability} onDrill={(drill) => setRunsDrill({ ...drill })} />}
+        {view === "agent" && selected && <ReliabilityPanel report={reliability} agentId={selected.id} onDrill={(drill) => setRunsDrill({ ...drill })} />}
         {view === "agent" && selected && <ConfigComparison key={selected.id} agent={selected} runs={runs} evalRuns={evalRuns} onDrill={(drill) => setRunsDrill({ ...drill })} onOpenEvalComparison={(pair) => { setEvalComparisonSelection(pair); setView("overview"); }} />}
         {selectedRunId && (
           <TraceDetail
@@ -1223,6 +1235,7 @@ export default function App() {
             onCaseSaved={refreshRegressionCases}
             onRerun={(runId) => void rerunPrompt(runId)}
             onClose={closeTrace}
+            workspaces={workspaces}
           />
         )}
         {/* runs are server-scoped already; the filter only keeps another Agent's rows out of the DOM across a switch */}
@@ -1236,6 +1249,7 @@ export default function App() {
           emptyText={view === "agent" && selected ? "No Runs for this Agent yet." : "No Runs observed yet."}
           baseline={view === "agent" ? runBaseline : null}
           drill={runsDrill}
+          workspaces={workspaces}
         />
       </main>
 
@@ -1284,7 +1298,7 @@ export default function App() {
                 placeholder="Leave blank for a managed workspace"
                 value={form.workspace}
                 onChange={(event) => setForm({ ...form, workspace: event.target.value })}
-                pattern="[a-z0-9][a-z0-9._-]{0,63}"
+                pattern="[a-z0-9][a-z0-9._\-]{0,63}"
               />
             </label>
             <datalist id="workspace-names-create">

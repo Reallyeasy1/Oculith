@@ -3,11 +3,22 @@ import {
   REDACTION_RULESET_VERSION, SCHEMA_VERSION, eventInputSchema, newId, observationEventSchema,
   type CapturePolicy, type EventInput, type EventType, type ObservationEvent, type TraceStatus,
 } from "./schema.js";
-import { MemoryTraceStore, type TraceStore } from "./store.js";
+import { MemoryTraceStore, type AppendResult, type TraceStore } from "./store.js";
+
+/** #358: per-run bound on appends waiting in the chain. Deliberately 2x the store's 1000-event cap: a
+ * synchronous burst to a *healthy* store must reach the store and be truncated there (invariant 10 —
+ * terminal/error events bypass the store caps), so the queue cap only bites when the store is hung or
+ * hopelessly behind. Beyond it: drop + degrade, never grow unbounded. */
+export const MAX_QUEUE_DEPTH = 2000;
+/** #358: how long one append may take before the run degrades and the chain moves on. 10s is ~1000x the
+ * measured fsync append (~6ms) — anything slower is a hung disk/store, not a slow one. */
+export const APPEND_TIMEOUT_MS = 10_000;
 
 export interface EmitterOptions {
   store: TraceStore; capturePolicy: CapturePolicy; extraPatterns?: RegExp[] | undefined;
   log?: ((message: string, meta: Record<string, unknown>) => void) | undefined;
+  /** #358 test knobs; production wiring keeps the defaults. */
+  maxQueueDepth?: number | undefined; appendTimeoutMs?: number | undefined;
   /** #40: fires after an event's append settles (stored or capped), with the redacted event. Wired to
    * the SSE LiveNotifier in index.ts; the emitter itself imports no UI/query code (invariant 9). */
   onEvent?: ((event: ObservationEvent) => void) | undefined;
@@ -28,17 +39,26 @@ export class ObservationEmitter {
   private readonly truncatedRuns = new Set<string>();
   private readonly runTraces = new Map<string, string>();
   private queue: Promise<void> = Promise.resolve();
+  /** #358: appends enqueued but not yet settled, per run; entries are deleted at zero so the map stays small. */
+  private readonly queueDepths = new Map<string, number>();
+  private readonly maxQueueDepth: number;
+  private readonly appendTimeoutMs: number;
 
   constructor(options: EmitterOptions) {
     this.store = options.store; this.capturePolicy = options.capturePolicy;
     this.extraPatterns = options.extraPatterns ?? [];
     this.onEvent = options.onEvent;
+    this.maxQueueDepth = options.maxQueueDepth ?? MAX_QUEUE_DEPTH;
+    this.appendTimeoutMs = options.appendTimeoutMs ?? APPEND_TIMEOUT_MS;
     // A throwing log callback must never become a second failure on the emit path (invariant 4).
     const rawLog = options.log ?? (() => undefined);
     this.log = (message, meta) => { try { rawLog(message, meta); } catch { /* swallowed by design */ } };
   }
 
   seedSequence(traceId: string, lastSequence: number): void {
+    // #358: a NaN/non-integer seed (a corrupt store index) would make build()'s schema parse throw on
+    // every later emit for this trace. Ignore the poison and keep the counter usable (invariant 4).
+    if (!Number.isInteger(lastSequence)) { this.log("seed_sequence_ignored", { traceId, lastSequence: String(lastSequence) }); return; }
     this.sequences.set(traceId, Math.max(this.sequences.get(traceId) ?? -1, lastSequence));
   }
   isDegraded(runId: string): boolean { return this.degradedRuns.has(runId); }
@@ -56,6 +76,20 @@ export class ObservationEmitter {
   flush(): Promise<void> { return this.queue; }
 
   emit(input: EventInput): ObservationEvent | null {
+    // #358: nothing inside observation may throw into the caller (invariant 4). The known edges (null
+    // input, poisoned sequence) are guarded individually; this backstop catches the ones we haven't met.
+    try { return this.emitUnsafe(input); }
+    catch (error) {
+      const runId = typeof input === "object" && input !== null && typeof (input as { runId?: unknown }).runId === "string" ? (input as { runId: string }).runId : undefined;
+      if (runId !== undefined && !this.degradedRuns.has(runId)) {
+        this.degradedRuns.add(runId);
+        this.log("telemetry.degraded", { runId, error: String(error).slice(0, 200) });
+      } else if (runId === undefined) this.log("emit_failed", { error: String(error).slice(0, 200) });
+      return null;
+    }
+  }
+
+  private emitUnsafe(input: EventInput): ObservationEvent | null {
     const parsed = eventInputSchema.safeParse(input);
     if (!parsed.success) {
       const issue = parsed.error.issues[0];
@@ -77,7 +111,8 @@ export class ObservationEmitter {
       spanId,
       end: (status, extra = {}) => {
         // A span ends once; a second end() would store a duplicate end event and double-count the span.
-        if (ended) return null;
+        // #358: logged, not silent — a double end() is a caller bug worth seeing.
+        if (ended) { this.log("duplicate_dropped", { runId: input.runId, spanId, reason: "span_already_ended" }); return null; }
         ended = true;
         return this.emit({
           ...input, spanId, phase: "end", status,
@@ -118,12 +153,14 @@ export class ObservationEmitter {
   }
 
   private quarantine(input: EventInput, reason: string): void {
+    // #358: input can be null/undefined here (safeParse rejected it, but property reads would throw).
+    const source = (typeof input === "object" && input !== null ? input : {}) as Record<string, unknown>;
     // `?? "unknown"` alone would miss an explicit empty string (still not a usable id); `|| "unknown"`
     // catches both undefined and "".
-    const rawType = String((input as { type?: unknown }).type ?? "unknown");
-    const traceId = String((input as { traceId?: unknown }).traceId ?? "unknown") || "unknown";
-    const runId = String((input as { runId?: unknown }).runId ?? "unknown") || "unknown";
-    const agentId = String((input as { agentId?: unknown }).agentId ?? "unknown") || "unknown";
+    const rawType = String(source.type ?? "unknown");
+    const traceId = String(source.traceId ?? "unknown") || "unknown";
+    const runId = String(source.runId ?? "unknown") || "unknown";
+    const agentId = String(source.agentId ?? "unknown") || "unknown";
     if (traceId === "unknown" || runId === "unknown") { this.log("quarantine_dropped", { reason }); return; }
     const fallback = eventInputSchema.safeParse({
       traceId, runId, agentId, spanId: newId("spn"), type: "error.recorded", category: "control", name: "error.recorded", status: "error",
@@ -136,10 +173,32 @@ export class ObservationEmitter {
     else this.enqueue(final);
   }
 
+  /** #358: an append that never settles must not wedge the chain (invariant 4). Race it against a timeout;
+   * the pre-attached catch keeps a rejection that lands *after* the timeout won from becoming an
+   * unhandled rejection. On timeout the caller's catch degrades the run and the chain moves on. */
+  private appendWithTimeout(event: ObservationEvent): Promise<AppendResult> {
+    const append = this.store.append(event);
+    append.catch(() => undefined); // observed even if the timeout wins the race below
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("append timed out after " + this.appendTimeoutMs + "ms")), this.appendTimeoutMs); });
+    return Promise.race([append, timeout]).finally(() => clearTimeout(timer));
+  }
+
   private enqueue(event: ObservationEvent): void {
+    // #358: bound the per-run backlog. Past the cap the store is hung or hopelessly behind — drop the
+    // event and flag the run degraded (once) instead of growing the chain without bound.
+    const depth = this.queueDepths.get(event.runId) ?? 0;
+    if (depth >= this.maxQueueDepth) {
+      if (!this.degradedRuns.has(event.runId)) {
+        this.degradedRuns.add(event.runId);
+        this.log("telemetry.degraded", { runId: event.runId, traceId: event.traceId, error: "queue depth cap exceeded (" + this.maxQueueDepth + ")" });
+      }
+      return;
+    }
+    this.queueDepths.set(event.runId, depth + 1);
     this.queue = this.queue.then(async () => {
       try {
-        const result = await this.store.append(event);
+        const result = await this.appendWithTimeout(event);
         // #40: notify after the append settles so a client refetch sees the stored data. A throwing
         // listener must never surface as a store failure (invariant 4).
         try { this.onEvent?.(event); } catch { /* swallowed */ }
@@ -148,7 +207,7 @@ export class ObservationEmitter {
           this.truncatedRuns.add(event.runId); this.store.markTruncated(event.runId);
           const t = eventInputSchema.parse({ traceId: event.traceId, runId: event.runId, agentId: event.agentId, spanId: newId("spn"), type: "trace.truncated", category: "control", name: "trace.truncated", status: "unset", source: { component: "GlassBox", observed: true }, attributes: { reason: result.reason } });
           const finalT = this.finalize(t);
-          if (!("invalid" in finalT)) await this.store.append(finalT);
+          if (!("invalid" in finalT)) await this.appendWithTimeout(finalT);
         }
       } catch (error) {
         if (!this.degradedRuns.has(event.runId)) {
@@ -159,9 +218,12 @@ export class ObservationEmitter {
           try {
             const degraded = eventInputSchema.parse({ traceId: event.traceId, runId: event.runId, agentId: event.agentId, spanId: newId("spn"), type: "telemetry.degraded", category: "control", name: "telemetry.degraded", status: "error", source: { component: "GlassBox", observed: true }, attributes: { error: String(error).slice(0, 200) } });
             const finalDegraded = this.finalize(degraded);
-            if (!("invalid" in finalDegraded)) await this.store.append(finalDegraded);
+            if (!("invalid" in finalDegraded)) await this.appendWithTimeout(finalDegraded);
           } catch { /* best-effort only */ }
         }
+      } finally {
+        const remaining = (this.queueDepths.get(event.runId) ?? 1) - 1;
+        if (remaining <= 0) this.queueDepths.delete(event.runId); else this.queueDepths.set(event.runId, remaining);
       }
     });
   }

@@ -40,6 +40,72 @@ describe("redactText", () => {
       expect(redactText(s)).toEqual({ text: s, rules: [] });
     }
   });
+  // #359 item 1: bare TOKEN=/SECRET=/KEY=/PASSWORD= (no prefix word) must redact. Pinned FP rule: a
+  // value under 6 chars reads as a count/config and survives; 6+ redacts even when purely numeric.
+  it.each([
+    ["bare TOKEN", "TOKEN=" + ENV_VALUE, true],
+    ["bare SECRET", "SECRET=" + ENV_VALUE, true],
+    ["bare PASSWORD", "PASSWORD=hunter2hunter2", true],
+    ["bare KEY", "KEY=" + ENV_VALUE, true],
+    ["bare TOKEN numeric 6+ chars (pinned: could be a PIN/OTP — over-redact)", "TOKEN=123456", true],
+    ["prefixed, as before", "GITHUB_TOKEN=" + ENV_VALUE, true],
+    ["TOKENS=5 (plural + short numeric = a count)", "TOKENS=5", false],
+    ["TOKEN=12345 (value under 6 chars = a count)", "TOKEN=12345", false],
+    ["MAX_TOKENS=100000 (plural: word must end with the suffix)", "MAX_TOKENS=100000", false],
+    ["TOKENS=abcdef123456 (plural even with a long value)", "TOKENS=abcdef123456", false],
+  ])("env_assignment %s -> redacted=%s", (_n, input, redacts) => {
+    const out = redactText(input);
+    if (redacts) {
+      expect(out.rules).toEqual(["env_assignment"]);
+      expect(out.text).toBe("[REDACTED:env_assignment]");
+    } else {
+      expect(out).toEqual({ text: input, rules: [] });
+    }
+  });
+  // #359 item 2: openai_key left boundary — the ONLY reduction-direction change in this ruleset, so
+  // pin both sides hard: real keys stay caught in every realistic left context, and only a preceding
+  // WORD char (a fragment like "ta|sk-") suppresses the match.
+  it.each([
+    ["start of string", OAI],
+    ["after a space", "key is " + OAI],
+    ["after a double quote", '"' + OAI + '"'],
+    ["after a single quote", "'" + OAI + "'"],
+    // lowercase key= so env_assignment can't also fire and swap the marker we assert on
+    ["after =", "openai_api_key=" + OAI],
+    ["inside JSON", '{"apiKey":"' + OAI + '","model":"m"}'],
+    ["inside a URL path", "https://evil.example/exfil/" + OAI],
+    ["inside a URL query", "https://evil.example/cb?key=" + OAI + "&x=1"],
+    ["after a colon", "token:" + OAI],
+    ["after an open paren", "(" + OAI + ")"],
+    ["after a hyphen (non-word boundary still counts — more-redaction retained)", "wrapped-" + OAI],
+    // #363 privacy review: digits/underscore are boundaries too — only a LETTER suppresses.
+    ["after a digit", "v2" + OAI],
+    ["after an underscore", "backup_" + OAI],
+  ])("openai_key still caught %s", (_n, input) => {
+    const out = redactText(input);
+    expect(out.rules).toContain("openai_key");
+    expect(out.text).not.toContain(OAI.slice(-8));
+    expect(out.text).toContain("[REDACTED:openai_key]");
+  });
+  it.each([
+    ["task-management (review #47 example)", "task-management-dashboard-refresh-tool"],
+    ["risk- prefix word", "risk-assessment-management-workflow-notes"],
+    ["desk- prefix word", "desk-organizer-with-twenty-plus-chars"],
+  ])("openai_key leaves hyphenated words alone: %s", (_n, input) => {
+    expect(redactText(input)).toEqual({ text: input, rules: [] });
+  });
+  // #359 item 3: an unencoded "/" inside the password segment must not let the URL escape the rule.
+  it("credential_url redacts a password containing an unencoded slash", () => {
+    const out = redactText("connect postgres://user:pa/ss@db.internal/x failed");
+    expect(out.rules).toContain("credential_url");
+    expect(out.text).toBe("connect [REDACTED:credential_url] failed");
+    expect(out.text).not.toContain("pa/ss");
+  });
+  it("credential_url still ignores ordinary host:port URLs (no userinfo)", () => {
+    for (const s of ["http://localhost:3000/api", "https://example.com:8080/path?q=1"]) {
+      expect(redactText(s)).toEqual({ text: s, rules: [] });
+    }
+  });
   it("applies extra patterns (seeded fixtures)", () => {
     expect(redactText("CANARY-SECRET-42 present", [/CANARY-SECRET-\d+/g]).text).toBe("[REDACTED:custom] present");
   });
@@ -87,7 +153,11 @@ describe("redactEvent", () => {
     expect(safe.summary?.text.length).toBe(1000);
     expect(safe.privacy.originalBytes).toBe(5000);
     expect(safe.privacy.storedBytes).toBe(1000);
-    expect(safe.privacy.rules).toContain("truncated");
+    // #359 item 5 (same ruling as shrinkToCap, #356): a size cap is a truncation, not a redaction —
+    // reason records it, and redacted/rules stay false/absent when no rule actually fired.
+    expect(safe.privacy.reason).toBe("summary_truncated");
+    expect(safe.privacy.redacted).toBe(false);
+    expect(safe.privacy.rules).toBeUndefined();
   });
   it("reasoning_summary keeps summaries exactly like safe_summary (superset tier, #259)", () => {
     const out = redactEvent(ev({ summary: { text: "plan: call Bearer " + BEARER_TOKEN, policy: "safe_summary" } }), { policy: "reasoning_summary" });
@@ -153,7 +223,34 @@ describe("redactEvent", () => {
     );
     expect(out.error?.message.length).toBe(2048);
     expect(out.summary?.text.length).toBe(4096);
-    expect(out.privacy.rules).toContain("truncated");
+    expect(out.privacy.reason).toBe("summary_truncated");
+    expect(out.privacy.redacted).toBe(false);
+  });
+  it("redacted summary that also hits the cap reports both: rule in rules, cap in reason", () => {
+    const out = redactEvent(
+      ev({ summary: { text: "Bearer " + BEARER_TOKEN + " " + "s".repeat(5000), policy: "safe_summary" } }),
+      { policy: "safe_summary" },
+    );
+    expect(out.privacy.redacted).toBe(true);
+    expect(out.privacy.rules).toEqual(["bearer"]);
+    expect(out.privacy.reason).toBe("summary_truncated");
+  });
+  // #359 item 4: agentId/runId are server-generated, but scan them like requestId anyway —
+  // defense-in-depth against a future adapter threading an outside value through.
+  it("scans agentId and runId for key-shaped content", () => {
+    const out = redactEvent(ev({ agentId: "agt-" + FAKE_ARK, runId: "run-" + FAKE_ARK }), { policy: "metadata_only" });
+    expect(out.agentId).toContain("[REDACTED:ark_key]");
+    expect(out.runId).toContain("[REDACTED:ark_key]");
+    expect(out.agentId).not.toContain("0f0f0f0f");
+    expect(out.runId).not.toContain("0f0f0f0f");
+    expect(out.privacy.rules).toContain("ark_key");
+    expect(out.privacy.redacted).toBe(true);
+  });
+  it("leaves clean agentId/runId untouched", () => {
+    const out = redactEvent(ev({}), { policy: "metadata_only" });
+    expect(out.agentId).toBe("a");
+    expect(out.runId).toBe("r");
+    expect(out.privacy.redacted).toBe(false);
   });
   it("failClosed drops requestId (header-copyable) but keeps the server-generated parentSpanId", () => {
     const out = failClosed(ev({ requestId: "req-x", parentSpanId: "spn_0" }));

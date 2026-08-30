@@ -100,6 +100,38 @@ describe("writeWorkspaceFile", () => {
     await expect(writeWorkspaceFile(root, upload("wrapped.bin", encoded, "base64"))).rejects.toThrowError(/credential/);
   });
 
+  it("maps a file-as-parent write to a clean 400-class error without the server path (#344)", async () => {
+    await writeFile(path.join(root, "empty.txt"), "", "utf8");
+    const error: unknown = await writeWorkspaceFile(root, upload("empty.txt/child.txt", "x")).catch((e) => e);
+    expect(error).toBeInstanceOf(WorkspaceEditError);
+    expect((error as Error).message).toBe("empty.txt is not a directory");
+    expect((error as Error).message).not.toContain(root);
+  });
+
+  it.each([
+    ["   "],
+    ["a//b"],
+    ["a/   /b"],
+  ])("rejects the path %j with an empty or whitespace-only segment (#344)", async (p) => {
+    await expect(writeWorkspaceFile(root, upload(p, "x"))).rejects.toThrowError(/empty or whitespace-only segment/);
+  });
+
+  it.each([["dir/"], ["dir\\"], ["dir/ "]])(
+    "rejects the directory-shaped path %j (#344)",
+    async (p) => {
+      await expect(writeWorkspaceFile(root, upload(p, "x"))).rejects.toThrowError(/must not end with a slash/);
+    },
+  );
+
+  it("still writes into an existing directory after the parent guards (#344 control)", async () => {
+    await writeWorkspaceFile(root, upload("nested/first.txt", "one"));
+    await expect(writeWorkspaceFile(root, upload("nested/second.txt", "two"))).resolves.toEqual({
+      path: "nested/second.txt",
+      bytes: 3,
+    });
+    expect(await readFile(path.join(root, "nested", "second.txt"), "utf8")).toBe("two");
+  });
+
   it("refuses to overwrite a directory", async () => {
     await mkdir(path.join(root, "src"));
     await expect(writeWorkspaceFile(root, upload("src", "x"))).rejects.toThrowError(/is a directory/);
@@ -143,6 +175,18 @@ describe("seedWorkspaceFiles", () => {
       seedWorkspaceFiles(root, [upload("dir/a.txt", "one"), upload("dir\\a.txt", "two")]),
     ).rejects.toThrowError(/appears twice/);
     await expect(stat(path.join(root, "dir"))).rejects.toThrowError();
+  });
+
+  it("sweeps the files it created when a write fails mid-batch (#350)", async () => {
+    await writeFile(path.join(root, "kept.txt"), "old", "utf8");
+    // Validation cannot see that "x.txt" (written by this same batch) makes "x.txt/y.txt" a
+    // file-as-parent write; the failure happens mid-write and the swept batch leaves no residue.
+    await expect(
+      seedWorkspaceFiles(root, [upload("kept.txt", "new"), upload("x.txt", "one"), upload("x.txt/y.txt", "two")]),
+    ).rejects.toThrowError(/x\.txt is not a directory/);
+    await expect(stat(path.join(root, "x.txt"))).rejects.toThrowError();
+    // An overwritten file keeps the batch's content — the sweep never deletes pre-existing files.
+    expect(await readFile(path.join(root, "kept.txt"), "utf8")).toBe("new");
   });
 
   it("a credential anywhere in the batch refuses the whole batch", async () => {

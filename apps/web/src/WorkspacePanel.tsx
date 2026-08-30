@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { api } from "./api";
+import { formatClock } from "./runs-view-model";
 import type { WorkspaceFile, WorkspaceHistoryEntry, WorkspaceListing } from "./types";
 import {
   checkNewFilePath,
@@ -55,7 +56,13 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
   const [editText, setEditText] = useState<string | null>(null);
   const [newFilePath, setNewFilePath] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [copyState, setCopyState] = useState<"copied" | "failed" | null>(null);
+  const copyTimer = useRef<number | undefined>(undefined);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  // #350: refresh()'s preview re-fetch races the Edit button — the resolution callback needs the
+  // editText value at *resolution* time (its closure only sees the value at call time), so mirror it.
+  const editingRef = useRef(false);
+  editingRef.current = editText !== null;
   const loading = useRef(new Set<string>());
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -68,6 +75,8 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
       setError(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
+      // #341: collapse the dir again so the "loading…" placeholder doesn't persist forever
+      if (path !== "") setExpanded((previous) => { const next = new Set(previous); next.delete(path); return next; });
     } finally {
       loading.current.delete(path);
     }
@@ -95,6 +104,26 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusReq]);
 
+  // #341: clear the "Copied ✓" revert timer on unmount.
+  useEffect(() => () => window.clearTimeout(copyTimer.current), []);
+
+  const copyPath = () => {
+    navigator.clipboard.writeText(workspacePath).then(
+      () => setCopyState("copied"),
+      () => setCopyState("failed"),
+    );
+    window.clearTimeout(copyTimer.current);
+    copyTimer.current = window.setTimeout(() => setCopyState(null), 1500);
+  };
+
+  /** #341: every path that would drop a dirty editor (close, open another file, Escape, Refresh)
+   * confirms first. True = safe to proceed. */
+  const confirmDiscardEdits = (): boolean =>
+    editText === null ||
+    preview === null ||
+    editText === preview.content ||
+    window.confirm("Discard unsaved changes to " + preview.path + "?");
+
   const rows = flattenWorkspaceTree(listings, expanded);
   const focusRow = (path: string) => { setFocusPath(path); setFocusReq((n) => n + 1); };
   const toggleDir = (row: WorkspaceRow) => {
@@ -119,6 +148,7 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
   };
 
   const closePreview = () => {
+    if (!confirmDiscardEdits()) return;
     const back = preview?.path;
     setPreview(null);
     setEditText(null);
@@ -126,7 +156,20 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
   };
 
   const refresh = () => {
-    setPreview(null);
+    // #344: keep a non-dirty preview open across a refresh by re-fetching it (a dirty one is only
+    // reached here after confirmDiscardEdits, and stays dropped). Gone-on-refetch closes silently.
+    const keep = preview !== null && (editText === null || editText === preview.content) ? preview.path : null;
+    if (keep) {
+      // #350: if Edit was clicked while this fetch was in flight, the editor is based on the
+      // preview at click time — swapping (or closing) the preview underneath it would let Save
+      // clobber the newer content, so skip; the dirty-editor guard covers the rest.
+      api.readWorkspaceFile(agentId, keep).then(
+        (file) => setPreview((current) => (current?.path === keep && !editingRef.current ? file : current)),
+        () => setPreview((current) => (current?.path === keep && !editingRef.current ? null : current)),
+      );
+    } else {
+      setPreview(null);
+    }
     setEditText(null);
     void loadListing("");
     for (const path of expanded) if (listings.has(path)) void loadListing(path);
@@ -150,6 +193,7 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
   };
 
   const addFiles = async (selected: FileList) => {
+    if (!confirmDiscardEdits()) return; // #341: runEdit's refresh drops a dirty editor
     const files = [...selected];
     if (files.length === 0) return;
     if (files.length > MAX_UPLOAD_FILES) {
@@ -172,8 +216,12 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
   };
 
   const createFile = async () => {
+    if (!confirmDiscardEdits()) return; // #341: runEdit's refresh drops a dirty editor
     const checked = checkNewFilePath(newFilePath ?? "");
     if ("error" in checked) { setError(checked.error); return; }
+    // UAT: "New file" over an existing path silently truncated it to 0 bytes — refuse instead.
+    const exists = await api.readWorkspaceFile(agentId, checked.path).then(() => true, () => false);
+    if (exists) { setError(checked.path + " already exists — select it in the tree to edit it."); return; }
     const created = await runEdit(async () => {
       await api.writeWorkspaceFile(agentId, { path: checked.path, content: "", encoding: "utf8" });
     });
@@ -202,8 +250,11 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
   };
 
   const resetWorkspace = async () => {
+    // #341: the first dialog is the only gate on the wipe — Cancel there aborts everything. The
+    // thread question is asked only after the reset is confirmed, as an additive choice whose
+    // Cancel takes the safe default (conversation kept); it never widens the destruction.
     if (!window.confirm("Reset this workspace? All files are archived to .deleted/ and the platform files are recreated.")) return;
-    const forgetThread = window.confirm("Also forget the Codex session thread? OK = start the next run fresh, Cancel = keep the conversation.");
+    const forgetThread = window.confirm("Reset confirmed. Also forget the Codex conversation thread, so the next run starts fresh? Cancel keeps the conversation.");
     const wiped = await runEdit(async () => { await api.resetWorkspace(agentId, forgetThread); });
     if (wiped) {
       setListings(new Map());
@@ -215,7 +266,7 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
 
   const activate = (row: WorkspaceRow) => {
     if (row.kind === "dir") toggleDir(row);
-    else void openPreview(row.path);
+    else if (confirmDiscardEdits()) void openPreview(row.path);
   };
 
   const onRowKey = (event: React.KeyboardEvent, index: number) => {
@@ -261,7 +312,9 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
           <h2 id="workspace-panel-heading">Files</h2>
           <p className="workspace-panel-meta">
             <code title={workspacePath}>{workspacePath}</code>{" "}
-            <button type="button" className="button button-ghost" onClick={() => void navigator.clipboard.writeText(workspacePath)}>Copy path</button>
+            <button type="button" className="button button-ghost" onClick={copyPath}>
+              {copyState === "copied" ? "Copied ✓" : copyState === "failed" ? "Copy failed" : "Copy path"}
+            </button>
             {summary && <span className="workspace-summary"> {summary}</span>}
           </p>
         </div>
@@ -280,8 +333,9 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
               />
               <button type="button" className="button button-ghost" disabled={editLocked} title={editHint} onClick={() => fileInput.current?.click()}>Add files</button>
               <button type="button" className="button button-ghost" disabled={editLocked} title={editHint} onClick={() => setNewFilePath((value) => (value === null ? "" : value))}>New file</button>
-              <button type="button" className="button button-ghost" disabled={editLocked} title={editHint} onClick={() => void resetWorkspace()}>Reset…</button>
-              <button type="button" className="button button-ghost" onClick={refresh}>Refresh</button>
+              <button type="button" className="button button-danger" disabled={editLocked} title={editHint} onClick={() => void resetWorkspace()}>Reset…</button>
+              <button type="button" className="button button-ghost" onClick={() => { if (confirmDiscardEdits()) refresh(); }}>Refresh</button>
+              {pending && <span className="workspace-row-meta" role="status">Saving…</span>}
             </>
           )}
           <button type="button" className="button button-ghost" onClick={() => setOpen((value) => !value)}>
@@ -319,8 +373,8 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
       {open && rows.length > 0 && (
         <div className="workspace-tree" role="tree" aria-label="Workspace files">
           {rows.map((row, index) => (
+            <Fragment key={row.path}>
             <div
-              key={row.path}
               ref={(element) => { if (element) rowRefs.current.set(row.path, element); else rowRefs.current.delete(row.path); }}
               role="treeitem"
               aria-level={row.depth + 1}
@@ -340,6 +394,14 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
                 {row.kind === "file" ? formatBytes(row.size) : row.kind === "symlink" ? "symlink" : ""}
               </span>
             </div>
+            {/* #341: an expanded directory shows a placeholder child until its listing lands. */}
+            {row.kind === "dir" && row.expanded && !row.loaded && (
+              <div className="workspace-row" role="none" style={{ paddingLeft: 12 + (row.depth + 1) * 16 }}>
+                <span className="workspace-row-kind" aria-hidden="true">·</span>
+                <span className="workspace-row-meta">loading…</span>
+              </div>
+            )}
+            </Fragment>
           ))}
         </div>
       )}
@@ -359,13 +421,21 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
             </div>
           </div>
           <p className="workspace-panel-meta">
-            {formatBytes(preview.size)} · {new Date(preview.mtime).toLocaleString()} · {preview.encoding}
+            {formatBytes(preview.size)} · <span title={preview.mtime}>{formatClock(preview.mtime)}</span> · {preview.encoding}
           </p>
           {editText !== null ? (
             <div className="workspace-editor">
               <textarea
                 value={editText}
                 onChange={(event) => setEditText(event.target.value)}
+                // #344: Escape in the editor routes through the same guarded close as everywhere
+                // else; stopPropagation keeps the panel-level Escape from firing a second time.
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.stopPropagation();
+                    closePreview();
+                  }
+                }}
                 rows={16}
                 spellCheck={false}
                 aria-label={"Edit " + preview.path}

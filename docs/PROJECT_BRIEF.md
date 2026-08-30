@@ -115,7 +115,7 @@ buildTrace / projectAudit / evaluators (glassbox/query.ts, eval/evaluators.ts) �
 
 ## 4. Observation contract
 
-Defined with zod in `apps/server/src/glassbox/schema.ts` (`SCHEMA_VERSION "1.0"`, `REDACTION_RULESET_VERSION "1"`).
+Defined with zod in `apps/server/src/glassbox/schema.ts` (`SCHEMA_VERSION "1.0"`, `REDACTION_RULESET_VERSION "2"`).
 
 **Identity and ordering.** `eventId` (unique; duplicates are dropped on read), `sequence` (monotonic per Run, assigned by the emitter), `timestamp` (ISO), `traceId`, `runId`, `agentId`, `sessionId?` (Codex thread), `requestId?`, `spanId`, `parentSpanId?`.
 
@@ -145,7 +145,7 @@ Defined with zod in `apps/server/src/glassbox/schema.ts` (`SCHEMA_VERSION "1.0"`
 | Tool | `tool.call.started`, `tool.call.completed`, `tool.call.failed` (`program`, `commandBytes`, `exitCode`, `outputBytes`; `summary.text` under `safe_summary`) | CodexObserver |
 | Workspace | `workspace.changed` (`added`, `modified`, `removed`, `bytesDelta`, `truncated`, `paths`) | AgentService |
 | Policy / limits | `policy.denied` (declined program, `service/sandbox`), `limit.exceeded` (output cap) | CodexObserver, runners |
-| GlassBox self-events | `redaction.applied`, `error.recorded`, `telemetry.degraded`, `trace.truncated`, `capability.unavailable` | emitter, observer, store |
+| GlassBox self-events | `error.recorded`, `telemetry.degraded`, `trace.truncated`, `capability.unavailable` | emitter, observer, store |
 
 **Terminal mapping.** `run.completed → ok`, `run.failed → error`, `run.cancelled → cancelled`, `run.timed_out → timeout`; the last terminal event in sequence order decides the Run's trace status.
 

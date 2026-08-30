@@ -462,7 +462,9 @@ describe("buildTrace", () => {
     expect(summary.failure?.spanId).toBe("x");
     const path = summary.failure!.path;
     expect(new Set(path).size).toBe(path.length);
-    expect(path).toEqual(expect.arrayContaining(["x", "y"]));
+    // #361: x is the promoted cycle root (back-pointer cleared), so the root-to-x path is just ["x"];
+    // y hangs beneath it as a child. The old ["x","y"] pin reflected the cyclic back-pointer world.
+    expect(path).toEqual(["x"]);
   });
   it("end-before-start: a later start event corrects the provisional span and closes it", () => {
     seq = 0;
@@ -493,5 +495,99 @@ describe("buildTrace", () => {
   it("empty input yields an honest empty view", () => {
     const v = buildTrace([], { capturePolicy: "metadata_only" });
     expect(v.summary.status).toBe("unset"); expect(v.spans).toEqual([]); expect(v.summary.eventCount).toBe(0);
+  });
+});
+
+describe("buildTrace correctness (#357)", () => {
+  it("accounts for every span in a parent cycle: the entry span (lowest sequence) becomes a root, its subtree kept", () => {
+    seq = 0;
+    const events = [
+      root(),                                                                                                             // seq 1
+      ev({ type: "tool.call.started", category: "tool", spanId: "x", parentSpanId: "y", phase: "start", status: "running" }), // seq 2 — cycle entry
+      ev({ type: "tool.call.started", category: "tool", spanId: "y", parentSpanId: "x", phase: "start", status: "running" }), // seq 3
+      ev({ type: "tool.call.completed", category: "tool", spanId: "z", parentSpanId: "y", status: "ok" }),                    // seq 4 — subtree off the cycle
+      ev({ type: "run.completed", category: "control", spanId: "done", parentSpanId: "root", status: "ok" }),
+      ev({ type: "http.request.completed", category: "control", spanId: "root", phase: "end", status: "ok" }),
+    ];
+    const view = buildTrace(events, { capturePolicy: "metadata_only" });
+    expect(view.summary.spanCount).toBe(5); // root, done, x, y, z — the cycle no longer vanishes from the counts
+    expect(flattenSpans(view.spans).map((s) => s.spanId).sort()).toEqual(["done", "root", "x", "y", "z"]);
+    expect(view.spans.map((s) => s.spanId)).toEqual(["root", "x"]); // x promoted to a root, ordered by sequence
+    const x = view.spans[1]!;
+    expect(x.depth).toBe(0);
+    expect(x.children.map((c) => c.spanId)).toEqual(["y"]);
+    expect(x.children[0]!.children.map((c) => c.spanId)).toEqual(["z"]);
+    expect(view.summary.incompleteSpans).toBe(2); // x and y never closed — still honestly incomplete
+  });
+  it.each([
+    { label: "span still open", withEnd: false, durationMs: undefined, incomplete: true, status: "running" },
+    { label: "span later closed by its end", withEnd: true, durationMs: 20, incomplete: false, status: "ok" },
+  ])("duplicate start ($label): the first start keeps startedAt and sequence", ({ withEnd, durationMs, incomplete, status }) => {
+    seq = 0;
+    const events = [
+      ev({ type: "tool.call.started", category: "tool", spanId: "t", phase: "start", status: "running" }), // t10 — first start wins
+      ev({ type: "tool.call.started", category: "tool", spanId: "t", phase: "start", status: "running" }), // t20 — duplicate
+      ...(withEnd ? [ev({ type: "tool.call.completed", category: "tool", spanId: "t", phase: "end", status: "ok" })] : []), // t30
+    ];
+    const span = flattenSpans(buildTrace(events, { capturePolicy: "metadata_only" }).spans).find((s) => s.spanId === "t")!;
+    expect(span.startedAt).toBe(t(10));
+    expect(span.sequence).toBe(1);
+    expect(span.durationMs).toBe(durationMs);
+    expect(span.incomplete).toBe(incomplete);
+    expect(span.status).toBe(status);
+    expect(span.events.map((e) => e.eventId)).toContain("evt_2"); // the duplicate is kept as evidence, never applied
+  });
+  it("an out-of-order instant never closes a span: a later start reopens it and keeps the instant as an inner event", () => {
+    seq = 0;
+    const instant = ev({ type: "tool.call.failed", category: "tool", spanId: "t", status: "error", sequence: 1, timestamp: t(30) });
+    const start = ev({ type: "tool.call.started", category: "tool", spanId: "t", phase: "start", status: "running", sequence: 2, timestamp: t(10) });
+    const view = buildTrace([start, instant], { capturePolicy: "metadata_only" });
+    const span = flattenSpans(view.spans).find((s) => s.spanId === "t")!;
+    expect(span.incomplete).toBe(true); // never guessed closed (invariant 7)
+    expect(span.endedAt).toBeUndefined();
+    expect(span.durationMs).toBeUndefined();
+    expect(span.status).toBe("running");
+    expect(span.startedAt).toBe(t(10));
+    expect(span.events.map((e) => e.eventId)).toEqual([instant.eventId]);
+    expect(view.summary.incompleteSpans).toBe(1);
+  });
+  // Seed 150 swaps the tieA/tieB pair (review #361: the lower seeds never do, and the sort is
+  // stable, so without a tie-swapping order the eventId tiebreak is unexercised); the reverse case
+  // below guarantees it deterministically as well.
+  it.each([{ seed: 1 }, { seed: 42 }, { seed: 150 }, { seed: 20260830 }])("buildTrace(events) deep-equals buildTrace(shuffle(events)) (seed $seed)", ({ seed }) => {
+    const shuffle = (list: ObservationEvent[], seedValue: number): ObservationEvent[] => {
+      const out = [...list];
+      let state = seedValue >>> 0;
+      const next = () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state / 4294967296; };
+      for (let i = out.length - 1; i > 0; i--) {
+        const j = Math.floor(next() * (i + 1));
+        const swap = out[i]!; out[i] = out[j]!; out[j] = swap;
+      }
+      return out;
+    };
+    seq = 0;
+    const tieA = ev({ type: "tool.call.completed", category: "tool", spanId: "tieA", parentSpanId: "rt", status: "ok" });
+    const fixture = [
+      root(), svcStart(), rtStart(), tieA,
+      // same sequence AND timestamp as tieA: only the eventId tiebreak keeps their order stable
+      ev({ type: "tool.call.completed", category: "tool", spanId: "tieB", parentSpanId: "rt", status: "ok", sequence: tieA.sequence, timestamp: tieA.timestamp }),
+      ev({ type: "tool.call.started", category: "tool", spanId: "tool1", parentSpanId: "rt", phase: "start", status: "running" }),
+      ev({ type: "tool.call.started", category: "tool", spanId: "tool1", parentSpanId: "rt", phase: "start", status: "running" }), // duplicate start
+      ev({ type: "tool.call.failed", category: "tool", spanId: "tool1", parentSpanId: "rt", phase: "end", status: "error", error: { type: "exit_code", message: "exit code 127" } }),
+      ev({ type: "model.completed", category: "model", spanId: "m1", parentSpanId: "rt", status: "ok", attributes: { inputTokens: 10, outputTokens: 2 } }),
+      ev({ type: "tool.call.started", category: "tool", spanId: "cx", parentSpanId: "cy", phase: "start", status: "running" }), // parent cycle
+      ev({ type: "tool.call.started", category: "tool", spanId: "cy", parentSpanId: "cx", phase: "start", status: "running" }),
+      ev({ type: "tool.call.completed", category: "tool", spanId: "oo", parentSpanId: "rt", status: "ok" }),                    // out-of-order instant…
+      ev({ type: "tool.call.started", category: "tool", spanId: "oo", parentSpanId: "rt", phase: "start", status: "running" }), // …before its start
+      ev({ type: "runtime.codex.completed", category: "runtime", spanId: "rt", phase: "end", status: "ok" }),
+      ev({ type: "run.completed", category: "control", spanId: "done", parentSpanId: "svc", status: "ok", attributes: { finalMessageBytes: 3 } }),
+      ev({ type: "agent_service.run.completed", category: "control", spanId: "svc", phase: "end", status: "ok" }),
+      ev({ type: "http.request.completed", category: "control", spanId: "root", phase: "end", status: "ok" }),
+    ];
+    const expected = buildTrace(fixture, { capturePolicy: "metadata_only" });
+    expect(buildTrace(shuffle(fixture, seed), { capturePolicy: "metadata_only" })).toEqual(expected);
+    // Reversal puts tieB before tieA, so this fails if the eventId tiebreak is removed.
+    expect(buildTrace([...fixture].reverse(), { capturePolicy: "metadata_only" })).toEqual(expected);
+    expect(expected.summary.spanCount).toBe(11); // sanity: root, svc, rt, tieA, tieB, tool1, m1, cx, cy, oo, done — cycle spans accounted for
   });
 });

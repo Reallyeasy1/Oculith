@@ -53,6 +53,10 @@ describe("evaluator registry", () => {
     expect(byArg!.pass).toBe(true);
     expect(byWrapper!.pass).toBe(true);
     expect(absent!.pass).toBe(false);
+    // #346: observed names the matched command, not just the wrapper shell identity.
+    expect(byArg!.observed).toBe("shell:powershell.exe npm");
+    expect(byWrapper!.observed).toBe("shell:powershell.exe npm");
+    expect(absent!.observed).toBeNull();
   });
 
   it("reports failing tool, count, duration, and terminal-status assertions", async () => {

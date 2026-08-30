@@ -1,5 +1,7 @@
-import { SCHEMA_VERSION, newId, type CapturePolicy } from "./schema.js";
+import { SCHEMA_VERSION, newId, type ActorType, type CapturePolicy } from "./schema.js";
 
+/** No `sessionId` slot on purpose: the Codex thread id only exists once the runner observes
+ * `thread.started`, and the observer stamps it per-event — nothing populates one at ingress time (#59). */
 export interface TraceContext {
   traceId: string;
   rootSpanId: string;
@@ -7,7 +9,7 @@ export interface TraceContext {
   method?: string | undefined;
   path?: string | undefined;
   actorId: string;
-  actorType: "human" | "service" | "agent" | "controller";
+  actorType: ActorType;
   capturePolicy: CapturePolicy;
   schemaVersion: typeof SCHEMA_VERSION;
   receivedAt: string;

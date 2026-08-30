@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type { Assertion, AuditRow, EvaluationResult, ObservationEvent, RunListItem, RunLogLine, Span, TraceView } from "./types";
-import { evaluatorLabel, metadataSummary } from "./eval-view-model";
+import { evaluatorLabel, metadataParts } from "./eval-view-model";
 import { REPORTED_FAILURE_HINT, STATUS_ICON, collapseRequestId, errorHead, formatClock, formatDuration, formatRunDuration, formatUsage, pluralize, workspaceLabel } from "./runs-view-model";
 import {
   CATEGORIES,
@@ -22,8 +22,10 @@ import {
   indexSpans,
   interruptedSpanDurationMs,
   isFilterActive,
+  spanArgument,
   spanStatusLabel,
   timelineTicks,
+  trimDiagnosis,
   visibleRows,
   type TraceFilter,
 } from "./trace-view-model";
@@ -51,11 +53,13 @@ interface Props {
   /** #256: re-dispatch this Run's originating prompt as an ordinary new Run (busy Agent → error banner). */
   onRerun: (runId: string) => void;
   onClose: () => void;
+  /** #217: lets the workspace field tell a shared workspace from a managed one. */
+  workspaces?: readonly { name: string; managed: boolean }[];
 }
 
 // Trace detail (UX-02): summary header, first-error banner with Jump, nested tree with duration bars,
 // client-side filters, focus-trapped span drawer. Everything shown comes straight from the API payload.
-export default function TraceDetail({ runId, run, view, templateBacked, focusEventId, onFocusHandled, onCaseSaved, onRerun, onClose }: Props) {
+export default function TraceDetail({ runId, run, view, templateBacked, focusEventId, onFocusHandled, onCaseSaved, onRerun, onClose, workspaces }: Props) {
   const [filter, setFilter] = useState<TraceFilter>(EMPTY_FILTER);
   // null = untouched → follow the API's default (roots + failure path) even as the trace grows while polling.
   const [expandedState, setExpanded] = useState<Set<string> | null>(null);
@@ -69,6 +73,8 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
   const onSaveCaseKeyDown = useFocusTrap(saveCaseRef, () => { if (!savingCase) setShowSaveCase(false); }, String(showSaveCase));
   const [caseName, setCaseName] = useState("");
   const [caseAssertions, setCaseAssertions] = useState<Assertion[]>([]);
+  // #341: include/exclude checkboxes instead of one-way Delete — indexes are stable once the draft loads.
+  const [excludedChecks, setExcludedChecks] = useState<Set<number>>(new Set());
   const [savingCase, setSavingCase] = useState(false);
   const [caseError, setCaseError] = useState<string | null>(null);
   const [showAudit, setShowAudit] = useState(false);
@@ -155,7 +161,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
 
   const { summary } = view;
   const failure = summary.failure;
-  const workspace = workspaceLabel(summary.workspace ?? run?.workspace, summary.agentId || run?.agentId || "");
+  const workspace = workspaceLabel(summary.workspace ?? run?.workspace, summary.agentId || run?.agentId || "", workspaces);
   const actors = formatActors(summary.audit);
   const failingSpan = failure && byId.get(failure.spanId);
   // An ok Run can still contain recovered tool failures worth anchoring to (#pass-2); failed Runs keep the full banner.
@@ -171,19 +177,21 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
     // The server derives the draft from the same trace it will persist from; nothing is saved until Save.
     setCaseName("");
     setCaseAssertions([]);
+    setExcludedChecks(new Set());
     setCaseError(null);
     setShowSaveCase(true);
     api.regressionCaseDraft(runId)
       .then(({ draft }) => { setCaseName(draft.name); setCaseAssertions(draft.assertions); })
       .catch((reason) => setCaseError(reason instanceof Error ? reason.message : String(reason)));
   };
+  const includedAssertions = caseAssertions.filter((_, index) => !excludedChecks.has(index));
   const saveCase = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!caseName.trim() || caseAssertions.length === 0) return;
+    if (!caseName.trim() || includedAssertions.length === 0) return;
     setSavingCase(true);
     setCaseError(null);
     try {
-      await api.saveRunAsRegressionCase(runId, { name: caseName.trim(), assertions: caseAssertions });
+      await api.saveRunAsRegressionCase(runId, { name: caseName.trim(), assertions: includedAssertions });
       setShowSaveCase(false); // the case exists now; a failed list refresh must not invite a duplicate Save
       await onCaseSaved();
     } catch (reason) {
@@ -272,7 +280,8 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
       anchor.href = url;
       anchor.download = filename;
       anchor.click();
-      setTimeout(() => URL.revokeObjectURL(url), 0);
+      // #217: revoking on the next tick races the download outside Chrome; a second is safely past it.
+      setTimeout(() => URL.revokeObjectURL(url), 1_000);
     } catch (reason) {
       setExportError(reason instanceof Error ? reason.message : String(reason));
     }
@@ -289,16 +298,15 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
           </h2>
         </div>
         <div className="header-actions">
-          <a
-            className="button button-ghost"
-            href={"/api/traces/" + encodeURIComponent(summary.traceId) + "/export"}
-            download={"trace-" + summary.traceId + ".json"}
-            onClick={(event) => { event.preventDefault(); void downloadExport(); }}
-          >
+          {/* #217: a real button — a middle-click or "Save link as" on an <a> bypasses onClick and
+              hits the export URL without the bearer token, saving a 401 JSON body. */}
+          <button type="button" className="button button-ghost" onClick={() => void downloadExport()}>
             Export JSON
-          </a>
+          </button>
           <button type="button" className="button button-ghost" onClick={() => onRerun(runId)}>Re-run prompt</button>
           <button type="button" className="button button-ghost" onClick={openSaveCase} disabled={Boolean(saveReason)} title={saveReason || undefined}>Save as regression case</button>
+          {/* #341: a disabled button is unfocusable, so its title never surfaces — say why visibly. */}
+          {saveReason && <span className="trace-muted">{saveReason}</span>}
           <button type="button" className="button button-ghost" onClick={onClose}>Close trace</button>
         </div>
       </div>
@@ -348,7 +356,8 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
             {/* #263: the meta line names the origin only; the full error text renders once, in the diagnosis. */}
             <span className="trace-banner-meta" title={failure.message || undefined}>{failure.category} · {failure.component}</span>
             {failure.hint && <span className="badge badge-warn" title="Derived from the stored provider error by a fixed rule — not a judgement.">{failure.hint}</span>}
-            <p id="trace-diagnosis" className="trace-diagnosis">{collapseRequestId(failure.diagnosis)}</p>
+            {/* #341: the server diagnosis restates the heading's "First actionable <kind>: <name>" clause — trimmed here. */}
+            <p id="trace-diagnosis" className="trace-diagnosis">{collapseRequestId(trimDiagnosis(failure.diagnosis, failure))}</p>
           </div>
           {failingSpan && (
             <button type="button" className="button button-primary" onClick={jump} aria-describedby="trace-diagnosis">Jump to failing span</button>
@@ -367,20 +376,25 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
         <section className="trace-evaluations" aria-labelledby="trace-evaluations-heading">
           <h3 id="trace-evaluations-heading">Evaluation</h3>
           <ul>
-            {evaluations.map((result) => (
-              <li key={evaluatorLabel(result)}>
-                <span className={"badge " + (result.passed ? "" : "badge-warn")}>{result.passed ? "PASS" : "FAIL"}</span>
-                <code>{evaluatorLabel(result)}</code>
-                {result.score !== undefined && <span>score {result.score}</span>}
-                {result.explanation && <span className="trace-muted">{result.explanation}</span>}
-                {metadataSummary(result.metadata) && <span className="trace-muted">{metadataSummary(result.metadata)}</span>}
-                {result.evidenceEventIds.map((eventId, index) => (
-                  <button key={eventId} type="button" className="evidence-link" onClick={() => openEvidenceEvent(eventId)}>
-                    evidence{result.evidenceEventIds.length > 1 ? " " + (index + 1) : ""}
-                  </button>
-                ))}
-              </li>
-            ))}
+            {evaluations.map((result) => {
+              const meta = metadataParts(result);
+              return (
+                <li key={evaluatorLabel(result)}>
+                  <span className={"badge " + (result.passed ? "badge-pass" : "badge-fail")}>{result.passed ? "PASS" : "FAIL"}</span>
+                  <code>{evaluatorLabel(result)}</code>
+                  <span className="eval-message">
+                    {result.score !== undefined && <span>score {result.score}</span>}
+                    {result.explanation && <span className="trace-muted">{result.explanation}</span>}
+                    {meta.length > 0 && (
+                      <span className="trace-muted eval-meta">
+                        {meta.map((part) => <span key={part.text} title={part.title}>{part.text}</span>)}
+                      </span>
+                    )}
+                  </span>
+                  <EvidenceLinks ids={result.evidenceEventIds} onOpen={openEvidenceEvent} />
+                </li>
+              );
+            })}
           </ul>
         </section>
       )}
@@ -448,6 +462,11 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
             : undefined;
           const timingId = `span-timing-${s.spanId}`;
           const failing = failure?.spanId === s.spanId;
+          const statusLabel = spanStatusLabel(s, summary);
+          // #341: a never-closed span in a dead Run is a warning, not activity — amber, never RUNNING-blue.
+          const statusClass = statusLabel === "never closed" ? "status-timeout" : "status-" + s.status;
+          const fillStatus = statusLabel === "never closed" ? "timeout" : s.status;
+          const argument = spanArgument(s.attributes);
           return (
             <div
               key={s.spanId}
@@ -473,29 +492,31 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
               >
                 {row.hasChildren ? (row.expanded ? "▾" : "▸") : "·"}
               </button>
-              <span className={"status status-" + s.status}><span aria-hidden="true">{STATUS_ICON[s.status]}</span>{spanStatusLabel(s, summary.endedReason)}</span>
+              <span className={"status " + statusClass}><span aria-hidden="true">{STATUS_ICON[s.status]}</span>{statusLabel}</span>
               <span className="trace-name" title={[[s.attributes.program, s.attributes.argument0].filter((value) => typeof value === "string" && value.length > 0).join(" "), s.error?.message].filter(Boolean).join("\n") || undefined}>
                 {s.name}
+                {/* #341: argument0 discriminates otherwise-identical tool rows (16× "shell:powershell.exe"). */}
+                {argument && <span className="trace-muted"> {argument}</span>}
                 {/* #263: error subtitle is a truncated head; the full text stays in the row's title tooltip. */}
                 {s.error?.message && <span className="trace-error-head"> — {errorHead(s.error.message)}</span>}
               </span>
               <span className="trace-cat">{s.category}</span>
               <span className="trace-badges">
-                {(row.repeat ?? 1) > 1 && <span className="badge" title={`${row.repeat} consecutive identical errors collapsed`}>×{row.repeat}</span>}
+                {(row.repeat ?? 1) > 1 && <span className="badge" title={`repeated ${row.repeat} times — identical repeats collapsed`}>×{row.repeat}</span>}
                 {s.incomplete && <span className="badge badge-warn">incomplete</span>}
                 {!s.source.observed && <span className="badge">unavailable</span>}
                 {redactedSpans.has(s.spanId) && <span className="badge">redacted</span>}
               </span>
               <span className="trace-bar" title={timingDescription} aria-hidden="true">
-                {geo?.instant && <span className={"trace-bar-marker fill-" + s.status} style={{ left: geo.left + "%" }} />}
+                {geo?.instant && <span className={"trace-bar-marker fill-" + fillStatus} style={{ left: geo.left + "%" }} />}
                 {geo && !geo.instant && (
                   <span
-                    className={"trace-bar-fill fill-" + s.status + (geo.openEnded ? " open-ended" : "")}
+                    className={"trace-bar-fill fill-" + fillStatus + (geo.openEnded ? " open-ended" : "")}
                     style={{ left: geo.left + "%", width: geo.width + "%" }}
                   />
                 )}
               </span>
-              <span className="trace-dur">{geo?.instant ? "instant" : formatDuration(s.durationMs)}</span>
+              <span className="trace-dur">{geo?.instant ? <span className="dash">instant</span> : formatDuration(s.durationMs)}</span>
               {timingDescription && <span id={timingId} className="sr-only">{timingDescription}</span>}
             </div>
           );
@@ -524,7 +545,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
                 {logs.map((line, index) => (
                   <li key={line.time + ":" + index} className={line.level === "error" ? "log-error" : line.level === "warn" ? "log-warn" : undefined}>
                     <time>{formatClock(line.time)}</time> <strong>{line.level}</strong>{" "}
-                    {line.spanId && byId.has(line.spanId) ? <button type="button" onClick={() => focusRow(line.spanId!)}>{line.msg}</button> : <span>{line.msg}</span>}
+                    {line.spanId && byId.has(line.spanId) ? <button type="button" className="evidence-link" onClick={() => focusRow(line.spanId!)}>{line.msg}</button> : <span>{line.msg}</span>}
                     {line.err && <small>{line.err}</small>}
                   </li>
                 ))}
@@ -542,7 +563,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
               <div>
                 <span className="eyebrow">Regression case</span>
                 <h2 id="save-case-title">Save successful Run</h2>
-                <p>These checks were inferred from the trace evidence. Remove any that should not become a stable expectation.</p>
+                <p>These checks were inferred from the trace evidence. Uncheck any that should not become a stable expectation.</p>
               </div>
               <button type="button" onClick={() => setShowSaveCase(false)} disabled={savingCase} aria-label="Close save regression case">×</button>
             </div>
@@ -554,20 +575,56 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
               {caseAssertions.length === 0 && !caseError && <p className="trace-muted">Deriving checks from the trace…</p>}
               {caseAssertions.map((assertion, index) => (
                 <div key={assertionLabel(assertion) + index}>
-                  <code>{assertionLabel(assertion)}</code>
-                  <button type="button" className="button button-ghost" onClick={() => setCaseAssertions((items) => items.filter((_, itemIndex) => itemIndex !== index))} disabled={savingCase || caseAssertions.length === 1}>Delete</button>
+                  <label className="trace-check">
+                    <input
+                      type="checkbox"
+                      checked={!excludedChecks.has(index)}
+                      disabled={savingCase}
+                      aria-label={"Include check: " + assertionLabel(assertion)}
+                      onChange={(event) => setExcludedChecks((previous) => {
+                        const next = new Set(previous);
+                        if (event.target.checked) next.delete(index); else next.add(index);
+                        return next;
+                      })}
+                    />
+                    <code>{assertionLabel(assertion)}</code>
+                  </label>
                 </div>
               ))}
             </div>
             {caseError && <div className="error-banner" role="alert">{caseError}</div>}
+            {includedAssertions.length === 0 && <p className="form-help" role="status">Include at least one check — a case with no checks cannot assert anything.</p>}
             <div className="modal-footer">
               <button type="button" className="button button-ghost" onClick={() => setShowSaveCase(false)} disabled={savingCase}>Cancel</button>
-              <button className="button button-primary" disabled={savingCase || !caseName.trim() || caseAssertions.length === 0}>{savingCase ? "Saving…" : "Save regression case"}</button>
+              <button className="button button-primary" disabled={savingCase || !caseName.trim() || includedAssertions.length === 0}>{savingCase ? "Saving…" : "Save regression case"}</button>
             </div>
           </form>
         </div>
       )}
     </section>
+  );
+}
+
+/** #346: evaluation rows can carry 14–25 evidence links; show the first few and expand on demand. */
+const EVIDENCE_PREVIEW = 3;
+
+function EvidenceLinks({ ids, onOpen }: { ids: string[]; onOpen: (eventId: string) => void }) {
+  const [expanded, setExpanded] = useState(false);
+  if (ids.length === 0) return null;
+  const visible = expanded ? ids : ids.slice(0, EVIDENCE_PREVIEW);
+  return (
+    <span className="eval-evidence">
+      {visible.map((eventId, index) => (
+        <button key={eventId} type="button" className="evidence-link" onClick={() => onOpen(eventId)}>
+          evidence{ids.length > 1 ? " " + (index + 1) : ""}
+        </button>
+      ))}
+      {ids.length > EVIDENCE_PREVIEW && (
+        <button type="button" className="evidence-link evidence-more" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
+          {expanded ? "show fewer" : `+${ids.length - EVIDENCE_PREVIEW} more`}
+        </button>
+      )}
+    </span>
   );
 }
 
@@ -590,14 +647,16 @@ function AuditTable({ rows, error, onOpenSpan }: { rows: AuditRow[] | null; erro
       <table className="runs-table audit-table">
         <thead><tr><th scope="col">Time</th><th scope="col">Actor</th><th scope="col">Action</th><th scope="col">Resource</th><th scope="col">Outcome</th></tr></thead>
         <tbody>{rows.map((row) => (
-          <tr key={row.eventId} tabIndex={0} onClick={() => onOpenSpan(row.spanId)} onKeyDown={(event) => {
+          // #341: every tool call doubles into started+completed rows — mute the .started half so the
+          // consequential row carries the table. Future work: merge each pair into one row.
+          <tr key={row.eventId} tabIndex={0} className={row.action.endsWith(".started") ? "trace-muted" : undefined} onClick={() => onOpenSpan(row.spanId)} onKeyDown={(event) => {
             if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpenSpan(row.spanId); }
           }} aria-label={`Open evidence for ${row.action} by ${row.actor.type}/${row.actor.id}`}>
             <td>{formatClock(row.at)}</td>
             <td title={formatAuditActor(row.actor).title}>{formatAuditActor(row.actor).text}</td>
             <td><button type="button" className="audit-evidence" onClick={(event) => { event.stopPropagation(); onOpenSpan(row.spanId); }}>{row.action}</button></td>
             <td>{row.resource}</td>
-            <td><span className={"badge audit-outcome" + (row.outcome === "denied" ? " badge-error" : "")}>{row.outcome}</span></td>
+            <td><span className={"badge audit-outcome" + (row.outcome === "denied" || row.outcome === "error" ? " badge-error" : "")}>{row.outcome}</span></td>
           </tr>
         ))}</tbody>
       </table>
@@ -665,8 +724,9 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
         <Field label="Span id">{span.spanId}</Field>
         <Field label="Parent">{parentName ?? span.parentSpanId ?? <><span className="dash">—</span> (root)</>}</Field>
         <Field label="Source">{span.source.component}{span.source.adapter ? " / " + span.source.adapter : ""} <span className="badge">{span.source.observed ? "observed" : "unavailable"}</span></Field>
-        <Field label="Started">{span.startedAt}</Field>
-        <Field label="Ended">{interruptedDuration !== undefined ? `never closed — server restarted at ${formatClock(view.summary.endedAt)}` : span.endedAt ?? <span className="dash">—</span>}</Field>
+        {/* #341: local clock like the event rows below — the raw ISO UTC stamp stays in the title. */}
+        <Field label="Started"><span title={span.startedAt}>{formatClock(span.startedAt)}</span></Field>
+        <Field label="Ended">{interruptedDuration !== undefined ? `never closed — server restarted at ${formatClock(view.summary.endedAt)}` : span.endedAt ? <span title={span.endedAt}>{formatClock(span.endedAt)}</span> : <span className="dash">—</span>}</Field>
         <Field label="Duration">{interruptedDuration !== undefined ? `≥ ${formatDuration(interruptedDuration)}` : span.durationMs === 0 && !span.incomplete ? "instant" : formatDuration(span.durationMs)}</Field>
         <Field label="Attempt">{attempt ?? <span className="dash">—</span>}</Field>
         <Field label="Sequence">{span.sequence}</Field>
@@ -701,7 +761,7 @@ function SpanDrawer({ span, view, parentName, onClose }: { span: Span; view: Tra
         </dl>
       )}
 
-      <h4>Events <span className="trace-count">showing {shown.length} of {events.length}</span></h4>
+      <h4>Events {events.length > DRAWER_EVENT_CAP && <span className="trace-count">showing {shown.length} of {events.length}</span>}</h4>
       {shown.length === 0 ? <p className="runs-empty">No events recorded for this span.</p> : (
         <ol className="span-events">
           {shown.map((e) => <EventRow key={e.eventId} event={e} />)}

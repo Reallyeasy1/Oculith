@@ -203,6 +203,15 @@ describe("workspace presentation", () => {
     expect(workspaceLabel(undefined, "agent-uuid")).toEqual({ text: "—" });
   });
 
+  // #217: name===id alone kept reading "managed" after a second Agent attached to the folder.
+  it("trusts the workspace record over the name===id heuristic once a second Agent shares it", () => {
+    expect(workspaceLabel("agent-uuid", "agent-uuid", [{ name: "agent-uuid", managed: false }])).toEqual({ text: "agent-uuid" });
+    expect(workspaceLabel("agent-uuid", "agent-uuid", [{ name: "agent-uuid", managed: true }])).toEqual({ text: "managed", title: "agent-uuid" });
+    // a Run whose workspace has no record (deleted, or the list is still loading) keeps the heuristic
+    expect(workspaceLabel("agent-uuid", "agent-uuid", [{ name: "other", managed: false }])).toEqual({ text: "managed", title: "agent-uuid" });
+    expect(workspaceLabel("shared-repo", "agent-uuid", [{ name: "shared-repo", managed: false }])).toEqual({ text: "shared-repo" });
+  });
+
   it("describes selectable workspaces with sharing and file-count context", () => {
     expect(workspaceOptionLabel({ name: "shared-repo", path: "/work/shared-repo", agents: ["a", "b"], fileCount: 7, lastModified: "2026-08-27T00:00:00Z", managed: false }))
       .toBe("shared-repo · 2 agents · unmanaged · 7 files");

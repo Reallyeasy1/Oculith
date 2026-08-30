@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { Agent, EvalRun, RegressionCase, RunListItem } from "./types";
 import { templateHashDetails } from "./eval-view-model";
 import { summarizeRuns } from "./runs-view-model";
+import type { ReliabilityDrill } from "./reliability-view-model";
 
 interface Props {
   runs: RunListItem[];
@@ -10,12 +11,21 @@ interface Props {
   selectedAgent: Agent | null;
   onRunCase: (regressionCase: RegressionCase) => Promise<void>;
   onDeleteCase: (regressionCase: RegressionCase) => Promise<void>;
+  /** Optional: stat tiles with an exact Runs-table filter drill into it (same plumbing as ReliabilityPanel). */
+  onDrill?: (drill: ReliabilityDrill) => void;
 }
 
 // All-runs overview across Agents (#70): the summary strip. The Runs table and trace detail stay in App below it.
-export default function Overview({ runs, cases, evalRuns, selectedAgent, onRunCase, onDeleteCase }: Props) {
+export default function Overview({ runs, cases, evalRuns, selectedAgent, onRunCase, onDeleteCase, onDrill }: Props) {
   const s = summarizeRuns(runs);
-  const stats: [string, number][] = [["Total", s.total], ["Ok", s.ok], ["Needs attention", s.attention], ["Recovered", s.recovered], ["Running", s.running]];
+  // Drills only where a Runs quick filter states the tile's provenance exactly; Ok/Recovered have none.
+  const stats: { label: string; value: number; drill?: ReliabilityDrill }[] = [
+    { label: "Total", value: s.total, drill: { quick: "all", taskOutcome: "all" } },
+    { label: "Ok", value: s.ok },
+    { label: "Needs attention", value: s.attention, drill: { quick: "attention", taskOutcome: "all" } },
+    { label: "Recovered", value: s.recovered },
+    { label: "Running", value: s.running, drill: { quick: "running", taskOutcome: "all" } },
+  ];
   const [pendingCaseId, setPendingCaseId] = useState<string | null>(null);
   const act = async (regressionCase: RegressionCase, action: "run" | "delete") => {
     setPendingCaseId(regressionCase.id);
@@ -32,10 +42,22 @@ export default function Overview({ runs, cases, evalRuns, selectedAgent, onRunCa
           <span className="eyebrow">GlassBox</span>
           <h1 id="overview-heading">All runs</h1>
           <dl className="summary-strip">
-            {stats.map(([label, value]) => (
+            {stats.map(({ label, value, drill }) => (
               <div key={label}>
                 <dt>{label}</dt>
-                <dd>{value}</dd>
+                <dd>
+                  {drill && onDrill ? (
+                    <button
+                      type="button"
+                      className="reliability-drill"
+                      aria-label={"Show Runs: " + label}
+                      title="Open the Runs table pre-filtered to these Runs"
+                      onClick={() => onDrill(drill)}
+                    >
+                      {value}
+                    </button>
+                  ) : value}
+                </dd>
               </div>
             ))}
           </dl>
@@ -77,7 +99,7 @@ export default function Overview({ runs, cases, evalRuns, selectedAgent, onRunCa
                     {templateHashes.length > 0 && <> · <span className="trace-muted" title={templateHashes.map((item) => `${item.name}: ${item.hash}`).join("\n")}>templates: {templateHashes.map((item) => `${item.name} ${item.shortHash}`).join(", ")}</span></>}
                   </span> : <span className="dash">—</span>}</td>
                   <td className="case-actions">
-                    <button type="button" className="button button-primary" onClick={() => void act(regressionCase, "run")} disabled={!selectedAgent || pendingCaseId === regressionCase.id} title={selectedAgent ? undefined : "Select an Agent from the sidebar first."}>{pendingCaseId === regressionCase.id ? "Working…" : "Run against " + (selectedAgent?.name ?? "this Agent")}</button>
+                    <button type="button" className="button button-primary" onClick={() => void act(regressionCase, "run")} disabled={!selectedAgent || pendingCaseId === regressionCase.id} title={selectedAgent ? "Run against " + selectedAgent.name : "Select an Agent from the sidebar first."} aria-label={"Run against " + (selectedAgent?.name ?? "this Agent")}>{pendingCaseId === regressionCase.id ? "Working…" : "Run"}</button>
                     <button type="button" className="button button-ghost" onClick={() => void act(regressionCase, "delete")} disabled={pendingCaseId === regressionCase.id}>Delete</button>
                   </td>
                 </tr>;
