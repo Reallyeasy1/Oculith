@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { AgentRunBaseline, RunListItem } from "./types";
+import type { AgentRunBaseline, RunListItem, Workspace } from "./types";
 import type { ReliabilityDrill } from "./reliability-view-model";
 import {
   FILTER_LABEL,
@@ -44,9 +44,11 @@ interface Props {
   baseline?: AgentRunBaseline | null;
   /** #173 drill-back from a ReliabilityPanel tile: applies its filters when the object changes. */
   drill?: ReliabilityDrill | null;
+  /** #217: lets the workspace column tell a shared workspace from a managed one. */
+  workspaces?: readonly Pick<Workspace, "name" | "managed">[];
 }
 
-export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent = true, title = "Runs", emptyText = "No Runs observed yet.", baseline, drill }: Props) {
+export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent = true, title = "Runs", emptyText = "No Runs observed yet.", baseline, drill, workspaces }: Props) {
   const [filter, setFilter] = useState<QuickFilter>("attention");
   const [taskOutcome, setTaskOutcome] = useState<TaskOutcomeFilter>("all");
   const [provenanceRunIds, setProvenanceRunIds] = useState<string[] | undefined>();
@@ -160,6 +162,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
               const taskSource = task ? taskOutcomeProvenance(run.taskOutcomeSource) : undefined;
               const outlier = runOutlier(run, baseline);
               const duration = runDurationCell(run.durationMs, run.endedReason, run.interruptedAfterMs);
+              const workspace = workspaceLabel(run.workspace, run.agentId, workspaces);
               const outlierTitle = outlier ? [outlier.durationMultiple === undefined ? "" : `duration ×${outlier.durationMultiple.toFixed(1)}`, outlier.inputTokensMultiple === undefined ? "" : `tokens ×${outlier.inputTokensMultiple.toFixed(1)}`].filter(Boolean).join(" · ") + ` versus the last ${baseline?.sampleCount ?? 0} terminal Runs` : undefined;
               return (
               <tr
@@ -188,7 +191,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
                   {outlier && <span className="badge badge-warn badge-outlier" title={outlierTitle}>{outlierLabel(outlier)}</span>}
                 </td>
                 {showAgent && <td>{run.agentName || run.agentId}</td>}
-                <td className="runs-workspace" title={workspaceLabel(run.workspace, run.agentId).title ?? workspaceLabel(run.workspace, run.agentId).text}>{workspaceLabel(run.workspace, run.agentId).text}</td>
+                <td className="runs-workspace" title={workspace.title ?? workspace.text}>{workspace.text}</td>
                 <td>{formatClock(run.startedAt)}</td>
                 <td className="num" title={duration.title}>{duration.text}</td>
                 {cols.outcome && <td className="runs-outcome" title={run.outcome?.text}>{run.outcome?.text ?? (run.outcome?.reportedFailure ? <span className="badge badge-warn" title={REPORTED_FAILURE_HINT}>agent reported failure</span> : <span className="dash">—</span>)}</td>}

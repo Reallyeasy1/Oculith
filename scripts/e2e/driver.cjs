@@ -348,10 +348,10 @@ async function closeResources() {
   await collapsePlayground.click();
   await expandPlayground.waitFor({ timeout: 5_000 });
   ok(true, "Playground toggle names both Expand and Collapse states (#103)");
-  const exportLink = page.getByRole("link", { name: "Export JSON" });
-  eq(await exportLink.getAttribute("href"), "/api/traces/" + okRun.run.traceId + "/export", "Export JSON link targets the redacted trace export (#154)");
+  // #217: export is a real button (an <a> href let middle-click bypass onClick and save a 401 JSON).
+  const exportButton = page.getByRole("button", { name: "Export JSON" });
   const downloadPromise = page.waitForEvent("download");
-  await exportLink.click();
+  await exportButton.click();
   eq((await downloadPromise).suggestedFilename(), "trace-" + okRun.run.traceId + ".json", "authenticated UI export keeps the trace filename (#154)");
   const timeSplitField = page.locator(".trace-summary dt", { hasText: /^Time split$/ });
   await timeSplitField.waitFor({ timeout: 10_000 });

@@ -52,9 +52,17 @@ export function taskOutcomeProvenance(source: string | undefined): TaskOutcomePr
   return { label: "recorded source", title: `Verdict source: ${source}` };
 }
 
-export function workspaceLabel(workspace: string | undefined, agentId: string): { text: string; title?: string } {
+export function workspaceLabel(
+  workspace: string | undefined,
+  agentId: string,
+  workspaces?: readonly Pick<Workspace, "name" | "managed">[],
+): { text: string; title?: string } {
   if (!workspace) return { text: "—" };
-  return workspace === agentId ? { text: "managed", title: workspace } : { text: workspace };
+  // #217: `managed` on the workspace record goes false once a second Agent attaches, so a shared
+  // workspace shows its name; the name===id heuristic only fills in when the record isn't loaded.
+  const record = workspaces?.find((item) => item.name === workspace);
+  const managed = record ? record.managed : workspace === agentId;
+  return managed ? { text: "managed", title: workspace } : { text: workspace };
 }
 
 export function workspaceOptionLabel(workspace: Workspace): string {

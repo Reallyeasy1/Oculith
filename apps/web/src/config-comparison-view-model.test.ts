@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentConfigSnapshot, EvalRun, ReliabilityCompareReport, RunListItem } from "./types";
-import { comparisonRows, configDiffRows, configOptions, findCompatibleEvalPair, provenanceRunIds } from "./config-comparison-view-model";
+import { comparisonRows, configDiffRows, configOptions, evidenceButtonLabel, findCompatibleEvalPair, provenanceRunIds } from "./config-comparison-view-model";
 
 const snapshot = (overrides: Partial<AgentConfigSnapshot> = {}): AgentConfigSnapshot => ({
   instructions: "sha256:instructions-a",
@@ -81,5 +81,12 @@ describe("deterministic comparison link (#174)", () => {
     ], "agent-1", "cfg-a", "cfg-b");
     expect(pair).toEqual({ baselineId: "base", candidateId: "candidate" });
     expect(findCompatibleEvalPair([evalRun("other", "cfg-a", ["case-1"], "2026-08-01T00:00:00.000Z")], "agent-1", "cfg-a", "cfg-b")).toBeUndefined();
+  });
+});
+
+describe("evidence button accessible name (#217)", () => {
+  it("names side, case, and verdict instead of the bare cell text", () => {
+    expect(evidenceButtonLabel("baseline", "0f8b1c2d-aaaa-bbbb-cccc-000000000000", true)).toBe("Open baseline evidence for case 0f8b1c2d — PASS");
+    expect(evidenceButtonLabel("candidate", "0f8b1c2d-aaaa-bbbb-cccc-000000000000", false)).toBe("Open candidate evidence for case 0f8b1c2d — FAIL");
   });
 });

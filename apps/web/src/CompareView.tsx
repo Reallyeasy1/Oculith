@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import type { EvalComparison, EvalResult, EvalRun } from "./types";
-import type { EvalComparisonPair } from "./config-comparison-view-model";
+import { evidenceButtonLabel, type EvalComparisonPair } from "./config-comparison-view-model";
 
 interface Props {
   evalRuns: EvalRun[];
@@ -65,16 +65,16 @@ export default function CompareView({ evalRuns, onOpenEvidence, selection }: Pro
       {comparison.templateMismatch && <div className="config-banner" role="status"><strong>Template changed between evaluations</strong> · the two EvalRuns hashed a workspace template differently, so assertion deltas may reflect the template edit rather than the Agent configuration.</div>}
       {hoistedMessages.map((message) => <div key={message} className="config-banner" role="status">Candidate evaluation errored: {message}</div>)}
       {rows.length === 0 ? <p className="runs-empty">No shared assertions to compare.</p> : (
-        <div className="runs-table-wrap"><table className="runs-table"><thead><tr><th scope="col">Case</th><th scope="col">Assertion</th><th scope="col">Baseline</th><th scope="col">Candidate</th><th scope="col">Δ</th></tr></thead><tbody>{rows.map(({ item, assertion, index }) => <tr key={item.caseId + index} className={assertion.regression ? "comparison-regression" : undefined}><td>{item.caseId.slice(0, 8)}</td><td>{assertion.type}</td><td><ResultCell result={assertion.baseline} runId={item.traceLinks.baseline} onOpenEvidence={onOpenEvidence} /></td><td>{!assertion.candidate && assertion.message && !hoistedByCase.has(item.caseId) ? <span className="trace-muted">{assertion.message}</span> : <ResultCell result={assertion.candidate} runId={item.traceLinks.candidate} onOpenEvidence={onOpenEvidence} />}</td><td className={assertion.delta === undefined ? undefined : "delta-regressed"}>{assertion.delta === undefined ? <span className="dash">—</span> : assertion.delta > 0 ? "+" + assertion.delta : assertion.delta}</td></tr>)}</tbody></table></div>
+        <div className="runs-table-wrap"><table className="runs-table"><thead><tr><th scope="col">Case</th><th scope="col">Assertion</th><th scope="col">Baseline</th><th scope="col">Candidate</th><th scope="col">Δ</th></tr></thead><tbody>{rows.map(({ item, assertion, index }) => <tr key={item.caseId + index} className={assertion.regression ? "comparison-regression" : undefined}><td>{item.caseId.slice(0, 8)}</td><td>{assertion.type}</td><td><ResultCell result={assertion.baseline} runId={item.traceLinks.baseline} side="baseline" caseId={item.caseId} onOpenEvidence={onOpenEvidence} /></td><td>{!assertion.candidate && assertion.message && !hoistedByCase.has(item.caseId) ? <span className="trace-muted">{assertion.message}</span> : <ResultCell result={assertion.candidate} runId={item.traceLinks.candidate} side="candidate" caseId={item.caseId} onOpenEvidence={onOpenEvidence} />}</td><td className={assertion.delta === undefined ? undefined : "delta-regressed"}>{assertion.delta === undefined ? <span className="dash">—</span> : assertion.delta > 0 ? "+" + assertion.delta : assertion.delta}</td></tr>)}</tbody></table></div>
       )}
     </>}
   </section>;
 }
 
-function ResultCell({ result, runId, onOpenEvidence }: { result?: EvalResult; runId?: string; onOpenEvidence: (runId: string, eventId?: string) => void }) {
+function ResultCell({ result, runId, side, caseId, onOpenEvidence }: { result?: EvalResult; runId?: string; side: "baseline" | "candidate"; caseId: string; onOpenEvidence: (runId: string, eventId?: string) => void }) {
   if (!result) return <span className="dash">—</span>;
   const eventId = result.evidenceEventIds[0];
   // #350: verdicts get the trace Evaluation panel's pass/fail palette — amber stays for warnings.
   const content = <><span className={"badge " + (result.pass ? "badge-pass" : "badge-fail")}>{result.pass ? "PASS" : "FAIL"}</span> {result.observed === null ? <span className="dash">—</span> : String(result.observed)}</>;
-  return runId ? <button type="button" className="evidence-link" onClick={() => onOpenEvidence(runId, eventId)}>{content}</button> : content;
+  return runId ? <button type="button" className="evidence-link" aria-label={evidenceButtonLabel(side, caseId, result.pass)} onClick={() => onOpenEvidence(runId, eventId)}>{content}</button> : content;
 }

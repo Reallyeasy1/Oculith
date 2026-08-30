@@ -525,6 +525,11 @@ export class AgentService {
   }
 
   async createRegressionCase(input: Omit<RegressionCase, "id" | "createdAt" | "templateHash">): Promise<RegressionCase> {
+    // #217: sourceRunId is client-supplied provenance on the generic POST; refuse a dangling reference
+    // so every stored case's evidence link resolves. The from-Run route derives it from a fetched Run.
+    if (input.sourceRunId !== undefined && !this.store.snapshot().runs.some((run) => run.id === input.sourceRunId)) {
+      throw new HttpError(400, "sourceRunId does not reference a known Run");
+    }
     const item: RegressionCase = { ...input, templateHash: await this.templateHash(input.workspaceTemplate), id: randomUUID(), createdAt: now() };
     await this.store.mutate((database) => database.regressionCases.push(item));
     return item;

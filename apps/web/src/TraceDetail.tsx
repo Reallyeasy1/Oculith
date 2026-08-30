@@ -53,11 +53,13 @@ interface Props {
   /** #256: re-dispatch this Run's originating prompt as an ordinary new Run (busy Agent → error banner). */
   onRerun: (runId: string) => void;
   onClose: () => void;
+  /** #217: lets the workspace field tell a shared workspace from a managed one. */
+  workspaces?: readonly { name: string; managed: boolean }[];
 }
 
 // Trace detail (UX-02): summary header, first-error banner with Jump, nested tree with duration bars,
 // client-side filters, focus-trapped span drawer. Everything shown comes straight from the API payload.
-export default function TraceDetail({ runId, run, view, templateBacked, focusEventId, onFocusHandled, onCaseSaved, onRerun, onClose }: Props) {
+export default function TraceDetail({ runId, run, view, templateBacked, focusEventId, onFocusHandled, onCaseSaved, onRerun, onClose, workspaces }: Props) {
   const [filter, setFilter] = useState<TraceFilter>(EMPTY_FILTER);
   // null = untouched → follow the API's default (roots + failure path) even as the trace grows while polling.
   const [expandedState, setExpanded] = useState<Set<string> | null>(null);
@@ -159,7 +161,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
 
   const { summary } = view;
   const failure = summary.failure;
-  const workspace = workspaceLabel(summary.workspace ?? run?.workspace, summary.agentId || run?.agentId || "");
+  const workspace = workspaceLabel(summary.workspace ?? run?.workspace, summary.agentId || run?.agentId || "", workspaces);
   const actors = formatActors(summary.audit);
   const failingSpan = failure && byId.get(failure.spanId);
   // An ok Run can still contain recovered tool failures worth anchoring to (#pass-2); failed Runs keep the full banner.
@@ -278,7 +280,8 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
       anchor.href = url;
       anchor.download = filename;
       anchor.click();
-      setTimeout(() => URL.revokeObjectURL(url), 0);
+      // #217: revoking on the next tick races the download outside Chrome; a second is safely past it.
+      setTimeout(() => URL.revokeObjectURL(url), 1_000);
     } catch (reason) {
       setExportError(reason instanceof Error ? reason.message : String(reason));
     }
@@ -295,14 +298,11 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
           </h2>
         </div>
         <div className="header-actions">
-          <a
-            className="button button-ghost"
-            href={"/api/traces/" + encodeURIComponent(summary.traceId) + "/export"}
-            download={"trace-" + summary.traceId + ".json"}
-            onClick={(event) => { event.preventDefault(); void downloadExport(); }}
-          >
+          {/* #217: a real button — a middle-click or "Save link as" on an <a> bypasses onClick and
+              hits the export URL without the bearer token, saving a 401 JSON body. */}
+          <button type="button" className="button button-ghost" onClick={() => void downloadExport()}>
             Export JSON
-          </a>
+          </button>
           <button type="button" className="button button-ghost" onClick={() => onRerun(runId)}>Re-run prompt</button>
           <button type="button" className="button button-ghost" onClick={openSaveCase} disabled={Boolean(saveReason)} title={saveReason || undefined}>Save as regression case</button>
           {/* #341: a disabled button is unfocusable, so its title never surfaces — say why visibly. */}
