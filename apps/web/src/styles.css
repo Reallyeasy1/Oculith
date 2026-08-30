@@ -2737,3 +2737,166 @@ select:focus {
   font-family: var(--mono, ui-monospace, monospace);
   overflow-wrap: anywhere;
 }
+
+/* ============================================================================
+   #342 — metrics charts drill-in (ReliabilityPanel "Charts" toggle + MetricsDashboard).
+   Toggle and bucket chips reuse .button/.button-ghost + .runs-filters; only the
+   chart-specific pieces get new rules. Cards follow the summary-strip tile pattern
+   (line border, radius-lg, paper). Chart-internal selectors are MetricsDashboard's
+   contract — keep the class names, values are ours.
+   ========================================================================== */
+
+/* Topbar right side: the Runs count line + the Charts toggle share one row. */
+.reliability-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Charts region below the tile strip; matches the strip's horizontal padding.
+   Parent gap owns the vertical rhythm — children keep margin 0. */
+.reliability-charts {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 22px 18px;
+}
+
+.reliability-bucket-filters .button {
+  padding: 5px 10px;
+  font-size: 11px;
+}
+
+.charts-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* Chart card grid: 2-up, collapsing to 1-up on narrow viewports. */
+.charts-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 900px) {
+  .charts-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.chart-card {
+  min-width: 0; /* keep SVG from forcing grid overflow */
+  padding: 10px 14px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+}
+
+.chart-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.chart-head h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+/* Legend chips: series name + a line-color swatch. */
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.chart-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.chart-chip-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+/* Hover/keyboard readout: "Aug 29 · 62% · 13 Runs". Fixed height so it never jumps. */
+.chart-readout {
+  margin: 8px 0 6px;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  min-height: 1.2em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chart-body {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+/* Tick labels top→bottom (max, mid, 0); space-between matches the gridline positions. */
+.chart-yaxis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+  min-width: 42px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-plot {
+  flex: 1;
+  min-width: 0;
+  height: 120px;
+  cursor: crosshair;
+  touch-action: none; /* pointermove hover on touch */
+}
+
+.chart-plot:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* viewBox 0 0 100 100 + preserveAspectRatio="none"; strokes use vector-effect: non-scaling-stroke. */
+.chart-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  overflow: visible;
+}
+
+.chart-grid {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+/* Cursor line snapped to the nearest bucket. */
+.chart-cursor {
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.chart-xaxis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  padding-left: 50px; /* aligns with plot start (yaxis min-width + gap) */
+  font-size: 11px;
+  color: var(--muted);
+}
