@@ -1104,6 +1104,9 @@ export default function App() {
                       ))}
                     </div>
                   </div>
+                ) : messages.length === 0 ? (
+                  // #371: a terminal activeRun with an empty history left a 700px void here.
+                  <p className="welcome runs-empty">No conversation yet — describe a task below.</p>
                 ) : (
                   messages.map((message) => (
                     <article className={"message message-" + message.role} key={message.id}>
@@ -1225,8 +1228,9 @@ export default function App() {
           </>
         ) : (
           <div className="no-agent">
-            <div className="no-agent-art">A</div>
-            <span className="eyebrow">Agent Launchpad</span>
+            {/* #371: the one spot #325's GlassBox rebrand missed. */}
+            <BrandMark />
+            <span className="eyebrow">GlassBox</span>
             <h1>Your runtime is ready for an Agent.</h1>
             <p>Create a workspace, give Codex a job, and continue the conversation here.</p>
             <button

@@ -1050,19 +1050,19 @@ select:focus {
   text-align: center;
 }
 
-.no-agent-art {
+/* #371: the hero wears the GlassBox BrandMark (scaled up from its 38px sidebar size). */
+.no-agent .brand-mark {
   width: 92px;
   height: 92px;
   border-radius: 28px;
-  display: grid;
-  place-items: center;
   margin-bottom: 25px;
-  color: white;
-  font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif;
-  font-size: 34px;
-  background: linear-gradient(145deg, #937ef2, #5641bd);
   box-shadow: 0 25px 55px rgba(82, 59, 185, 0.25);
   transform: rotate(-5deg);
+}
+
+.no-agent .brand-mark svg {
+  width: 44px;
+  height: 44px;
 }
 
 .no-agent h1 {
@@ -1139,6 +1139,31 @@ select:focus {
 .assertion-list code {
   overflow-wrap: anywhere;
   white-space: normal;
+}
+
+/* #371: save-case checks — natural purple checkbox inline-left of a plain-text label
+   (the global input { width: 100%; height: var(--control-h) } rule made them giant). */
+.assertion-list .trace-check {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.assertion-list input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  flex: none;
+  accent-color: var(--purple);
+}
+
+.assertion-list .trace-check code {
+  font-family: inherit;
+  font-size: 12px;
 }
 
 @keyframes spin {
@@ -1413,6 +1438,12 @@ select:focus {
   text-overflow: ellipsis;
 }
 
+/* #371: "local-process · deepseek-…" repeats on every row — 120px + the existing
+   ellipsis/title reclaims width so the table fits 1920 without panning. */
+.runs-runtime {
+  max-width: 120px;
+}
+
 .runs-workspace {
   max-width: 120px;
 }
@@ -1441,8 +1472,9 @@ select:focus {
 
 .runs-table th,
 .runs-table td {
-  /* #338: compact density — 8px vertical padding read ~2× taller than needed. */
-  padding: 5px 10px;
+  /* #338: compact density — 8px vertical padding read ~2× taller than needed.
+     #371: 8px horizontal (was 10px, the ≤1439 value) so ~14 columns fit 1920 unpanned. */
+  padding: 5px 8px;
   text-align: left;
   white-space: nowrap;
   border-bottom: 1px solid #ecebe5;
@@ -1478,15 +1510,6 @@ select:focus {
 /* #199: on 1366-class laptops tighten the wide columns further so the common
    columns fit the wrapper; anything left scrolls inside .runs-table-wrap. */
 @media (max-width: 1439px) {
-  .runs-table th,
-  .runs-table td {
-    padding: 5px 8px;
-  }
-
-  .runs-runtime {
-    max-width: 120px;
-  }
-
   .runs-outcome {
     max-width: 200px;
   }
@@ -2360,7 +2383,8 @@ select:focus {
 /* Grid instead of flex-wrap so 1024/800 widths fill rows evenly (no ragged 2/3/2). */
 .reliability-strip {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  /* #371: 230px min so one-line values (LATENCY's p50 · p95 pair) have room. */
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
 }
 
 .reliability-strip > div {
@@ -2372,6 +2396,19 @@ select:focus {
   margin-top: 2px;
   font-size: 11px;
   color: var(--muted);
+  /* #371: one muted line per tile; the full text lives in the span's title. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* #371: values stay one line (no dangling "·"); wider tracks + a step down from the
+   20px summary-strip size so the two-part LATENCY value fits at 1920. */
+.reliability-strip dd {
+  font-size: 17px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sparkline {
@@ -2516,6 +2553,14 @@ select:focus {
   color: var(--red-ink);
   border-color: #e2aaaa;
   background: var(--red-soft);
+}
+
+/* #371: the redaction chip is the privacy beat — purple outline so it never reads as an
+   anonymous gray pill (scoped like .badge-fail: trace surfaces only, not the global .badge). */
+.trace-detail .badge-redacted {
+  color: var(--purple-dark);
+  border-color: var(--purple);
+  background: var(--purple-soft);
 }
 
 .trace-evaluations .evidence-link {
