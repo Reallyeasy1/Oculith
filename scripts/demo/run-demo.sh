@@ -54,9 +54,6 @@ EXPORT_FILE="$repo_dir/docs/assets/demo/denial-trace-export.json"
 # below is a no-op unless DEMO_REDACTION_BEAT=1.
 canary_uuid="00000000-dead-beef-0000-000000000000"
 REDACTION_CANARY="ARK_API_KEY=ark-${canary_uuid}"
-if [[ "${DEMO_REDACTION_BEAT:-}" == "1" ]]; then
-  BASELINE_PROMPT="$BASELINE_PROMPT Also read .notes/env-backup.txt and mention in your reply what kind of file it is."
-fi
 
 log() { printf '[demo] %s\n' "$*" >&2; }
 say() { printf '\n=== step %s: %s ===\n' "$1" "$2"; }
@@ -123,17 +120,49 @@ send_run() { # send_run PROMPT → run id
 # seed_redaction_canary (DEMO_REDACTION_BEAT=1 only): drop the fake canary into the Agent's
 # workspace so the baseline Run reads it and the stored trace redacts it. The server runs on
 # this host in both demo paths (dev, and poc — only the Codex runtime is containerized), so
-# the API's workspacePath is writable from this shell. Sets canary_file for cleanup.
-canary_file=""
+# the API's workspacePath is writable from this shell. The file is exclusively created under a
+# demo-owned random name, so an operator's existing workspace content is never overwritten.
+canary_file="" canary_dir="" canary_relative_path="" canary_dir_created="0"
+cleanup_redaction_canary() {
+  # Avoid `local` here: Bash may execute an EXIT trap after a process-substitution source has
+  # unwound its function frame (the focused UAT loader does exactly that).
+  cleanup_redaction_file="$canary_file"
+  cleanup_redaction_dir="$canary_dir"
+  cleanup_redaction_remove_dir="$canary_dir_created"
+  canary_file=""
+  canary_dir=""
+  canary_relative_path=""
+  canary_dir_created="0"
+  if [[ -n "$cleanup_redaction_file" ]]; then
+    rm -f -- "$cleanup_redaction_file"
+    log "Redaction beat: temporary canary file removed."
+  fi
+  if [[ "$cleanup_redaction_remove_dir" == "1" && -n "$cleanup_redaction_dir" ]]; then
+    rmdir -- "$cleanup_redaction_dir" 2>/dev/null || true
+  fi
+  cleanup_redaction_file=""
+  cleanup_redaction_dir=""
+  cleanup_redaction_remove_dir="0"
+}
+
 seed_redaction_canary() {
-  local ws
+  local ws notes_dir
   ws="$(call GET "/api/agents/$agent_id" | json 'd.agent.workspacePath')"
   ws="${ws//\\//}" # Windows: the API returns C:\…, Git Bash wants C:/…
   [[ -n "$ws" && -d "$ws" ]] || { log "DEMO_REDACTION_BEAT=1 but the workspace ($ws) is not visible from this shell (server on another host/container?). Unset the flag or use the dev/poc path."; exit 1; }
-  mkdir -p "$ws/.notes"
-  canary_file="$ws/.notes/env-backup.txt"
+  notes_dir="$ws/.notes"
+  if [[ ! -d "$notes_dir" ]]; then
+    mkdir "$notes_dir"
+    canary_dir_created="1"
+  fi
+  canary_dir="$notes_dir"
+  canary_file="$(mktemp "$notes_dir/glassbox-redaction-demo.XXXXXX.txt")"
+  canary_relative_path=".notes/${canary_file##*/}"
+  trap cleanup_redaction_canary EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   printf '# Stray env backup (DEMO: the credential below is a seeded FAKE canary, not a real key)\n%s\n' "$REDACTION_CANARY" > "$canary_file"
-  log "Redaction beat: seeded .notes/env-backup.txt (provably-fake canary) into the workspace."
+  log "Redaction beat: seeded $canary_relative_path (provably-fake canary) into the workspace."
 }
 
 run_status="" trace_status=""
@@ -250,11 +279,15 @@ step2() {
 step3() {
   say 3 "baseline Run — the agent fixes the failing test"
   ensure_agent_id
-  local existing run_id
+  local existing run_id prompt="$BASELINE_PROMPT"
   existing="$(call GET "/api/runs?agentId=$agent_id&status=ok" | json 'd.runs.length?d.runs[d.runs.length-1].runId:undefined')"
-  if [[ -n "$existing" ]]; then log "Baseline ok Run already recorded ($existing); nothing to send."; return 0; fi
-  [[ "${DEMO_REDACTION_BEAT:-}" == "1" ]] && seed_redaction_canary
-  run_id="$(send_run "$BASELINE_PROMPT")"
+  if [[ -n "$existing" && "${DEMO_REDACTION_BEAT:-}" != "1" ]]; then log "Baseline ok Run already recorded ($existing); nothing to send."; return 0; fi
+  if [[ "${DEMO_REDACTION_BEAT:-}" == "1" ]]; then
+    [[ -n "$existing" ]] && log "Baseline ok Run $existing already exists; sending a fresh opt-in redaction Run."
+    seed_redaction_canary
+    prompt="$prompt Also read $canary_relative_path and mention in your reply what kind of file it is."
+  fi
+  run_id="$(send_run "$prompt")"
   log "Run $run_id queued; the agent is fixing src/fees.js and running npm test…"
   wait_run "$run_id"
   if [[ "$trace_status" != "ok" ]]; then
@@ -266,8 +299,9 @@ step3() {
   fi
   log "Baseline Run $run_id: run=$run_status trace=$trace_status"
   if [[ -n "$canary_file" ]]; then
-    rm -f "$canary_file"
-    log "Redaction beat: canary file removed — the redaction lives in the stored trace."
+    cleanup_redaction_canary
+    trap - EXIT INT TERM
+    log "Redaction beat: the redaction lives in the stored trace."
     echo "  Redaction beat: open the trace — the redacted chip, [REDACTED:env_assignment] in the"
     echo "  drawer summary, and redactedEvents > 0 all come from the seeded FAKE canary"
     echo "  (all zeros + dead-beef). Say out loud that it was seeded on purpose."
