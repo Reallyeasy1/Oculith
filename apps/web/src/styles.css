@@ -2467,17 +2467,76 @@ select:focus {
   gap: 6px;
 }
 
+/* #346: one grid row per verdict — chip | evaluator id | message+meta | evidence — matching the
+   audit/runs table treatment instead of an inline wrap-stream. */
 .trace-evaluations li {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
   align-items: baseline;
-  gap: 8px;
+  gap: 4px 8px;
   font-size: 13px;
+}
+
+.trace-evaluations li > code {
+  min-width: 148px; /* keeps message columns roughly aligned across rows without a table */
+}
+
+.trace-evaluations .eval-message {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+.trace-evaluations .eval-meta span + span::before {
+  content: " · ";
+}
+
+.trace-evaluations .eval-evidence {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  justify-content: flex-end;
+  justify-self: end;
+  max-width: 300px;
+}
+
+/* Verdict chips follow the status-pill palette: pass = green, fail = red-ink family
+   (amber stays reserved for timeout/degraded warnings). */
+.trace-evaluations .badge-pass {
+  color: var(--green-ink);
+  border-color: #9ed8bb;
+  background: var(--green-soft);
+}
+
+.trace-evaluations .badge-fail {
+  color: var(--red-ink);
+  border-color: #e2aaaa;
+  background: var(--red-soft);
 }
 
 .trace-evaluations .evidence-link {
   color: var(--purple);
   text-decoration: underline;
+}
+
+.trace-evaluations .evidence-more {
+  color: var(--muted);
+}
+
+/* Narrow container: message and evidence stack cleanly under the chip + id line. */
+@media (max-width: 760px) {
+  .trace-evaluations li {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .trace-evaluations .eval-message,
+  .trace-evaluations .eval-evidence {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+    justify-self: start;
+    max-width: none;
+  }
 }
 
 /* #254 — per-Agent message queue: sidebar depth chip, queued rows in the chat, cancel affordance */
