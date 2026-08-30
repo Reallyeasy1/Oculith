@@ -23,6 +23,7 @@ import {
   interruptedSpanDurationMs,
   isFilterActive,
   spanArgument,
+  spanFillStatus,
   spanStatusLabel,
   timelineTicks,
   trimDiagnosis,
@@ -463,9 +464,10 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
           const timingId = `span-timing-${s.spanId}`;
           const failing = failure?.spanId === s.spanId;
           const statusLabel = spanStatusLabel(s, summary);
-          // #341: a never-closed span in a dead Run is a warning, not activity — amber, never RUNNING-blue.
-          const statusClass = statusLabel === "never closed" ? "status-timeout" : "status-" + s.status;
-          const fillStatus = statusLabel === "never closed" ? "timeout" : s.status;
+          // #341/#368: a never-closed or interrupted span in a dead Run is a warning, not
+          // activity — amber for both the pill and the bar fill, never RUNNING-blue.
+          const fillStatus = spanFillStatus(statusLabel, s.status);
+          const statusClass = "status-" + fillStatus;
           const argument = spanArgument(s.attributes);
           return (
             <div
