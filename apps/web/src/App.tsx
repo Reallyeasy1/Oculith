@@ -1218,7 +1218,7 @@ export default function App() {
           </div>
         )}
 
-        {view === "agent" && selected && <ReliabilityPanel report={reliability} onDrill={(drill) => setRunsDrill({ ...drill })} />}
+        {view === "agent" && selected && <ReliabilityPanel report={reliability} agentId={selected.id} onDrill={(drill) => setRunsDrill({ ...drill })} />}
         {view === "agent" && selected && <ConfigComparison key={selected.id} agent={selected} runs={runs} evalRuns={evalRuns} onDrill={(drill) => setRunsDrill({ ...drill })} onOpenEvalComparison={(pair) => { setEvalComparisonSelection(pair); setView("overview"); }} />}
         {selectedRunId && (
           <TraceDetail

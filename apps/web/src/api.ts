@@ -181,8 +181,16 @@ export const api = {
     }),
   // #173: historical reliability aggregates for the Agent detail panel (#172's endpoint; server defaults
   // to daily buckets and the seeded task_completion evaluator).
-  reliability: (agentId: string) =>
-    request<ReliabilityReport>("/api/agents/" + agentId + "/reliability"),
+  // #342: optional bucket/from/to for the charts drill-in — only provided keys become query params, so
+  // existing no-opts callers hit the exact same URL as before.
+  reliability: (agentId: string, opts: { bucket?: "hour" | "day"; from?: string; to?: string } = {}) => {
+    const query = new URLSearchParams({
+      ...(opts.bucket ? { bucket: opts.bucket } : {}),
+      ...(opts.from ? { from: opts.from } : {}),
+      ...(opts.to ? { to: opts.to } : {}),
+    }).toString();
+    return request<ReliabilityReport>("/api/agents/" + agentId + "/reliability" + (query ? "?" + query : ""));
+  },
   // #192: the evaluator catalogue and the user-defined llm_judge create form.
   listEvaluators: () => request<{ evaluators: EvaluatorDefinition[] }>("/api/evaluators"),
   createEvaluator: (body: { name: string; rubric: string; minScore: number; maxScore: number; passThreshold: number; setsTaskOutcome?: boolean }) =>
