@@ -124,12 +124,15 @@ describe("describeHistoryEntry (#66)", () => {
 });
 
 describe("checkNewFilePath (#66)", () => {
-  it("trims and normalizes leading/trailing separators", () => {
-    expect(checkNewFilePath("  /src/app.ts/ ")).toEqual({ path: "src/app.ts" });
+  it("trims whitespace and trailing separators", () => {
+    expect(checkNewFilePath("  src/app.ts/ ")).toEqual({ path: "src/app.ts" });
   });
   it.each([
     ["", "Enter a file path"],
     ["   ", "Enter a file path"],
+    ["/abs/path.txt", "relative path"],
+    ["\\abs\\path.txt", "relative path"],
+    ["/", "relative path"],
     ["../escape.txt", "'..'"],
     ["a/../../b", "'..'"],
     ["AGENTS.md", "platform-managed"],

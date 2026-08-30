@@ -42,12 +42,15 @@ import { boundedChangedPaths, diffWorkspace, snapshotWorkspace } from "./workspa
 const now = () => new Date().toISOString();
 
 /** #65/#66: a proven-unsafe or wrong-kind path (or a refused write — cap, managed file, credential)
- * is the client's fault (400); a path that checks out but names nothing on disk is 404. Anything
- * else (EPERM, EIO) stays a 500 for the error handler. */
+ * is the client's fault (400); a path that checks out but names nothing on disk is 404. A path with a
+ * file where a directory must be (EEXIST on Windows mkdir, ENOTDIR on Linux) is 400 — and never the
+ * raw errno message, which embeds the server's absolute path (#344). Anything else (EPERM, EIO)
+ * stays a 500 for the error handler. */
 function mapWorkspaceBrowseError(error: unknown): unknown {
   if (error instanceof WorkspacePathError || error instanceof WorkspaceEditError) return new HttpError(400, error.message);
   const code = (error as NodeJS.ErrnoException | null)?.code;
-  if (code === "ENOENT" || code === "ENOTDIR") return new HttpError(404, "No such file or directory in this workspace");
+  if (code === "ENOENT") return new HttpError(404, "No such file or directory in this workspace");
+  if (code === "EEXIST" || code === "ENOTDIR") return new HttpError(400, "A path segment is not a directory");
   return error;
 }
 const HEARTBEAT_INTERVAL_MS = 15_000;

@@ -9,6 +9,24 @@ export class ApiError extends Error {
   }
 }
 
+/** #344: server-side zod failures arrive as a stringified issue array in `error`; showing it
+ * verbatim puts raw JSON in the banner. Render the FIRST issue as "path: message" (+N more when
+ * several); anything that isn't a zod issue array passes through unchanged. */
+export function humanizeErrorMessage(message: string): string {
+  if (!message.trimStart().startsWith("[")) return message;
+  try {
+    const issues: unknown = JSON.parse(message);
+    if (!Array.isArray(issues) || issues.length === 0) return message;
+    const first = issues[0] as { path?: unknown; message?: unknown };
+    if (typeof first !== "object" || first === null || typeof first.message !== "string" || !Array.isArray(first.path)) return message;
+    const prefix = first.path.length > 0 ? first.path.join(".") + ": " : "";
+    const more = issues.length > 1 ? " (+" + (issues.length - 1) + " more)" : "";
+    return prefix + first.message + more;
+  } catch {
+    return message;
+  }
+}
+
 let authToken = "";
 
 export function setAuthToken(token: string): void {
@@ -32,7 +50,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   });
   const data = (await response.json().catch(() => ({}))) as T & { error?: string };
   if (!response.ok) {
-    throw new ApiError(data.error ?? "Request failed", response.status);
+    throw new ApiError(data.error ? humanizeErrorMessage(data.error) : "Request failed", response.status);
   }
   return data;
 }
@@ -186,7 +204,7 @@ export const api = {
     });
     if (!response.ok) {
       const data = (await response.json().catch(() => ({}))) as { error?: string };
-      throw new ApiError(data.error ?? "Export failed", response.status);
+      throw new ApiError(data.error ? humanizeErrorMessage(data.error) : "Export failed", response.status);
     }
     const disposition = response.headers.get("Content-Disposition") ?? "";
     const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? "trace-" + traceId + ".json";
