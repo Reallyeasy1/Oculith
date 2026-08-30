@@ -78,6 +78,9 @@ describe("redactText", () => {
     ["after a colon", "token:" + OAI],
     ["after an open paren", "(" + OAI + ")"],
     ["after a hyphen (non-word boundary still counts — more-redaction retained)", "wrapped-" + OAI],
+    // #363 privacy review: digits/underscore are boundaries too — only a LETTER suppresses.
+    ["after a digit", "v2" + OAI],
+    ["after an underscore", "backup_" + OAI],
   ])("openai_key still caught %s", (_n, input) => {
     const out = redactText(input);
     expect(out.rules).toContain("openai_key");

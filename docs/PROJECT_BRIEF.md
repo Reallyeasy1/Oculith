@@ -115,7 +115,7 @@ buildTrace / projectAudit / evaluators (glassbox/query.ts, eval/evaluators.ts) â
 
 ## 4. Observation contract
 
-Defined with zod in `apps/server/src/glassbox/schema.ts` (`SCHEMA_VERSION "1.0"`, `REDACTION_RULESET_VERSION "1"`).
+Defined with zod in `apps/server/src/glassbox/schema.ts` (`SCHEMA_VERSION "1.0"`, `REDACTION_RULESET_VERSION "2"`).
 
 **Identity and ordering.** `eventId` (unique; duplicates are dropped on read), `sequence` (monotonic per Run, assigned by the emitter), `timestamp` (ISO), `traceId`, `runId`, `agentId`, `sessionId?` (Codex thread), `requestId?`, `spanId`, `parentSpanId?`.
 

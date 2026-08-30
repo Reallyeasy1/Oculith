@@ -22,11 +22,12 @@ const PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
   // falling back to end-of-string keeps the body from shipping in cleartext.
   ["private_key", /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g],
   ["bearer", /Bearer\s+[A-Za-z0-9._~+/-]{16,}=*/gi],
-  // Left boundary (#359, review #47): a preceding word char means "sk-" is a fragment of a longer word
-  // ("task-management-…" starts with "ta" + "sk-"), so only reject [A-Za-z0-9_] on the left. A preceding
+  // Left boundary (#359, review #47): a preceding LETTER means "sk-" is a fragment of a longer word
+  // ("task-management-…" starts with "ta" + "sk-"), so only reject [A-Za-z] on the left — digits and
+  // underscore still count as boundaries ("v2sk-…", "backup_sk-…" stay caught; privacy review #363). A preceding
   // hyphen or any punctuation still counts as a boundary, so keys glued after "-", "=", quotes, "/" (URLs)
   // or JSON syntax stay caught — this is the narrowest reduction that kills the hyphenated-word FP.
-  ["openai_key", /(?<![A-Za-z0-9_])sk-(?:proj-)?[A-Za-z0-9_-]{20,}/g],
+  ["openai_key", /(?<![A-Za-z])sk-(?:proj-)?[A-Za-z0-9_-]{20,}/g],
   ["ark_key", /ark-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:-[0-9a-f]+)?/gi],
   ["volc_ak", /AKLT[A-Za-z0-9]{20,}/g],
   // Matches the whole credentialed URL (scheme://user:pass@host/path), not just the userinfo — the host can be
