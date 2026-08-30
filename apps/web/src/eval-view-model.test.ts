@@ -1,16 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { evaluatorLabel, metadataParts, metadataSummary, templateHashDetails } from "./eval-view-model";
+import { evaluatorLabel, metadataParts, templateHashDetails } from "./eval-view-model";
 
 describe("evaluatorLabel", () => {
   it("joins evaluator id and version as the provenance label", () => {
     expect(evaluatorLabel({ evaluatorId: "task_completion", evaluatorVersion: 1 })).toBe("task_completion@1");
-  });
-});
-
-describe("metadataSummary", () => {
-  it("renders sorted key: value pairs and an empty string for no metadata", () => {
-    expect(metadataSummary({ zulu: true, alpha: 3, beta: null })).toBe("alpha: 3 · beta: null · zulu: true");
-    expect(metadataSummary({})).toBe("");
   });
 });
 

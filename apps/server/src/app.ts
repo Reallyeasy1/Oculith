@@ -23,6 +23,7 @@ import type { RunLogStore } from "./run-log-store.js";
 import type { PreviewManager } from "./preview.js";
 import { BASELINE_QUERY_LIMIT, buildAgentRunBaseline, estimatedCost } from "./glassbox/baseline.js";
 import { caseFromRun, regressionCaseInput } from "./eval/cases.js";
+import { assertionSchema } from "./eval/evaluators.js";
 import { EvalRunner } from "./eval/runner.js";
 import { compareEvalRuns } from "./eval/compare.js";
 
@@ -65,11 +66,23 @@ const messageBody = z.strictObject({
 // #254: cancel-while-queued — both ids are server-issued UUIDs.
 const pendingMessageParams = z.object({ id: z.string().uuid(), messageId: z.string().uuid() });
 const evalRunBody = z.strictObject({ agentId: z.string().uuid(), caseIds: z.array(z.string().uuid()).min(1).max(20).refine((ids) => new Set(ids).size === ids.length, "caseIds must be unique"), force: z.boolean().optional() });
+// #350: the boundary rejects unknown keys inside nested assertions too (the web dialog and the
+// demo script both send only server-derived keys); assertionSchema itself stays lenient for
+// internal callers, mirroring the #345 posture note on regressionCaseInput below.
+const strictAssertions = z
+  .array(z.discriminatedUnion(
+    "type",
+    assertionSchema.options.map((option) => z.strictObject(option.shape)) as unknown as typeof assertionSchema.options,
+  ))
+  .min(1)
+  .max(16);
+// #345: strict at the boundary; regressionCaseInput itself stays lenient for internal callers.
+const createRegressionCaseBody = z.strictObject({ ...regressionCaseInput.shape, assertions: strictAssertions });
 // A case is always derived from the trace evidence. The UI may only name it or remove an
 // automatically proposed assertion; it cannot supply a different prompt or template.
 const regressionCaseFromRunBody = z.strictObject({
   name: z.string().trim().min(1).max(120).optional(),
-  assertions: regressionCaseInput.shape.assertions.optional(),
+  assertions: strictAssertions.optional(),
 });
 // #192: user-defined llm_judge evaluators. The id is a slug of the name, so a changed rubric under
 // the same name versions the same definition (FR-20); the store redacts name/rubric before persisting.
@@ -143,8 +156,20 @@ export async function createApp(
     if (statusCode >= 500) {
       request.log.error(appError);
     }
+    // #350: an errno-shaped 500 (EPERM/EACCES/EIO from a workspace write) names the server's
+    // absolute path in its message — same leak class #344 fixed for EEXIST/ENOTDIR. The full
+    // detail stays in the log line above; the response gets a generic message. Deliberate
+    // HttpError messages and every non-500 status are untouched.
+    const errnoCode =
+      typeof (error as { code?: unknown }).code === "string" && /^E[A-Z]+$/.test((error as { code: string }).code)
+        ? (error as { code: string }).code
+        : undefined;
+    const scrub =
+      statusCode >= 500 &&
+      !(error instanceof HttpError) &&
+      (errnoCode !== undefined || /[A-Za-z]:[\\/]|(?:^|[\s"'(])\/(?:[^\s"']+\/)+[^\s"']+/.test(appError.message));
     return reply.code(statusCode).send({
-      error: appError.message,
+      error: scrub ? "Internal error" + (errnoCode ? " (" + errnoCode + ")" : "") : appError.message,
       ...(validationError ? { details: error.issues } : {}),
     });
   });
@@ -433,8 +458,7 @@ export async function createApp(
     return reply.code(204).send();
   });
   app.post("/api/regression-cases", async (request, reply) => {
-    // #345: strict at the boundary; regressionCaseInput itself stays lenient for internal callers.
-    const body = z.strictObject(regressionCaseInput.shape).parse(request.body);
+    const body = createRegressionCaseBody.parse(request.body);
     const regressionCase = await service.createRegressionCase({ ...body });
     return reply.code(201).send({ regressionCase });
   });

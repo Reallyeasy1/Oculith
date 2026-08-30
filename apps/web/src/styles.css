@@ -2502,14 +2502,17 @@ select:focus {
 }
 
 /* Verdict chips follow the status-pill palette: pass = green, fail = red-ink family
-   (amber stays reserved for timeout/degraded warnings). */
-.trace-evaluations .badge-pass {
+   (amber stays reserved for timeout/degraded warnings). #350: the compare table's verdict
+   cells share the treatment — scoped to the two evaluation surfaces, not the global .badge. */
+.trace-evaluations .badge-pass,
+.comparison-view .badge-pass {
   color: var(--green-ink);
   border-color: #9ed8bb;
   background: var(--green-soft);
 }
 
-.trace-evaluations .badge-fail {
+.trace-evaluations .badge-fail,
+.comparison-view .badge-fail {
   color: var(--red-ink);
   border-color: #e2aaaa;
   background: var(--red-soft);

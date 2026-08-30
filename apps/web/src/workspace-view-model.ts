@@ -86,8 +86,10 @@ export function checkNewFilePath(input: string): { path: string } | { error: str
   if (!trimmed) return { error: "Enter a file path" };
   // #344: stripping a leading slash silently turned "/abs/path.txt" into "abs/path.txt" — reject instead.
   if (/^[/\\]/.test(trimmed)) return { error: "Use a relative path inside the workspace" };
-  const path = trimmed.replace(/[/\\]+$/, "");
-  if (!path) return { error: "Enter a file path" };
+  // #350: stripping a trailing separator silently turned "dir/" into a file named "dir" — reject
+  // instead (the server 400s raw trailing-slash paths too).
+  if (/[/\\]$/.test(trimmed)) return { error: "A file path must not end with a slash" };
+  const path = trimmed;
   if (path.length > 1024) return { error: "Path is too long (1,024 characters max)" };
   if (path.split(/[/\\]+/).includes("..")) return { error: "Path may not contain '..'" };
   if (["AGENTS.md", "README.md", ".gitignore"].includes(path)) {

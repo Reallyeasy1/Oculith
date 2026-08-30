@@ -109,9 +109,12 @@ export async function writeWorkspaceFile(root: string, upload: WorkspaceUpload):
 }
 
 /**
- * Batch seed: everything is validated (paths, caps, credential scan, duplicates) before the first
- * byte is written, so a refused batch leaves the workspace untouched. Per-file size is bounded only
- * by the batch cap — browser uploads of a single large asset stay possible (#66).
+ * Batch seed: everything validable up front (paths, caps, credential scan, duplicates) is checked
+ * before the first byte is written, so a batch refused there leaves the workspace untouched. A
+ * write that fails mid-batch (e.g. "x.txt" then "x.txt/y.txt") sweeps the files this batch
+ * created; a file the batch had already overwritten keeps the batch's content (#350). Per-file
+ * size is bounded only by the batch cap — browser uploads of a single large asset stay
+ * possible (#66).
  */
 export async function seedWorkspaceFiles(root: string, uploads: WorkspaceUpload[]): Promise<WorkspaceWriteReceipt[]> {
   if (uploads.length > MAX_SEED_FILES) {
@@ -132,8 +135,20 @@ export async function seedWorkspaceFiles(root: string, uploads: WorkspaceUpload[
     }
     prepared.push(item);
   }
-  const receipts = [];
-  for (const item of prepared) receipts.push(await writePrepared(item));
+  const receipts: WorkspaceWriteReceipt[] = [];
+  const created: string[] = [];
+  try {
+    for (const item of prepared) {
+      const existed = await lstat(item.absolute).then(() => true, () => false);
+      receipts.push(await writePrepared(item));
+      if (!existed) created.push(item.absolute);
+    }
+  } catch (error) {
+    // ponytail: best-effort sweep of the files this batch created (bounded by MAX_SEED_FILES) —
+    // a true rollback of overwritten files would need an undo log nothing here warrants.
+    for (const absolute of created) await unlink(absolute).catch(() => undefined);
+    throw error;
+  }
   return receipts;
 }
 
