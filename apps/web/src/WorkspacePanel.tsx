@@ -7,6 +7,7 @@ import {
   describeHistoryEntry,
   flattenWorkspaceTree,
   formatBytes,
+  listedFileExists,
   parentPath,
   workspaceSummaryLine,
   type WorkspaceRow,
@@ -220,7 +221,13 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
     const checked = checkNewFilePath(newFilePath ?? "");
     if ("error" in checked) { setError(checked.error); return; }
     // UAT: "New file" over an existing path silently truncated it to 0 bytes — refuse instead.
-    const exists = await api.readWorkspaceFile(agentId, checked.path).then(() => true, () => false);
+    // #368: consult the already-loaded tree listing first — the network probe logs a visible
+    // console 404 on every successful create. Listing loaded and name absent → skip the probe
+    // (an outside writer racing the create could still be overwritten; acceptable, the server
+    // is single-user). Listing can't answer (unloaded nested dir, truncated) → keep the probe,
+    // whose 404 noise is rare on that path.
+    const exists = listedFileExists(listings, checked.path)
+      ?? await api.readWorkspaceFile(agentId, checked.path).then(() => true, () => false);
     if (exists) { setError(checked.path + " already exists — select it in the tree to edit it."); return; }
     const created = await runEdit(async () => {
       await api.writeWorkspaceFile(agentId, { path: checked.path, content: "", encoding: "utf8" });

@@ -65,8 +65,8 @@ export class ObservationEmitter {
   /** Frees a finished Run's per-run bookkeeping (call after its rollup ran); without this the maps grow
    * one entry per Run for the life of the process (#54). A degraded Run is kept whole: its flag may be the
    * only surviving evidence of the store failure (invariant 4), and degraded Runs are rare by definition.
-   * ponytail: a straggler event emitted after eviction restarts its trace's sequence at 0 — nothing
-   * emits after rollup today; reseed from the store index if that ever changes. */
+   * A straggler emitted after eviction (eval post_check landing after a timed-out Run's rollup, #367)
+   * reseeds its sequence from the store index on demand — see storedLastSequence(). */
   evictRun(runId: string): void {
     if (this.degradedRuns.has(runId)) return;
     const traceId = this.runTraces.get(runId);
@@ -125,10 +125,23 @@ export class ObservationEmitter {
     };
   }
 
+  /** #367: a straggler emitted after evictRun (eval post_check lands after a timed-out Run's rollup+evict)
+   * must continue its trace's sequence, not restart at 0 and serve at the top of the timeline. The store
+   * index already records lastSequence per run (seedSequence restores from it on boot) and is synchronously
+   * readable, so reseed from it on a counter miss. A brand-new trace misses runIdForTrace and pays nothing;
+   * only a genuine straggler pays the listRuns scan, once — build() re-caches the counter.
+   * ponytail: the re-cached entry is never evicted again (nobody calls evictRun twice) — one tiny map
+   * entry per straggler run for process life; wire a second evict if stragglers ever stop being rare. */
+  private storedLastSequence(traceId: string): number {
+    const runId = this.store.runIdForTrace(traceId);
+    if (runId === undefined) return -1;
+    return this.store.listRuns().find((entry) => entry.runId === runId)?.lastSequence ?? -1;
+  }
+
   private build(data: ReturnType<typeof eventInputSchema.parse>): ObservationEvent {
     // The sequence is claimed here, before redaction/append: an event later quarantined or dropped by a
     // cap leaves a gap in the stored sequences. Gaps are expected; readers must not assume density.
-    const next = (this.sequences.get(data.traceId) ?? -1) + 1;
+    const next = (this.sequences.get(data.traceId) ?? this.storedLastSequence(data.traceId)) + 1;
     this.sequences.set(data.traceId, next);
     this.runTraces.set(data.runId, data.traceId);
     return observationEventSchema.parse({

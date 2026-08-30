@@ -116,8 +116,25 @@ export default function App() {
   // "Expand" re-opens it for this trace, "Close trace" restores it.
   const [playgroundExpanded, setPlaygroundExpanded] = useState(false);
   const playgroundCollapsed = selectedRunId !== null && !playgroundExpanded;
-  // Switching Agents or views closes the open trace: the bar must never show one Agent above another's trace.
-  useEffect(() => { setSelectedRunId(null); }, [selectedId, view]);
+  // #368: the ?run= deep link once bootstrap has validated it against the server. State, not a
+  // ref, so arming it re-runs the close-on-switch effect below even when bootstrap's
+  // setSelectedId/setView change nothing (the linked run may belong to the default Agent).
+  const [deepLink, setDeepLink] = useState<string | null>(null);
+  const deepLinkConsumedRef = useRef(false);
+  // Switching Agents or views closes the open trace: the bar must never show one Agent above
+  // another's trace. Exception (#368): the run of this effect after bootstrap arms a validated
+  // deep link APPLIES it instead of closing — the old requestAnimationFrame application raced
+  // this very effect and lost the run when the rAF landed first. Consumed exactly once, so a
+  // later Agent or view switch closes the trace like any other and never resurrects the link.
+  useEffect(() => {
+    if (deepLink && !deepLinkConsumedRef.current) {
+      deepLinkConsumedRef.current = true;
+      setSelectedRunId(deepLink);
+      setPlaygroundExpanded(false);
+      return;
+    }
+    setSelectedRunId(null);
+  }, [selectedId, view, deepLink]);
   // A drill belongs to the Agent whose panel was clicked; drop it when the scope changes so a remounted
   // RunsView opens on its default filter, not a stale drill.
   useEffect(() => { setRunsDrill(null); }, [selectedId, view]);
@@ -135,7 +152,7 @@ export default function App() {
   const selectedIdRef = useRef<string | null>(null);
   const selectedRunIdRef = useRef<string | null>(null);
   // Preserve the requested run through the first render, when the URL-sync effect clears
-  // an as-yet unopened trace.
+  // an as-yet unopened trace. Bootstrap validates it before arming `deepLink` above.
   const pendingDeepLinkRef = useRef(new URLSearchParams(window.location.search).get("run"));
   const viewRef = useRef(view);
   const mountedRef = useRef(true);
@@ -250,9 +267,12 @@ export default function App() {
     if (!runId) return;
     try {
       const { run } = await api.run(runId);
+      if (!mountedRef.current) return;
+      // #368: one batched update — the close-on-switch effect fires once for this commit
+      // (deepLink always changes) and opens the trace itself instead of being raced.
       setSelectedId(run.agentId);
       setView("agent");
-      requestAnimationFrame(() => { if (mountedRef.current) { setSelectedRunId(runId); setPlaygroundExpanded(false); } });
+      setDeepLink(runId);
     } catch {
       // A shared or stale link should fall back to the ordinary landing state without an error banner.
     }
@@ -1084,6 +1104,9 @@ export default function App() {
                       ))}
                     </div>
                   </div>
+                ) : messages.length === 0 ? (
+                  // #371: a terminal activeRun with an empty history left a 700px void here.
+                  <p className="welcome runs-empty">No conversation yet — describe a task below.</p>
                 ) : (
                   messages.map((message) => (
                     <article className={"message message-" + message.role} key={message.id}>
@@ -1205,8 +1228,9 @@ export default function App() {
           </>
         ) : (
           <div className="no-agent">
-            <div className="no-agent-art">A</div>
-            <span className="eyebrow">Agent Launchpad</span>
+            {/* #371: the one spot #325's GlassBox rebrand missed. */}
+            <BrandMark />
+            <span className="eyebrow">GlassBox</span>
             <h1>Your runtime is ready for an Agent.</h1>
             <p>Create a workspace, give Codex a job, and continue the conversation here.</p>
             <button

@@ -99,6 +99,14 @@ export function spanStatusLabel(
   return span.status;
 }
 
+/**
+ * #368: a restart-"interrupted" span is as dead as a "never closed" one — both style amber
+ * (timeout) for the row pill and the bar fill, never activity-blue RUNNING.
+ */
+export function spanFillStatus(label: string, status: TraceStatus): TraceStatus {
+  return label === "never closed" || label === "interrupted" ? "timeout" : status;
+}
+
 /** #341: the discriminating first argument (e.g. the script behind 16 identical "shell:powershell.exe" rows). */
 export function spanArgument(attributes: Span["attributes"]): string {
   const value = attributes.argument0;

@@ -23,6 +23,7 @@ import {
   interruptedSpanDurationMs,
   isFilterActive,
   spanArgument,
+  spanFillStatus,
   spanStatusLabel,
   timelineTicks,
   trimDiagnosis,
@@ -87,8 +88,12 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
   // runs after the target row has rendered, which matters when Jump expands a collapsed path.
   const [focusReq, setFocusReq] = useState(0);
   // Once per open (App keys this component by runId): bring the header + banner into the first viewport.
+  // #371: fire again when the trace payload lands — on deep links the panels above (Reliability,
+  // comparison) populate after the mount scroll and push the loading placeholder below the fold.
+  // Poll refreshes keep `loaded` true, so this never scroll-jacks a reading user.
   const sectionRef = useRef<HTMLElement>(null);
-  useEffect(() => { sectionRef.current?.scrollIntoView({ block: "start" }); }, []);
+  const loaded = view !== null;
+  useEffect(() => { sectionRef.current?.scrollIntoView({ block: "start" }); }, [loaded]);
   useEffect(() => {
     void api.logs(runId, logLevel).then((result) => { setLogs(result.lines); setLogsTruncated(result.truncated); }).catch(() => undefined);
   }, [logLevel, runId]);
@@ -294,7 +299,8 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
           <span className="eyebrow">Trace · schema {summary.schemaVersion} · {summary.capturePolicy}</span>
           <h2 id="trace-heading">
             <span className={"status status-" + summary.status}><span aria-hidden="true">{STATUS_ICON[summary.status]}</span>{summary.status}</span>{" "}
-            <code>{summary.runId || runId}</code>
+            {/* #371: runs-list short-id style — full UUID stays hoverable here and in the TRACE field. */}
+            Run <code title={summary.runId || runId}>{(summary.runId || runId).slice(0, 8)}</code>
           </h2>
         </div>
         <div className="header-actions">
@@ -341,7 +347,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
         <Field label="Evidence" className="trace-evidence">
           <CapabilityBadge layer="model" state={summary.capabilities.model} status={summary.status} />
           <CapabilityBadge layer="tool" state={summary.capabilities.tool} status={summary.status} />
-          {summary.redactedEvents > 0 && <span className="badge">redacted {summary.redactedEvents}</span>}
+          {summary.redactedEvents > 0 && <span className="badge badge-redacted">redacted {summary.redactedEvents}</span>}
           {summary.truncated && <span className="badge badge-warn">truncated</span>}
           {summary.degraded && <span className="badge badge-warn">degraded</span>}
           {summary.incompleteSpans > 0 && <span className="badge badge-warn">{summary.incompleteSpans} incomplete</span>}
@@ -463,9 +469,10 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
           const timingId = `span-timing-${s.spanId}`;
           const failing = failure?.spanId === s.spanId;
           const statusLabel = spanStatusLabel(s, summary);
-          // #341: a never-closed span in a dead Run is a warning, not activity — amber, never RUNNING-blue.
-          const statusClass = statusLabel === "never closed" ? "status-timeout" : "status-" + s.status;
-          const fillStatus = statusLabel === "never closed" ? "timeout" : s.status;
+          // #341/#368: a never-closed or interrupted span in a dead Run is a warning, not
+          // activity — amber for both the pill and the bar fill, never RUNNING-blue.
+          const fillStatus = spanFillStatus(statusLabel, s.status);
+          const statusClass = "status-" + fillStatus;
           const argument = spanArgument(s.attributes);
           return (
             <div
@@ -505,7 +512,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
                 {(row.repeat ?? 1) > 1 && <span className="badge" title={`repeated ${row.repeat} times — identical repeats collapsed`}>×{row.repeat}</span>}
                 {s.incomplete && <span className="badge badge-warn">incomplete</span>}
                 {!s.source.observed && <span className="badge">unavailable</span>}
-                {redactedSpans.has(s.spanId) && <span className="badge">redacted</span>}
+                {redactedSpans.has(s.spanId) && <span className="badge badge-redacted">redacted</span>}
               </span>
               <span className="trace-bar" title={timingDescription} aria-hidden="true">
                 {geo?.instant && <span className={"trace-bar-marker fill-" + fillStatus} style={{ left: geo.left + "%" }} />}
@@ -783,7 +790,7 @@ function EventRow({ event: e }: { event: ObservationEvent }) {
       <span className="trace-name">{e.type}</span>
       <span className="trace-cat">{e.phase}</span>
       <span className="trace-badges">
-        {e.privacy.redacted && <span className="badge">redacted</span>}
+        {e.privacy.redacted && <span className="badge badge-redacted">redacted</span>}
         {!e.source.observed && <span className="badge">unavailable</span>}
       </span>
       <span className="trace-dur">{formatClock(e.timestamp)}</span>

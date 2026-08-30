@@ -79,6 +79,30 @@ export function describeHistoryEntry(entry: WorkspaceHistoryEntry): string {
   return time + verb + " " + entry.path + size;
 }
 
+/**
+ * #368: whether `path` exists according to the listings already fetched for the tree — true/false
+ * when the parent directory's listing can answer, undefined when it cannot (parent not loaded,
+ * or truncated past the 2,000-entry cap). Matching is exact, like the tree itself; the server
+ * stays the authority on the actual write.
+ */
+export function listedFileExists(
+  listings: ReadonlyMap<string, WorkspaceListing>,
+  path: string,
+): boolean | undefined {
+  if (path.includes("\\")) return undefined; // backslash paths don't key these listings — let the caller probe
+  const listing = listings.get(parentPath(path));
+  if (!listing || listing.truncated) return undefined;
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  if (listing.entries.some((entry) => entry.name === name)) return true;
+  // #372 review: on a case-insensitive filesystem (this project's own Windows host included) a
+  // case-variant name resolves to the SAME file server-side — an exact-only "false" here would skip
+  // the probe and let the write truncate it. Case-insensitive-only match → undefined: the network
+  // probe decides per-filesystem, exactly like before the listing short-cut existed.
+  const lower = name.toLowerCase();
+  if (listing.entries.some((entry) => entry.name.toLowerCase() === lower)) return undefined;
+  return false;
+}
+
 /** Client-side pre-check for "New file": the server proves the path, this only catches obvious
  * mistakes before a round trip. Returns the trimmed path or an error message. */
 export function checkNewFilePath(input: string): { path: string } | { error: string } {

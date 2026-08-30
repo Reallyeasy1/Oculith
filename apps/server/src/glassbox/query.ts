@@ -170,7 +170,15 @@ function reconstructSpans(events: ObservationEvent[]): Map<string, Span> {
 
 function buildTree(spans: Map<string, Span>): Span[] {
   const roots: Span[] = [];
-  for (const s of spans.values()) { const p = s.parentSpanId ? spans.get(s.parentSpanId) : undefined; if (p) p.children.push(s); else roots.push(s); }
+  for (const s of spans.values()) {
+    const p = s.parentSpanId ? spans.get(s.parentSpanId) : undefined;
+    if (p) { p.children.push(s); continue; }
+    // Clear the back-pointer on a missing-parent orphan too (#367, same rationale as the #361 review):
+    // consumers walk parentSpanId without cycle guards (TraceDetail path expansion, OTel export) — a span
+    // attached as a root must be a real root both ways, not point at a span that emitted zero events.
+    s.parentSpanId = undefined;
+    roots.push(s);
+  }
   // #357 — a parentSpanId cycle (x→y→…→x) leaves every member off the root list, so the whole cycle and any
   // subtree hanging off it would vanish from spanCount/incompleteSpans/metrics. Cycle-breaking rule: promote the
   // cycle's entry span — the unreachable span with the lowest sequence (ties: lexicographic spanId) — to a root

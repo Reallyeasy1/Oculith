@@ -519,6 +519,20 @@ describe("buildTrace correctness (#357)", () => {
     expect(x.children[0]!.children.map((c) => c.spanId)).toEqual(["z"]);
     expect(view.summary.incompleteSpans).toBe(2); // x and y never closed — still honestly incomplete
   });
+  it("#367: a span whose parentSpanId names a never-seen span serves as a root with the dangling pointer cleared", () => {
+    seq = 0;
+    // No root(): the http.request parent span emitted zero events (the post-rollup straggler family) —
+    // svc still serves at depth 0, but must not keep a parentSpanId consumers can only resolve to a miss.
+    const events = [
+      ev({ type: "agent_service.run.started", category: "control", spanId: "svc", parentSpanId: "ghost", phase: "start", status: "running" }),
+      ev({ type: "run.completed", category: "control", spanId: "done", parentSpanId: "svc", status: "ok" }),
+    ];
+    const view = buildTrace(events, { capturePolicy: "metadata_only" });
+    const svc = view.spans.find((s) => s.spanId === "svc")!;
+    expect(svc.depth).toBe(0);
+    expect(svc.parentSpanId).toBeUndefined();
+    expect(svc.children.map((c) => c.spanId)).toEqual(["done"]); // subtree intact beneath the promoted root
+  });
   it.each([
     { label: "span still open", withEnd: false, durationMs: undefined, incomplete: true, status: "running" },
     { label: "span later closed by its end", withEnd: true, durationMs: 20, incomplete: false, status: "ok" },
