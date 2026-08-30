@@ -94,6 +94,11 @@ export function findCompatibleEvalPair(evalRuns: readonly EvalRun[], agentId: st
   return undefined;
 }
 
+/** #217: the visible cell ("PASS 0") names neither side nor case — screen readers get both. */
+export function evidenceButtonLabel(side: "baseline" | "candidate", caseId: string, pass: boolean): string {
+  return `Open ${side} evidence for case ${caseId.slice(0, 8)} — ${pass ? "PASS" : "FAIL"}`;
+}
+
 export function comparisonWindow(from: string, to: string): { from?: string; to?: string } {
   return {
     ...(from ? { from: `${from}T00:00:00.000Z` } : {}),

@@ -495,7 +495,8 @@ export default function App() {
         const { evalRun } = await api.evalRun(evalRunId);
         if (!mountedRef.current) return;
         setEvalRuns((current) => [evalRun, ...current.filter((item) => item.id !== evalRun.id)]);
-        await refreshRuns();
+        // #217: no per-tick refreshRuns — the dashboard timer (#98) already covers the Runs table
+        // while an evaluation runs; only the terminal transition below refreshes it explicitly.
         if (evalRun.status !== "running") {
           await Promise.all([refreshEvalRuns(), refreshRuns()]);
           return;
@@ -1232,6 +1233,7 @@ export default function App() {
             onCaseSaved={refreshRegressionCases}
             onRerun={(runId) => void rerunPrompt(runId)}
             onClose={closeTrace}
+            workspaces={workspaces}
           />
         )}
         {/* runs are server-scoped already; the filter only keeps another Agent's rows out of the DOM across a switch */}
@@ -1245,6 +1247,7 @@ export default function App() {
           emptyText={view === "agent" && selected ? "No Runs for this Agent yet." : "No Runs observed yet."}
           baseline={view === "agent" ? runBaseline : null}
           drill={runsDrill}
+          workspaces={workspaces}
         />
       </main>
 

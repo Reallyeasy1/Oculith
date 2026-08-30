@@ -513,6 +513,8 @@ describe("GlassBox control-plane adapter", () => {
     await writeFile(path.join(template, "starting.txt"), "v3", "utf8");
     expect((await service.createEvalRun({ caseIds: [legacy.id], target })).templateHashMismatch).toBeUndefined();
     await expect(service.createRegressionCase({ name: "missing", prompt: "x", workspaceTemplate: "nope", baselineConfigHash: "b", assertions: [{ type: "terminal_status", expected: "ok" }] })).rejects.toMatchObject({ statusCode: 400 });
+    // #217: a client-supplied sourceRunId must reference a stored Run; a dangling id is refused.
+    await expect(service.createRegressionCase({ name: "dangling", prompt: "x", workspaceTemplate: "fixture", baselineConfigHash: "b", sourceRunId: "00000000-0000-4000-8000-000000000000", assertions: [{ type: "terminal_status", expected: "ok" }] })).rejects.toMatchObject({ statusCode: 400, message: "sourceRunId does not reference a known Run" });
     // a template deleted after the case was recorded is a 400 at EvalRun creation, not a 500
     await rm(template, { recursive: true, force: true });
     await expect(service.createEvalRun({ caseIds: [regressionCase.id], target })).rejects.toMatchObject({ statusCode: 400 });
