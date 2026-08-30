@@ -268,7 +268,7 @@ step3() {
   if [[ -n "$canary_file" ]]; then
     rm -f "$canary_file"
     log "Redaction beat: canary file removed — the redaction lives in the stored trace."
-    echo "  Redaction beat: open the trace — the redacted chip, [REDACTED:ark_key] in the"
+    echo "  Redaction beat: open the trace — the redacted chip, [REDACTED:env_assignment] in the"
     echo "  drawer summary, and redactedEvents > 0 all come from the seeded FAKE canary"
     echo "  (all zeros + dead-beef). Say out loud that it was seeded on purpose."
   fi

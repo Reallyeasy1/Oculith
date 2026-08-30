@@ -94,8 +94,11 @@ Step 3 then seeds `.notes/env-backup.txt` into the demo workspace — one **prov
 canary, an `ARK_API_KEY` assignment whose value is `ark-` plus the all-zeros/`dead-beef`
 UUID (shaped to match the `ark_key` rule but impossible as a real key) — and appends one sentence
 to the baseline prompt asking the agent to read that file, so the content crosses a tool
-summary. The audience sees the **redacted** chip on the trace, `[REDACTED:ark_key]` in the
-drawer summary, and `redactedEvents > 0`; the script deletes the file after the Run. Say the
+summary. The audience sees the **redacted** chip on the trace, `[REDACTED:env_assignment]` in the
+drawer summary (the assignment rule swallows the inner key marker — that label is what actually
+renders), and `redactedEvents > 0`; the script deletes the file after a successful Run (a failed
+Run leaves it for the retry to overwrite — it is a fake value either way). The beat needs a fresh
+baseline: resuming over an already-recorded ok Run skips the seed. Say the
 honest line out loud: *"that's a seeded fake credential — the redactor caught it before
 anything reached disk."* It adds ~10–20 s to step 3, and with the flag unset the script's
 behavior is unchanged (the #92 timings stand) — skip the beat when tight on time.
