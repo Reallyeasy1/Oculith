@@ -177,6 +177,18 @@ describe("seedWorkspaceFiles", () => {
     await expect(stat(path.join(root, "dir"))).rejects.toThrowError();
   });
 
+  it("sweeps the files it created when a write fails mid-batch (#350)", async () => {
+    await writeFile(path.join(root, "kept.txt"), "old", "utf8");
+    // Validation cannot see that "x.txt" (written by this same batch) makes "x.txt/y.txt" a
+    // file-as-parent write; the failure happens mid-write and the swept batch leaves no residue.
+    await expect(
+      seedWorkspaceFiles(root, [upload("kept.txt", "new"), upload("x.txt", "one"), upload("x.txt/y.txt", "two")]),
+    ).rejects.toThrowError(/x\.txt is not a directory/);
+    await expect(stat(path.join(root, "x.txt"))).rejects.toThrowError();
+    // An overwritten file keeps the batch's content — the sweep never deletes pre-existing files.
+    expect(await readFile(path.join(root, "kept.txt"), "utf8")).toBe("new");
+  });
+
   it("a credential anywhere in the batch refuses the whole batch", async () => {
     await expect(
       seedWorkspaceFiles(root, [upload("ok.txt", "fine"), upload("bad.txt", "API_TOKEN=abcdef123456")]),

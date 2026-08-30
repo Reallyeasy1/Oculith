@@ -6,17 +6,9 @@ export function evaluatorLabel(result: Pick<EvaluationResult, "evaluatorId" | "e
   return `${result.evaluatorId}@${result.evaluatorVersion}`;
 }
 
-/** Stable "key: value · key: value" summary of a result's metadata; empty string when there is none. */
-export function metadataSummary(metadata: EvaluationResult["metadata"]): string {
-  return Object.entries(metadata)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => `${key}: ${String(value)}`)
-    .join(" · ");
-}
-
 /**
- * #346: metadata as renderable parts for the trace Evaluation panel — same sorted "key: value" pairs
- * as `metadataSummary`, but max_duration_ms expected/observed are humanized (raw ms kept as a title).
+ * #346: metadata as renderable parts for the trace Evaluation panel — sorted "key: value" pairs,
+ * with max_duration_ms expected/observed humanized (raw ms kept as a title).
  */
 export function metadataParts(result: Pick<EvaluationResult, "evaluatorId" | "metadata">): { text: string; title?: string }[] {
   return Object.entries(result.metadata)

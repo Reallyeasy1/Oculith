@@ -74,6 +74,7 @@ export default function CompareView({ evalRuns, onOpenEvidence, selection }: Pro
 function ResultCell({ result, runId, onOpenEvidence }: { result?: EvalResult; runId?: string; onOpenEvidence: (runId: string, eventId?: string) => void }) {
   if (!result) return <span className="dash">—</span>;
   const eventId = result.evidenceEventIds[0];
-  const content = <><span className={"badge " + (result.pass ? "" : "badge-warn")}>{result.pass ? "PASS" : "FAIL"}</span> {result.observed === null ? <span className="dash">—</span> : String(result.observed)}</>;
+  // #350: verdicts get the trace Evaluation panel's pass/fail palette — amber stays for warnings.
+  const content = <><span className={"badge " + (result.pass ? "badge-pass" : "badge-fail")}>{result.pass ? "PASS" : "FAIL"}</span> {result.observed === null ? <span className="dash">—</span> : String(result.observed)}</>;
   return runId ? <button type="button" className="evidence-link" onClick={() => onOpenEvidence(runId, eventId)}>{content}</button> : content;
 }

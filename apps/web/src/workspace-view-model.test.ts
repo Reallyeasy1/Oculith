@@ -124,12 +124,15 @@ describe("describeHistoryEntry (#66)", () => {
 });
 
 describe("checkNewFilePath (#66)", () => {
-  it("trims whitespace and trailing separators", () => {
-    expect(checkNewFilePath("  src/app.ts/ ")).toEqual({ path: "src/app.ts" });
+  it("trims surrounding whitespace", () => {
+    expect(checkNewFilePath("  src/app.ts ")).toEqual({ path: "src/app.ts" });
   });
   it.each([
     ["", "Enter a file path"],
     ["   ", "Enter a file path"],
+    // #350: "dir/" used to be silently stripped to a file named "dir" — now rejected like the server.
+    ["src/app.ts/", "must not end with a slash"],
+    ["dir\\", "must not end with a slash"],
     ["/abs/path.txt", "relative path"],
     ["\\abs\\path.txt", "relative path"],
     ["/", "relative path"],

@@ -819,6 +819,59 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     await app.close();
   });
 
+  it("scrubs errno-shaped 500 messages so server paths never reach the response (#350)", async () => {
+    const failures: Error[] = [
+      Object.assign(new Error("EACCES: permission denied, open 'C:\\srv\\workspaces\\agt-1\\x.txt'"), { code: "EACCES" }),
+      new Error("something broke near /srv/workspaces/agt-1/x.txt"),
+      new Error("kaboom"),
+    ];
+    const svc = { ...service, listWorkspaces: async () => { throw failures.shift(); } } as unknown as AgentService;
+    const app = await createApp(config(), svc);
+    const get = () => app.inject({ method: "GET", url: "/api/workspaces", headers: auth });
+
+    const errno = await get();
+    expect(errno.statusCode).toBe(500);
+    expect(errno.json()).toEqual({ error: "Internal error (EACCES)" });
+    expect(errno.body).not.toContain("workspaces");
+
+    const pathy = await get();
+    expect(pathy.statusCode).toBe(500);
+    expect(pathy.json()).toEqual({ error: "Internal error" });
+
+    // A 500 that is neither errno-shaped nor path-bearing keeps its message.
+    expect((await get()).json()).toEqual({ error: "kaboom" });
+    // Non-500 HttpError messages are untouched (the 409 carries deliberate operator guidance).
+    const svc409 = { ...service, sendMessage: async () => { throw new HttpError(409, "This Agent is already running"); } } as unknown as AgentService;
+    const app409 = await createApp(config(), svc409);
+    const res = await app409.inject({
+      method: "POST", url: "/api/agents/2c1b9f8e-3b7e-4b9d-9d3a-1c2d3e4f5a6b/messages",
+      headers: { ...auth, "content-type": "application/json" }, payload: { content: "hi" },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toEqual({ error: "This Agent is already running" });
+    await app409.close();
+    await app.close();
+  });
+
+  it("rejects unknown keys nested inside assertions (#350)", async () => {
+    const svc = {
+      ...service,
+      createRegressionCase: async (input: Record<string, unknown>) => ({ ...input, id: "case-1", createdAt: "2026-08-30T00:00:00.000Z" }),
+    } as unknown as AgentService;
+    const app = await createApp(config(), svc);
+    const base = { name: "n", prompt: "p", workspaceTemplate: "fixture", baselineConfigHash: "hash" };
+    const post = (assertions: unknown) => app.inject({
+      method: "POST", url: "/api/regression-cases",
+      headers: { ...auth, "content-type": "application/json" },
+      payload: { ...base, assertions } as Record<string, unknown>,
+    });
+    expect((await post([{ type: "terminal_status", expected: "ok" }])).statusCode).toBe(201);
+    expect((await post([{ type: "post_check", command: "npm test" }])).statusCode).toBe(201); // defaulted timeoutMs still applies
+    expect((await post([{ type: "terminal_status", expected: "ok", surprise: true }])).statusCode).toBe(400);
+    expect((await post([{ type: "expected_tool", program: "npm", shell: "bash" }])).statusCode).toBe(400);
+    await app.close();
+  });
+
   it("rejects unknown keys in mutation bodies with 400 (#345)", async () => {
     const svc = {
       ...service,

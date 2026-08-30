@@ -59,6 +59,10 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
   const [copyState, setCopyState] = useState<"copied" | "failed" | null>(null);
   const copyTimer = useRef<number | undefined>(undefined);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  // #350: refresh()'s preview re-fetch races the Edit button — the resolution callback needs the
+  // editText value at *resolution* time (its closure only sees the value at call time), so mirror it.
+  const editingRef = useRef(false);
+  editingRef.current = editText !== null;
   const loading = useRef(new Set<string>());
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -156,9 +160,12 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
     // reached here after confirmDiscardEdits, and stays dropped). Gone-on-refetch closes silently.
     const keep = preview !== null && (editText === null || editText === preview.content) ? preview.path : null;
     if (keep) {
+      // #350: if Edit was clicked while this fetch was in flight, the editor is based on the
+      // preview at click time — swapping (or closing) the preview underneath it would let Save
+      // clobber the newer content, so skip; the dirty-editor guard covers the rest.
       api.readWorkspaceFile(agentId, keep).then(
-        (file) => setPreview((current) => (current?.path === keep ? file : current)),
-        () => setPreview((current) => (current?.path === keep ? null : current)),
+        (file) => setPreview((current) => (current?.path === keep && !editingRef.current ? file : current)),
+        () => setPreview((current) => (current?.path === keep && !editingRef.current ? null : current)),
       );
     } else {
       setPreview(null);
