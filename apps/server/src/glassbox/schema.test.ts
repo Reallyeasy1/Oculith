@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ZodError } from "zod";
 import {
-  CAPTURE_POLICIES, CATEGORIES, EVENT_TYPES, SCHEMA_VERSION, STATUSES,
+  ACTOR_TYPES, CAPTURE_POLICIES, CATEGORIES, EVENT_TYPES, SCHEMA_VERSION, STATUSES,
   capturesSummaries, eventInputSchema, newId, observationEventSchema,
 } from "./schema.js";
 import { createTraceContext } from "./context.js";
@@ -42,6 +42,26 @@ describe("ObservationEvent schema", () => {
     for (const type of EVENT_TYPES) expect(() => observationEventSchema.parse({ ...base, type })).not.toThrow();
     for (const category of CATEGORIES) expect(() => observationEventSchema.parse({ ...base, category })).not.toThrow();
     expect(STATUSES).toEqual(["running", "ok", "error", "cancelled", "timeout", "unset"]);
+  });
+  it("redaction.applied is not an event type: redaction outcome lives inline on privacy (PRD, #59)", () => {
+    expect(EVENT_TYPES).not.toContain("redaction.applied");
+    expect(() => observationEventSchema.parse({ ...base, type: "redaction.applied" })).toThrow(ZodError);
+  });
+  it("actorType comes from the single ACTOR_TYPES enum and rejects unknown actors", () => {
+    for (const actorType of ACTOR_TYPES) expect(() => observationEventSchema.parse({ ...base, actorType })).not.toThrow();
+    expect(() => observationEventSchema.parse({ ...base, actorType: "robot" })).toThrow(ZodError);
+  });
+  it.each([
+    ["2026-08-26T00:00:00.000Z", true],
+    ["2026-08-26T00:00:00Z", true],
+    ["2026-08-26", false], // date-only is not a datetime
+    ["not-a-date", false],
+  ])("timestamp %s accepted=%s (z.iso.datetime, zod 4)", (timestamp, ok) => {
+    expect(observationEventSchema.safeParse({ ...base, timestamp }).success).toBe(ok);
+    expect(eventInputSchema.safeParse({
+      traceId: "trc_1", spanId: "spn_1", runId: "r", agentId: "a", type: "run.created",
+      category: "control", name: "run.created", source: { component: "x", observed: true }, timestamp,
+    }).success).toBe(ok);
   });
   it("eventInputSchema omits generated fields", () => {
     const input = eventInputSchema.parse({
