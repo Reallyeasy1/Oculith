@@ -347,7 +347,7 @@ export default function TraceDetail({ runId, run, view, templateBacked, focusEve
         <Field label="Evidence" className="trace-evidence">
           <CapabilityBadge layer="model" state={summary.capabilities.model} status={summary.status} />
           <CapabilityBadge layer="tool" state={summary.capabilities.tool} status={summary.status} />
-          {summary.redactedEvents > 0 && <span className="badge">redacted {summary.redactedEvents}</span>}
+          {summary.redactedEvents > 0 && <span className="badge badge-redacted">redacted {summary.redactedEvents}</span>}
           {summary.truncated && <span className="badge badge-warn">truncated</span>}
           {summary.degraded && <span className="badge badge-warn">degraded</span>}
           {summary.incompleteSpans > 0 && <span className="badge badge-warn">{summary.incompleteSpans} incomplete</span>}
