@@ -9,6 +9,7 @@ import RunsView from "./RunsView";
 import ReliabilityPanel from "./ReliabilityPanel";
 import type { ReliabilityDrill } from "./reliability-view-model";
 import TraceDetail from "./TraceDetail";
+import Markdown from "./MarkdownView";
 import Overview from "./Overview";
 import CompareView from "./CompareView";
 import EvaluatorsPanel from "./EvaluatorsPanel";
@@ -1119,7 +1120,9 @@ export default function App() {
                           </button>
                         )}
                       </div>
-                      <div className="message-body">{message.content}</div>
+                      <div className="message-body">
+                        {message.role === "assistant" ? <Markdown source={message.content} /> : message.content}
+                      </div>
                     </article>
                   ))
                 )}
