@@ -99,25 +99,43 @@ export function flattenSpans(spans: Span[]): Span[] {
 
 function reconstructSpans(events: ObservationEvent[]): Map<string, Span> {
   const spans = new Map<string, Span>();
+  // #357 — spans need phase bookkeeping the Span shape doesn't carry:
+  // `started`: the first `start` wins; a later duplicate `start` is kept as evidence but never re-times the span.
+  // `ended`: only a real `end` may close a span — an `instant` is a point event and must never end one.
+  // `instantSeed`: the instant that provisionally created a span, folded into its events if a `start` reopens it.
+  const started = new Set<string>();
+  const ended = new Set<string>();
+  const instantSeed = new Map<string, ObservationEvent>();
   for (const e of events) {
     const existing = spans.get(e.spanId);
     if (e.phase === "start") {
+      if (started.has(e.spanId)) {
+        // Duplicate start: first start wins — record the event, keep the original startedAt/sequence.
+        existing?.events.push(e);
+        continue;
+      }
+      started.add(e.spanId);
       if (!existing) {
         spans.set(e.spanId, { spanId: e.spanId, parentSpanId: e.parentSpanId, name: e.name, category: e.category, status: "running",
           startedAt: e.timestamp, incomplete: true, sequence: e.sequence, source: e.source, attributes: { ...e.attributes },
           summary: e.summary, error: e.error, events: [], children: [], depth: 0 });
         continue;
       }
-      // A `start` event is authoritative for timing even when it arrives after the matching `end` (out-of-order
-      // delivery): always (re)establish startedAt/sequence from it, and once both phases have been observed,
-      // close the span for real (recompute durationMs, clear incomplete).
+      // The first `start` is authoritative for timing even when it arrives after the span was provisionally
+      // created by an out-of-order `end` or `instant`: (re)establish startedAt/sequence from it.
       existing.startedAt = e.timestamp;
       existing.sequence = e.sequence;
-      if (existing.endedAt !== undefined) {
+      if (existing.endedAt !== undefined && ended.has(e.spanId)) {
+        // Both real phases observed: close the span for real (recompute durationMs, clear incomplete).
         existing.durationMs = Math.max(0, Date.parse(existing.endedAt) - Date.parse(e.timestamp));
         existing.incomplete = false;
       } else {
-        existing.events.push(e);
+        // Seeded by instant(s) only: reopen it — an instant must never close a span. The seed instant becomes
+        // an ordinary inner event, exactly as if it had arrived after the start.
+        existing.status = "running";
+        existing.endedAt = undefined; existing.durationMs = undefined; existing.incomplete = true;
+        const seed = instantSeed.get(e.spanId);
+        if (seed) { existing.events.unshift(seed); instantSeed.delete(e.spanId); }
       }
       continue;
     }
@@ -127,7 +145,9 @@ function reconstructSpans(events: ObservationEvent[]): Map<string, Span> {
         summary: e.summary, error: e.error, events: [], children: [], depth: 0 };
       if (e.phase === "instant") {
         span.endedAt = e.timestamp; span.durationMs = e.durationMs ?? 0;
+        instantSeed.set(e.spanId, e);
       } else {
+        ended.add(e.spanId);
         // `end` arrived with no `start` yet seen: derive a provisional startedAt from durationMs (else fall back
         // to the end timestamp) but stay `incomplete: true` — honest per invariant #7 — until a real `start`
         // event corrects it above. Never guess a span closed.
@@ -137,8 +157,8 @@ function reconstructSpans(events: ObservationEvent[]): Map<string, Span> {
       }
       spans.set(e.spanId, span);
     } else if (e.phase === "end") {
+      ended.add(e.spanId);
       existing.endedAt = e.timestamp; existing.status = e.status; existing.incomplete = false;
-      existing.name = existing.name === existing.spanId ? e.name : existing.name;
       existing.durationMs = e.durationMs ?? Math.max(0, Date.parse(e.timestamp) - Date.parse(existing.startedAt));
       Object.assign(existing.attributes, e.attributes); if (e.error) existing.error = e.error; if (e.summary) existing.summary = e.summary;
     } else {
@@ -151,6 +171,23 @@ function reconstructSpans(events: ObservationEvent[]): Map<string, Span> {
 function buildTree(spans: Map<string, Span>): Span[] {
   const roots: Span[] = [];
   for (const s of spans.values()) { const p = s.parentSpanId ? spans.get(s.parentSpanId) : undefined; if (p) p.children.push(s); else roots.push(s); }
+  // #357 — a parentSpanId cycle (x→y→…→x) leaves every member off the root list, so the whole cycle and any
+  // subtree hanging off it would vanish from spanCount/incompleteSpans/metrics. Cycle-breaking rule: promote the
+  // cycle's entry span — the unreachable span with the lowest sequence (ties: lexicographic spanId) — to a root
+  // and sever the one child edge pointing at it; the rest of the cycle stays beneath it as ordinary children, so
+  // every span is accounted for exactly once. Deterministic because sequence/spanId come from the events, not
+  // input order. (ponytail: O(n²) rescan per promoted cycle — fine under the 1,000-events/Run cap.)
+  const reachable = new Set<Span>();
+  const mark = (s: Span) => { if (reachable.has(s)) return; reachable.add(s); s.children.forEach(mark); };
+  roots.forEach(mark);
+  while (reachable.size < spans.size) {
+    const entry = [...spans.values()].filter((s) => !reachable.has(s))
+      .sort((a, b) => a.sequence - b.sequence || a.spanId.localeCompare(b.spanId))[0]!;
+    const parent = entry.parentSpanId ? spans.get(entry.parentSpanId) : undefined;
+    if (parent) parent.children.splice(parent.children.indexOf(entry), 1);
+    roots.push(entry);
+    mark(entry);
+  }
   const sortRec = (list: Span[], depth: number) => { list.sort((a, b) => a.sequence - b.sequence); for (const s of list) { s.depth = depth; sortRec(s.children, depth + 1); } };
   sortRec(roots, 0);
   return roots;
@@ -283,7 +320,9 @@ function focusFailure(events: ObservationEvent[], spans: Map<string, Span>, stat
 const isRestartCancel = (e: ObservationEvent): boolean => e.type === "run.cancelled" && e.attributes.reason === "server_restart";
 
 export function buildTrace(input: ObservationEvent[], opts: { capturePolicy: CapturePolicy; degraded?: boolean | undefined; truncated?: boolean | undefined }): TraceView {
-  const events = [...input].sort((a, b) => a.sequence - b.sequence || a.timestamp.localeCompare(b.timestamp));
+  // eventId is the final tiebreak so the sort is total: buildTrace(events) is then independent of input order
+  // even when two events share a sequence and timestamp (#357 shuffle determinism).
+  const events = [...input].sort((a, b) => a.sequence - b.sequence || a.timestamp.localeCompare(b.timestamp) || a.eventId.localeCompare(b.eventId));
   const spans = reconstructSpans(events);
   // Spans are a derived presentation view, so enrich their error copy without changing the persisted events that
   // back exports and evidence. This also covers handled tool failures on an otherwise-ok Run, where there is no
