@@ -230,20 +230,22 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     const dir = await mkdtemp(path.join(tmpdir(), "run-logs-"));
     const logs = new RunLogStore(dir, 1_000_000);
     await logs.initialize();
+    const run9 = "019f3fa8-44d2-7b60-b413-1a0b2c3d4e09";
+    const run8 = "019f3fa8-44d2-7b60-b413-1a0b2c3d4e08";
     const line = (runId: string, n: number) => ({ time: new Date(n).toISOString(), level: n % 2 ? "error" : "info", msg: "line " + n, runId, traceId: "trc_" + runId, agentId: "agt-9" });
-    for (let n = 0; n < 4; n++) await logs.append(line("run-9", n));
-    await logs.append(line("run-8", 9));
-    const svc = { ...service, getRun: (id: string) => { if (id !== "run-9") throw new HttpError(404, "Run not found"); return { id }; } } as unknown as AgentService;
+    for (let n = 0; n < 4; n++) await logs.append(line(run9, n));
+    await logs.append(line(run8, 9));
+    const svc = { ...service, getRun: (id: string) => { if (id !== run9) throw new HttpError(404, "Run not found"); return { id }; } } as unknown as AgentService;
     const store = new MemoryTraceStore();
     const app = await createApp(config(), svc, { emitter: new ObservationEmitter({ store, capturePolicy: "metadata_only" }), store, logs });
-    expect((await app.inject({ method: "GET", url: "/api/runs/run-9/logs" })).statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: `/api/runs/${run9}/logs` })).statusCode).toBe(401);
     const get = (url: string) => app.inject({ method: "GET", url, headers: auth });
-    const all = (await get("/api/runs/run-9/logs")).json();
+    const all = (await get(`/api/runs/${run9}/logs`)).json();
     expect(all).toEqual({ lines: [0, 1, 2, 3].map((n) => ({ time: new Date(n).toISOString(), level: n % 2 ? "error" : "info", msg: "line " + n })), truncated: false });
-    const bounded = (await get("/api/runs/run-9/logs?level=error&limit=1")).json();
+    const bounded = (await get(`/api/runs/${run9}/logs?level=error&limit=1`)).json();
     expect(bounded).toEqual({ lines: [{ time: new Date(3).toISOString(), level: "error", msg: "line 3" }], truncated: true });
-    expect((await get("/api/runs/run-9/logs?limit=9999")).statusCode).toBe(400);
-    expect((await get("/api/runs/nope/logs")).statusCode).toBe(404);
+    expect((await get(`/api/runs/${run9}/logs?limit=9999`)).statusCode).toBe(400);
+    expect((await get("/api/runs/019f3fa8-44d2-7b60-b413-1a0b2c3d4eff/logs")).statusCode).toBe(404);
     await app.close();
     await rm(dir, { recursive: true, force: true });
   });
@@ -393,7 +395,8 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
 
   it("lists runs and serves a trace with schemaVersion and capturePolicy", async () => {
     const store = new MemoryTraceStore(); const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
-    const ids = { traceId: "trc_9", runId: "run-9", agentId: "agt-9" };
+    const run9 = "019f3fa8-44d2-7b60-b413-1a0b2c3d4e90";
+    const ids = { traceId: "trc_9", runId: run9, agentId: "agt-9" };
     const configSnapshot = { instructions: "sha256:" + "a".repeat(64), modelProvider: "ark", model: "model", codexSandboxMode: "workspace-write", runtimeProvider: "container", containerRuntimeImage: "runtime:test", capturePolicy: "metadata_only" } as const;
     emitter.emit({ ...ids, spanId: "root", type: "http.request.received", category: "control", name: "POST", phase: "start", status: "running", source: { component: "Fastify", observed: true } });
     emitter.emit({ ...ids, sessionId: "thr-9", spanId: "created", parentSpanId: "root", type: "run.created", category: "control", name: "run.created", status: "ok", attributes: { configHash: "0123456789abcdef" }, source: { component: "AgentService", observed: true } });
@@ -404,32 +407,34 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     emitter.emit({ ...ids, spanId: "t", parentSpanId: "root", type: "run.timed_out", category: "control", name: "run.timed_out", status: "timeout", source: { component: "AgentService", observed: true } });
     await emitter.flush();
     const svc = { ...service, getRuns: () => [], listAgents: () => [{ id: "agt-9", name: "Nine" }],
-      getRun: (id: string) => { if (id !== "run-9") throw new HttpError(404, "Run not found"); return { id, agentId: "agt-9", status: "failed", traceId: "trc_9", createdAt: "2026-08-26T00:00:00.000Z", configHash: "0123456789abcdef", configSnapshot }; },
-      allRuns: () => [{ id: "run-9", agentId: "agt-9", status: "failed", traceId: "trc_9", createdAt: "2026-08-26T00:00:00.000Z", configHash: "0123456789abcdef", configSnapshot }] } as unknown as AgentService;
+      getRun: (id: string) => { if (id !== run9) throw new HttpError(404, "Run not found"); return { id, agentId: "agt-9", status: "failed", traceId: "trc_9", createdAt: "2026-08-26T00:00:00.000Z", configHash: "0123456789abcdef", configSnapshot }; },
+      allRuns: () => [{ id: run9, agentId: "agt-9", status: "failed", traceId: "trc_9", createdAt: "2026-08-26T00:00:00.000Z", configHash: "0123456789abcdef", configSnapshot }] } as unknown as AgentService;
     const app = await createApp(config(), svc, { emitter, store });
     const get = (url: string) => app.inject({ method: "GET", url, headers: auth });
     const list = await get("/api/runs?limit=10");
     expect(list.statusCode).toBe(200);
     const body = list.json();
     expect(body.schemaVersion).toBe("1.0"); expect(body.capturePolicy).toBe("metadata_only");
-    expect(body.runs[0]).toMatchObject({ runId: "run-9", agentName: "Nine", sessionId: "thr-9", status: "timeout", firstFailingStep: "codex", eventCount: 7, toolCalls: 1, toolFailures: 1, tokens: { output: 7 }, denials: 0, configHash: "0123456789abcdef", configSnapshot, capabilities: { model: "observed", tool: "observed" }, actions: 5 });
-    const trace = await get("/api/runs/run-9/trace");
+    expect(body.runs[0]).toMatchObject({ runId: run9, agentName: "Nine", sessionId: "thr-9", status: "timeout", firstFailingStep: "codex", eventCount: 7, toolCalls: 1, toolFailures: 1, tokens: { output: 7 }, denials: 0, configHash: "0123456789abcdef", configSnapshot, capabilities: { model: "observed", tool: "observed" }, actions: 5 });
+    const trace = await get(`/api/runs/${run9}/trace`);
     expect(body.runs[0].toolCalls).toBe(trace.json().summary.metrics.toolCalls);
     expect(body.runs[0].toolFailures).toBe(trace.json().summary.metrics.toolFailures);
     expect(body.runs[0].tokens.output).toBe(trace.json().summary.metrics.tokens.output);
     expect(trace.json().summary.configHash).toBe(body.runs[0].configHash);
     expect(trace.json().summary.failure).toMatchObject({ kind: "timeout", spanId: "rt", path: ["root", "rt"] });
     expect(trace.json().spans[0].children.some((span: { spanId: string }) => span.spanId === "rt")).toBe(true);
-    expect((await get("/api/traces/trc_9")).json().summary.runId).toBe("run-9");
+    expect((await get("/api/traces/trc_9")).json().summary.runId).toBe(run9);
     const filtered = (await get("/api/traces/trc_9/events?status=timeout")).json();
     expect(filtered.events.map((e: { type: string }) => e.type)).toEqual(["runtime.codex.failed", "run.timed_out"]);
     const byCategories = (await get("/api/traces/trc_9/events?category=control,runtime")).json();
     expect(byCategories.events).toHaveLength(5);
-    const audit = (await get("/api/runs/run-9/audit")).json();
+    const audit = (await get(`/api/runs/${run9}/audit`)).json();
     expect(audit.audit).toEqual(expect.arrayContaining([expect.objectContaining({ action: "runtime.codex.failed", outcome: "timeout" })]));
     expect(audit.audit.every((row: { eventId: string }) => trace.json().events.some((event: { eventId: string }) => event.eventId === row.eventId))).toBe(true);
     expect((await get("/api/traces/trc_9/audit")).json().audit).toEqual(audit.audit);
-    expect((await get("/api/runs/nope/trace")).statusCode).toBe(404);
+    // #345: a malformed run id is a 400 contract violation on every run-id route; unknown UUIDs stay 404.
+    expect((await get("/api/runs/nope/trace")).statusCode).toBe(400);
+    expect((await get("/api/runs/019f3fa8-44d2-7b60-b413-1a0b2c3d4eff/trace")).statusCode).toBe(404);
     expect((await get("/api/runs?limit=9999")).statusCode).toBe(400);
     // FR-12: export = the trace route's body wrapped in { schemaVersion, exportedAt } — same builder, same policy.
     const exported = await get("/api/traces/trc_9/export");
@@ -788,6 +793,51 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     });
     expect(res.statusCode).toBe(201);
     expect(saved).toMatchObject({ name: "Keeps only the terminal check", sourceRunId: ids.runId, workspaceTemplate: "node-lib-with-failing-test", assertions: [{ type: "terminal_status", expected: "ok" }] });
+    await app.close();
+  });
+
+  it("rejects a malformed run id with 400 on every run-id route (#345)", async () => {
+    const store = new MemoryTraceStore();
+    const emitter = new ObservationEmitter({ store, capturePolicy: "metadata_only" });
+    const evaluations = { resultsForRun: async () => [] } as unknown as EvaluationStore;
+    const svc = { ...service, getRun: () => { throw new HttpError(404, "Run not found"); } } as unknown as AgentService;
+    const app = await createApp(config(), svc, { emitter, store, evaluations });
+    for (const [method, url] of [
+      ["GET", "/api/runs/not-a-uuid"],
+      ["GET", "/api/runs/not-a-uuid/trace"],
+      ["GET", "/api/runs/not-a-uuid/logs"],
+      ["GET", "/api/runs/not-a-uuid/audit"],
+      ["GET", "/api/runs/not-a-uuid/evaluations"],
+      ["GET", "/api/runs/not-a-uuid/regression-case"],
+      ["POST", "/api/runs/not-a-uuid/regression-case"],
+    ] as const) {
+      const res = await app.inject({ method, url, headers: { ...auth, "content-type": "application/json" }, payload: method === "POST" ? {} : undefined });
+      expect(res.statusCode, `${method} ${url}`).toBe(400);
+    }
+    // A well-formed but unknown id is still a 404 lookup miss.
+    expect((await app.inject({ method: "GET", url: "/api/runs/019f3fa8-44d2-7b60-b413-1a0b2c3d4eff/evaluations", headers: auth })).statusCode).toBe(404);
+    await app.close();
+  });
+
+  it("rejects unknown keys in mutation bodies with 400 (#345)", async () => {
+    const svc = {
+      ...service,
+      createAgent: async (input: unknown) => input,
+      updateAgent: async (_id: string, input: unknown) => input,
+      sendMessage: async () => ({ run: { id: "run-1" }, message: {} }),
+    } as unknown as AgentService;
+    const app = await createApp(config(), svc);
+    const agentId = "2c1b9f8e-3b7e-4b9d-9d3a-1c2d3e4f5a6b";
+    const call = (method: "POST" | "PATCH", url: string, payload: Record<string, unknown>) =>
+      app.inject({ method, url, headers: { ...auth, "content-type": "application/json" }, payload });
+    expect((await call("POST", "/api/agents", { name: "ok" })).statusCode).toBe(201);
+    expect((await call("POST", "/api/agents", { name: "ok", surprise: true })).statusCode).toBe(400);
+    expect((await call("POST", "/api/agents", { name: "ok", budget: { maxTokensPerDay: 1, surprise: true } })).statusCode).toBe(400);
+    // partial() keeps the strict posture on the update body.
+    expect((await call("PATCH", "/api/agents/" + agentId, { name: "ok" })).statusCode).toBe(200);
+    expect((await call("PATCH", "/api/agents/" + agentId, { name: "ok", surprise: true })).statusCode).toBe(400);
+    expect((await call("POST", "/api/agents/" + agentId + "/messages", { content: "hi" })).statusCode).toBe(202);
+    expect((await call("POST", "/api/agents/" + agentId + "/messages", { content: "hi", surprise: true })).statusCode).toBe(400);
     await app.close();
   });
 });
