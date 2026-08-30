@@ -378,7 +378,8 @@ export interface RunLogLine {
 }
 
 /** #96: allow-listed preview commands — the API accepts these two names, never a command line. */
-export type PreviewCommand = "vite" | "static";
+/** #375: static is the only preview command (vite retired — same dist/, none of the boot failures). */
+export type PreviewCommand = "static";
 
 /** #96: one long-lived hardened container serving the Agent's workspace on a published loopback port. */
 export interface WorkspacePreview {
@@ -392,9 +393,8 @@ export interface WorkspacePreview {
   expiresAt: string;
 }
 
-/** #335: what this workspace can currently serve — a local vite install and/or a built dist/. */
+/** #335/#375: whether this workspace can serve — a built dist/index.html (the only command). */
 export interface PreviewServability {
-  vite: boolean;
   static: boolean;
 }
 

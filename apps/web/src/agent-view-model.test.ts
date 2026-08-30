@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { showLastErrorHint } from "./agent-view-model";
+import { preferredPreviewCommand, showLastErrorHint } from "./agent-view-model";
 
 describe("showLastErrorHint (#266)", () => {
   it("shows persisted evidence when no run is on screen (reload / agent switch)", () => {
@@ -16,5 +16,15 @@ describe("showLastErrorHint (#266)", () => {
   it("never shows without lastError", () => {
     expect(showLastErrorHint(null, null)).toBe(false);
     expect(showLastErrorHint(null, "failed")).toBe(false);
+  });
+});
+
+describe("preferredPreviewCommand (#370, #375)", () => {
+  it("starts the static preview when the workspace has a built dist", () => {
+    expect(preferredPreviewCommand({ static: true })).toBe("static");
+  });
+  it("returns null when nothing is servable — the Preview button stays hidden", () => {
+    expect(preferredPreviewCommand({ static: false })).toBeNull();
+    expect(preferredPreviewCommand(null)).toBeNull();
   });
 });

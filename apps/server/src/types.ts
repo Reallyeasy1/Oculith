@@ -124,8 +124,10 @@ export interface AgentRun {
   currentActivity?: RunActivity | undefined;
 }
 
-/** #96: allow-listed preview commands — the API accepts these two names, never a command line. */
-export type PreviewCommand = "vite" | "static";
+/** #96/#375: the allow-listed preview command — the API accepts this name, never a command line.
+ * vite retired in #375: `vite preview` served the same dist/ but died on host-platform
+ * node_modules (native bindings) and vite 5's read-only-mount config loading. */
+export type PreviewCommand = "static";
 
 /** #96: one long-lived hardened container serving the Agent's workspace on a published loopback port.
  * In-process state only (a restart removes the container), so it never enters the Database. */
@@ -140,9 +142,8 @@ export interface WorkspacePreview {
   expiresAt: string;
 }
 
-/** #335: what this workspace can currently serve — a local vite install and/or a built dist/. */
+/** #335/#375: whether this workspace can serve — a built dist/index.html (the only command). */
 export interface PreviewServability {
-  vite: boolean;
   static: boolean;
 }
 
