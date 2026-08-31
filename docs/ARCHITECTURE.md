@@ -2,7 +2,13 @@
 
 Volc Agent Launchpad is a single-node control plane. GlassBox observes the existing execution path; it does not replace the runner or become a second source of Run state.
 
-## Implemented system
+## The one-page diagram
+
+![GlassBox architecture — trust boundaries, instrumentation points, redaction gate, recovery behavior, verify loop](assets/architecture.svg)
+
+Reading guide: dashed borders are trust boundaries (untrusted browser client, untrusted runtime execution); ★ marks the five instrumentation points where adapters sit on existing seams; the green gate is the single redaction boundary every event crosses before it can exist on disk, API, export or log (and the serve gate scrubs the raw conversation store on every read); ↻ marks recovery behavior (non-blocking emitter, `telemetry.degraded`, fail-closed redaction, honest restart cancellation); the purple loop is verification replaying saved evidence through the same real execution path until `PASS→FAIL = REGRESSION`.
+
+## Implemented system (component detail)
 
 ```mermaid
 flowchart LR
