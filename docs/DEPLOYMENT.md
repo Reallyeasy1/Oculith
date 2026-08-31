@@ -1,13 +1,22 @@
 # Deployment
 
-Use one of two Volcengine ECS paths:
+Use one of two ECS paths:
 
-- Install and deploy to an existing Linux ECS instance.
-- Provision the complete network and ECS stack with Terraform.
+- Install and deploy to an existing Linux ECS instance (BytePlus or Volcengine —
+  the procedure is identical and cloud-agnostic).
+- Provision the complete network and ECS stack on Volcengine with Terraform.
 
-Both profiles require a Volcengine Ark API key and a Responses-capable endpoint.
+Both profiles require an Ark API key and a Responses-capable endpoint.
 
-## Existing Linux ECS
+## Existing Linux ECS (BytePlus or Volcengine)
+
+For BytePlus, create the instance in the console first: region `ap-southeast-1`,
+2 vCPU / 4 GiB general-purpose instance, Ubuntu 24.04 LTS image, 40 GiB system
+disk, an SSH key pair, and a pay-by-traffic EIP. Security group: TCP 22 from
+administrator IPs only; TCP 80 and 443 open when using the HTTPS overlay below
+(80 only, event network only, for the plain-HTTP setup); egress open (Ark, Git,
+package registries). Ubuntu 24.04's kernel supports Landlock, so the Codex
+sandbox keeps `workspace-write` without the `danger-full-access` fallback.
 
 Recommended host:
 
@@ -119,9 +128,46 @@ docker compose --env-file .env.production ps
 
 Deploy updates with `git pull --ff-only`, then rerun the deployment script.
 
+### HTTPS with Caddy and DuckDNS
+
+The repository ships an optional Caddy overlay (`docker-compose.caddy.yml` +
+`deploy/caddy/Caddyfile`) that terminates TLS with an automatic Let's Encrypt
+certificate. Use it whenever `APP_AUTH_TOKEN` crosses an untrusted network.
+
+1. Create a free hostname at [duckdns.org](https://www.duckdns.org) and point it
+   at the instance's EIP. DuckDNS is on the Public Suffix List, so each
+   subdomain gets its own Let's Encrypt rate-limit bucket; do not use nip.io,
+   whose shared bucket is usually exhausted.
+2. Set in `.env.production`:
+
+   ```dotenv
+   PUBLIC_PORT=127.0.0.1:3000
+   LAUNCHPAD_DOMAIN=your-name.duckdns.org
+   ACME_EMAIL=you@example.com
+   ```
+
+   `PUBLIC_PORT=127.0.0.1:3000` binds the app port to loopback so Caddy is the
+   only public entrypoint.
+3. Open TCP 443 in the security group and keep TCP 80 open (Caddy answers the
+   ACME HTTP-01 challenge there and redirects HTTP to HTTPS).
+4. Rerun `./scripts/deploy-existing-ecs.sh .env.production` — a non-empty
+   `LAUNCHPAD_DOMAIN` adds the overlay automatically.
+
+Verify:
+
+```bash
+curl https://your-name.duckdns.org/api/health
+curl -H "Authorization: Bearer $APP_AUTH_TOKEN" \
+  https://your-name.duckdns.org/api/system
+```
+
+Certificates persist in `data/caddy/`, so recreating containers does not burn
+Let's Encrypt rate limits.
+
 ### Network and cleanup
 
-- Allow TCP 80 only from the event network.
+- With the HTTPS overlay: allow TCP 80 and 443 from anywhere (the token is
+  protected in transit); without it: allow TCP 80 only from the event network.
 - Allow TCP 22 only from administrator IP addresses.
 - Allow outbound HTTPS to Ark and package registries.
 - Add HTTPS before using `APP_AUTH_TOKEN` across an untrusted network.
@@ -131,6 +177,10 @@ Stop the application without deleting Agent data:
 ```bash
 docker compose --env-file .env.production down
 ```
+
+When a console-provisioned demo instance is no longer needed, stop the stack,
+release the EIP, and terminate the instance in the console (this deletes the
+system disk and all Agent data — back up `data/` and `workspaces/` first).
 
 ## Terraform deployment
 

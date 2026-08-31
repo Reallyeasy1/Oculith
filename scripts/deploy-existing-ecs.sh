@@ -27,6 +27,13 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
+# A non-empty LAUNCHPAD_DOMAIN enables the Caddy HTTPS overlay in front of the app.
+launchpad_domain="$(sed -n 's/^LAUNCHPAD_DOMAIN=//p' "$env_file" | tail -n 1)"
+compose_files=(-f docker-compose.yml)
+if [[ -n "$launchpad_domain" ]]; then
+  compose_files+=(-f docker-compose.caddy.yml)
+fi
+
 mkdir -p data workspaces codex-home
 if [[ "$(stat -c '%u:%g' data)" != "1000:1000" ]] \
   || [[ "$(stat -c '%u:%g' workspaces)" != "1000:1000" ]] \
@@ -43,20 +50,24 @@ if [[ "$(stat -c '%u:%g' data)" != "1000:1000" ]] \
 fi
 export LAUNCHPAD_ENV_FILE="$env_file"
 
-docker compose --env-file "$env_file" up -d --build
+docker compose "${compose_files[@]}" --env-file "$env_file" up -d --build
 
 requested_sandbox_mode="$(sed -n 's/^CODEX_SANDBOX_MODE=//p' "$env_file" | tail -n 1)"
 requested_sandbox_mode="${requested_sandbox_mode:-workspace-write}"
 if [[ "$requested_sandbox_mode" == "workspace-write" ]] \
-  && ! docker compose --env-file "$env_file" exec -T launchpad \
+  && ! docker compose "${compose_files[@]}" --env-file "$env_file" exec -T launchpad \
     codex sandbox linux --full-auto -- true >/dev/null 2>&1; then
   echo "Codex Landlock is unavailable on this Linux kernel/container runtime." >&2
   echo "Falling back to danger-full-access inside the outer Docker boundary." >&2
   echo "This POC does not provide per-Agent isolation; do not store unrelated secrets in it." >&2
   export CODEX_SANDBOX_MODE=danger-full-access
-  docker compose --env-file "$env_file" up -d --no-build --force-recreate
+  docker compose "${compose_files[@]}" --env-file "$env_file" up -d --no-build --force-recreate
 fi
-docker compose --env-file "$env_file" ps
+docker compose "${compose_files[@]}" --env-file "$env_file" ps
 
-public_port="$(sed -n 's/^PUBLIC_PORT=//p' "$env_file" | tail -n 1)"
-echo "Agent Launchpad is starting on port ${public_port:-3000}."
+if [[ -n "$launchpad_domain" ]]; then
+  echo "Agent Launchpad is starting behind Caddy at https://$launchpad_domain."
+else
+  public_port="$(sed -n 's/^PUBLIC_PORT=//p' "$env_file" | tail -n 1)"
+  echo "Agent Launchpad is starting on port ${public_port:-3000}."
+fi

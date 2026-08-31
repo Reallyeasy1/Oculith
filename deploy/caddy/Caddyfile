@@ -1,0 +1,7 @@
+{
+	email {$ACME_EMAIL}
+}
+
+{$LAUNCHPAD_DOMAIN} {
+	reverse_proxy launchpad:3000
+}
