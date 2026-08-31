@@ -1,4 +1,4 @@
-# GlassBox User Guide
+# Oculith User Guide
 
 _How to operate the platform day to day: run agents, read their evidence, and turn good runs into
 regression checks. For setup and reproduction see the [README](../README.md); for a guided first

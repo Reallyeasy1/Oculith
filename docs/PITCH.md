@@ -1,4 +1,4 @@
-# GlassBox — pitch and three-minute demo script
+# Oculith — pitch and three-minute demo script
 
 _One product narrative for the TechJam Track 1 submission ("Agent Launchpad: Design and Build Lightweight Agent Middleware", Glass Box track). The presenter reads §2 during the demo recording (#95); §1 frames how judges should read the code; §3 is the Q&A pocket card. Runbook and fixtures: `docs/DEMO.md` (#92). Sources: `docs/PRD.md`, `docs/PROBLEM_STATEMENT.md`, `docs/UAT_COVERAGE.md`, `docs/OBSERVABILITY_ROADMAP.md`._
 
@@ -10,7 +10,7 @@ _One product narrative for the TechJam Track 1 submission ("Agent Launchpad: Des
 
 **Agents execute opaque chains of actions.** A Run on the starter kit ends in a final message or a one-line error. We hit the cost ourselves: a ten-minute timeout that looked like a model problem was actually every shell command paying a 40-second host-profile tax. The evidence existed — nothing in the product surfaced it.
 
-**GlassBox instruments the real runtime.** Not a mock, not a wrapper UI: adapters at the real seams — Fastify → AgentService → AgentRunner → container/process → Codex → workspace — normalise everything into one versioned `ObservationEvent` contract, through a single redaction boundary, into an append-only local trace per Run. Thirty event types across nine categories today.
+**Oculith instruments the real runtime.** Not a mock, not a wrapper UI: adapters at the real seams — Fastify → AgentService → AgentRunner → container/process → Codex → workspace — normalise everything into one versioned `ObservationEvent` contract, through a single redaction boundary, into an append-only local trace per Run. Thirty event types across nine categories today.
 
 **The trace explains what happened.** One correlated tree from the HTTP request to the terminal result: per-call model activity, tool identities with durations and exit codes, token usage, sandbox denials as first-class evidence, and first-failure focus that puts the operator on the failing span in at most two interactions.
 
@@ -60,13 +60,13 @@ _Nine steps matching the #92 runbook (`docs/DEMO.md`). **Say** lines are the spo
 
 **Click:** open `localhost:3000`, unlock with the token, select the **Demo** Agent.
 
-**Say:** Agents execute opaque chains of actions. When a Run fails, the evidence usually exists — nothing surfaces it. GlassBox instruments the real runtime, so every Run becomes one correlated, privacy-safe trace. This is our Demo Agent; everything on this screen is stored evidence from real Runs.
+**Say:** Agents execute opaque chains of actions. When a Run fails, the evidence usually exists — nothing surfaces it. Oculith instruments the real runtime, so every Run becomes one correlated, privacy-safe trace. This is our Demo Agent; everything on this screen is stored evidence from real Runs.
 
 ### Step 2 — One live Run (0:20–0:45)
 
 **Click:** Playground → send the Repo Doctor task ("fix the failing test") against the `node-lib-with-failing-test` template workspace.
 
-**Say:** I'll start one live Run: fix the failing test in this repository. The request travels the real path — the control plane, the service, the runner, a disposable container, Codex — and GlassBox listens at the seams. While it works, everything you see next is stored evidence from Runs exactly like it.
+**Say:** I'll start one live Run: fix the failing test in this repository. The request travels the real path — the control plane, the service, the runner, a disposable container, Codex — and Oculith listens at the seams. While it works, everything you see next is stored evidence from Runs exactly like it.
 
 ### Step 3 — The trace (0:45–1:10)
 
@@ -110,7 +110,7 @@ _Nine steps matching the #92 runbook (`docs/DEMO.md`). **Say** lines are the spo
 
 **Click:** back to the Agent overview.
 
-**Say:** That is the loop: instrument the real runtime, explain every Run, audit the decisions, turn good evidence into regression checks, and catch the change that breaks them. Glass box, not black box. Thank you.
+**Say:** That is the loop: instrument the real runtime, explain every Run, audit the decisions, turn good evidence into regression checks, and catch the change that breaks them. No more black boxes: every run, in plain sight. Thank you.
 
 ---
 

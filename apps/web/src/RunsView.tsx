@@ -95,7 +95,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
     <section className="runs-view" aria-labelledby="runs-heading">
       <div className="playground-topbar">
         <div>
-          <span className="eyebrow">GlassBox</span>
+          <span className="eyebrow">Oculith</span>
           <h2 id="runs-heading" tabIndex={-1}>{title}</h2>
         </div>
         <div className="runs-filters" role="group" aria-label="Quick filters">

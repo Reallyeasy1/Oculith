@@ -1,4 +1,4 @@
-# Observability roadmap — what GlassBox should capture next
+# Observability roadmap — what Oculith should capture next
 
 _Tech-lead position, 28 August 2026 (main `a47447f`). Answers "what belongs in the observability portion — inputs, outputs, model reasoning?" with a concrete stance per signal, ranked against the judging rubric (40% end-to-end behavior · 25% design · 20% verification · 15% demo/repro). The full inventory of what is captured today lives in the tables below; PRD §4/§8 and `.claude/rules/glassbox-invariants.md` remain the constitution — nothing here relaxes them._
 

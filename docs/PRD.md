@@ -1,11 +1,11 @@
-# PRD — GlassBox: observability-first middleware for Agent Runs
+# PRD — Oculith: observability-first middleware for Agent Runs
 
 | | |
 |---|---|
 | **Track** | TikTok TechJam 2026 · Track 1 "Agent Launchpad: Design and Build Lightweight Agent Middleware" |
 | **Repo** | github.com/Reallyeasy1/Oculith (built on the RrankPyramid/CodeJam Starter Kit) |
 | **Status** | Draft v4 — 27 Aug 2026 (Observe + Audit + Evaluate + Verify) |
-| **Source** | *GlassBox Observability PRD* (25 Aug 2026) + Track 1 problem statement §1.1–1.12 |
+| **Source** | *Oculith Observability PRD* (25 Aug 2026) + Track 1 problem statement §1.1–1.12 |
 | **Decision** | **Ship evidence before control.** Single-Run observability and failure diagnosis are the MVP; orchestration is roadmap. |
 | **Horizon** | Sprint plan S0–S8 (Observe → Verify) and E1–E3 (Evaluate, in parallel with S6–S8); see [SPRINTS.md](SPRINTS.md) |
 
@@ -23,7 +23,7 @@ We hit this ourselves during baseline testing: a 10-minute timeout that looked l
 
 ## 2. Product concept
 
-**GlassBox** is a thin observation plane alongside the existing execution path. It instruments the real seams (Fastify → `AgentService` → `AgentRunner` → runtime/container → Codex → workspace), normalises everything into one versioned `ObservationEvent` contract through a single redaction boundary, persists it locally, and exposes a Runs index and a Trace detail view with first-failure focus.
+**Oculith** is a thin observation plane alongside the existing execution path. It instruments the real seams (Fastify → `AgentService` → `AgentRunner` → runtime/container → Codex → workspace), normalises everything into one versioned `ObservationEvent` contract through a single redaction boundary, persists it locally, and exposes a Runs index and a Trace detail view with first-failure focus.
 
 **MVP outcome**
 1. A successful Run can be followed from the HTTP boundary to the runtime result in one trace.
@@ -247,14 +247,14 @@ The authoritative S0–S8 schedule, issue membership, gates, lanes and critical 
 
 ## 15. Rubric alignment
 
-| Dimension | Weight | GlassBox proof |
+| Dimension | Weight | Oculith proof |
 |---|---|---|
 | End-to-end behaviour | 40 % | real task traverses UI → Fastify → AgentService → AgentRunner → runtime/workspace and returns a connected trace; real controlled failure diagnosed |
 | Design & integration | 25 % | documented seams, baseline preserved, provider-neutral versioned contract, evidence separated from future control |
 | Verification & robustness | 20 % | success/failure/privacy/restart/degradation tests, caps, idempotency, reproducible setup |
 | Demo & reproducibility | 15 % | success → trace → failure → diagnosis → privacy proof, one-command local path |
 
-**Narrative:** *Agents fail in ways logs cannot explain. GlassBox makes every Run auditable and diagnosable today, and turns that evidence into the control substrate for tomorrow's agent plane.*
+**Narrative:** *Agents fail in ways logs cannot explain. Oculith makes every Run auditable and diagnosable today, and turns that evidence into the control substrate for tomorrow's agent plane.*
 
 ## 16. Verify: Audit → Regression Case → EvalRun → Comparison
 

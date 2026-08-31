@@ -6,7 +6,7 @@ flowchart LR
     API["Fastify<br/>app.ts"] --> Service["AgentService<br/>agent-service.ts"]
     Service --> Json["JsonStore<br/>store.ts"]
     Service --> Workspaces["WorkspaceManager<br/>workspace.ts"]
-    subgraph glassbox["GlassBox instrumentation boundary"]
+    subgraph glassbox["Oculith instrumentation boundary"]
       Context["context.ts"] --> Adapter["service + runner adapters"]
       Observer["CodexStreamObserver"] --> Adapter
       Adapter -->|ObservationEvent| Emitter["ObservationEmitter"] --> Redact["REDACTION POINT"] --> EventStore["NDJSON TraceStore + index"]

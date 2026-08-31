@@ -1,4 +1,4 @@
-# GlassBox project reference
+# Oculith project reference
 
 _State as of 27 August 2026 (main `755546b`). Sections 1–9 describe the system and change slowly; sections 10–14 (plan, status, ledger, UAT history, risks) are snapshots — epic #42, `docs/SPRINTS.md` and the GitHub milestone **TechJam MVP** are the live source of truth._
 
@@ -26,7 +26,7 @@ _State as of 27 August 2026 (main `755546b`). Sections 1–9 describe the system
 
 ## 1. What it is
 
-**GlassBox** is an agent-reliability middleware built on the Volc Agent Launchpad starter kit for TikTok TechJam 2026, Track 1. It sits between the control plane and the runtime of an AI coding agent (Codex CLI in a disposable container) and answers, with evidence rather than inference:
+**Oculith** is an agent-reliability middleware built on the Volc Agent Launchpad starter kit for TikTok TechJam 2026, Track 1. It sits between the control plane and the runtime of an AI coding agent (Codex CLI in a disposable container) and answers, with evidence rather than inference:
 
 > _What did the agent do? Why did it fail? Did a configuration change make it worse?_
 
@@ -40,7 +40,7 @@ _State as of 27 August 2026 (main `755546b`). Sections 1–9 describe the system
 
 **Evaluate plane (PRD v4, 27 Aug).** A fourth stage between Observe/Audit and Verify answers *was the Agent actually good, over history?* without touching the observation contract: evaluator definitions are immutable, versioned records; results are append-only and cite the event ids they rest on; `taskOutcome` (`passed | failed | unknown`) is a derived Run-summary field with a source, never an event, and stays `unknown` until an evaluator sets it. Three vocabularies stay distinct and labelled — **observed fact** (events) · **derived diagnosis** (`buildTrace`) · **evaluator judgement** (results). Deterministic Verify remains LLM-free and the only classifier of `REGRESSION`; the historical comparison shows "quality drift". NDJSON + `db.json` remain the judged one-command path; PostgreSQL is an optional backend behind the existing store interfaces (#175). Sprints E1–E3 run in parallel with S6–S8 (section 10).
 
-**History.** The repository started as _LaunchGuard_ (capability leases and a protected-action gateway; issues #1–#20, all closed). On 26 August it was re-scoped to GlassBox (epic #42): evidence, not control, is what the track rewards, and a future controller needs the same facts anyway (PRD goal G6 — the contract must drive future controls without re-instrumenting). Sprint 1 (Observe) shipped the same day; the Verify half was planned as sprints S1–S8 (section 10).
+**History.** The repository started as _LaunchGuard_ (capability leases and a protected-action gateway; issues #1–#20, all closed). On 26 August it was re-scoped to Oculith (epic #42): evidence, not control, is what the track rewards, and a future controller needs the same facts anyway (PRD goal G6 — the contract must drive future controls without re-instrumenting). Sprint 1 (Observe) shipped the same day; the Verify half was planned as sprints S1–S8 (section 10).
 
 ## 2. Problem, concept, users, non-goals
 
@@ -102,7 +102,7 @@ buildTrace / projectAudit / evaluators (glassbox/query.ts, eval/evaluators.ts) �
 | Workspace snapshot | `apps/server/src/workspace-snapshot.ts` | Bounded tree hash (5 000 entries, 4 MiB hashed per file, 200 paths reported) before and after a Run → `workspace.changed` |
 | Post-check | `apps/server/src/postcheck-runner.ts` (#114) | Runs a verification command inside the sandbox against a Run's workspace; emits `runtime.postcheck.*` |
 | Evaluators | `apps/server/src/eval/evaluators.ts` (#122) | Deterministic assertions over a trace (section 7) |
-| GlassBox core | `apps/server/src/glassbox/` | `schema.ts`, `emitter.ts`, `redact.ts`, `store.ts`, `query.ts`, `codex-observer.ts`, `context.ts`, `otlp.ts` (mapping adapter, #107) |
+| Oculith core | `apps/server/src/glassbox/` | `schema.ts`, `emitter.ts`, `redact.ts`, `store.ts`, `query.ts`, `codex-observer.ts`, `context.ts`, `otlp.ts` (mapping adapter, #107) |
 | Runtime image | `runtime/` + `Dockerfile` | `volc-agent-runtime:local` built by the POC script; contains Node, Codex CLI, `agentctl`; no `curl` (observed in UAT round 3) |
 
 **Invariants** (`.claude/rules/glassbox-invariants.md`, enforced by review):
@@ -145,7 +145,7 @@ Defined with zod in `apps/server/src/glassbox/schema.ts` (`SCHEMA_VERSION "1.0"`
 | Tool | `tool.call.started`, `tool.call.completed`, `tool.call.failed` (`program`, `commandBytes`, `exitCode`, `outputBytes`; `summary.text` under `safe_summary`) | CodexObserver |
 | Workspace | `workspace.changed` (`added`, `modified`, `removed`, `bytesDelta`, `truncated`, `paths`) | AgentService |
 | Policy / limits | `policy.denied` (declined program, `service/sandbox`), `limit.exceeded` (output cap) | CodexObserver, runners |
-| GlassBox self-events | `error.recorded`, `telemetry.degraded`, `trace.truncated`, `capability.unavailable` | emitter, observer, store |
+| Oculith self-events | `error.recorded`, `telemetry.degraded`, `trace.truncated`, `capability.unavailable` | emitter, observer, store |
 
 **Terminal mapping.** `run.completed → ok`, `run.failed → error`, `run.cancelled → cancelled`, `run.timed_out → timeout`; the last terminal event in sequence order decides the Run's trace status.
 
@@ -205,7 +205,7 @@ Designed and in review (PR stack, section 11):
 
 ## 8. API reference
 
-All `/api/*` routes except `/api/auth` and `/api/health` require `Authorization: Bearer <APP_AUTH_TOKEN>` when the token is set (the local `.env` leaves it empty, which disables auth). Validation errors are 400 with `details`; unknown ids are 404; busy Agents are 409. Every GlassBox response carries `schemaVersion` and `capturePolicy`.
+All `/api/*` routes except `/api/auth` and `/api/health` require `Authorization: Bearer <APP_AUTH_TOKEN>` when the token is set (the local `.env` leaves it empty, which disables auth). Validation errors are 400 with `details`; unknown ids are 404; busy Agents are 409. Every Oculith response carries `schemaVersion` and `capturePolicy`.
 
 | Method and path | Purpose | Notes |
 |---|---|---|
@@ -311,7 +311,7 @@ _Snapshot 27 August 2026, ~16:30 SGT._
 
 **Closed — LaunchGuard era (superseded):** #1 policy profile · #2 capability lease · #3 protected-action gateway · #4 policy evaluator · #5 mock resource · #6 agentctl adapter · #7 RunContext · #8 evidence timeline · #9 human approval · #10 policy panel · #11 redaction canaries · #12 failure semantics · #13 reset script · #14 README/diagram · #15 workshop decisions · #16 recovery hints · #17 budgets · #18 policy diff · #19 decision export · #20 epic.
 
-**Closed — GlassBox Observe (S0):** #21 schema · #22 TraceStore · #23 emitter · #24 Codex stream fixture · #25 trace context · #26 AgentService adapter · #27 query API · #28 runner adapters · #29 redaction pipeline · #30 gated failure fixture · #31 Runs view · #32 trace detail · #33 restart/incomplete/degraded/duplicates · #34 E2E + privacy + performance · #38 export · #39 retention · #41 OTLP adapter · #60 first UAT fixes · #69 · #70 per-Agent Runs + All-runs · #73 timeline axis · #76 workflow guards.
+**Closed — Oculith Observe (S0):** #21 schema · #22 TraceStore · #23 emitter · #24 Codex stream fixture · #25 trace context · #26 AgentService adapter · #27 query API · #28 runner adapters · #29 redaction pipeline · #30 gated failure fixture · #31 Runs view · #32 trace detail · #33 restart/incomplete/degraded/duplicates · #34 E2E + privacy + performance · #38 export · #39 retention · #41 OTLP adapter · #60 first UAT fixes · #69 · #70 per-Agent Runs + All-runs · #73 timeline axis · #76 workflow guards.
 
 **Closed — S1/S2/S3 items:** #79 configHash · #97 sandbox briefing · #104 PRD v3 · #72 trace visuals · #74 metrics · #81 denials · #82 audit projection · #87 audit view · #98 live refresh · #99 first load · #101 restart trace · #67 workspace changes · #80 post-check runner · #83 evaluators · #131 attention rule · #133 exit hints · #135 actor attribution · #143 E2E case fix · #146 project brief.
 

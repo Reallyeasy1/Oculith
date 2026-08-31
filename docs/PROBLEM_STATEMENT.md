@@ -1,6 +1,6 @@
 # TikTok TechJam 2026 — Track 1 problem statement
 
-_Transcribed from "[Early Bird Access] TikTok TechJam 2026 Tracks & Problem Statements" (Feishu, retrieved 25 August 2026) so the requirements travel with the code. Wording is the organisers'; only layout was normalised. Starter Kit: <https://github.com/RrankPyramid/CodeJam>. Technical workshop webinar: 28 August 2026, 13:00–13:45 SGT. The last section maps each requirement to where GlassBox addresses it._
+_Transcribed from "[Early Bird Access] TikTok TechJam 2026 Tracks & Problem Statements" (Feishu, retrieved 25 August 2026) so the requirements travel with the code. Wording is the organisers'; only layout was normalised. Starter Kit: <https://github.com/RrankPyramid/CodeJam>. Technical workshop webinar: 28 August 2026, 13:00–13:45 SGT. The last section maps each requirement to where Oculith addresses it._
 
 ## 1. Agent Launchpad: Design and Build Lightweight Agent Middleware
 
@@ -115,7 +115,7 @@ Implement only the lifecycle behavior needed to make the chosen capability convi
 
 Recommended examples, not a prescribed checklist: identity and authorization; **trace, audit, and observability**; layered Agent architecture; threat modeling and safety; multi-Agent coordination; other team-designed middleware (lifecycle reconciliation and failure recovery, state and memory governance, human-in-the-loop workflows, cost and budget control, provider abstraction, versioning and rollback, tool or model routing, credential exchange, automated diagnosis and remediation). A team-defined capability should still explain the Agent-specific problem, architecture boundary, functional evidence, failure or recovery case, and known limitations.
 
-**Trace, audit, and observability (GlassBox's chosen direction).** A team choosing this area could represent an Agent Run as a connected sequence of reasoning and actions rather than unrelated logs. Trace context may propagate across the frontend, control plane, Agent Runtime, model calls, tool calls, workspace operations, sandbox jobs, or cloud APIs that are relevant to the team's design. Possible ideas:
+**Trace, audit, and observability (Oculith's chosen direction).** A team choosing this area could represent an Agent Run as a connected sequence of reasoning and actions rather than unrelated logs. Trace context may propagate across the frontend, control plane, Agent Runtime, model calls, tool calls, workspace operations, sandbox jobs, or cloud APIs that are relevant to the team's design. Possible ideas:
 
 - Stable identifiers such as Agent ID, Agent version, Run ID, session ID, trace ID, span ID, and actor type.
 - Start time, duration, status, error details, and retry or cancellation relationships.
@@ -190,9 +190,9 @@ This is a hackathon-scale Agent infrastructure challenge, not a requirement to b
 - **Why does Ark return 401?** Using an account AK/SK instead of an Ark model API key, or the wrong endpoint ID.
 - **Where to start reading the code?** `apps/server/src/types.ts`, `apps/server/src/app.ts`, `apps/server/src/agent-service.ts`, the two `AgentRunner` implementations; then `apps/web/src/App.tsx` for the smallest UI integration point.
 
-## 2. How GlassBox maps to this statement
+## 2. How Oculith maps to this statement
 
-| Track requirement | Where GlassBox addresses it |
+| Track requirement | Where Oculith addresses it |
 |---|---|
 | Agent-specific problem + coherent middleware story | PRD §1–§2: observability-first reliability middleware (Instrument → Observe → Audit → Verify); `docs/PROJECT_BRIEF.md` §1 |
 | Real behavior in a backend / Runtime / data path | Emitters at the Fastify boundary, `AgentService`, `AgentRunner`, the Codex stream and the workspace; NDJSON trace store; query/audit/eval services (`docs/PROJECT_BRIEF.md` §3–§7) |

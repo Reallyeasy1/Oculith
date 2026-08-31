@@ -1,4 +1,4 @@
-# GlassBox TechJam MVP sprint plan
+# Oculith TechJam MVP sprint plan
 
 Encoded 26 August 2026. GitHub milestone: **TechJam MVP**. Active work uses labels `sprint:S1` through `sprint:S8` and, from 27 August, `sprint:E1` through `sprint:E3` for the Evaluate plane (PRD v4 §17); S0 records completed Observe work.
 
