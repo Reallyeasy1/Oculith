@@ -48,10 +48,9 @@ Left to right: the **browser** (Runs view and trace detail — evidence only, no
 
 ## 2. The 3:00 demo script
 
-> **Superseded for the recording (#95):** the video uses the 2:30 cut in
-> `docs/demo/SCRIPT.md`, which matches the current `fee-ledger` knowledge-gate runbook and
-> a more personal voice. The section below is kept as the fuller 9-step spoken version and
-> the Q&A framing; where the two disagree (the denial beat, the "22 model calls" figures),
+> **Superseded for the recording (#95):** the video uses the features cut in
+> `docs/demo/SCRIPT.md` (eight beats, ~2:50, no Compare beat). The section below is kept
+> as the fuller 9-step spoken version and the Q&A framing; where the two disagree,
 > `docs/demo/` is current.
 
 _Nine steps matching the #92 runbook (`docs/DEMO.md`). **Say** lines are the spoken script — 410 words, word count at the bottom. Read at a normal presenting pace; each step's budget is generous enough to click while talking. Fallbacks per step are in the runbook._

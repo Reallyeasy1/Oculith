@@ -4,9 +4,9 @@ The 9-step story, scripted by `scripts/demo/run-demo.sh [step]` (idempotent — 
 from any step; it reuses whatever already exists and never prints secrets). Target: under
 3:00 from step 1 to the REGRESSION banner. Run everything from Git Bash.
 
-> **Video production (#95):** the recording plan, the scene-by-scene storyboard, and the
-> 2:30 narration live in `docs/demo/` (`PLAN.md`, `STORY.md`, `SCRIPT.md`). This file stays
-> the mechanical ground truth for the steps and their fallbacks.
+> **Video production (#95):** the narration and the beat-by-beat recording actions live in
+> `docs/demo/` (`SCRIPT.md`, `RUNSHEET.md`). This file stays the mechanical ground truth
+> for the steps and their fallbacks.
 
 > **Rehearsal status** (logs on #92): the full 9-step story has been driven end to end on
 > the dev instance (28 Aug — REGRESSION shown, steps 1–6 in ~10 s, 7–9 in ~110 s), and the

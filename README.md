@@ -156,8 +156,8 @@ bash scripts/demo/run-demo.sh          # walks steps 1–9, prints every URL to 
 DEMO_REDACTION_BEAT=1 bash scripts/demo/run-demo.sh   # opt-in: seeds a provably fake credential and shows the REDACTED chip live
 ```
 
-Runbook with per-step fallbacks: [docs/DEMO.md](docs/DEMO.md). Video production kit (recording plan,
-storyboard, 2:30 narration): [docs/demo/](docs/demo/). Rehearsed twice on the judged Docker path from
+Runbook with per-step fallbacks: [docs/DEMO.md](docs/DEMO.md). Video script and beat-by-beat
+run sheet: [docs/demo/](docs/demo/). Rehearsed twice on the judged Docker path from
 a clean root: 171 s and 168 s end to end (logs on #92). Quick smoke alternative:
 `bash scripts/seed-demo.sh ok|fail` seeds a single real ok/timeout Run.
 

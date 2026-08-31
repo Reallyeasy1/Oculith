@@ -1,106 +1,82 @@
-# Demo video script (2:30 cut)
+# Demo video script — features cut (2:50 target)
 
-Read the SAY lines over the footage at a normal presenting pace; about 370 spoken words,
-which lands near 2:25 and leaves room for the three freeze-frames. Timestamps are targets
-for the final cut, not the recording; the two long waits are trimmed and captioned. Click
-cues match the scene numbers in `STORY.md`; recovery for any step is in `docs/DEMO.md`.
-Cut from the bottom of scene 5 first if running long.
+The narration for the submission video: a feature showcase in eight beats. ~370 spoken
+words, landing near 2:50 at a 125–130 wpm presenting pace with pauses on the four freeze
+moments. Recording actions beat by beat: `RUNSHEET.md`. Step mechanics and fallbacks:
+`docs/DEMO.md`.
 
----
-
-**0:00 - 0:15 | Cold open** (scene 1)
-
-ON SCREEN: terminal prints `Pre-flight OK`; browser unlocks past the token gate into the
-Oculith shell.
-
-SAY: Three days into building with agents, ours died and all the log gave me was one
-word: "error". I lost a whole evening to guessing, and I promised myself: never again.
-That promise became Oculith. Everything you see is one script driving the same API a
-judge gets. No mocks. No hidden state.
+Cutting order if long: the last sentence of the trace beat first, then the audit aside in
+the failure beat.
 
 ---
 
-**0:15 - 0:35 | The setup** (scene 2)
+**0:00 - 0:15 | Cold open** (Runs overview, mixed ok and failed rows)
 
-ON SCREEN: Demo Agent appears from the `fee-ledger` template; the task is typed into the
-Playground and sent; the run row flips queued, then running. Caption: "about 70 s,
-trimmed".
-
-SAY: Meet Repo Doctor: a small fee library with a red test suite. The one business fact
-needed to fix it lives in the agent's instructions. Hold onto that. The run travels the
-real path: control plane, service, a disposable container, Codex itself. Nothing staged.
+SAY: AI agents change code, call tools, and touch files, and their final answer rarely
+tells you what actually happened. Ours died once and gave us one word: "error". Oculith
+is my answer to that night: every run becomes evidence you can inspect and reuse.
 
 ---
 
-**0:35 - 1:00 | Green run, purple chip** (scene 3)
+**0:15 - 0:40 | A real run** (Playground: type the task, send; row flips queued →
+running → ok; trim captioned)
 
-ON SCREEN: the row lands on ok; the trace header opens. Freeze on the purple REDACTED chip,
-then the drawer showing `[REDACTED:env_assignment]`.
-
-SAY: A confession: while it worked, I planted a fake API key in that workspace, on
-purpose. Watch what becomes of it. The trace wears a redacted chip; the drawer shows a
-marker where my assignment used to be. It never touched disk. Raw capture isn't a mode we
-turned off; it's a mode we never built.
+SAY: This is Frontend Builder. I ask it, right in the Playground, to apply our approved
+campaign style to the primary button. The design values live in the agent's
+configuration, not the task. The run travels the real path: control plane, service,
+Codex, the Ark model. We trim the wait, never the result.
 
 ---
 
-**1:00 - 1:20 | The tree** (scene 4)
+**0:40 - 1:10 | The trace** (open the ok run; scroll the tree; click a tool span)
 
-ON SCREEN: scroll the span tree: model turn, tool calls with durations and exit codes,
-usage numbers, PASS pills in the Evaluation block.
-
-SAY: This is what I wished for on day three. One tree from the HTTP request to the
-result: every model turn, every command, every exit code, the token bill. If we didn't
-observe it, it isn't on this screen. Nothing here guesses. Neither do I.
+SAY: And here is what I built Oculith for. One correlated trace: every model turn, every
+command, every exit code, the files changed, the token bill, the time split. Click any
+span and the drawer shows its attributes and events. If a layer exposed nothing, Oculith
+says "no evidence" instead of inventing it.
 
 ---
 
-**1:20 - 1:40 | The failure** (scene 5)
+**1:10 - 1:30 | The judges** (Evaluation block: PASS pills, written reasons, evidence
+links; the New evaluator modal)
 
-ON SCREEN: Needs attention filter; the timeout Run opens on its red banner; click Jump to
-failing span; freeze on the TIMEOUT badge.
-
-SAY: Now my favorite run: a failure. The banner says it straight: first actionable
-timeout, codex exec, runner layer, cut at three seconds. One click and I'm standing on
-the failing span. That click used to be twenty minutes of grepping logs.
-
----
-
-**1:40 - 1:55 | Evidence becomes a check** (scene 6)
-
-ON SCREEN: Save as regression case on the good Run; the case row appears; the baseline
-EvalRun's Latest evaluation reads all passed.
-
-SAY: That green run is too good to waste. One click turns it into a regression case,
-assertions pre-filled from its own evidence, including a post check that reruns the tests
-in a fresh workspace. Replayed as a baseline: all green. A promise that checks itself.
+SAY: Every run is also judged. Deterministic evaluators check the facts, and LLM judges
+score task completion, recovery quality, even politeness, each with a written reason and
+evidence links back into the trace. And when I want a new standard, I define a judge
+right in the UI.
 
 ---
 
-**1:55 - 2:05 | One deleted line** (scene 7)
+**1:30 - 1:50 | Redaction** (open the redaction run: freeze on the REDACTED chip, then
+the drawer marker)
 
-ON SCREEN: terminal PATCHes the instructions. Caption: "one line removed; config hash
-changed".
-
-SAY: Then I do what a well-meaning teammate once did to us: I tidy up the instructions.
-One line gone. Looks harmless. It isn't.
-
----
-
-**2:05 - 2:25 | The catch** (scene 8)
-
-ON SCREEN: candidate EvalRun (captioned trim); Compare evaluations; freeze on the red
-REGRESSION banner.
-
-SAY: Same case, fresh workspace, same real path. Without that one fact, its best fix
-fails the checksum suite. Every single time. REGRESSION, in red, both traces linked as
-receipts. I don't argue anymore. I just send the link.
+SAY: A confession: I planted a fake API key in that workspace, on purpose. The trace
+wears a redacted chip, and the drawer shows a marker where my assignment used to be. It
+never touched disk. Raw capture isn't a mode we turned off; it's a mode we never built.
 
 ---
 
-**2:25 - 2:30 | Close** (scene 9)
+**1:50 - 2:10 | The failure** (Needs attention → timeout run → red banner → Jump; 1 s
+audit toggle optional)
 
-ON SCREEN: back to the overview: stat tiles, reliability strip, runs table.
+SAY: Now my favorite run: a failure. The banner names the first actionable timeout:
+codex exec, runner layer, cut at three seconds. One click and I'm standing on the
+failing span. That used to be twenty minutes of grepping logs.
 
-SAY: That deleted line would have reached Friday's demo. Oculith caught it in about a
-minute. No more black boxes. Every run, in plain sight.
+---
+
+**2:10 - 2:35 | Evidence becomes reliability** (ok run → Save as regression case → case
+row all passed → overview charts + per-judge cards)
+
+SAY: A green run is too good to waste: one click saves it as a regression case,
+assertions pre-filled from its own evidence, replayed all green in a fresh workspace.
+And over time the overview turns runs into reliability: completion rates, latency, cost,
+a chart per judge.
+
+---
+
+**2:35 - 2:50 | Close** (the architecture one-pager; end on the Oculith name)
+
+SAY: Under the hood, Oculith is a thin observation plane: instrument the real seams,
+redact before storage, diagnose from facts, and turn proven runs into checks. No more
+black boxes. Every run, in plain sight.
