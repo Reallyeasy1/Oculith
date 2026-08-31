@@ -346,21 +346,43 @@ judge — labelled *evaluation*, never mixed with telemetry.
 
 ## Configuration
 
-**Fresh clone: three values.** Copy `.env.example` to `.env` — every other variable ships a
-working default — and set `ARK_API_KEY` + `ARK_MODEL` (or `MODEL_PROVIDER=openai` with
-`OPENAI_API_KEY`) and `APP_AUTH_TOKEN` (24+ random characters). The table below lists the
-variables that change behavior; the full commented list, including container/resource
+### Credentials — the only secrets
+
+A fresh clone needs exactly three values in `.env` (copy `.env.example`; everything else
+ships a working default):
+
+```bash
+ARK_API_KEY=ark-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx   # your BytePlus/Volcengine Ark key
+ARK_MODEL=ep-xxxxxxxxxxxx                               # a Responses-capable endpoint ID
+APP_AUTH_TOKEN=$(openssl rand -hex 16)                  # 24+ chars; pasted once into the browser unlock screen
+```
+
+Prefer OpenAI? Set `MODEL_PROVIDER=openai` and `OPENAI_API_KEY` instead of the Ark pair
+(`OPENAI_MODEL` optional — Codex picks its default).
+
+How those secrets are treated:
+
+- `.env` is gitignored, and the commit hook scans every staged diff for key-shaped content
+  before it can land.
+- Keys reach Codex only through an explicit env allow-list, never argv; child processes
+  never inherit the full environment.
+- Nothing key-shaped survives into stored data: redaction runs before persistence and the
+  E2E lane sweeps seeded canary credentials across every file, API response, export, log
+  and the rendered DOM (see **Security and redaction**).
+- `APP_AUTH_TOKEN` is a shared demo secret, not identity; production refuses a
+  non-loopback bind with fewer than 24 characters, and an empty value disables auth.
+
+### Behavior knobs — defaults work
+
+Variables that change behavior; the full commented list, including container/resource
 limits, is [.env.example](.env.example).
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `ARK_API_KEY` / `ARK_MODEL` | Required | Ark key + Responses-capable endpoint ID (`ARK_BASE_URL` defaults to BytePlus ap-southeast v3) |
-| `MODEL_PROVIDER` | `ark` | `ark` or `openai` (`OPENAI_API_KEY`, optional `OPENAI_MODEL`) |
 | `HOST` / `PORT` | `0.0.0.0` / `3000` | Bind address and port (`PUBLIC_PORT` maps the Compose host port; `LOG_LEVEL` defaults `info`) |
 | `APP_DATA_DIR` / `AGENT_WORKSPACE_ROOT` / `CODEX_HOME` | `/app/data` / `/app/workspaces` / `/app/codex-home` | Where state lives (Docker paths; local dev outside Docker uses `.data` / `workspaces` / `codex-home` — see **Run it**) |
 | `CODEX_BIN` | `codex` | Codex CLI binary; on Windows point it at the native `codex.exe` — the npm `.cmd` shim cannot be spawned by `execFile` |
 | `TASK_COMPLETION_JUDGE` | `ark` | Task Completion evaluator backend; `fake` is deterministic and reserved for the repository E2E lane |
-| `APP_AUTH_TOKEN` | Empty (auth off) | Bearer token for every `/api/*` route; production refuses non-loopback with <24 chars |
 | `RUNTIME_PROVIDER` | `local-process` | `container` for disposable Runtime containers (`npm run poc` sets this) |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox; falls back to `danger-full-access` without Landlock |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn |
