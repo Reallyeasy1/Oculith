@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, getAuthToken, setAuthToken } from "./api";
+import { api, ApiError, clearAuthToken, getAuthToken, probeToken, setAuthToken, setUnauthorizedHandler } from "./api";
 import { connectLive } from "./live";
 import { agentPayload, budgetFormError } from "./agent-form";
 import { preferredPreviewCommand, queuedSentNote, showLastErrorHint } from "./agent-view-model";
@@ -148,6 +148,14 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
+  // #413 review: the one funnel for surfacing async failures. A 401 is suppressed only when the
+  // unauthorized handler actually took over (it wipes the token first, so an empty token is the
+  // signal); a superseded token's 401 — current token still present — must render like any other
+  // denial (rules/web.md: the UI renders every denial the backend returns).
+  const showError = useCallback((reason: unknown) => {
+    if (reason instanceof ApiError && reason.status === 401 && !getAuthToken()) return;
+    setError(reason instanceof Error ? reason.message : String(reason));
+  }, []);
   const messageEnd = useRef<HTMLDivElement>(null);
   // undefined means this Agent's history has not loaded yet; null is a loaded, empty history.
   const lastMessageIdRef = useRef<string | null | undefined>(undefined);
@@ -260,13 +268,16 @@ export default function App() {
     setTrace(null);
     if (!selectedRunId) return;
     void refreshTrace(selectedRunId).catch((reason) =>
-      setError(reason instanceof Error ? reason.message : String(reason)),
+      showError(reason),
     );
   }, [refreshTrace, selectedRunId]);
 
   const bootstrap = useCallback(async () => {
     await Promise.all([refreshAgents(), refreshRuns(), refreshRegressionCases(), refreshEvalRuns(), api.system().then((info) => { setSystem(info); setSystemFailed(false); }, (reason) => { setSystemFailed(true); throw reason; }), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces)), api.listWorkspaceTemplates().then((result) => setTemplates(result.templates))]);
     const runId = pendingDeepLinkRef.current;
+    // #413 review: consume the deep link exactly once — bootstrap runs again after a re-auth,
+    // and replaying a stale ?run= would yank the user back to that trace.
+    pendingDeepLinkRef.current = null;
     if (!runId) return;
     try {
       const { run } = await api.run(runId);
@@ -294,14 +305,48 @@ export default function App() {
       .auth()
       .then(async ({ required }) => {
         if (!mountedRef.current) return;
+        // #413: a token restored from sessionStorage skips the form while it still works —
+        // validated by one cheap probe before any fan-out, so a stale token costs one request,
+        // not a parallel 401 storm. Any failure falls through to the interactive token form,
+        // never the dead Connecting screen; non-401 failures keep the token so a later reload
+        // retries it.
+        if (required && getAuthToken()) {
+          try {
+            if (await probeToken(getAuthToken())) {
+              await bootstrap();
+              // A rotation racing the fan-out can still 401 inside a fail-soft refresh; the
+              // wiped token is the sign the handler took over — stay on the form.
+              if (mountedRef.current && getAuthToken()) {
+                setAuthRequired(false);
+                return;
+              }
+            } else {
+              clearAuthToken();
+              setError("The saved access token is no longer valid. Enter the current token.");
+            }
+          } catch (reason) {
+            showError(reason);
+          }
+        }
+        if (!mountedRef.current) return;
         setAuthRequired(required);
         if (!required) await bootstrap();
       })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+      .catch((reason) => showError(reason));
     return () => {
       mountedRef.current = false;
     };
-  }, [bootstrap]);
+  }, [bootstrap, showError]);
+
+  // #413: any 401 mid-session (rotated APP_AUTH_TOKEN, stale stored token) returns the app to the
+  // token screen; the stored token is already wiped by the time this runs.
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      setAuthRequired(true);
+      setError("The access token was rejected. Enter the current token to continue.");
+    });
+    return () => setUnauthorizedHandler(null);
+  }, []);
 
   useEffect(() => {
     setActiveRun(null);
@@ -318,12 +363,12 @@ export default function App() {
         setActiveRun(latest);
         if (latest && ["queued", "running"].includes(latest.status)) {
           void pollRun(latest.id, selectedId).catch((reason) =>
-            setError(reason instanceof Error ? reason.message : String(reason)),
+            showError(reason),
           );
         }
       })
       .catch((reason) =>
-        setError(reason instanceof Error ? reason.message : String(reason)),
+        showError(reason),
       );
   }, [refreshMessages, selectedId]);
 
@@ -392,7 +437,7 @@ export default function App() {
       setShowCreate(false);
       setForm(emptyForm);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      showError(reason);
     } finally {
       setBusy(false);
     }
@@ -413,7 +458,7 @@ export default function App() {
       await Promise.all([refreshAgents(), api.listWorkspaces().then((result) => setWorkspaces(result.workspaces))]);
       setShowSettings(false);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      showError(reason);
     } finally {
       setBusy(false);
     }
@@ -431,7 +476,7 @@ export default function App() {
       }
       await refreshAgents();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      showError(reason);
     } finally {
       setBusy(false);
     }
@@ -468,7 +513,7 @@ export default function App() {
         }, 2000);
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      showError(reason);
     } finally {
       setBusy(false);
     }
@@ -485,7 +530,7 @@ export default function App() {
       await api.deleteAgent(selected.id);
       await refreshAgents();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      showError(reason);
     } finally {
       setBusy(false);
     }
@@ -551,9 +596,9 @@ export default function App() {
       const { evalRun } = result;
       setEvalRuns((current) => [evalRun, ...current.filter((item) => item.id !== evalRun.id)]);
       await refreshRuns();
-      void pollEvalRun(evalRun.id).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+      void pollEvalRun(evalRun.id).catch((reason) => showError(reason));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      showError(reason);
     }
   };
 
@@ -564,7 +609,7 @@ export default function App() {
       await api.deleteRegressionCase(regressionCase.id);
       await Promise.all([refreshRegressionCases(), refreshEvalRuns()]);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      showError(reason);
     }
   };
 
@@ -593,11 +638,12 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (authRequired !== false) return; // #413: don't keep polling (and 401ing) behind the token screen
     if (view === "agent" && !selectedId) return;
     const intervalMs = refreshIntervalMs(trace?.summary.status);
     const id = window.setInterval(() => void refreshVisibleRuns(), intervalMs);
     return () => window.clearInterval(id);
-  }, [selectedId, trace?.summary.status, view]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [authRequired, selectedId, trace?.summary.status, view]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // #40: live updates — an SSE notification triggers the same refresh path the timer runs, just
   // sooner. The polling intervals above stay untouched as the safety net, so a failed or
@@ -640,21 +686,31 @@ export default function App() {
     await pollRun(result.run.id, agentId);
   };
 
-  const dispatchPrompt = async (agentId: string, content: string) =>
-    applyDispatch(await api.sendMessage(agentId, content));
-
   const sendMessage = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!selected || !prompt.trim()) return;
     const content = prompt.trim();
     setPrompt("");
     setError(null);
+    let receipt: Awaited<ReturnType<typeof api.sendMessage>>;
     try {
-      await dispatchPrompt(selected.id, content);
+      receipt = await api.sendMessage(selected.id, content);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      // Only a message the server never accepted comes back to the composer (unless the user
+      // already typed anew) — restoring after a post-dispatch failure would refill it with
+      // already-executed text and invite a duplicate send. Recovery refreshes skip 401s (the
+      // token is gone, they cannot succeed) and fail soft.
+      showError(reason);
+      setPrompt((current) => current || content);
+      if (!(reason instanceof ApiError && reason.status === 401)) await refreshAgents().catch(() => undefined);
+      return;
+    }
+    try {
+      await applyDispatch(receipt);
+    } catch (reason) {
+      showError(reason);
       setActiveRun(null);
-      await refreshAgents();
+      if (!(reason instanceof ApiError && reason.status === 401)) await refreshAgents().catch(() => undefined);
     }
   };
 
@@ -666,7 +722,7 @@ export default function App() {
     try {
       await applyDispatch(await api.rerun(runId));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      showError(reason);
     }
   };
 
@@ -678,8 +734,8 @@ export default function App() {
       await api.cancelPendingMessage(selected.id, messageId);
       await refreshAgents();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-      await refreshAgents().catch(() => undefined);
+      showError(reason);
+      if (!(reason instanceof ApiError && reason.status === 401)) await refreshAgents().catch(() => undefined);
     }
   };
 
@@ -687,17 +743,24 @@ export default function App() {
     event.preventDefault();
     setBusy(true);
     setError(null);
-    setAuthToken(authInput);
     try {
-      await bootstrap();
-      setAuthRequired(false);
-      setAuthInput("");
-    } catch (reason) {
-      if (reason instanceof ApiError && reason.status === 401) {
+      // #413 review: probe before persisting — a wrong guess must not overwrite a still-valid
+      // stored token, and a bad token costs one request instead of a parallel 401 storm (whose
+      // racing failures also made the resulting banner nondeterministic).
+      if (!(await probeToken(authInput))) {
         setError("The access token is not valid.");
-      } else {
-        setError(reason instanceof Error ? reason.message : String(reason));
+        return;
       }
+      setAuthToken(authInput);
+      await bootstrap();
+      // A rotation racing the fan-out can still 401 inside a fail-soft refresh, wiping the
+      // token — stay on the form rather than opening a half-authenticated UI.
+      if (getAuthToken()) {
+        setAuthRequired(false);
+        setAuthInput("");
+      }
+    } catch (reason) {
+      showError(reason);
     } finally {
       setBusy(false);
     }
@@ -708,7 +771,7 @@ export default function App() {
       <main className="auth-screen">
         <section className="auth-card" aria-live="polite">
           <BrandMark />
-          <span className="eyebrow">GlassBox · Agent Launchpad</span>
+          <span className="eyebrow">Oculith · Agent Launchpad</span>
           <h1>Connecting to the control plane</h1>
           {error ? <div className="error-banner" role="alert">{error}</div> : <Spinner />}
         </section>
@@ -721,7 +784,7 @@ export default function App() {
       <main className="auth-screen">
         <form className="auth-card" onSubmit={unlock}>
           <BrandMark />
-          <span className="eyebrow">GlassBox · Agent Launchpad</span>
+          <span className="eyebrow">Oculith · Agent Launchpad</span>
           <h1>Enter the access token</h1>
           <p>This shared demo token is configured by the platform operator.</p>
           {error && <div className="error-banner" role="alert">{error}</div>}
@@ -750,7 +813,7 @@ export default function App() {
         <div className="brand">
           <BrandMark />
           <div>
-            <strong>GlassBox</strong>
+            <strong>Oculith</strong>
             <span>Observability for Agent Runs</span>
           </div>
         </div>
@@ -776,7 +839,7 @@ export default function App() {
             <div className="agent-avatar">◎</div>
             <div className="agent-card-copy">
               <strong>All runs</strong>
-              <span>GlassBox · every Agent</span>
+              <span>Oculith · every Agent</span>
             </div>
           </button>
         </nav>
@@ -1242,7 +1305,7 @@ export default function App() {
           <div className="no-agent">
             {/* #371: the one spot #325's GlassBox rebrand missed. */}
             <BrandMark />
-            <span className="eyebrow">GlassBox</span>
+            <span className="eyebrow">Oculith</span>
             <h1>Your runtime is ready for an Agent.</h1>
             <p>Create a workspace, give Codex a job, and continue the conversation here.</p>
             <button

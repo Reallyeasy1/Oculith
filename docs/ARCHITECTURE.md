@@ -1,10 +1,10 @@
 # Architecture
 
-Volc Agent Launchpad is a single-node control plane. GlassBox observes the existing execution path; it does not replace the runner or become a second source of Run state.
+Volc Agent Launchpad is a single-node control plane. Oculith observes the existing execution path; it does not replace the runner or become a second source of Run state.
 
 ## The one-page diagram
 
-![GlassBox architecture — trust boundaries, instrumentation points, redaction gate, recovery behavior, verify loop](assets/architecture.svg)
+![Oculith architecture — trust boundaries, instrumentation points, redaction gate, recovery behavior, verify loop](assets/architecture.svg)
 
 Reading guide: dashed borders are trust boundaries (untrusted browser client, untrusted runtime execution); ★ marks the five instrumentation points where adapters sit on existing seams; the green gate is the single redaction boundary every event crosses before it can exist on disk, API, export or log (and the serve gate scrubs the raw conversation store on every read); ↻ marks recovery behavior (non-blocking emitter, `telemetry.degraded`, fail-closed redaction, honest restart cancellation); the purple loop is verification replaying saved evidence through the same real execution path until `PASS→FAIL = REGRESSION`.
 
@@ -22,7 +22,7 @@ flowchart LR
     Json["JsonStore<br/>store.ts"]
     Workspaces["WorkspaceManager<br/>workspace.ts"]
 
-    subgraph glassbox["GlassBox instrumentation boundary"]
+    subgraph glassbox["Oculith instrumentation boundary"]
       Context["request / Run context<br/>glassbox/context.ts"]
       Adapter["service + runner adapters<br/>agent-service.ts<br/>codex-runner.ts<br/>container-codex-runner.ts"]
       Observer["CodexStreamObserver<br/>glassbox/codex-observer.ts"]
@@ -91,13 +91,13 @@ flowchart LR
 
 [PNG export of the architecture diagram](assets/architecture.png)
 
-The browser, control plane, and Agent Runtime are separate trust boundaries. The API token protects the demo endpoint but is not user identity or authorization. The runtime boundary limits ordinary execution; it is not hardened multi-tenant isolation. Secrets and content cross into telemetry only through `redactEvent`, before the NDJSON append. Failures and sandbox denials remain observations: they do not grant GlassBox control over execution.
+The browser, control plane, and Agent Runtime are separate trust boundaries. The API token protects the demo endpoint but is not user identity or authorization. The runtime boundary limits ordinary execution; it is not hardened multi-tenant isolation. Secrets and content cross into telemetry only through `redactEvent`, before the NDJSON append. Failures and sandbox denials remain observations: they do not grant Oculith control over execution.
 
 ## Contract
 
 `apps/server/src/glassbox/schema.ts` is the authoritative event contract. Every `ObservationEvent` carries bounded correlation identifiers (`traceId`, `spanId`, `runId`, `agentId`), actor and source attribution, sequence and timing, category/type/status, bounded attributes, optional safe summary/error, and privacy metadata. `schemaVersion` is `1.0`; additive event types do not invalidate stored 1.0 events.
 
-The behavioral rules are maintained in [GlassBox invariants](../.claude/rules/glassbox-invariants.md). In particular, telemetry must never break baseline Agent behavior, fabricate evidence, leak credentials, or confuse absence with unavailability.
+The behavioral rules are maintained in [Oculith invariants](../.claude/rules/glassbox-invariants.md). In particular, telemetry must never break baseline Agent behavior, fabricate evidence, leak credentials, or confuse absence with unavailability.
 
 ## Persisted and derived data
 

@@ -39,7 +39,7 @@ export default function Overview({ runs, cases, evalRuns, selectedAgent, onRunCa
     <>
       <header className="agent-header overview" aria-labelledby="overview-heading">
         <div>
-          <span className="eyebrow">GlassBox</span>
+          <span className="eyebrow">Oculith</span>
           <h1 id="overview-heading">All runs</h1>
           <dl className="summary-strip">
             {stats.map(({ label, value, drill }) => (

@@ -1,7 +1,171 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError, humanizeErrorMessage } from "./api";
+import { api, ApiError, clearAuthToken, getAuthToken, humanizeErrorMessage, probeToken, setAuthToken, setUnauthorizedHandler } from "./api";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  setUnauthorizedHandler(null);
+  clearAuthToken();
+  vi.unstubAllGlobals();
+});
+
+/** Minimal Storage double — vitest runs in node, where sessionStorage does not exist. */
+function fakeSessionStorage(seed: Record<string, string> = {}) {
+  const map = new Map(Object.entries(seed));
+  return {
+    getItem: (key: string) => map.get(key) ?? null,
+    setItem: (key: string, value: string) => void map.set(key, value),
+    removeItem: (key: string) => void map.delete(key),
+    get size() {
+      return map.size;
+    },
+  };
+}
+
+const jsonResponse = (status: number, body: unknown = {}) =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+describe("auth token persistence (#413)", () => {
+  it("stores the trimmed token in sessionStorage and removes it when cleared", () => {
+    const storage = fakeSessionStorage();
+    vi.stubGlobal("sessionStorage", storage);
+
+    setAuthToken("  shared-demo-token  ");
+    expect(getAuthToken()).toBe("shared-demo-token");
+    expect(storage.getItem("launchpad.access-token")).toBe("shared-demo-token");
+
+    clearAuthToken();
+    expect(getAuthToken()).toBe("");
+    expect(storage.size).toBe(0);
+  });
+
+  it("restores the stored token when the module loads (refresh survival)", async () => {
+    vi.stubGlobal("sessionStorage", fakeSessionStorage({ "launchpad.access-token": "restored-token" }));
+    vi.resetModules();
+    const fresh = await import("./api");
+    expect(fresh.getAuthToken()).toBe("restored-token");
+  });
+
+  it("still works when sessionStorage is missing or throws", () => {
+    setAuthToken("memory-only"); // node env: no sessionStorage global at all
+    expect(getAuthToken()).toBe("memory-only");
+
+    vi.stubGlobal("sessionStorage", {
+      getItem: () => {
+        throw new Error("blocked");
+      },
+      setItem: () => {
+        throw new Error("blocked");
+      },
+      removeItem: () => {
+        throw new Error("blocked");
+      },
+    });
+    setAuthToken("still-memory");
+    expect(getAuthToken()).toBe("still-memory");
+  });
+
+  it("wipes the stored token and notifies the handler on a 401", async () => {
+    const storage = fakeSessionStorage();
+    vi.stubGlobal("sessionStorage", storage);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(401, { error: "unauthorized" })));
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+    setAuthToken("rotated-away");
+
+    await expect(api.listAgents()).rejects.toThrowError(new ApiError("unauthorized", 401));
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+    expect(getAuthToken()).toBe("");
+    expect(storage.size).toBe(0);
+  });
+
+  it("ignores a 401 earned by a superseded token (slow response landing after re-auth)", async () => {
+    const storage = fakeSessionStorage();
+    vi.stubGlobal("sessionStorage", storage);
+    let respond!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => { respond = resolve; })));
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+    setAuthToken("rotated-away");
+
+    const pending = api.listAgents();
+    setAuthToken("fresh-token"); // user re-authenticated while the request was in flight
+    respond(jsonResponse(401, { error: "unauthorized" }));
+
+    await expect(pending).rejects.toThrowError(new ApiError("unauthorized", 401));
+    expect(onUnauthorized).not.toHaveBeenCalled();
+    expect(getAuthToken()).toBe("fresh-token");
+    expect(storage.getItem("launchpad.access-token")).toBe("fresh-token");
+  });
+
+  it("does not treat an anonymous 401 as a rejection of the current token", async () => {
+    // A recovery request issued after the token was wiped goes out with no Authorization header;
+    // its inevitable 401 must not re-fire the handler behind the token screen.
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(401, { error: "unauthorized" })));
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+    clearAuthToken();
+
+    await expect(api.listAgents()).rejects.toThrowError(new ApiError("unauthorized", 401));
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it("keeps the token and stays quiet on non-401 failures", async () => {
+    const storage = fakeSessionStorage();
+    vi.stubGlobal("sessionStorage", storage);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(400, { error: "bad request" })));
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+    setAuthToken("valid-token");
+
+    await expect(api.listAgents()).rejects.toThrowError(new ApiError("bad request", 400));
+    expect(onUnauthorized).not.toHaveBeenCalled();
+    expect(getAuthToken()).toBe("valid-token");
+    expect(storage.getItem("launchpad.access-token")).toBe("valid-token");
+  });
+
+  it("probeToken validates a candidate without persisting it or firing the handler", async () => {
+    const storage = fakeSessionStorage({ "launchpad.access-token": "still-good" });
+    vi.stubGlobal("sessionStorage", storage);
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+    setAuthToken("still-good");
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(200)));
+    await expect(probeToken("candidate")).resolves.toBe(true);
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(401, { error: "unauthorized" })));
+    await expect(probeToken("wrong-guess")).resolves.toBe(false);
+    // The rejected CANDIDATE must not disturb the working token or bounce the UI.
+    expect(onUnauthorized).not.toHaveBeenCalled();
+    expect(getAuthToken()).toBe("still-good");
+    expect(storage.getItem("launchpad.access-token")).toBe("still-good");
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(503, { error: "backend down" })));
+    await expect(probeToken("candidate")).rejects.toThrowError(new ApiError("backend down", 503));
+  });
+
+  it("sends the trimmed candidate in probeToken's Authorization header", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200));
+    vi.stubGlobal("fetch", fetchMock);
+    await probeToken("  padded-token  ");
+    expect(fetchMock).toHaveBeenCalledWith("/api/system", {
+      headers: { Authorization: "Bearer padded-token" },
+    });
+  });
+
+  it("treats a 401 from the raw-fetch export path the same way", async () => {
+    const storage = fakeSessionStorage();
+    vi.stubGlobal("sessionStorage", storage);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(401, { error: "unauthorized" })));
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+    setAuthToken("rotated-away");
+
+    await expect(api.exportTrace("trace-1")).rejects.toThrowError(new ApiError("unauthorized", 401));
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+    expect(getAuthToken()).toBe("");
+    expect(storage.size).toBe(0);
+  });
+});
 
 describe("evaluation API", () => {
   it("sends the explicit force flag when the user accepts a template mismatch", async () => {

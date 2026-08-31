@@ -41,7 +41,7 @@ Also on Windows: Codex runs every `shell_command` via `powershell.exe -Command` 
 
 ## Architecture
 
-Request flow: `App.tsx` → `api.ts` (bearer token in memory) → Fastify routes in `app.ts` → `AgentService` → `JsonStore` + `WorkspaceManager` + an `AgentRunner`. Wiring happens once in `apps/server/src/index.ts`.
+Request flow: `App.tsx` → `api.ts` (bearer token in sessionStorage, wiped on 401) → Fastify routes in `app.ts` → `AgentService` → `JsonStore` + `WorkspaceManager` + an `AgentRunner`. Wiring happens once in `apps/server/src/index.ts`.
 
 **Runs are asynchronous.** `POST /api/agents/:id/messages` atomically flips the Agent to `busy`, inserts a `queued` Run + user Message, fires `executeRun` in the background, and returns immediately. The web UI polls `GET /api/runs/:id`. Run terminal states: `completed | failed | cancelled`; Agent states: `ready | busy | stopped | error`. On startup `AgentService.initialize()` marks any `queued`/`running` Run as `cancelled` and resets `busy` Agents. One active Run per Agent is enforced in the store mutation, not in the route.
 

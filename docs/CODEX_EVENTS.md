@@ -11,7 +11,7 @@ warnings go to stderr and are not part of this contract.
 
 ## Observed types
 
-| Version | Top-level `type` | `item.type` | Fields seen | GlassBox mapping | Evidence state | Example |
+| Version | Top-level `type` | `item.type` | Fields seen | Oculith mapping | Evidence state | Example |
 |---|---|---|---|---|---|---|
 | 0.111 / 0.142 | `thread.started` | — | `thread_id` | `sessionId` backfill (already parsed) | observed | E1 |
 | 0.111 / 0.142 | `turn.started` | — | *(no other fields)* | `model.request` — `start` of the `model.turn` span (`turnIndex`); marks the model capability observed (#129) | observed | E2 |

@@ -1,4 +1,4 @@
-# GlassBox demo runbook (#92)
+# Oculith demo runbook (#92)
 
 The 9-step story, scripted by `scripts/demo/run-demo.sh [step]` (idempotent — re-runnable
 from any step; it reuses whatever already exists and never prints secrets). Target: under
@@ -80,7 +80,7 @@ rehearsal (the script reuses them automatically on re-run) and the screenshots u
 | 6 | Denial beat | (script) prints the recorded export summary; open `docs/assets/demo/denial-trace-export.json` | "Sandbox denials are evidence too — this is a real recorded trace from our Windows sandbox round, because the judged Docker box can't do Landlock; we say that honestly." | Terminal: `25 denials`, sample `sandbox_declined` command | The export file is committed — it cannot fail; screenshots as backup |
 | 7 | Save the case | (script) prefill API saves a regression case from the baseline Run, then runs the baseline EvalRun | "The good Run becomes a regression case — including a post_check that re-runs the checksum suite in a fresh workspace, then proven green." | All runs → Regression cases row; EvalRun **N/N passed** | Case/EvalRun already exist → reused; UI path: trace → *Save as regression case* |
 | 8 | Candidate config | (script) PATCHes the Agent's instructions: *the billing context line is removed* | "Someone 'tidies up' the instructions — one deleted line, looks harmless." | (terminal only; config hash changes) | PATCH is idempotent; re-run `run-demo.sh 8` |
-| 9 | Candidate + compare | (script) runs the candidate EvalRun, fetches the comparison; open **All runs → Compare evaluations**, pick baseline vs candidate, click Compare | "GlassBox catches it: without that knowledge the candidate's best fix fails the checksum suite — post_check regresses deterministically, with evidence links to both traces." | Red **REGRESSION** banner, regressed rows highlighted | A no-regression here means a stale pre-gate EvalRun was reused — the script already re-runs a fresh candidate; the rehearsal's recorded comparison is the last resort |
+| 9 | Candidate + compare | (script) runs the candidate EvalRun, fetches the comparison; open **All runs → Compare evaluations**, pick baseline vs candidate, click Compare | "Oculith catches it: without that knowledge the candidate's best fix fails the checksum suite — post_check regresses deterministically, with evidence links to both traces." | Red **REGRESSION** banner, regressed rows highlighted | A no-regression here means a stale pre-gate EvalRun was reused — the script already re-runs a fresh candidate; the rehearsal's recorded comparison is the last resort |
 
 Total budget: step 3 ≈ 70 s live; every other step is seconds. Steps 5 and 6 are recorded
 evidence by design — the demo never depends on the model being in a good mood.

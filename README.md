@@ -1,8 +1,8 @@
-# Oculith — GlassBox
+# Oculith
 
 **TikTok TechJam 2026 · Track 1 "Agent Launchpad" · selected middleware track: Glass Box (observability).**
 Built on the CodeJam Starter Kit (React Playground + Fastify control plane + Codex CLI on the
-Volcengine/BytePlus Ark Responses API); GlassBox is the middleware layer this team added on top.
+Volcengine/BytePlus Ark Responses API); Oculith is the middleware layer this team added on top.
 
 ## Problem statement (Track 1)
 
@@ -10,7 +10,7 @@ A Run on the starter kit is a black box: the Playground shows a final message or
 nothing connects the HTTP request, service state transitions, the runner process/container, Codex's own
 event stream, and the terminal result. When something fails, an operator cannot tell **which layer**
 failed — and the naive fix (dump everything to a log) turns observability into a secret-leak liability.
-Track 1 leaves "trace timeline" and "audit model" as intentionally absent middleware; GlassBox fills
+Track 1 leaves "trace timeline" and "audit model" as intentionally absent middleware; Oculith fills
 that gap. Full statement: [docs/PROBLEM_STATEMENT.md](docs/PROBLEM_STATEMENT.md) · spec: [docs/PRD.md](docs/PRD.md).
 
 ## Product thesis: instrument → observe → audit → verify
@@ -24,33 +24,19 @@ is derived from those stored facts and never invented:
 | **Observe** | Runs list + trace detail (tree, timeline, span drawer) with first-failure focus and per-layer capability honesty |
 | **Audit** | Actor/action/resource/outcome rows and sandbox `policy.denied` evidence, every row linked to its source event |
 | **Verify** | Save a Run as a Regression Case → rerun it as an isolated EvalRun → deterministic comparison that classifies PASS→FAIL as `REGRESSION` |
-| **Judge** (fenced) | Versioned `llm_judge` evaluators score historical Runs over the redacted evaluation view only — provenance-stamped, never a diagnosis, never a regression verdict |
 
 Three vocabularies are kept distinct everywhere: *observed fact* · *derived diagnosis* · *evaluator
 judgement* (PRD §17.1). No LLM writes a diagnosis or classifies a regression.
 
-## For judges: where the evidence lives
-
-| Criterion ([§1.11](docs/PROBLEM_STATEMENT.md)) | Look here |
-|---|---|
-| End-to-end middleware behavior (40%) | `npm run poc` → send any task → the Run's trace, audit rows, metrics and reliability charts are all served from stored events emitted in the backend path. `bash scripts/demo/run-demo.sh` drives the full story to a live `REGRESSION` |
-| Technical design & integration (25%) | The one-page diagram below · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · all GlassBox server code in one module (`apps/server/src/glassbox/`), adapters only at existing seams · versioned `ObservationEvent` contract · trust invariants in [.claude/rules/glassbox-invariants.md](.claude/rules/glassbox-invariants.md) |
-| Verification & robustness (20%) | `npm run check` (typecheck + server/web suites + guard self-test + build, green in CI) · `npm run test:e2e` (real Docker runtime, seeded-secret sweep across files/API/export/log/DOM, performance bounds) · fail-closed redaction · [docs/UAT_COVERAGE.md](docs/UAT_COVERAGE.md) |
-| Demo & reproducibility (15%) | One command, no hidden setup (`npm run poc`) · [docs/DEMO.md](docs/DEMO.md) runbook rehearsed twice at 171 s / 168 s from a clean root · [Known limitations](#known-limitations) documented, not hidden |
-
-Every §1.10 acceptance line holds: clone → `npm run poc` → create/test an Agent from the browser;
-the middleware executes server-side; `npm run check` passes (CI); commit hooks scan every diff for
-secrets and the E2E lane sweeps seeded canaries across every persisted and rendered surface.
-
 ## Architecture
 
-![GlassBox architecture](docs/assets/architecture.svg)
+![Oculith architecture](docs/assets/architecture.png)
 
 Component and extension boundaries:
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 Runtime flow in one line: Web UI → Fastify control plane → `AgentService` → `AgentRunner`
-(`local-process` or disposable `container`) → Codex CLI → Ark Responses API, with GlassBox observing
+(`local-process` or disposable `container`) → Codex CLI → Ark Responses API, with Oculith observing
 every seam into per-Run NDJSON traces plus an in-memory index.
 
 ## Middleware boundaries: instrumented vs derived
@@ -64,7 +50,7 @@ every seam into per-Run NDJSON traces plus an in-memory index.
 | Sandbox denials as `policy.denied` | Evaluator results and baseline/candidate comparison |
 | Workspace disk truth (bytes/files) | Capability states per layer: `observed` / `unavailable` / `unknown` — absence is never guessed |
 
-Adapters live in the existing starter-kit seams; GlassBox server code is `apps/server/src/glassbox/`
+Adapters live in the existing starter-kit seams; Oculith server code is `apps/server/src/glassbox/`
 (context, emitter, redact, store, query).
 
 ## Setup
@@ -146,19 +132,18 @@ and Terraform paths: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — the judged pat
 
 ## Demo
 
-The full 9-step story — baseline Run on the `fee-ledger` template, trace, pre-seeded timeout,
-recorded denial evidence, save-case, candidate config change, red `REGRESSION` banner — is driven by
-one idempotent script:
+Full rehearsal runbook: [docs/DEMO.md](docs/DEMO.md). The 3-minute script is
+PRD §13. Short version:
 
-```bash
-bash scripts/demo/run-demo.sh          # walks steps 1–9, prints every URL to open
-DEMO_REDACTION_BEAT=1 bash scripts/demo/run-demo.sh   # opt-in: seeds a provably fake credential and shows the REDACTED chip live
-```
-
-Runbook with per-step fallbacks: [docs/DEMO.md](docs/DEMO.md). Video production kit (recording plan,
-storyboard, 2:30 narration): [docs/demo/](docs/demo/). Rehearsed twice on the judged Docker path from
-a clean root: 171 s and 168 s end to end (logs on #92). Quick smoke alternative:
-`bash scripts/seed-demo.sh ok|fail` seeds a single real ok/timeout Run.
+1. `.env`: `APP_AUTH_TOKEN` set (24+ chars), `GLASSBOX_CAPTURE_POLICY=safe_summary` (so the Outcome
+   column carries the Agent's final line), `GLASSBOX_DEMO_FAILURE=off`. The server reads these once at
+   boot — every change needs a restart.
+2. Start the server, seed one ok Run: `bash scripts/seed-demo.sh ok` (creates the **Demo** Agent if
+   missing, sends one real task, prints the run id — never the token).
+3. Set `GLASSBOX_DEMO_FAILURE=timeout` → restart → `bash scripts/seed-demo.sh fail` → the Run times out
+   after 3 s through the real Run path → set it back to `off` → restart.
+4. Open <http://localhost:3000>, unlock with the token → **Demo** Agent → the failed Run tops
+   **Needs attention** → open its trace → **Jump to failing span** → trust badges.
 
 The failure fixture adds no failure path of its own: it only overrides `CODEX_TIMEOUT_MS` to 3 s for
 the next Run, which then takes the ordinary runner timeout (SIGTERM→SIGKILL for `local-process`,
@@ -272,12 +257,6 @@ Covered:
   rendered surface.
 - API keys reach Codex only via explicit env allow-lists, never argv; child processes never inherit the
   full environment.
-- **The conversation store is redacted on serve (#388/#404).** `Run.prompt`/`output` and message
-  content must stay raw internally (the runner replays them from the store), so every read surface —
-  run detail, message and run lists, regression-case bodies, eval-run errors, the POST echo, queued
-  messages on agent responses — scrubs them at response time with the same redactor. Paste a secret
-  into the Playground and what renders back is the `[REDACTED:…]` marker; reruns are server-side so
-  the client never needs the raw text.
 
 Not covered — know this before putting anything sensitive near it:
 
@@ -285,7 +264,9 @@ Not covered — know this before putting anything sensitive near it:
   disk as plain files; the trace records bytes/paths, but the workspace itself is outside the redaction
   boundary.
 - **The shared bearer token is a demo secret, not identity.** One `APP_AUTH_TOKEN` for every route;
-  no users, no authz — that is the Bouncer track, not this one.
+  no users, no authz — that is the Bouncer track, not this one. The browser keeps this demo token in
+  tab `sessionStorage` so a refresh doesn't log you out; it dies with the tab and is wiped the moment
+  the server rejects it.
 - Redaction is exact on structured attributes and best-effort on free text; a novel secret format in a
   command string can slip past — which is why the default policy is `metadata_only`.
 - Single-user proof of concept: do not use production data or credentials. See [SECURITY.md](SECURITY.md).
@@ -296,7 +277,7 @@ Not covered — know this before putting anything sensitive near it:
   in-memory-plus-file with no cross-process locking; run one server.
 - **Templates are versioned starting states, not exact replay.** An EvalRun reruns the task from the
   template; it does not replay the original trace step by step.
-- **No policy engine.** Denials are *observed* sandbox facts; nothing in GlassBox decides or blocks —
+- **No policy engine.** Denials are *observed* sandbox facts; nothing in Oculith decides or blocks —
   controls are roadmap, written as linked `ControlDecision` records that never mutate observation facts.
 - **Landlock fallback in Docker Desktop.** Kernels without Landlock (Docker Desktop on Windows/macOS)
   fall back to `danger-full-access` inside the outer container: the container boundary holds, per-Agent
@@ -313,25 +294,16 @@ Not covered — know this before putting anything sensitive near it:
   time-to-first-token is structurally unavailable from `codex exec` and is declared, not approximated.
 - Agents cannot expose ports to the host; runnable build output stays in the workspace.
 
-## Evaluate plane (LLM-as-judge, fenced)
-
-Beyond the deterministic Verify loop, versioned `llm_judge` evaluators (`task_completion`,
-`recovery_quality`, plus user-defined judges via **New evaluator**) score historical Runs 1–5
-through the configured model, as background jobs (`POST /api/evaluation-jobs`) that read only the
-redacted evaluation view. The judge is deliberately fenced: deterministic verdicts are ground truth
-it can never overwrite, every score carries `evaluatorModel` provenance, no LLM ever writes a
-diagnosis or classifies a regression, and the reliability dashboard renders one chart card per
-judge — labelled *evaluation*, never mixed with telemetry.
-
 ## Future work (deliberately deferred)
 
 | Deferred | Where it stands |
 |---|---|
-| Controls / policy engine | Roadmap by design ("evidence before control") — nothing in GlassBox blocks or decides |
+| LLM judge / semantic evaluation | #171 (in review) — kept apart from deterministic Verify by design |
 | Cross-model comparison / tournament | Explicit non-goal for the MVP (PRD §16.2) |
 | OTLP / OTel GenAI mapping | #41 — adapter stub exists; internal schema stays authoritative |
-| Server-side rerun for queued lineage + span-name polish | Follow-ups recorded on PR #405 |
-| Alerting | Explicit non-goal (PRD) |
+| SSE live streaming | #40 — polling ships first, gated on P0 per PRD |
+| Workspace browser | #65 / #66 |
+| Run-log follow-ups | #243 |
 
 ## Configuration
 

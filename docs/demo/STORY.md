@@ -11,7 +11,7 @@ instance differ, the "on the poc box" notes say what the recording will actually
 Two windows side by side. Left: Git Bash running `run-demo.sh`, large font, printing its
 pre-flight lines and `Pre-flight OK`. Right: the browser on the access gate, a single
 centered card with a masked token field over a dark page. The presenter pastes the token
-(masked, safe on camera) and the shell appears: dark sidebar, GlassBox wireframe-box logo,
+(masked, safe on camera) and the shell appears: dark sidebar, Oculith wireframe-box logo,
 "Observability for Agent Runs" under it, a violet Create Agent button, and the agent list.
 
 On the poc box: the sidebar has only the Demo agent, and the Runs list starts almost empty.
@@ -19,10 +19,12 @@ That emptiness is the point; everything the camera sees from here on is created 
 
 ## Scene 2: the setup (one sentence, one send)
 
-The script creates the Demo Agent from the `fee-ledger` template and sends the fix-the-test
-task. The camera stays on the Runs list as the new row appears and flips queued, then
-running, with the live ms-elapsed ticker counting. This wait is where the recording keeps
-rolling and the cut trims to a captioned "about 70 s, trimmed".
+The script creates the Demo Agent from the `fee-ledger` template and prints the task; the
+presenter pastes it into the Playground composer and hits Enter (the Track 1 journey's
+"invoke through the Playground" — the script adopts the UI-sent Run automatically). The
+camera then moves to the Runs list as the new row appears and flips queued, then running,
+with the live ms-elapsed ticker counting. This wait is where the recording keeps rolling
+and the cut trims to a captioned "about 70 s, trimmed".
 
 ## Scene 3: green run, purple chip (the redaction beat)
 

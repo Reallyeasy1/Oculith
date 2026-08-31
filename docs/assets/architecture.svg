@@ -12,7 +12,7 @@
   </defs>
 
   <rect x="0" y="0" width="1440" height="980" fill="#ffffff"/>
-  <text x="24" y="36" font-size="22" font-weight="700" fill="#0f172a">GlassBox — observability middleware for Agent Runs</text>
+  <text x="24" y="36" font-size="22" font-weight="700" fill="#0f172a">Oculith — observability middleware for Agent Runs</text>
   <text x="24" y="58" font-size="13" fill="#475569">One Run = one correlated, privacy-safe trace. Solid arrows: execution path. Blue arrows: observation data flow. Purple: verification loop.</text>
 
   <!-- ══════════ EXECUTION ROW ══════════ -->
@@ -99,10 +99,10 @@
     <text x="1322" y="304" text-anchor="middle">disk snapshot · denials</text>
   </g>
 
-  <!-- ══════════ GLASSBOX MIDDLEWARE BAND ══════════ -->
+  <!-- ══════════ OCULITH MIDDLEWARE BAND ══════════ -->
   <g>
     <rect x="24" y="322" width="1392" height="300" rx="10" fill="#f0fdf4" stroke="#059669" stroke-width="2"/>
-    <text x="500" y="350" font-size="13" font-weight="700" fill="#047857" text-anchor="middle" letter-spacing="0.5">GLASSBOX MIDDLEWARE</text>
+    <text x="500" y="350" font-size="13" font-weight="700" fill="#047857" text-anchor="middle" letter-spacing="0.5">OCULITH MIDDLEWARE</text>
     <text x="500" y="366" font-size="10.5" fill="#047857" text-anchor="middle">apps/server/src/glassbox/</text>
 
     <!-- event contract -->
@@ -224,7 +224,7 @@
     <path d="M 426 686 L 426 634 L 32 634 L 32 300 L 288 300 L 288 224 L 306 224" fill="none" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arrowPurple)"/>
 
     <text x="40" y="800" font-size="10.5" fill="#6d28d9">Judge fence: LLM evaluators read only the redacted evaluation view, stamp evaluatorModel provenance on every score, and can never write a diagnosis or classify a regression.</text>
-    <text x="40" y="818" font-size="10.5" fill="#6d28d9">Controls are roadmap, not product: nothing in GlassBox blocks or decides — it observes, explains, and verifies. Evidence before control.</text>
+    <text x="40" y="818" font-size="10.5" fill="#6d28d9">Controls are roadmap, not product: nothing in Oculith blocks or decides — it observes, explains, and verifies. Evidence before control.</text>
   </g>
 
   <!-- ══════════ LEGEND ══════════ -->
