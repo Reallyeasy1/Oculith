@@ -183,7 +183,7 @@ TLS with an automatic Let's Encrypt certificate. Use it whenever
 3. Make sure the firewall rule opens TCP 443 and keeps TCP 80 open (the
    `launchpad-demo-web` rule above opens both; Caddy answers the ACME HTTP-01
    challenge on 80 and redirects HTTP to HTTPS).
-4. Rerun `./scripts/deploy-existing-ecs.sh .env.production`.
+4. Rerun `bash scripts/deploy-existing-ecs.sh .env.production`.
 
 Verify:
 
