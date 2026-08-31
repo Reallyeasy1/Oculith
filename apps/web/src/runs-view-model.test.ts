@@ -2,7 +2,7 @@
 //   npx vitest run apps/web/src/runs-view-model.test.ts
 import { describe, expect, it } from "vitest";
 import type { RunListItem, TraceStatus } from "./types";
-import { ERROR_HEAD_CHARS, collapseRequestId, errorHead, evidenceBadges, formatCost, formatRunDuration, formatUsage, liveRuns, matchesFilter, matchesProvenance, matchesTaskOutcome, needsAttention, outlierLabel, pluralize, recoveredFailures, runDurationCell, runOutlier, runsColumns, SESSION_INPUT_TOKENS_ADVISORY_THRESHOLD, sessionHealth, summarizeRuns, taskOutcomeChip, taskOutcomeProvenance, workspaceLabel, workspaceOptionLabel } from "./runs-view-model";
+import { ERROR_HEAD_CHARS, collapseRequestId, errorHead, evidenceBadges, formatCost, formatRunDuration, formatUsage, liveRuns, matchesFilter, matchesProvenance, matchesTaskOutcome, matchesTimeWindow, needsAttention, outlierLabel, pluralize, recoveredFailures, runDurationCell, runOutlier, runsColumns, SESSION_INPUT_TOKENS_ADVISORY_THRESHOLD, sessionHealth, summarizeRuns, taskOutcomeChip, taskOutcomeProvenance, workspaceLabel, workspaceOptionLabel } from "./runs-view-model";
 
 function run(status: TraceStatus, degraded = false, agentId = "a", agentName = "A", extra: Partial<RunListItem> = {}): RunListItem {
   return {
@@ -320,5 +320,20 @@ describe("provenance drill-back (#174)", () => {
     expect(matchesProvenance(run("ok", false, "a", "A", { runId: "a" }), ["a", "b"])).toBe(true);
     expect(matchesProvenance(run("ok", false, "c", "C", { runId: "c" }), ["a", "b"])).toBe(false);
     expect(matchesProvenance(run("ok", false, "c", "C", { runId: "c" }), undefined)).toBe(true);
+  });
+});
+
+describe("chart-bucket time window (#369)", () => {
+  const window = { from: "2026-08-29T14:00:00.000Z", to: "2026-08-29T14:59:59.999Z" };
+  const at = (startedAt?: string) => run("ok", false, "a", "A", startedAt ? { startedAt } : {});
+  it("keeps only Runs whose startedAt falls inside the inclusive bounds", () => {
+    expect(matchesTimeWindow(at("2026-08-29T14:00:00.000Z"), window)).toBe(true);
+    expect(matchesTimeWindow(at("2026-08-29T14:59:59.999Z"), window)).toBe(true);
+    expect(matchesTimeWindow(at("2026-08-29T15:00:00.000Z"), window)).toBe(false);
+    expect(matchesTimeWindow(at("2026-08-29T13:59:59.999Z"), window)).toBe(false);
+  });
+  it("never matches a Run without an observed start, and no window matches everything", () => {
+    expect(matchesTimeWindow(at(undefined), window)).toBe(false);
+    expect(matchesTimeWindow(at(undefined), undefined)).toBe(true);
   });
 });

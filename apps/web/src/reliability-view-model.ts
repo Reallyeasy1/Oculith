@@ -1,4 +1,4 @@
-import type { ReliabilityReport, ReliabilitySeriesPoint, TaskCompletionRate } from "./types";
+import type { ReliabilityBlock, ReliabilitySeriesPoint, TaskCompletionRate } from "./types";
 import { formatCount, formatDuration, type QuickFilter, type TaskOutcomeFilter } from "./runs-view-model";
 
 // Pure formatting for ReliabilityPanel (#173). A `null` from the API renders as "—" — zero is a claim
@@ -31,6 +31,8 @@ export interface ReliabilityDrill {
   taskOutcome: TaskOutcomeFilter;
   /** Exact provenance for a config-comparison cell (#174); absent for ordinary dashboard drills. */
   runIds?: string[];
+  /** #369 chart-bucket drill: keep only Runs whose startedAt falls in [from, to] (both inclusive ISO bounds). */
+  window?: { from: string; to: string; label: string };
 }
 
 export interface ReliabilityTile {
@@ -48,7 +50,8 @@ export interface ReliabilityTile {
   drill?: ReliabilityDrill;
 }
 
-export function reliabilityTiles(report: ReliabilityReport): ReliabilityTile[] {
+// #369: takes the block, not the full report, so the agent-optional Overview report renders the same tiles.
+export function reliabilityTiles(report: ReliabilityBlock): ReliabilityTile[] {
   const of = (value: (point: ReliabilitySeriesPoint) => number | null): (number | null)[] => report.series.map(value);
   const tokensValue = report.tokens.avgInput === null && report.tokens.avgOutput === null
     ? "—"

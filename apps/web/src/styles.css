@@ -924,6 +924,94 @@ select:focus {
   border-left: 2px solid var(--purple);
 }
 
+/* #378: assistant replies render as markdown. The wrapper deliberately inherits
+   .message-body's pre-wrap so spacing in unmodeled content (aligned columns,
+   ASCII trees, pipe tables) is preserved exactly as the model wrote it. */
+.message-body .markdown > :first-child {
+  margin-top: 0;
+}
+
+.message-body .markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.message-body .markdown p,
+.message-body .markdown ul,
+.message-body .markdown ol,
+.message-body .markdown blockquote,
+.message-body .markdown pre {
+  margin: 0 0 10px;
+}
+
+.message-body .markdown h1,
+.message-body .markdown h2,
+.message-body .markdown h3,
+.message-body .markdown h4,
+.message-body .markdown h5,
+.message-body .markdown h6 {
+  margin: 14px 0 7px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.message-body .markdown h1 {
+  font-size: 15px;
+}
+
+.message-body .markdown h2 {
+  font-size: 14px;
+}
+
+.message-body .markdown ul,
+.message-body .markdown ol {
+  padding-left: 22px;
+}
+
+.message-body .markdown li {
+  margin: 0 0 4px;
+}
+
+.message-body .markdown code {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: rgba(124, 108, 255, 0.08);
+  border: 1px solid rgba(124, 108, 255, 0.14);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+.message-body .markdown pre {
+  background: #fbfbf9;
+  border: 1px solid #e7e7e2;
+  border-radius: var(--radius-sm, 6px);
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+
+.message-body .markdown pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+  white-space: pre;
+}
+
+.message-body .markdown blockquote {
+  border-left: 2px solid #ddd6f8;
+  padding-left: 11px;
+  color: #6b6c66;
+}
+
+.message-body .markdown hr {
+  border: 0;
+  border-top: 1px solid #e7e7e2;
+  margin: 12px 0;
+}
+
+.message-body .markdown a {
+  color: var(--purple);
+  text-decoration: underline;
+}
+
 .thinking {
   opacity: 0.82;
 }
@@ -2874,6 +2962,34 @@ select:focus {
   font-size: 11px;
 }
 
+/* #369: bucket toggle + range presets + overlay pickers share one wrapping control row. */
+.reliability-chart-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.reliability-overlay-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.reliability-overlay-controls .button {
+  padding: 5px 10px;
+  font-size: 11px;
+}
+
+.reliability-overlay-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
 .charts-empty {
   margin: 0;
   color: var(--muted);
@@ -2935,6 +3051,15 @@ select:focus {
   border-radius: 2px;
 }
 
+/* #369 overlay delta chips: raw B − A per chart, reusing the .badge look. */
+.chart-deltas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin: 6px 0 0;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Hover/keyboard readout: "Aug 29 · 62% · 13 Runs". Fixed height so it never jumps. */
 .chart-readout {
   margin: 8px 0 6px;
@@ -2971,6 +3096,20 @@ select:focus {
   height: 120px;
   cursor: crosshair;
   touch-action: none; /* pointermove hover on touch */
+}
+
+/* #369: a drillable plot advertises the click; the crosshair stays for hover reading. */
+.chart-plot-drillable {
+  cursor: pointer;
+}
+
+/* #369 volume bars; the overlay's candidate bars share the series color at reduced opacity. */
+.chart-bar {
+  opacity: 0.85;
+}
+
+.chart-bar-b {
+  opacity: 0.45;
 }
 
 .chart-plot:focus-visible {

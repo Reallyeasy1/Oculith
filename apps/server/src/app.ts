@@ -550,6 +550,10 @@ export async function createApp(
         service.getAgent(id);
         return { capturePolicy: glassbox.emitter.capturePolicy, ...(await reliability.forAgent(id, reliabilityQuerySchema.parse(request.query))) };
       });
+      // #369: the agent-optional variant behind the all-runs Overview dashboard — one block over
+      // every Agent's Runs, same query contract as the per-Agent endpoint minus the path id.
+      app.get("/api/reliability", async (request) =>
+        ({ capturePolicy: glassbox.emitter.capturePolicy, ...(await reliability.forAll(reliabilityQuerySchema.parse(request.query))) }));
       app.get("/api/reliability/compare", async (request) => {
         const query = reliabilityCompareQuerySchema.parse(request.query);
         service.getAgent(query.agentId);

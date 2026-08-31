@@ -112,6 +112,7 @@ describe("reliabilityNumbers on the hand-computed fixture", () => {
       tokens: { avgInput: 100, avgOutput: 50, sum: 1800, sampled: 12 },
       latency: { p50: 7000, p95: 14000, sampled: 14 },
       denialRate: 3 / 15,
+      cost: { avg: null, sum: null, sampled: 0 }, // no fixture row carries an estimate — no claim
     });
   });
 
@@ -125,6 +126,7 @@ describe("reliabilityNumbers on the hand-computed fixture", () => {
       tokens: { avgInput: 200, avgOutput: 100, sum: 3900, sampled: 13 },
       latency: { p50: 8000, p95: 14000, sampled: 13 },
       denialRate: 0,
+      cost: { avg: null, sum: null, sampled: 0 },
     });
   });
 
@@ -138,6 +140,7 @@ describe("reliabilityNumbers on the hand-computed fixture", () => {
       tokens: { avgInput: null, avgOutput: null, sum: null, sampled: 0 },
       latency: { p50: null, p95: null, sampled: 0 },
       denialRate: null,
+      cost: { avg: null, sum: null, sampled: 0 },
     });
     // a lone running Run: 1 window Run but no terminal one → execution rate is null, not 0
     const running = [row("r1", A1, "cfg-x", d(1, "00:00"), "running", 0, 0, undefined, undefined, 0)];
@@ -152,6 +155,17 @@ describe("reliabilityNumbers on the hand-computed fixture", () => {
     const whole = row("h2", A1, "cfg-h", d(1, "01:00"), "completed", 1, 0, t(10, 20), 100, 0);
     const numbers = reliabilityNumbers([half, whole], VERDICTS, EVALUATOR);
     expect(numbers.tokens).toEqual({ avgInput: 255, avgOutput: 20, sum: 30, sampled: 1 });
+  });
+
+  it("aggregates cost only over Runs with a persisted estimate (#369)", () => {
+    const priced = (runId: string, estimatedCostUsd: number | undefined, startedAt: string) =>
+      ({ ...row(runId, A1, "cfg-p", startedAt, "completed", 1, 0, undefined, 100, 0), ...(estimatedCostUsd === undefined ? {} : { estimatedCostUsd }) });
+    const numbers = reliabilityNumbers([priced("p1", 0.02, d(1, "00:00")), priced("p2", 0.04, d(1, "01:00")), priced("p3", undefined, d(1, "02:00"))], VERDICTS, EVALUATOR);
+    // p3 has no estimate: it joins neither the sum nor the average — visible as sampled 2 of 3
+    expect(numbers.cost).toEqual({ avg: 0.03, sum: 0.06, sampled: 2 });
+    // deltas follow the same refusal: an unobserved side yields null, never a fabricated zero
+    const deltas = reliabilityDeltas(numbers, reliabilityNumbers([priced("q1", undefined, d(1, "00:00"))], VERDICTS, EVALUATOR));
+    expect(deltas.cost).toEqual({ avg: null, sum: null });
   });
 });
 
@@ -208,6 +222,7 @@ describe("reliabilityDeltas", () => {
       tokens: { avgInput: 100, avgOutput: 50, sum: 2100 },
       latency: { p50: 1000, p95: 0 },
       denialRate: -3 / 15,
+      cost: { avg: null, sum: null },
     });
     const empty = reliabilityNumbers([], VERDICTS, EVALUATOR);
     const deltas = reliabilityDeltas(a, empty);
@@ -259,6 +274,19 @@ describe("ReliabilityService", () => {
     expect(report.provenance.runIds).not.toContain("z01");
     // the whole-Agent window spans both configHashes but still excludes agt-2
     expect((await stores.service.forAgent(A1, query())).runs).toBe(28);
+  });
+
+  it("aggregates every Agent's Runs when no Agent is bound and keeps agentId out of the filter echo (#369)", async () => {
+    const stores = await setup();
+    await seed(stores);
+    const report = await stores.service.forAll(query());
+    expect(report.runs).toBe(30); // 28 agt-1 Runs + the 2 agt-2 Runs the per-Agent window excludes
+    expect(report.provenance.filter).toEqual({});
+    expect(report.provenance.runIds).toContain("z01");
+    expect(report).not.toHaveProperty("agentId");
+    // the shared window options still apply without an Agent bound
+    expect((await stores.service.forAll(query({ configHash: "cfg-base" }))).runs).toBe(16); // 15 + z01
+    expect((await stores.service.forAll(query({ from: d(3, "00:00") }))).runs).toBe(10); // c05..c13 + z02
   });
 
   it("windows by time range and echoes the ms-normalised filter", async () => {
