@@ -18,7 +18,10 @@ An **Agent** is a persistent workspace folder plus a resumable Codex session and
 
 - **Create Agent** — name, description, instructions, and optionally:
   - **Workspace**: share an existing workspace by name, or leave blank for a managed one.
-  - **Start from**: seed the workspace from a template (e.g. `node-lib-with-failing-test`).
+  - **Start from**: seed the workspace from a template. Shipped templates
+    (`workspace-templates/`): `empty`, `fee-ledger` (the knowledge-gated demo library),
+    `frontend-button` (a static landing page with a design-gate test suite), and
+    `node-lib-with-failing-test` (a tiny library whose tests fail on purpose).
     Templates are content-hashed; the hash later guards regression cases (§6).
   - **Verify command** (Settings): a command (e.g. `npm test`) the *platform itself* runs in the
     workspace after every completed Run. Its exit code becomes the Run's measured **task outcome**
