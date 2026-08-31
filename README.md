@@ -171,6 +171,8 @@ and exit codes, workspace disk truth, `configHash` on every Run. Trace detail = 
 nested tree/timeline, span drawer, local filters, persistent first-error banner with **Jump to failing
 span**. Export (`GET /api/traces/:traceId/export`) is byte-identical in policy to the query response.
 
+![Trace detail with the span drawer open on a tool span](docs/assets/ui/s3b-span-drawer.png)
+
 **Per-layer capabilities.** Model/tool evidence has exactly three states and is never guessed:
 `observed` (the runtime emitted events for that layer), `unavailable` (the Run completed and the
 runtime exposed no detail — emits `capability.unavailable`), `unknown` (cancelled/timed out/stream
@@ -191,6 +193,8 @@ telemetry and evaluation metrics labelled apart, nearest-rank percentiles, every
 semantics for the dashboard, so the two APIs can never disagree on the same window.
 
 ## Audit, failure and denial behaviour
+
+![Timeout trace: red first-failure banner with Jump to failing span](docs/assets/ui/s5a-trace-timeout.png)
 
 - **Audit:** `GET /api/runs/:id/audit` derives actor/action/resource/outcome rows from stored control,
   policy, sandbox, tool and terminal events — no fabricated rows; every row links to its source event.
@@ -218,6 +222,8 @@ semantics for the dashboard, so the two APIs can never disagree on the same wind
 ## Regression workflow (Verify)
 
 Save case → rerun → compare, all through the real Run path:
+
+![Regression cases card on the overview](docs/assets/ui/s6-regression-cases.png)
 
 1. **Save** a Run as a Regression Case: bounded prompt, baseline Run/config, workspace-template
    reference with a **template content hash**, and deterministic assertions pre-filled from evidence
@@ -326,6 +332,8 @@ it can never overwrite, every score carries `evaluatorModel` provenance, no LLM 
 diagnosis or classifies a regression, and the reliability dashboard renders one chart card per
 judge — labelled *evaluation*, never mixed with telemetry.
 
+![Reliability charts: completion, failure, latency and per-judge cards](docs/assets/ui/s9b-reliability-charts.png)
+
 ## Future work (deliberately deferred)
 
 | Deferred | Where it stands |
@@ -339,10 +347,19 @@ judge — labelled *evaluation*, never mixed with telemetry.
 
 ## Configuration
 
+**Fresh clone: three values.** Copy `.env.example` to `.env` — every other variable ships a
+working default — and set `ARK_API_KEY` + `ARK_MODEL` (or `MODEL_PROVIDER=openai` with
+`OPENAI_API_KEY`) and `APP_AUTH_TOKEN` (24+ random characters). The table below lists the
+variables that change behavior; the full commented list, including container/resource
+limits, is [.env.example](.env.example).
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `ARK_API_KEY` / `ARK_MODEL` | Required | Ark key + Responses-capable endpoint ID (`ARK_BASE_URL` defaults to BytePlus ap-southeast v3) |
 | `MODEL_PROVIDER` | `ark` | `ark` or `openai` (`OPENAI_API_KEY`, optional `OPENAI_MODEL`) |
+| `HOST` / `PORT` | `0.0.0.0` / `3000` | Bind address and port (`PUBLIC_PORT` maps the Compose host port; `LOG_LEVEL` defaults `info`) |
+| `APP_DATA_DIR` / `AGENT_WORKSPACE_ROOT` / `CODEX_HOME` | `/app/data` / `/app/workspaces` / `/app/codex-home` | Where state lives (Docker paths; local dev outside Docker uses `.data` / `workspaces` / `codex-home` — see **Run it**) |
+| `CODEX_BIN` | `codex` | Codex CLI binary; on Windows point it at the native `codex.exe` — the npm `.cmd` shim cannot be spawned by `execFile` |
 | `TASK_COMPLETION_JUDGE` | `ark` | Task Completion evaluator backend; `fake` is deterministic and reserved for the repository E2E lane |
 | `APP_AUTH_TOKEN` | Empty (auth off) | Bearer token for every `/api/*` route; production refuses non-loopback with <24 chars |
 | `RUNTIME_PROVIDER` | `local-process` | `container` for disposable Runtime containers (`npm run poc` sets this) |
@@ -357,8 +374,6 @@ judge — labelled *evaluation*, never mixed with telemetry.
 | `GLASSBOX_STORE` / `DATABASE_URL` | `json` / — | `postgres` keeps traces and Run summaries in PostgreSQL (`docker compose --profile postgres up`); the default keeps NDJSON + `db.json`. Dev-only: the store conformance tests run their Postgres cases only when `TEST_DATABASE_URL` points at a **throwaway** database — they empty its tables between cases, which is why they never read `DATABASE_URL` (#216) |
 | `GLASSBOX_PRICE_PER_MTOK_INPUT` / `_CACHED_INPUT` / `_OUTPUT` | — | Optional cost estimates; cached input defaults to the input rate |
 | `GLASSBOX_POSTCHECK_ALLOWLIST` | `npm test` | Comma-separated commands `post_check` assertions may run in eval workspaces; anything else fails closed |
-
-Full list including container/resource limits: [.env.example](.env.example).
 
 ## Documentation
 
