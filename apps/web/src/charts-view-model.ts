@@ -186,6 +186,13 @@ export function domainMax(domain: ChartDomain, values: readonly (number | null)[
 /** Judge-score labels: one decimal, "4.2". */
 export const formatScore = (value: number): string => value.toFixed(1);
 
+/** #396 judge card title: humanize an evaluatorId. Assumes evaluator ids are lowercase-underscore
+ * slugs of their names (#192) — split on "_" and title-case each word ("task_completion" →
+ * "Task Completion", "politeness_judge" → "Politeness Judge"). */
+export function humanizeEvaluatorId(id: string): string {
+  return id.split("_").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
+}
+
 /** Volume axis / tick labels: whole counts stay integers, but a .5 midpoint stays honest.
  * niceMax can hand the mid tick a fractional value (max 5 → 2.5); rounding it to "3" put the
  * label off the gridline it names (#390 item 1), so show the true value with one decimal. */

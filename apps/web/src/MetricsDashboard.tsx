@@ -9,6 +9,7 @@ import {
   emptyStateMessage,
   formatCount,
   formatScore,
+  humanizeEvaluatorId,
   hoverReadout,
   linePath,
   nearestBucketIndex,
@@ -47,7 +48,7 @@ interface ChartSpec {
   lines: ChartLine[];
 }
 
-const CHARTS: ChartSpec[] = [
+const LEADING_CHARTS: ChartSpec[] = [
   {
     key: "completion",
     title: "Completion",
@@ -81,19 +82,9 @@ const CHARTS: ChartSpec[] = [
       { label: "p95", color: "var(--blue)", value: (p) => p.latency.p95 },
     ],
   },
-  {
-    key: "judge",
-    title: "Judge scores",
-    kind: "line",
-    domain: "score",
-    format: formatScore,
-    provenance: "evaluation",
-    lines: [
-      // ponytail: `?? []` guards a pre-#384 server that doesn't send judgeScores yet — the card just stays empty.
-      { label: "Task Completion", color: "var(--purple)", value: (p) => (p.judgeScores ?? []).find((s) => s.evaluatorId === "task_completion")?.meanScore ?? null },
-      { label: "Recovery Quality", color: "var(--blue)", value: (p) => (p.judgeScores ?? []).find((s) => s.evaluatorId === "recovery_quality")?.meanScore ?? null },
-    ],
-  },
+];
+
+const TRAILING_CHARTS: ChartSpec[] = [
   {
     key: "cost",
     title: "Cost",
@@ -111,6 +102,33 @@ const CHARTS: ChartSpec[] = [
     lines: [{ label: "Runs", color: "var(--blue)", value: (p) => p.runs }],
   },
 ];
+
+/** #396: judge cards are dynamic — one per distinct llm_judge evaluator present in the series'
+ * judgeScores, not two hardcoded lines. The server sends judgeScores for ALL judge evaluators, so a
+ * new "Politeness Judge" (or any future judge) auto-appears; a judge with no scored runs shows an empty
+ * card. Colors cycle a small token palette, repeating past three judges. All judge cards share
+ * `key: "judge"` (they have no delta chips — chartDeltaChips("judge", …) returns []). */
+const JUDGE_COLORS = ["var(--purple)", "var(--blue)", "var(--green-ink)"];
+
+export function buildJudgeSpecs(series: readonly ReliabilitySeriesPoint[]): ChartSpec[] {
+  const ids = [...new Set(series.flatMap((point) => point.judgeScores.map((s) => s.evaluatorId)))].sort();
+  return ids.map((id, index) => ({
+    key: "judge",
+    title: humanizeEvaluatorId(id),
+    kind: "line",
+    domain: "score",
+    format: formatScore,
+    provenance: "evaluation",
+    lines: [
+      {
+        label: humanizeEvaluatorId(id),
+        color: JUDGE_COLORS[index % JUDGE_COLORS.length]!,
+        // ponytail: `?? []` guards a pre-#384 server that doesn't send judgeScores yet — the line stays null.
+        value: (p) => (p.judgeScores ?? []).find((s) => s.evaluatorId === id)?.meanScore ?? null,
+      },
+    ],
+  }));
+}
 
 /** #369: the candidate configuration's series rendered dashed over the baseline, with B − A chips. */
 export interface ChartOverlay {
@@ -135,9 +153,11 @@ export default function MetricsDashboard({ series, bucket, overlay, onDrillBucke
   }
   const axis = overlay ? synthesizeAxisPair(series, overlay.b, bucket) : synthesizeAxis(series, bucket);
   if (axis.length < 2) return <p className="charts-empty">Charts appear once Runs span two time buckets.</p>;
+  // #396: judge cards sit where the single Judge card used to — after Latency, before Cost.
+  const charts = [...LEADING_CHARTS, ...buildJudgeSpecs(series), ...TRAILING_CHARTS];
   return (
     <div className="charts-grid">
-      {CHARTS.map((spec) => (
+      {charts.map((spec) => (
         <ChartCard key={spec.title} spec={spec} axis={axis} bucket={bucket} {...(overlay ? { overlay } : {})} {...(onDrillBucket ? { onDrillBucket } : {})} />
       ))}
     </div>
