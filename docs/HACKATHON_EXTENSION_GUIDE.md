@@ -86,3 +86,6 @@ Only three deliverables are required:
 - [ ] The demo includes a positive and a failure, denial, or malicious case.
 - [ ] Automated evidence covers the core event or policy decision.
 - [ ] No secret appears in source, logs, traces, screenshots, or the browser.
+  (Deliberate exception: the shared demo access token lives in tab-scoped `sessionStorage` so a
+  reload doesn't sign you out. It never outlives the tab, and it is wiped the moment the server
+  rejects it. See README § Security and redaction.)
