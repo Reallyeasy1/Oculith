@@ -246,7 +246,7 @@ export default function App() {
     if (mountedRef.current) setEvalRuns(result.evalRuns);
   }, []);
 
-  useEffect(() => { setRuns([]); void refreshRuns(); }, [refreshRuns, view, selectedId]); // clear the previous scope so the strip/table never show another scope for a round trip
+  useEffect(() => { setRuns([]); setReliability(null); void refreshRuns(); }, [refreshRuns, view, selectedId]); // clear the previous scope so the strip/table/reliability panel never show another scope for a round trip
 
   // No-op unless `runId` is the trace currently open, so the poll loop can call it on every tick
   // (poll-tick refreshes fail soft — invariant 12; only the initial open surfaces an error).
