@@ -126,5 +126,5 @@ Both runner adapters use argv-only process execution, bounded output/time, resum
 - No autonomous controller, approval engine, or policy-enforcement loop; the dashed controller boundary is an extension seam only.
 - No multi-user identity, authorization, hardened tenant isolation, or distributed control plane.
 - No external trace database or message bus; NDJSON is the deliberate POC trace store. PostgreSQL is an opt-in backend for Run summaries only.
-- No LLM-based evaluator or success inference. Regression evaluators use explicit stored evidence. The `postCheck` assertion type is defined but `EvalRunner` runs evaluators without a workspace runner, so it reports "unavailable" rather than executing commands.
+- No LLM in the diagnosis or regression path. `llm_judge` evaluators exist (task_completion, recovery_quality, user-defined) but are fenced to provenance-stamped scores over the redacted evaluation view; deterministic evaluators own every verdict, and `REGRESSION` is classified only from their PASS→FAIL deltas. `post_check` executes real commands in the isolated eval workspace, restricted to `GLASSBOX_POSTCHECK_ALLOWLIST` (default `npm test`) and failing closed otherwise (#282).
 - No deployment topology beyond the local POC and single ECS task described above.
