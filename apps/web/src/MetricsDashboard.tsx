@@ -5,17 +5,19 @@ import { formatPercent } from "./reliability-view-model";
 import {
   bucketDrillWindow,
   chartDeltaChips,
+  domainMax,
   emptyStateMessage,
+  formatScore,
   hoverReadout,
   linePath,
   nearestBucketIndex,
-  niceMax,
   overlayHoverReadout,
   slotIndex,
   synthesizeAxis,
   synthesizeAxisPair,
   yTicks,
   type AxisBucket,
+  type ChartDomain,
   type ChartKey,
 } from "./charts-view-model";
 
@@ -36,9 +38,11 @@ interface ChartSpec {
   title: string;
   /** "line" = fencepost points joined by paths; "bar" = one slot per bucket (#369 volume chart). */
   kind: "line" | "bar";
-  /** "rate" = fixed 0–1 domain rendered as 0–100%; "observed" = 0..niceMax of the data. */
-  domain: "rate" | "observed";
+  /** "rate" = fixed 0–1 domain rendered as 0–100%; "score" = fixed 0–5 (judge scores); "observed" = 0..niceMax of the data. */
+  domain: ChartDomain;
   format: (value: number) => string;
+  /** #385: evaluation charts wear the tiles' provenance marker so they never read as telemetry. */
+  provenance?: "evaluation";
   lines: ChartLine[];
 }
 
@@ -74,6 +78,19 @@ const CHARTS: ChartSpec[] = [
     lines: [
       { label: "p50", color: "var(--purple)", value: (p) => p.latency.p50 },
       { label: "p95", color: "var(--blue)", value: (p) => p.latency.p95 },
+    ],
+  },
+  {
+    key: "judge",
+    title: "Judge scores",
+    kind: "line",
+    domain: "score",
+    format: formatScore,
+    provenance: "evaluation",
+    lines: [
+      // ponytail: `?? []` guards a pre-#384 server that doesn't send judgeScores yet — the card just stays empty.
+      { label: "Task Completion", color: "var(--purple)", value: (p) => (p.judgeScores ?? []).find((s) => s.evaluatorId === "task_completion")?.meanScore ?? null },
+      { label: "Recovery Quality", color: "var(--blue)", value: (p) => (p.judgeScores ?? []).find((s) => s.evaluatorId === "recovery_quality")?.meanScore ?? null },
     ],
   },
   {
@@ -136,7 +153,7 @@ function ChartCard({ spec, axis, bucket, overlay, onDrillBucket }: { spec: Chart
       return point ? line.value(point) : null;
     });
   const lines = spec.lines.map((line) => ({ ...line, values: values(line, "a"), bValues: overlay ? values(line, "b") : [] }));
-  const max = spec.domain === "rate" ? 1 : niceMax(lines.flatMap((line) => [...line.values, ...line.bValues]));
+  const max = domainMax(spec.domain, lines.flatMap((line) => [...line.values, ...line.bValues]));
   const ticks = yTicks(max, spec.format);
   const slot = 100 / axis.length;
   const cursorX = spec.kind === "bar" ? (index + 0.5) * slot : axis.length === 1 ? 50 : (index / (axis.length - 1)) * 100;
@@ -172,7 +189,10 @@ function ChartCard({ spec, axis, bucket, overlay, onDrillBucket }: { spec: Chart
   return (
     <section className="chart-card" aria-label={label}>
       <header className="chart-head">
-        <h3>{spec.title}</h3>
+        <h3 title={spec.provenance === "evaluation" ? "Evaluation metric: computed from stored evaluator verdicts." : undefined}>
+          {spec.title}
+          {spec.provenance === "evaluation" && <> <span className="eyebrow">evaluation</span></>}
+        </h3>
         <span className="chart-legend">
           {spec.lines.map((line) => (
             <span key={line.label} className="chart-chip">
@@ -182,7 +202,7 @@ function ChartCard({ spec, axis, bucket, overlay, onDrillBucket }: { spec: Chart
           ))}
         </span>
       </header>
-      {overlay && (
+      {overlay && chartDeltaChips(spec.key, overlay.deltas).length > 0 && (
         <p className="chart-deltas" title={`Candidate ${overlay.bLabel} minus baseline ${overlay.aLabel}; "—" means one side observed nothing.`}>
           {chartDeltaChips(spec.key, overlay.deltas).map((chip) => (
             <span key={chip} className="badge">{chip}</span>

@@ -29,7 +29,7 @@ function report(overrides: Partial<ReliabilityReport> = {}): ReliabilityReport {
 }
 
 function point(bucket: string, overrides: Partial<ReliabilityNumbers> = {}): ReliabilitySeriesPoint {
-  return { bucket, ...emptyNumbers, ...overrides };
+  return { bucket, judgeScores: [], ...emptyNumbers, ...overrides };
 }
 
 describe("formatPercent", () => {
