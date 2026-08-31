@@ -622,10 +622,11 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
       ({ runId, agentId, configHash, executionStatus: "completed", taskOutcome: "unknown", startedAt, durationMs, denials: 0, updatedAt: startedAt, metrics }) as unknown as RunSummary;
     const rows = [summary("run-a", "cfg-a", "2026-08-01T00:00:00.000Z", 1000), summary("run-b", "cfg-b", "2026-08-02T00:00:00.000Z", 3000)];
     const summaries = { query: async (q: { configHash?: string }) => rows.filter((r) => !q.configHash || r.configHash === q.configHash) } as unknown as RunSummaryStore;
-    const definition = { id: "task_completion", version: 2 };
+    const definition = { id: "task_completion", version: 2, type: "llm_judge" };
     const evaluations = {
       getDefinition: async (id: string) => (id === "task_completion" ? definition : undefined),
-      query: async () => [{ runId: "run-a", evaluatorId: "task_completion", evaluatorVersion: 2, passed: true, evaluatedAt: "2026-08-03T00:00:00.000Z" }],
+      listDefinitions: async () => [definition],
+      query: async () => [{ runId: "run-a", evaluatorId: "task_completion", evaluatorVersion: 2, score: 5, passed: true, evaluatedAt: "2026-08-03T00:00:00.000Z" }],
     } as unknown as EvaluationStore;
     const svc = { ...service, getAgent: (id: string) => { if (id !== agentId) throw new HttpError(404, "Agent not found"); return { id }; } } as unknown as AgentService;
     const app = await createApp(config(), svc, { emitter, store, summaries, evaluations });
@@ -639,6 +640,10 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
       provenance: { count: 2, runIds: ["run-a", "run-b"], filter: { agentId } },
     });
     expect(ok.json().series).toHaveLength(2); // one day bucket per Run by default
+    // #384: each bucket carries the judge means from stored results (run-b's bucket has none → [])
+    expect(ok.json().series.map((point: { judgeScores: unknown }) => point.judgeScores)).toEqual([
+      [{ evaluatorId: "task_completion", version: 2, evaluated: 1, meanScore: 5 }], [],
+    ]);
 
     const compare = await app.inject({ method: "GET", url: `/api/reliability/compare?agentId=${agentId}&a=cfg-a&b=cfg-b`, headers: auth });
     expect(compare.statusCode).toBe(200);

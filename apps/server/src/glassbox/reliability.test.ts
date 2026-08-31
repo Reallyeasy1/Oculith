@@ -9,7 +9,7 @@ import { SCHEMA_VERSION } from "./schema.js";
 import { JsonRunSummaryStore, summaryFromView, type RunSummary } from "./summary.js";
 import {
   buildReliabilityBlock, reliabilityCompareQuerySchema, reliabilityDeltas, reliabilityNumbers, reliabilityQuerySchema,
-  ReliabilityService, type EvaluatorRef, type ReliabilityQuery,
+  ReliabilityService, type EvaluatorRef, type JudgeScoreSample, type ReliabilityQuery,
 } from "./reliability.js";
 
 const A1 = "019f3fa8-44d2-7b60-b413-1a0b2c3d4e01";
@@ -100,6 +100,10 @@ const CAND_VERDICTS = new Map<string, boolean>([
   ["c03", false], ["c06", false], ["c07", false], ["c08", false],
 ]);
 const VERDICTS = new Map([...BASE_VERDICTS, ...CAND_VERDICTS]);
+// Mirrors what `seed` below stores: one task_completion@1 score per verdict (5 when passed, 2 when failed).
+const JUDGE_SAMPLES = new Map<string, JudgeScoreSample[]>(
+  [...VERDICTS].map(([runId, passed]) => [runId, [{ evaluatorId: "task_completion", version: 1, score: passed ? 5 : 2 }]]),
+);
 
 describe("reliabilityNumbers on the hand-computed fixture", () => {
   it("computes every cfg-base number by hand", () => {
@@ -171,27 +175,45 @@ describe("reliabilityNumbers on the hand-computed fixture", () => {
 
 describe("buildReliabilityBlock series and provenance", () => {
   it("buckets cfg-base by UTC day, wrapping the full number block per bucket", () => {
-    const block = buildReliabilityBlock(BASE, VERDICTS, EVALUATOR, "day", { agentId: A1, configHash: "cfg-base" });
+    const block = buildReliabilityBlock(BASE, VERDICTS, EVALUATOR, "day", { agentId: A1, configHash: "cfg-base" }, JUDGE_SAMPLES);
     expect(block.series.map((point) => point.bucket)).toEqual(["2026-08-01T00:00:00.000Z", "2026-08-02T00:00:00.000Z"]);
     // day 1 = b01..b08: 8 terminal, 7 completed; failures 4 / calls 32; all 8 evaluated and passed;
-    // denial rows b03 + b07; durations 1000..8000 → p50 4000, p95 8000
+    // denial rows b03 + b07; durations 1000..8000 → p50 4000, p95 8000; judge scores 8 × 5 → mean 5
     expect(block.series[0]).toMatchObject({
       runs: 8, executionCompletionRate: 7 / 8,
       taskCompletionRate: { evaluated: 8, passed: 8, rate: 1 },
       toolFailureRate: 4 / 32, latency: { p50: 4000, p95: 8000, sampled: 8 }, denialRate: 2 / 8,
+      judgeScores: [{ evaluatorId: "task_completion", version: 1, evaluated: 8, meanScore: 5 }],
     });
     // day 2 = b09..b15: 6 terminal, 5 completed; failures 2 / calls 24; evaluated b09 + b10, both failed;
-    // denial row b11; durations 9000..14000 → p50 11000, p95 14000
+    // denial row b11; durations 9000..14000 → p50 11000, p95 14000; judge scores 2 × 2 → mean 2
     expect(block.series[1]).toMatchObject({
       runs: 7, executionCompletionRate: 5 / 6,
       taskCompletionRate: { evaluated: 2, passed: 0, rate: 0 },
       toolFailureRate: 2 / 24, latency: { p50: 11000, p95: 14000, sampled: 6 }, denialRate: 1 / 7,
+      judgeScores: [{ evaluatorId: "task_completion", version: 1, evaluated: 2, meanScore: 2 }],
     });
+  });
+
+  it("carries per-bucket judge means, one entry per evaluator version, empty when nothing was scored (#384)", () => {
+    const samples = new Map<string, JudgeScoreSample[]>([
+      // b01 is judged by both judges; b02 by two *versions* of the same judge — each keeps its own entry
+      ["b01", [{ evaluatorId: "task_completion", version: 1, score: 5 }, { evaluatorId: "recovery_quality", version: 1, score: 3 }]],
+      ["b02", [{ evaluatorId: "task_completion", version: 1, score: 4 }, { evaluatorId: "task_completion", version: 2, score: 2 }]],
+    ]);
+    const block = buildReliabilityBlock(BASE, VERDICTS, EVALUATOR, "day", { agentId: A1, configHash: "cfg-base" }, samples);
+    expect(block.series[0]?.judgeScores).toEqual([
+      { evaluatorId: "recovery_quality", version: 1, evaluated: 1, meanScore: 3 },
+      { evaluatorId: "task_completion", version: 1, evaluated: 2, meanScore: 4.5 },
+      { evaluatorId: "task_completion", version: 2, evaluated: 1, meanScore: 2 },
+    ]);
+    // day 2 has no scored judge result: an empty array, never a fabricated entry
+    expect(block.series[1]?.judgeScores).toEqual([]);
   });
 
   it("buckets by hour and leaves a startedAt-less Run out of the series but in the totals", () => {
     const rows = [...BASE.slice(0, 2), row("b99", A1, "cfg-base", undefined, "completed", 4, 0, undefined, 1000, 0)];
-    const block = buildReliabilityBlock(rows, VERDICTS, EVALUATOR, "hour", { agentId: A1 });
+    const block = buildReliabilityBlock(rows, VERDICTS, EVALUATOR, "hour", { agentId: A1 }, JUDGE_SAMPLES);
     expect(block.runs).toBe(3);
     expect(block.series).toHaveLength(2);
     expect(block.series.map((point) => [point.bucket, point.runs])).toEqual([
@@ -200,10 +222,10 @@ describe("buildReliabilityBlock series and provenance", () => {
   });
 
   it("inlines runIds only up to the cap; beyond it the filter echo is the drill-back contract", () => {
-    const small = buildReliabilityBlock(BASE, VERDICTS, EVALUATOR, "day", { agentId: A1, configHash: "cfg-base" });
+    const small = buildReliabilityBlock(BASE, VERDICTS, EVALUATOR, "day", { agentId: A1, configHash: "cfg-base" }, JUDGE_SAMPLES);
     expect(small.provenance).toEqual({ count: 15, runIds: BASE.map((r) => r.runId), filter: { agentId: A1, configHash: "cfg-base" } });
     const big = Array.from({ length: 120 }, (_, i) => row(`big-${String(i).padStart(3, "0")}`, A1, "cfg-big", d(1, "00:00"), "completed", 1, 0, undefined, 100, 0));
-    const capped = buildReliabilityBlock(big, VERDICTS, EVALUATOR, "day", { agentId: A1 });
+    const capped = buildReliabilityBlock(big, VERDICTS, EVALUATOR, "day", { agentId: A1 }, JUDGE_SAMPLES);
     expect(capped.provenance.count).toBe(120);
     expect(capped.provenance.runIds).toBeUndefined();
   });
@@ -265,7 +287,7 @@ describe("ReliabilityService", () => {
     const report = await stores.service.forAgent(A1, query({ configHash: "cfg-base" }));
     expect(report).toEqual({
       schemaVersion: SCHEMA_VERSION, agentId: A1,
-      ...buildReliabilityBlock(await stores.summaries.query({ agentId: A1, configHash: "cfg-base" }), VERDICTS, EVALUATOR, "day", { agentId: A1, configHash: "cfg-base" }),
+      ...buildReliabilityBlock(await stores.summaries.query({ agentId: A1, configHash: "cfg-base" }), VERDICTS, EVALUATOR, "day", { agentId: A1, configHash: "cfg-base" }, JUDGE_SAMPLES),
     });
     // the latest verdict for the re-evaluated b09 counts: 8/10, not 9/10
     expect(report.taskCompletionRate).toEqual({ evaluatorId: "task_completion", version: 1, evaluated: 10, passed: 8, rate: 8 / 10 });
@@ -314,6 +336,27 @@ describe("ReliabilityService", () => {
     expect(latest.taskCompletionRate).toEqual({ evaluatorId: "task_completion", version: 2, evaluated: 1, passed: 0, rate: 0 });
     await expect(stores.service.forAgent(A1, query({ evaluatorId: "no-such-evaluator" }))).rejects.toThrow('Unknown evaluator "no-such-evaluator"');
     await expect(stores.service.forAgent(A1, query({ evaluatorVersion: "9" }))).rejects.toThrow("@9");
+  });
+
+  it("serves per-bucket judge means from stored results only — no score or no judge, no entry (#384)", async () => {
+    const stores = await setup();
+    await seed(stores);
+    const judged = (runId: string, over: Partial<Parameters<typeof stores.evaluations.putResult>[0]>) => stores.evaluations.putResult({
+      runId, evaluatorId: "recovery_quality", evaluatorVersion: 1, passed: true, explanation: "judged",
+      evidenceEventIds: [], metadata: {}, evaluatedAt: d(4, "02:00"), ...over,
+    });
+    // recovery_quality scores b01 (3) and b02 (4); b03's notEligible verdict carries no score to average
+    await judged("b01", { score: 3, passed: false });
+    await judged("b02", { score: 4 });
+    await judged("b03", { metadata: { notEligible: true } });
+    // a scored deterministic result must never appear: judgeScores is llm_judge provenance only
+    await judged("b04", { evaluatorId: "safety", score: 1 });
+    const report = await stores.service.forAgent(A1, query({ configHash: "cfg-base" }));
+    expect(report.series[0]?.judgeScores).toEqual([
+      { evaluatorId: "recovery_quality", version: 1, evaluated: 2, meanScore: 3.5 },
+      { evaluatorId: "task_completion", version: 1, evaluated: 8, meanScore: 5 },
+    ]);
+    expect(report.series[1]?.judgeScores).toEqual([{ evaluatorId: "task_completion", version: 1, evaluated: 2, meanScore: 2 }]);
   });
 
   it("compares the demo's two configHashes side by side with deltas", async () => {
