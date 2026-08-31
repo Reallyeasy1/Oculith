@@ -29,20 +29,6 @@ is derived from those stored facts and never invented:
 Three vocabularies are kept distinct everywhere: *observed fact* · *derived diagnosis* · *evaluator
 judgement* (PRD §17.1). No LLM writes a diagnosis or classifies a regression.
 
-## For judges: where the evidence lives
-
-| Criterion ([§1.11](docs/PROBLEM_STATEMENT.md)) | Look here |
-|---|---|
-| End-to-end middleware behavior (40%) | `npm run poc` → send any task → the Run's trace, audit rows, metrics and reliability charts are all served from stored events emitted in the backend path. `bash scripts/demo/run-demo.sh` drives the full story to a live `REGRESSION` |
-| Technical design & integration (25%) | The one-page diagram below · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · all Oculith server code in one module (`apps/server/src/glassbox/`), adapters only at existing seams · versioned `ObservationEvent` contract · trust invariants in [.claude/rules/glassbox-invariants.md](.claude/rules/glassbox-invariants.md) |
-| Verification & robustness (20%) | `npm run check` (typecheck + server/web suites + guard self-test + build, green in CI) · `npm run test:e2e` (real Docker runtime, seeded-secret sweep across files/API/export/log/DOM, performance bounds) · fail-closed redaction · [docs/UAT_COVERAGE.md](docs/UAT_COVERAGE.md) |
-| Demo & reproducibility (15%) | One command, no hidden setup (`npm run poc`) · [docs/DEMO.md](docs/DEMO.md) runbook rehearsed twice at 171 s / 168 s from a clean root · [Known limitations](#known-limitations) documented, not hidden |
-
-Every §1.10 acceptance line holds: clone → `npm run poc` → create/test an Agent from the browser;
-the middleware executes server-side; `npm run check` passes (CI); the guarded agent workflow scans
-staged additions for credential-shaped content before commits, and the E2E lane sweeps seeded
-canaries across persisted and rendered surfaces.
-
 ## Architecture
 
 ![Oculith architecture](docs/assets/architecture.svg)
@@ -55,6 +41,14 @@ Runtime flow in one line: Web UI → Fastify control plane → `AgentService` �
 every seam into per-Run NDJSON traces plus an in-memory index.
 
 ## Middleware boundaries: instrumented vs derived
+
+Everything Oculith shows sits on one side of a hard boundary. **Instrumented** data is a
+fact recorded at capture time by an emitter at a real seam (the HTTP boundary, the service,
+the runner, the Codex stream, the workspace) — redacted, then appended to the Run's NDJSON
+trace. **Derived** data is computed at read time from those stored events and from nothing
+else: no derivation may add a fact the emitters didn't record, which is why every number in
+the UI can be reproduced from the trace file on disk, and why a layer that exposed nothing
+shows `no evidence` instead of a guess. The table maps what lives on each side:
 
 | Instrumented (facts, emitted at the seams) | Derived (computed from stored facts only) |
 |---|---|
@@ -369,7 +363,7 @@ Full list including container/resource limits: [.env.example](.env.example).
 ## Documentation
 
 - **[User guide](docs/USER_GUIDE.md)** — how to operate the product · **[Tutorial](docs/TUTORIAL.md)** — first login to a detected regression in ~15 minutes
-- [Track 1 problem statement](docs/PROBLEM_STATEMENT.md) · [PRD](docs/PRD.md) · [Architecture](docs/ARCHITECTURE.md)
+- [Track 1 problem statement](docs/PROBLEM_STATEMENT.md) · [PRD](docs/PRD.md) · [Architecture](docs/ARCHITECTURE.md) · [Trust invariants](.claude/rules/glassbox-invariants.md)
 - [Observability roadmap](docs/OBSERVABILITY_ROADMAP.md) — the stance on inputs, outputs and reasoning
 - [UAT coverage](docs/UAT_COVERAGE.md) — what has been tested, how, and what remains
 - [Local POC](docs/LOCAL_POC.md) · [Deployment](docs/DEPLOYMENT.md) · [Codex events](docs/CODEX_EVENTS.md)
