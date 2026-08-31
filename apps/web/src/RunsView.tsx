@@ -19,6 +19,7 @@ import {
   matchesFilter,
   matchesProvenance,
   matchesTaskOutcome,
+  matchesTimeWindow,
   outlierLabel,
   recoveredFailures,
   runDurationCell,
@@ -52,16 +53,19 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
   const [filter, setFilter] = useState<QuickFilter>("attention");
   const [taskOutcome, setTaskOutcome] = useState<TaskOutcomeFilter>("all");
   const [provenanceRunIds, setProvenanceRunIds] = useState<string[] | undefined>();
+  // #369: chart-bucket drill — only Runs whose startedAt falls inside the clicked bucket.
+  const [timeWindow, setTimeWindow] = useState<{ from: string; to: string; label: string } | undefined>();
   useEffect(() => {
     if (!drill) return;
     setFilter(drill.quick);
     setTaskOutcome(drill.taskOutcome);
     setProvenanceRunIds(drill.runIds);
+    setTimeWindow(drill.window);
     document.getElementById("runs-heading")?.focus();
   }, [drill]);
   const visible = useMemo(
-    () => sortNewestFirst(runs).filter((run) => matchesFilter(run, filter) && matchesTaskOutcome(run, taskOutcome) && matchesProvenance(run, provenanceRunIds)),
-    [runs, filter, taskOutcome, provenanceRunIds],
+    () => sortNewestFirst(runs).filter((run) => matchesFilter(run, filter) && matchesTaskOutcome(run, taskOutcome) && matchesProvenance(run, provenanceRunIds) && matchesTimeWindow(run, timeWindow)),
+    [runs, filter, taskOutcome, provenanceRunIds, timeWindow],
   );
   const okCount = summarizeRuns(runs).ok;
   // Elapsed is computed at render time: the dashboard poll (#98) replaces `runs` every tick, so it ticks with the poll.
@@ -92,7 +96,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
               type="button"
               className="button button-ghost"
               aria-pressed={filter === item}
-              onClick={() => { setFilter(item); setProvenanceRunIds(undefined); }}
+              onClick={() => { setFilter(item); setProvenanceRunIds(undefined); setTimeWindow(undefined); }}
             >
               {FILTER_LABEL[item] ?? item}
             </button>
@@ -106,17 +110,25 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
               type="button"
               className="button button-ghost"
               aria-pressed={taskOutcome === item}
-              onClick={() => { setTaskOutcome(item); setProvenanceRunIds(undefined); }}
+              onClick={() => { setTaskOutcome(item); setProvenanceRunIds(undefined); setTimeWindow(undefined); }}
             >
               {item}
             </button>
           ))}
         </div>
       </div>
-      {provenanceRunIds && (
+      {provenanceRunIds && !timeWindow && (
         <p className="runs-baseline comparison-drill-status" role="status">
           Config comparison · {provenanceRunIds.length} {provenanceRunIds.length === 1 ? "Run" : "Runs"}
           <button type="button" className="evidence-link" onClick={() => setProvenanceRunIds(undefined)}>Clear</button>
+        </p>
+      )}
+      {timeWindow && (
+        // "loaded" is deliberate: the table only holds the most recent page of Runs, so this count is a
+        // claim about the loaded page, never about every Run the chart's bucket aggregated server-side.
+        <p className="runs-baseline comparison-drill-status" role="status" title="Counted over the Runs currently loaded in this table (the most recent page), not every Run the chart aggregated.">
+          Time bucket {timeWindow.label}{provenanceRunIds ? " · compared configurations only" : ""} · {visible.length} loaded {visible.length === 1 ? "Run" : "Runs"}
+          <button type="button" className="evidence-link" onClick={() => { setTimeWindow(undefined); setProvenanceRunIds(undefined); }}>Clear</button>
         </p>
       )}
       {!showAgent && baseline && baseline.sampleCount > 0 && (
@@ -246,7 +258,7 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
             ) : (
               <>
                 No Runs match this filter.
-                <button type="button" className="button button-ghost runs-empty-action" onClick={() => { setFilter("attention"); setTaskOutcome("all"); }}>Clear filters</button>
+                <button type="button" className="button button-ghost runs-empty-action" onClick={() => { setFilter("attention"); setTaskOutcome("all"); setProvenanceRunIds(undefined); setTimeWindow(undefined); }}>Clear filters</button>
               </>
             )}
           </div>

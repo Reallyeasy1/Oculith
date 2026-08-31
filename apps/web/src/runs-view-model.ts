@@ -22,6 +22,13 @@ export function matchesProvenance(run: RunListItem, runIds: readonly string[] | 
   return runIds === undefined || runIds.includes(run.runId);
 }
 
+/** #369 chart-bucket drill — inclusive ISO bounds compare lexicographically (both sides are ms-precision
+ * UTC); a Run without an observed start time never matches a time-window claim. */
+export function matchesTimeWindow(run: RunListItem, window: { from: string; to: string } | undefined): boolean {
+  if (!window) return true;
+  return run.startedAt !== undefined && run.startedAt >= window.from && run.startedAt <= window.to;
+}
+
 export const TASK_OUTCOME_HINT = "Task outcome: an evaluator or Eval Run verdict on whether the task succeeded — independent of whether the process completed.";
 
 /** Task column chip; `unknown` is the absence of a verdict, so it renders as no claim (—), not a chip. */

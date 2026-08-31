@@ -4,7 +4,7 @@ import { connectLive } from "./live";
 import { agentPayload, budgetFormError } from "./agent-form";
 import { preferredPreviewCommand, showLastErrorHint } from "./agent-view-model";
 import { budgetBanner } from "./budget-view-model";
-import type { Agent, AgentBudgetReport, AgentRun, AgentRunBaseline, EvalRun, Message, PreviewServability, RegressionCase, ReliabilityReport, RunListItem, SystemInfo, TraceView, Workspace, WorkspacePreview, WorkspaceTemplate } from "./types";
+import type { Agent, AgentBudgetReport, AgentRun, AgentRunBaseline, EvalRun, Message, PreviewServability, RegressionCase, ReliabilityOverviewReport, ReliabilityReport, RunListItem, SystemInfo, TraceView, Workspace, WorkspacePreview, WorkspaceTemplate } from "./types";
 import RunsView from "./RunsView";
 import ReliabilityPanel from "./ReliabilityPanel";
 import type { ReliabilityDrill } from "./reliability-view-model";
@@ -92,7 +92,8 @@ export default function App() {
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
   const [runs, setRuns] = useState<RunListItem[]>([]);
   const [runBaseline, setRunBaseline] = useState<AgentRunBaseline | null>(null);
-  const [reliability, setReliability] = useState<ReliabilityReport | null>(null);
+  // #369: in the overview this holds the agent-optional all-runs report instead.
+  const [reliability, setReliability] = useState<ReliabilityReport | ReliabilityOverviewReport | null>(null);
   // #255: live budget status behind the banner; null when no Agent is selected or the endpoint is absent.
   const [budget, setBudget] = useState<AgentBudgetReport | null>(null);
   // #173 drill-back: a fresh object per tile click so RunsView re-applies the filters on repeat clicks.
@@ -222,8 +223,9 @@ export default function App() {
       const [result, baselineResult, reliabilityResult, budgetResult] = await Promise.all([
         api.listRuns(overview ? { limit: 200 } : { agentId: agentId!, limit: 100 }),
         overview ? Promise.resolve(null) : api.runBaseline(agentId!).catch(() => null),
-        // #173: same fail-soft contract as the baseline — a server without the reliability endpoints just hides the panel.
-        overview ? Promise.resolve(null) : api.reliability(agentId!).catch(() => null),
+        // #173: same fail-soft contract as the baseline — a server without the reliability endpoints just hides
+        // the panel. #369: the overview fetches the agent-optional all-runs report instead of skipping.
+        overview ? api.reliabilityAll().catch(() => null) : api.reliability(agentId!).catch(() => null),
         // #255: fail-soft too — no budget endpoint, no banner.
         overview ? Promise.resolve(null) : api.agentBudget(agentId!).catch(() => null),
       ]);
@@ -244,7 +246,7 @@ export default function App() {
     if (mountedRef.current) setEvalRuns(result.evalRuns);
   }, []);
 
-  useEffect(() => { setRuns([]); void refreshRuns(); }, [refreshRuns, view, selectedId]); // clear the previous scope so the strip/table never show another scope for a round trip
+  useEffect(() => { setRuns([]); setReliability(null); void refreshRuns(); }, [refreshRuns, view, selectedId]); // clear the previous scope so the strip/table/reliability panel never show another scope for a round trip
 
   // No-op unless `runId` is the trace currently open, so the poll loop can call it on every tick
   // (poll-tick refreshes fail soft — invariant 12; only the initial open surfaces an error).
@@ -849,7 +851,7 @@ export default function App() {
         )}
 
         {view === "overview" ? (
-          <><Overview runs={runs} cases={regressionCases} evalRuns={evalRuns} selectedAgent={selected} onRunCase={startEvaluation} onDeleteCase={deleteRegressionCase} onDrill={(drill) => setRunsDrill({ ...drill })} /><CompareView evalRuns={evalRuns} selection={evalComparisonSelection} onOpenEvidence={(runId, eventId) => { setFocusEventId(eventId ?? null); openTrace(runId); }} /><EvaluatorsPanel /></>
+          <><Overview runs={runs} cases={regressionCases} evalRuns={evalRuns} selectedAgent={selected} onRunCase={startEvaluation} onDeleteCase={deleteRegressionCase} onDrill={(drill) => setRunsDrill({ ...drill })} /><ReliabilityPanel report={reliability} onDrill={(drill) => setRunsDrill({ ...drill })} /><CompareView evalRuns={evalRuns} selection={evalComparisonSelection} onOpenEvidence={(runId, eventId) => { setFocusEventId(eventId ?? null); openTrace(runId); }} /><EvaluatorsPanel /></>
         ) : selected ? playgroundCollapsed ? (
           <div className="playground-bar">
             <div className="header-title-row">
@@ -1248,7 +1250,7 @@ export default function App() {
           </div>
         )}
 
-        {view === "agent" && selected && <ReliabilityPanel report={reliability} agentId={selected.id} onDrill={(drill) => setRunsDrill({ ...drill })} />}
+        {view === "agent" && selected && <ReliabilityPanel report={reliability} agentId={selected.id} runs={runs} onDrill={(drill) => setRunsDrill({ ...drill })} />}
         {view === "agent" && selected && <ConfigComparison key={selected.id} agent={selected} runs={runs} evalRuns={evalRuns} onDrill={(drill) => setRunsDrill({ ...drill })} onOpenEvalComparison={(pair) => { setEvalComparisonSelection(pair); setView("overview"); }} />}
         {selectedRunId && (
           <TraceDetail

@@ -648,6 +648,13 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
       deltas: { runs: 0, latency: { p50: 2000 }, taskCompletionRate: null },
     });
 
+    // #369: the agent-optional variant spans every Agent's Runs and never claims one
+    const all = await app.inject({ method: "GET", url: "/api/reliability", headers: auth });
+    expect(all.statusCode).toBe(200);
+    expect(all.json()).toMatchObject({ schemaVersion: "1.0", capturePolicy: "metadata_only", runs: 2, provenance: { count: 2, filter: {} } });
+    expect(all.json()).not.toHaveProperty("agentId");
+    expect((await app.inject({ method: "GET", url: "/api/reliability?bucket=week", headers: auth })).statusCode).toBe(400);
+
     expect((await app.inject({ method: "GET", url: "/api/agents/019f3fa8-44d2-7b60-b413-1a0b2c3d4e71/reliability", headers: auth })).statusCode).toBe(404);
     expect((await app.inject({ method: "GET", url: `/api/agents/${agentId}/reliability?bucket=week`, headers: auth })).statusCode).toBe(400);
     expect((await app.inject({ method: "GET", url: `/api/agents/${agentId}/reliability?evaluatorId=nope`, headers: auth })).statusCode).toBe(400);
@@ -657,6 +664,7 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     // without both read models wired, the endpoints do not exist
     const bare = await createApp(config(), svc, { emitter, store });
     expect((await bare.inject({ method: "GET", url: `/api/agents/${agentId}/reliability`, headers: auth })).statusCode).toBe(404);
+    expect((await bare.inject({ method: "GET", url: "/api/reliability", headers: auth })).statusCode).toBe(404);
     await bare.close();
   });
 
