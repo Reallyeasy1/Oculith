@@ -29,7 +29,7 @@ One correlated, privacy-safe trace per Run: 38 event types across 9 categories, 
 6. **Cost as a first-class metric:** `estimatedCostUsd` exists (env-priced, baseline + per-run column) but is not in the metric catalogue, not persisted on RunSummary, and prices cached input at full rate. Fold it into the catalogue and price cached tokens separately.
 7. Audit surface: `audit.actors[]` and `audit.denials` are computed and unshown; actor attribution is a trust story worth one row of UI.
 
-**P2 — after the hackathon:** OTLP adapter wiring (stub exists), SSE (#40, gated on P0 per PRD), per-model pricing table, evaluations/jobs UI (#192), budget hooks beyond the shipped per-Agent pre-run gate (#255; PRD §14 roadmap). Alerting stays out (PRD §17.5 explicit non-goal).
+**P2 — after the hackathon:** OTLP adapter wiring (stub exists), SSE (#40, gated on P0 per PRD), per-model pricing table, evaluations/jobs UI (#192), budget hooks beyond the shipped per-Agent pre-run gate (#255; PRD §14 roadmap), and an **AI diagnostic agent over the evidence plane** — an LLM agent that reads a Run's trace, correlated logs, and metric rollups to propose a root-cause diagnosis and flag cross-run anomalies (latency drift, cost spikes, recurring failure spans). The shipped LLM judges score one Run's outcome; this agent would evaluate the observability data itself, always as annotations linked back to spans — the recorded evidence stays authoritative. Alerting stays out (PRD §17.5 explicit non-goal).
 
 ## 4. What we will not capture, ever
 

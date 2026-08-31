@@ -340,6 +340,7 @@ judge — labelled *evaluation*, never mixed with telemetry.
 | Cross-model comparison / tournament | Explicit non-goal for the MVP (PRD §16.2) |
 | OTLP / OTel GenAI mapping | #41 — adapter stub exists; internal schema stays authoritative |
 | Server-side rerun for queued lineage + span-name polish | Follow-ups recorded on PR #405 |
+| AI agent evaluating the metrics, logs and traces | Roadmap (#425) — an LLM agent that reads a Run's trace, logs and metric rollups to propose root-cause diagnoses and flag cross-run anomalies; extends the shipped per-run judges to the evidence plane, as annotations that link back to spans |
 | Alerting | Explicit non-goal (PRD) |
 
 ## Configuration
