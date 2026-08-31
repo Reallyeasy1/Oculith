@@ -140,7 +140,7 @@ Deploy:
 
 ```bash
 chmod 600 .env.production
-./scripts/deploy-existing-ecs.sh .env.production
+bash scripts/deploy-existing-ecs.sh .env.production
 ```
 
 Verify:
