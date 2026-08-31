@@ -154,11 +154,17 @@ export default function ReliabilityPanel({ report, agentId, runs, onDrill }: Pro
           ? "No Runs observed for this Agent yet, so there is nothing to aggregate. Metrics appear after its first Run."
           : "No Runs observed yet, so there is nothing to aggregate. Metrics appear after the first Run."}</p>
       ) : (
-        <dl className="summary-strip reliability-strip">
-          {reliabilityTiles(report).map((tile) => (
-            <Tile key={tile.key} tile={tile} {...(onDrill ? { onDrill } : {})} />
-          ))}
-        </dl>
+        <>
+          {/* #401: the tiles always aggregate every observed Run (the parent report is never windowed).
+              The chart range presets below scope the charts only, so mark the strip's scope to stop an
+              all-time tile reading as a contradiction of a 24h/7d/30d chart directly beneath it. */}
+          <p className="eyebrow reliability-scope" title="These tiles aggregate every observed Run. The time-range presets below scope the charts only.">All-time</p>
+          <dl className="summary-strip reliability-strip">
+            {reliabilityTiles(report).map((tile) => (
+              <Tile key={tile.key} tile={tile} {...(onDrill ? { onDrill } : {})} />
+            ))}
+          </dl>
+        </>
       )}
       {chartsAvailable && showCharts && (
         <div className="reliability-charts">

@@ -2468,6 +2468,13 @@ select:focus {
   padding: 0 22px 16px;
 }
 
+/* #401: tile-strip scope marker — the tiles are always all-time; the chart range presets scope the
+   charts only. Aligns with the strip's 22px left padding. */
+.reliability-scope {
+  margin: 0 0 6px;
+  padding: 0 22px;
+}
+
 /* Grid instead of flex-wrap so 1024/800 widths fill rows evenly (no ragged 2/3/2). */
 .reliability-strip {
   display: grid;
