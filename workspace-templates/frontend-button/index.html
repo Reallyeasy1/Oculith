@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Latch — boring launches</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="hero">
+    <h1>Latch keeps your launches boring</h1>
+    <p>One dashboard for every release checklist your team already forgets.</p>
+    <button id="cta" class="cta" type="button">Get started</button>
+    <p id="cta-status" role="status" aria-live="polite"></p>
+  </main>
+  <script>
+    document.getElementById("cta").addEventListener("click", function () {
+      document.getElementById("cta-status").textContent = "Thanks! We'll be in touch.";
+    });
+  </script>
+</body>
+</html>
