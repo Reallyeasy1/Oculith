@@ -22,7 +22,7 @@ _One product narrative for the TechJam Track 1 submission ("Agent Launchpad: Des
 
 ### Track 1 alignment
 
-The Glass Box track asks for correlated Run and step events in a timeline or tree; status, duration, errors, and available model usage; redacted secrets; one successful task and the failing step of one failed task identified. The demo shows each of these live, then goes further: audit rows, denial evidence, and the regression loop. Against the judging rubric — 40% end-to-end middleware behavior, 25% design and integration, 20% verification and robustness, 15% demo and reproducibility — the middleware runs in the backend path (not the UI), the baseline platform is preserved, `npm run check` plus a 180-check E2E lane (real Docker runtime, real model, privacy sweep, performance bounds) cover the core events and policy decisions, and the judged path stays one documented command.
+The Glass Box track asks for correlated Run and step events in a timeline or tree; status, duration, errors, and available model usage; redacted secrets; one successful task and the failing step of one failed task identified. The demo shows each of these live, then goes further: audit rows, denial evidence, and the regression loop. Against the judging rubric — 40% end-to-end middleware behavior, 25% design and integration, 20% verification and robustness, 15% demo and reproducibility — the middleware runs in the backend path (not the UI), the baseline platform is preserved, `npm run check` plus the browser/Docker E2E lane (real runtime, real model where required, privacy sweep, performance bounds) cover the core events and policy decisions, and the judged path stays one documented command.
 
 ### What is real vs deferred
 
@@ -30,12 +30,13 @@ The Glass Box track asks for correlated Run and step events in a timeline or tre
 - Instrumentation of the real seams; every Run — including cancelled, timed-out, and restart-cut Runs — yields one trace.
 - Redaction before persistence: allowlist → key denylist → bounded pattern scan → truncation; on redactor error it fails closed to metadata only. Verified by an automated sweep of seeded fake keys across files, API, export, logs, and the rendered DOM.
 - Runs list and trace detail with first-failure focus, span drawer, audit view, evidence chips, deep links, keyboard navigation.
-- Per-Run metrics (`modelCallsObserved` per observed reasoning/message item, tool calls/failures, denials, tokens), the bounded metrics query API, and the reliability aggregate/compare endpoints — built and tested; the dashboard front end is the last piece in flight.
+- Per-Run metrics (`modelCallsObserved` per observed reasoning/message item, tool calls/failures, denials, tokens), the bounded metrics query API, reliability aggregate/compare endpoints, and dashboard cards for telemetry and each LLM-judge evaluator — built and tested.
 - Regression Cases, isolated EvalRuns through AgentService, deterministic evaluators (`terminal_status`, `expected_tool`, `max_tool_calls`, `max_duration_ms`, `post_check`), comparison with `REGRESSION` classification, and the versioned `task_completion@1` LLM judge for historical quality — kept strictly outside the diagnosis path.
+- Authenticated SSE nudges with polling fallback, plus the optional PostgreSQL trace/summary/evaluation stores behind the same interfaces; NDJSON + JSON remain the judged default.
 - The gated deterministic failure fixture (`GLASSBOX_DEMO_FAILURE=timeout`) that traverses the same real Run path.
 - Performance inside declared bounds: append p95 measured at 3.8 ms (bound 20 ms), 500-event query at 36.6 ms (bound 500 ms).
 
-**Deferred (deliberately):** OTLP export (mapping library exists, unwired), SSE (polling until P0 is done, per PRD), PostgreSQL backend (optional profile; NDJSON + JSON is the judged path), evaluation-jobs UI, cost in the metric catalogue (per-Run estimate exists, display-only), alerting (explicit non-goal). `workspace.changed` takes the platform's before/after disk snapshot as ground truth; the stream-side file-change report is a fallback observed only when the model uses apply_patch — neither path invents diffs.
+**Deferred (deliberately):** OTLP export (mapping library exists, unwired), evaluation-jobs progress UI, cost in the metric catalogue (per-Run estimate exists, display-only), and alerting (explicit non-goal). `workspace.changed` takes the platform's before/after disk snapshot as ground truth; the stream-side file-change report is a fallback observed only when the model uses apply_patch — neither path invents diffs.
 
 **Prohibited, not deferred:** raw prompts, completions and chain-of-thought are never stored; under an explicit opt-in tier (`reasoning_summary`, #259), reasoning appears only as 240-char redacted summaries — and judges can still be handed the export file. `full/raw` is forbidden by the PRD, not merely unimplemented.
 
