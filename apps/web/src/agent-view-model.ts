@@ -1,3 +1,4 @@
+import { formatClock } from "./runs-view-model";
 import type { PreviewCommand, PreviewServability, RunStatus } from "./types";
 
 // #266: a failed Run leaves the Agent `ready`; `lastError` is the persisted (redacted) evidence,
@@ -15,4 +16,17 @@ export function showLastErrorHint(lastError: string | null, activeRunStatus: Run
  */
 export function preferredPreviewCommand(servable: PreviewServability | null): PreviewCommand | null {
   return servable?.static ? "static" : null;
+}
+
+/**
+ * #395: a message that waited in the queue shows its Run moment as the timestamp; the send moment
+ * must be visible text, not a tooltip. Null when the message never queued, the send time is
+ * malformed, or both clock readings would print the same string ("sent 14:03, ran 14:03" reads
+ * like a bug, and the distinction is imperceptible anyway).
+ */
+export function queuedSentNote(message: { createdAt: string; queuedAt?: string }): string | null {
+  if (!message.queuedAt) return null;
+  const sent = formatClock(message.queuedAt);
+  if (sent === "—" || sent === formatClock(message.createdAt)) return null;
+  return "sent " + sent;
 }

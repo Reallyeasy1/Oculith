@@ -988,8 +988,9 @@ export class AgentService {
     run.configSnapshot = configSnapshot(agent, this.config);
     run.configHash = configHash(run.configSnapshot);
     database.runs.push(run);
-    // The chat Message keeps the pending id and queuedAt: it is the same user utterance, sent then.
-    database.messages.push({ id: next.id, agentId: agent.id, runId: run.id, role: "user", content: next.content, createdAt: next.queuedAt });
+    // The chat Message keeps the pending id but is stamped with the dequeue time: the transcript sorts
+    // by createdAt, and the send moment predates the previous Run's reply (#395). queuedAt keeps it.
+    database.messages.push({ id: next.id, agentId: agent.id, runId: run.id, role: "user", content: next.content, createdAt: timestamp, queuedAt: next.queuedAt });
     agent.status = "busy";
     agent.lastError = null;
     agent.updatedAt = timestamp;

@@ -71,6 +71,8 @@ export interface Message {
   role: MessageRole;
   content: string;
   createdAt: string;
+  /** #395: when the user sent a message that waited in the queue; createdAt is the dequeue moment. */
+  queuedAt?: string | undefined;
 }
 
 export interface RunUsage {

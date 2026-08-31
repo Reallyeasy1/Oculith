@@ -1132,6 +1132,31 @@ describe("per-Agent message queue (#254)", () => {
     expect(userMessageIds).toContain(third.messageId);
   });
 
+  it("orders the transcript by conversation, not send time: a queued message lands after the reply it followed (#395)", async () => {
+    const runner = new StepRunner();
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "transcript-order" });
+    expect("queued" in (await service.sendMessage(agent.id, "one"))).toBe(false);
+    expect(await service.sendMessage(agent.id, "two")).toMatchObject({ queued: true, position: 1 });
+    // Real clock: run one must complete strictly after "two" was queued, or a same-millisecond tie
+    // rescued by the stable sort would let the reverted code pass. This sleep is load-bearing.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    for (let index = 0; index < 2; index += 1) {
+      await expect.poll(() => runner.resolvers.length).toBe(index + 1);
+      runner.resolvers[index]!();
+    }
+    await expect.poll(() => service.getRuns(agent.id).filter((run) => run.status === "completed").length).toBe(2);
+    const transcript = service.getMessages(agent.id);
+    expect(transcript.map((message) => message.content)).toEqual(["one", "done: one", "two", "done: two"]);
+    // The dequeued message keeps its true send moment (provably before the reply it waited behind —
+    // this fails if a refactor stamps queuedAt at dequeue time) and its createdAt is the moment its
+    // own Run was created, so the transcript sorts by conversation.
+    const dequeuedMessage = transcript.find((message) => message.content === "two")!;
+    const firstReply = transcript.find((message) => message.content === "done: one")!;
+    expect(dequeuedMessage.queuedAt! < firstReply.createdAt).toBe(true);
+    expect(dequeuedMessage.createdAt).toBe(service.getRuns(agent.id).find((run) => run.prompt === "two")!.createdAt);
+  });
+
   it("caps the queue at 10 and refuses the next message with 429", async () => {
     const service = await makeService({
       run: () => new Promise(() => undefined),

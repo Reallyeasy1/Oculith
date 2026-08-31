@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, getAuthToken, setAuthToken } from "./api";
 import { connectLive } from "./live";
 import { agentPayload, budgetFormError } from "./agent-form";
-import { preferredPreviewCommand, showLastErrorHint } from "./agent-view-model";
+import { preferredPreviewCommand, queuedSentNote, showLastErrorHint } from "./agent-view-model";
 import { budgetBanner } from "./budget-view-model";
 import type { Agent, AgentBudgetReport, AgentRun, AgentRunBaseline, EvalRun, Message, PreviewServability, RegressionCase, ReliabilityOverviewReport, ReliabilityReport, RunListItem, SystemInfo, TraceView, Workspace, WorkspacePreview, WorkspaceTemplate } from "./types";
 import RunsView from "./RunsView";
@@ -1111,11 +1111,15 @@ export default function App() {
                   // #371: a terminal activeRun with an empty history left a 700px void here.
                   <p className="welcome runs-empty">No conversation yet — describe a task below.</p>
                 ) : (
-                  messages.map((message) => (
+                  messages.map((message) => {
+                    // #395: a dequeued message's createdAt is when its Run started, not when the user hit Enter.
+                    const sentNote = queuedSentNote(message);
+                    return (
                     <article className={"message message-" + message.role} key={message.id}>
                       <div className="message-meta">
                         <strong>{message.role === "user" ? "You" : selected.name}</strong>
                         <span>{formatTime(message.createdAt)}</span>
+                        {sentNote && <span>{sentNote}</span>}
                         {message.role === "assistant" && (
                           <button type="button" className="evidence-link message-trace" onClick={() => openTrace(message.runId)}>
                             trace
@@ -1126,7 +1130,8 @@ export default function App() {
                         {message.role === "assistant" ? <Markdown source={message.content} /> : message.content}
                       </div>
                     </article>
-                  ))
+                    );
+                  })
                 )}
                 {activeRun && ["queued", "running"].includes(activeRun.status) && (
                   <article className="message message-assistant thinking">
