@@ -622,12 +622,12 @@ export default function App() {
   // Shared by the composer and Re-run (#256): POST the prompt, reflect the new Run locally, poll it.
   // #254: a busy Agent answers with a queued receipt instead of a Run — refresh so the queue rows
   // and chip render the queued state, and skip the immediate-run path entirely.
-  const dispatchPrompt = async (agentId: string, content: string, rerunOf?: string) => {
-    const result = await api.sendMessage(agentId, content, rerunOf);
+  const applyDispatch = async (result: Awaited<ReturnType<typeof api.sendMessage>>) => {
     if ("queued" in result) {
       await refreshAgents();
       return;
     }
+    const agentId = result.run.agentId;
     if (selectedIdRef.current === agentId) {
       setMessages((current) => [...current, result.message]);
       setActiveRun(result.run);
@@ -639,6 +639,9 @@ export default function App() {
     );
     await pollRun(result.run.id, agentId);
   };
+
+  const dispatchPrompt = async (agentId: string, content: string) =>
+    applyDispatch(await api.sendMessage(agentId, content));
 
   const sendMessage = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -655,14 +658,13 @@ export default function App() {
     }
   };
 
-  // #256: re-send a Run's originating prompt as an ordinary new Run in the same session thread,
-  // exactly as if retyped — run.prompt IS the stored user Message content for that Run. A busy
-  // Agent queues it like any composer send (#254); dispatchPrompt renders the queued state.
+  // #256/#404: re-run exactly as if retyped — server-side, because served run payloads are
+  // redacted (#388) and re-sending the client copy would execute the [REDACTED:...] literal.
+  // A busy Agent queues it like any composer send (#254); applyDispatch renders the queued state.
   const rerunPrompt = async (runId: string) => {
     setError(null);
     try {
-      const { run } = await api.run(runId);
-      await dispatchPrompt(run.agentId, run.prompt, runId);
+      await applyDispatch(await api.rerun(runId));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }

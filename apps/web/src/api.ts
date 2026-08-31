@@ -142,20 +142,27 @@ export const api = {
   // #255: live budget status for the Agent banner — the rolling 24 h window the pre-run gate enforces.
   agentBudget: (id: string) =>
     request<import("./types").AgentBudgetReport>("/api/agents/" + id + "/budget"),
-  // rerunOf (#256): id of the Run this prompt re-dispatches; stamped on run.created for lineage.
   // #254: a busy Agent answers with a QueuedMessageReceipt instead of a started Run.
-  sendMessage: (id: string, content: string, rerunOf?: string) =>
+  // (#404: rerun lineage moved server-side — see api.rerun; no client-sent rerunOf any more.)
+  sendMessage: (id: string, content: string) =>
     request<{ run: AgentRun; message: Message } | QueuedMessageReceipt>(
       "/api/agents/" + id + "/messages",
       {
         method: "POST",
-        body: JSON.stringify({ content, ...(rerunOf ? { rerunOf } : {}) }),
+        body: JSON.stringify({ content }),
       },
     ),
   // #254: cancel a message still waiting in the Agent's queue.
   cancelPendingMessage: (agentId: string, messageId: string) =>
     request<void>("/api/agents/" + agentId + "/messages/" + messageId, { method: "DELETE" }),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
+  // #404: server-side rerun — the server replays the RAW stored prompt (served copies are
+  // redacted since #388, so the client's copy can't be trusted for re-dispatch).
+  rerun: (runId: string) =>
+    request<{ run: AgentRun; message: Message } | QueuedMessageReceipt>(
+      "/api/runs/" + runId + "/rerun",
+      { method: "POST" },
+    ),
   listRuns: (options: { agentId?: string; limit?: number } = {}) =>
     request<{ schemaVersion: string; capturePolicy: CapturePolicy; runs: RunListItem[] }>(
       "/api/runs?" + new URLSearchParams({ limit: String(options.limit ?? 100), ...(options.agentId ? { agentId: options.agentId } : {}) }),
