@@ -86,3 +86,6 @@ Only three deliverables are required:
 - [ ] The demo includes a positive and a failure, denial, or malicious case.
 - [ ] Automated evidence covers the core event or policy decision.
 - [ ] No secret appears in source, logs, traces, screenshots, or the browser.
+  (Known, deliberate deviation: the shared demo access token — not any API key; the Ark key never
+  leaves the server — persists in tab `sessionStorage` so a refresh doesn't sign you out. It dies
+  with the tab and is wiped the moment the server rejects it. See README § Security and redaction.)
