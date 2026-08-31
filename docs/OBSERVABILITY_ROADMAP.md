@@ -4,7 +4,7 @@ _Tech-lead position, 28 August 2026 (main `a47447f`). Answers "what belongs in t
 
 ## 1. Where we stand
 
-One correlated, privacy-safe trace per Run: 30 event types across 9 categories, per-turn token usage, per-call `modelCallsObserved` (#207/#230), bounded tool identities with durations and exit codes, sandbox denials as first-class `policy.denied` evidence, per-layer capability honesty (#212), workspace disk truth, first-failure focus with deterministic diagnosis, regression cases → isolated EvalRuns → comparison with evidence links. Three capture policies: `metadata_only` (default), `safe_summary` (four bounded, redacted text fields) and `reasoning_summary` (#259: everything `safe_summary` captures plus 240-char redacted reasoning summaries). `full/raw` is prohibited by PRD §4, not merely unimplemented.
+One correlated, privacy-safe trace per Run: 34 event types across 9 categories, per-turn token usage, per-call `modelCallsObserved` (#207/#230), bounded tool identities with durations and exit codes, sandbox denials as first-class `policy.denied` evidence, per-layer capability honesty (#212), workspace disk truth, first-failure focus with deterministic diagnosis, regression cases → isolated EvalRuns → comparison with evidence links. Three capture policies: `metadata_only` (default), `safe_summary` (four bounded, redacted text fields) and `reasoning_summary` (#259: everything `safe_summary` captures plus 240-char redacted reasoning summaries). `full/raw` is prohibited by PRD §4, not merely unimplemented.
 
 ## 2. The stance on inputs, outputs, and reasoning
 

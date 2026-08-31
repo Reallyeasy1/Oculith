@@ -108,7 +108,7 @@
     <!-- event contract -->
     <rect x="40" y="384" width="230" height="96" rx="8" fill="#ffffff" stroke="#6ee7b7" stroke-width="1.5"/>
     <text x="155" y="408" font-size="12.5" font-weight="600" fill="#0f172a" text-anchor="middle">ObservationEvent v1.0</text>
-    <text x="155" y="426" font-size="10.5" fill="#475569" text-anchor="middle">30 event types · 9 categories</text>
+    <text x="155" y="426" font-size="10.5" fill="#475569" text-anchor="middle">34 event types · 9 categories</text>
     <text x="155" y="441" font-size="10.5" fill="#475569" text-anchor="middle">traceId · spanId · runId · actor · sequence</text>
     <text x="155" y="462" font-size="10.5" fill="#b45309" text-anchor="middle">↻ emitter is non-blocking: telemetry</text>
     <text x="155" y="475" font-size="10.5" fill="#b45309" text-anchor="middle">failure never breaks the Run</text>
@@ -224,7 +224,7 @@
     <path d="M 426 686 L 426 634 L 32 634 L 32 300 L 288 300 L 288 224 L 306 224" fill="none" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arrowPurple)"/>
 
     <text x="40" y="800" font-size="10.5" fill="#6d28d9">Judge fence: LLM evaluators read only the redacted evaluation view, stamp evaluatorModel provenance on every score, and can never write a diagnosis or classify a regression.</text>
-    <text x="40" y="818" font-size="10.5" fill="#6d28d9">Controls are roadmap, not product: nothing in Oculith blocks or decides — it observes, explains, and verifies. Evidence before control.</text>
+    <text x="40" y="818" font-size="10.5" fill="#6d28d9">Controls are roadmap, not product: beyond the opt-in per-Agent budget gate, nothing in Oculith blocks or decides — it observes, explains, and verifies. Evidence before control.</text>
   </g>
 
   <!-- ══════════ LEGEND ══════════ -->
