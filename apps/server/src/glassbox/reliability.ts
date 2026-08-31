@@ -13,6 +13,9 @@ import type { RunSummary, RunSummaryStore } from "./summary.js";
  * `EvaluationResult`s and always carries its evaluator id + version as provenance. Every definition below
  * matches `computeMetric` (metrics.ts) byte for byte, so `/api/metrics/query` and these endpoints can
  * never disagree on the same window.
+ *
+ * #384: each series point additionally carries `judgeScores` — per-bucket mean 1–5 scores from every
+ * `llm_judge` evaluator version with stored results — on the evaluation side of the same line.
  */
 export const reliabilityQuerySchema = z.strictObject({
   from: isoDatetime.optional(),
@@ -37,6 +40,17 @@ export const reliabilityCompareQuerySchema = z.strictObject({
 export type ReliabilityCompareQuery = z.infer<typeof reliabilityCompareQuerySchema>;
 
 export interface EvaluatorRef { id: string; version: number }
+
+/** One scored, current `llm_judge` result for a Run — evaluator judgement provenance, never telemetry. */
+export interface JudgeScoreSample { evaluatorId: string; version: number; score: number }
+
+/**
+ * #384: per-bucket judge aggregate — `meanScore` is the arithmetic mean of the stored 1–5 scores from
+ * exactly this evaluator version, `evaluated` the count contributing. Derived ONLY from stored
+ * evaluation results (a score-less verdict, e.g. recovery_quality's notEligible, joins no side);
+ * no LLM call happens anywhere on this path.
+ */
+export interface JudgeScore { evaluatorId: string; version: number; evaluated: number; meanScore: number }
 
 /**
  * `rate` = passed / evaluated. Unevaluated Runs are excluded from both sides — `evaluated` says how many
@@ -72,7 +86,8 @@ export interface ReliabilityNumbers {
   cost: { avg: number | null; sum: number | null; sampled: number };
 }
 
-export interface ReliabilitySeriesPoint extends ReliabilityNumbers { bucket: string }
+/** `judgeScores` (#384) sits beside — never inside — the telemetry numbers: judgement provenance stays labelled. */
+export interface ReliabilitySeriesPoint extends ReliabilityNumbers { bucket: string; judgeScores: JudgeScore[] }
 
 export interface ReliabilityFilter {
   agentId?: string | undefined; configHash?: string | undefined;
@@ -153,8 +168,24 @@ export function reliabilityNumbers(rows: readonly RunSummary[], verdicts: Readon
   };
 }
 
+/** #384: one `JudgeScore` per evaluator version with ≥1 scored result among `rows`; `[]` otherwise. */
+function judgeScoresFor(rows: readonly RunSummary[], samples: ReadonlyMap<string, readonly JudgeScoreSample[]>): JudgeScore[] {
+  const totals = new Map<string, { evaluatorId: string; version: number; evaluated: number; total: number }>();
+  for (const row of rows) {
+    for (const sample of samples.get(row.runId) ?? []) {
+      const key = `${sample.evaluatorId}\0${sample.version}`;
+      const entry = totals.get(key) ?? { evaluatorId: sample.evaluatorId, version: sample.version, evaluated: 0, total: 0 };
+      entry.evaluated += 1;
+      entry.total += sample.score;
+      totals.set(key, entry);
+    }
+  }
+  return [...totals.values()].sort((a, b) => a.evaluatorId.localeCompare(b.evaluatorId) || a.version - b.version)
+    .map(({ evaluatorId, version, evaluated, total }) => ({ evaluatorId, version, evaluated, meanScore: total / evaluated }));
+}
+
 /** Numbers + a UTC hour/day series (a Run without an observed start time joins no bucket) + provenance. */
-export function buildReliabilityBlock(rows: readonly RunSummary[], verdicts: ReadonlyMap<string, boolean>, evaluator: EvaluatorRef, bucket: "hour" | "day", filter: ReliabilityFilter): ReliabilityBlock {
+export function buildReliabilityBlock(rows: readonly RunSummary[], verdicts: ReadonlyMap<string, boolean>, evaluator: EvaluatorRef, bucket: "hour" | "day", filter: ReliabilityFilter, judgeSamples: ReadonlyMap<string, readonly JudgeScoreSample[]>): ReliabilityBlock {
   const buckets = new Map<string, RunSummary[]>();
   for (const row of rows) {
     if (!row.startedAt) continue;
@@ -163,7 +194,7 @@ export function buildReliabilityBlock(rows: readonly RunSummary[], verdicts: Rea
     if (bucketRows) bucketRows.push(row); else buckets.set(key, [row]);
   }
   const series = [...buckets.entries()].sort(([a], [b]) => a.localeCompare(b))
-    .map(([key, bucketRows]) => ({ bucket: key, ...reliabilityNumbers(bucketRows, verdicts, evaluator) }));
+    .map(([key, bucketRows]) => ({ bucket: key, ...reliabilityNumbers(bucketRows, verdicts, evaluator), judgeScores: judgeScoresFor(bucketRows, judgeSamples) }));
   return {
     ...reliabilityNumbers(rows, verdicts, evaluator),
     series,
@@ -205,15 +236,30 @@ export class ReliabilityService {
     return { id: definition.id, version: definition.version };
   }
 
-  /** Latest verdict per Run for exactly one evaluator version (the store already exposes only current results). */
-  private async verdicts(evaluator: EvaluatorRef): Promise<Map<string, boolean>> {
-    const results = await this.evaluations.query({ evaluatorId: evaluator.id, version: evaluator.version });
-    return new Map(results.map((result) => [result.runId, result.passed]));
+  /**
+   * One pass over the store's current results: the pinned evaluator's latest verdict per Run, plus
+   * (#384) runId → every current *scored* `llm_judge` result across all judge evaluator versions.
+   * Reads only what the store already holds — a score-less verdict (e.g. notEligible) contributes
+   * nothing — and shares a single `query()` so the 1,000-summary perf bound keeps holding.
+   */
+  private async evaluationSlices(evaluator: EvaluatorRef): Promise<{ verdicts: Map<string, boolean>; judgeSamples: Map<string, JudgeScoreSample[]> }> {
+    const definitions = await this.evaluations.listDefinitions();
+    const judges = new Set(definitions.filter((definition) => definition.type === "llm_judge").map((definition) => `${definition.id}\0${definition.version}`));
+    const verdicts = new Map<string, boolean>();
+    const judgeSamples = new Map<string, JudgeScoreSample[]>();
+    for (const result of await this.evaluations.query()) {
+      if (result.evaluatorId === evaluator.id && result.evaluatorVersion === evaluator.version) verdicts.set(result.runId, result.passed);
+      if (result.score === undefined || !judges.has(`${result.evaluatorId}\0${result.evaluatorVersion}`)) continue;
+      const sample: JudgeScoreSample = { evaluatorId: result.evaluatorId, version: result.evaluatorVersion, score: result.score };
+      const existing = judgeSamples.get(result.runId);
+      if (existing) existing.push(sample); else judgeSamples.set(result.runId, [sample]);
+    }
+    return { verdicts, judgeSamples };
   }
 
   async forAgent(agentId: string, query: ReliabilityQuery): Promise<ReliabilityReport> {
     const evaluator = await this.resolveEvaluator(query.evaluatorId, query.evaluatorVersion);
-    const verdicts = await this.verdicts(evaluator);
+    const { verdicts, judgeSamples } = await this.evaluationSlices(evaluator);
     const filter: ReliabilityFilter = {
       agentId,
       ...(query.configHash !== undefined ? { configHash: query.configHash } : {}),
@@ -221,25 +267,25 @@ export class ReliabilityService {
       ...(query.to !== undefined ? { to: query.to } : {}),
     };
     const rows = await this.summaries.query(filter);
-    return { schemaVersion: SCHEMA_VERSION, agentId, ...buildReliabilityBlock(rows, verdicts, evaluator, query.bucket, filter) };
+    return { schemaVersion: SCHEMA_VERSION, agentId, ...buildReliabilityBlock(rows, verdicts, evaluator, query.bucket, filter, judgeSamples) };
   }
 
   /** #369: same window semantics with no Agent bound — `ReliabilityFilter.agentId` simply stays unset. */
   async forAll(query: ReliabilityQuery): Promise<ReliabilityOverviewReport> {
     const evaluator = await this.resolveEvaluator(query.evaluatorId, query.evaluatorVersion);
-    const verdicts = await this.verdicts(evaluator);
+    const { verdicts, judgeSamples } = await this.evaluationSlices(evaluator);
     const filter: ReliabilityFilter = {
       ...(query.configHash !== undefined ? { configHash: query.configHash } : {}),
       ...(query.from !== undefined ? { from: query.from } : {}),
       ...(query.to !== undefined ? { to: query.to } : {}),
     };
     const rows = await this.summaries.query(filter);
-    return { schemaVersion: SCHEMA_VERSION, ...buildReliabilityBlock(rows, verdicts, evaluator, query.bucket, filter) };
+    return { schemaVersion: SCHEMA_VERSION, ...buildReliabilityBlock(rows, verdicts, evaluator, query.bucket, filter, judgeSamples) };
   }
 
   async compare(query: ReliabilityCompareQuery): Promise<ReliabilityCompareReport> {
     const evaluator = await this.resolveEvaluator(query.evaluatorId, query.evaluatorVersion);
-    const verdicts = await this.verdicts(evaluator);
+    const { verdicts, judgeSamples } = await this.evaluationSlices(evaluator);
     const side = async (configHash: string): Promise<ReliabilityBlock & { configHash: string }> => {
       const filter: ReliabilityFilter = {
         agentId: query.agentId, configHash,
@@ -247,7 +293,7 @@ export class ReliabilityService {
         ...(query.to !== undefined ? { to: query.to } : {}),
       };
       const rows = await this.summaries.query(filter);
-      return { configHash, ...buildReliabilityBlock(rows, verdicts, evaluator, query.bucket, filter) };
+      return { configHash, ...buildReliabilityBlock(rows, verdicts, evaluator, query.bucket, filter, judgeSamples) };
     };
     const a = await side(query.a);
     const b = await side(query.b);
