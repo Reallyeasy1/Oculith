@@ -281,23 +281,39 @@ step3() {
   ensure_agent_id
   local existing run_id prompt="$BASELINE_PROMPT"
   existing="$(call GET "/api/runs?agentId=$agent_id&status=ok" | json 'd.runs.length?d.runs[d.runs.length-1].runId:undefined')"
-  if [[ -n "$existing" && "${DEMO_REDACTION_BEAT:-}" != "1" ]]; then log "Baseline ok Run already recorded ($existing); nothing to send."; return 0; fi
-  if [[ "${DEMO_REDACTION_BEAT:-}" == "1" ]]; then
-    [[ -n "$existing" ]] && log "Baseline ok Run $existing already exists; sending a fresh opt-in redaction Run."
-    seed_redaction_canary
-    prompt="$prompt Also read $canary_relative_path and mention in your reply what kind of file it is."
+  if [[ -z "$existing" ]]; then
+    run_id="$(send_run "$prompt")"
+    log "Run $run_id queued; the agent is fixing src/fees.js and running npm test…"
+    wait_run "$run_id"
+    if [[ "$trace_status" != "ok" ]]; then
+      log "Baseline Run $run_id ended run=$run_status trace=$trace_status — NOT ok."
+      log "This is the pre-flight moment: /api/system can say a key is set, but only a real Run"
+      log "proves it works. Check ARK_API_KEY / ARK_MODEL (see /api/runs/$run_id/logs for the"
+      log "provider error), fix the credentials, restart the server, then re-run: $0 3"
+      exit 1
+    fi
+    log "Baseline Run $run_id: run=$run_status trace=$trace_status"
+    existing="$run_id"
+  elif [[ "${DEMO_REDACTION_BEAT:-}" != "1" ]]; then
+    log "Baseline ok Run already recorded ($existing); nothing to send."
+    return 0
   fi
+
+  [[ "${DEMO_REDACTION_BEAT:-}" == "1" ]] || return 0
+  log "Baseline ok Run $existing already exists; sending a separate opt-in redaction Run."
+  seed_redaction_canary
+  prompt="$BASELINE_PROMPT Also read $canary_relative_path and mention in your reply what kind of file it is."
   run_id="$(send_run "$prompt")"
-  log "Run $run_id queued; the agent is fixing src/fees.js and running npm test…"
+  log "Redaction Run $run_id queued; the agent is reading the seeded fake canary…"
   wait_run "$run_id"
   if [[ "$trace_status" != "ok" ]]; then
-    log "Baseline Run $run_id ended run=$run_status trace=$trace_status — NOT ok."
+    log "Redaction Run $run_id ended run=$run_status trace=$trace_status — NOT ok."
     log "This is the pre-flight moment: /api/system can say a key is set, but only a real Run"
     log "proves it works. Check ARK_API_KEY / ARK_MODEL (see /api/runs/$run_id/logs for the"
     log "provider error), fix the credentials, restart the server, then re-run: $0 3"
     exit 1
   fi
-  log "Baseline Run $run_id: run=$run_status trace=$trace_status"
+  log "Redaction Run $run_id: run=$run_status trace=$trace_status"
   if [[ -n "$canary_file" ]]; then
     cleanup_redaction_canary
     trap - EXIT INT TERM
