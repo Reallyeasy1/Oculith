@@ -264,9 +264,9 @@ Not covered — know this before putting anything sensitive near it:
   disk as plain files; the trace records bytes/paths, but the workspace itself is outside the redaction
   boundary.
 - **The shared bearer token is a demo secret, not identity.** One `APP_AUTH_TOKEN` for every route;
-  no users, no authz — that is the Bouncer track, not this one. The browser keeps this demo token —
-  never the Ark API key, which never leaves the server — in tab `sessionStorage` so a refresh doesn't
-  log you out; it dies with the tab and is wiped the moment the server rejects it.
+  no users, no authz — that is the Bouncer track, not this one. The browser keeps this demo token in
+  tab `sessionStorage` so a refresh doesn't log you out; it dies with the tab and is wiped the moment
+  the server rejects it.
 - Redaction is exact on structured attributes and best-effort on free text; a novel secret format in a
   command string can slip past — which is why the default policy is `metadata_only`.
 - Single-user proof of concept: do not use production data or credentials. See [SECURITY.md](SECURITY.md).
