@@ -9,7 +9,9 @@ import {
   bucketDrillWindow,
   bucketLabel,
   chartDeltaChips,
+  domainMax,
   emptyStateMessage,
+  formatScore,
   hoverReadout,
   linePath,
   nearestBucketIndex,
@@ -35,7 +37,7 @@ const emptyNumbers: ReliabilityNumbers = {
 };
 
 function point(bucket: string, overrides: Partial<ReliabilityNumbers> = {}): ReliabilitySeriesPoint {
-  return { bucket, ...emptyNumbers, ...overrides };
+  return { bucket, judgeScores: [], ...emptyNumbers, ...overrides };
 }
 
 describe("bucketLabel", () => {
@@ -244,6 +246,46 @@ describe("chartDeltaChips (#369)", () => {
     expect(chartDeltaChips("latency", deltas)).toEqual(["Δ p50 −200 ms", "Δ p95 0 ms"]);
     expect(chartDeltaChips("cost", deltas)).toEqual(["Δ avg +$0.0042"]);
     expect(chartDeltaChips("volume", deltas)).toEqual(["Δ Runs −2"]);
+  });
+  it("renders no chips for the judge card — ReliabilityDeltas carries no judge-score deltas", () => {
+    expect(chartDeltaChips("judge", deltas)).toEqual([]);
+  });
+});
+
+describe("judge scores (#385)", () => {
+  /** Fixture matching the #384 contract: judgeScores on each series point, meanScore on a 1–5 scale. */
+  const judged = (bucket: string, taskScore: number | null): ReliabilitySeriesPoint => ({
+    ...point(bucket, { runs: 2 }),
+    judgeScores: taskScore === null ? [] : [
+      { evaluatorId: "task_completion", version: 1, evaluated: 2, meanScore: taskScore },
+      { evaluatorId: "recovery_quality", version: 1, evaluated: 2, meanScore: 5 },
+    ],
+  });
+  const taskScore = (p: ReliabilitySeriesPoint): number | null =>
+    p.judgeScores.find((s) => s.evaluatorId === "task_completion")?.meanScore ?? null;
+
+  it("domainMax pins the score axis at 5 whatever was observed; rate stays 1; observed defers to niceMax", () => {
+    expect(domainMax("score", [3.2, null, 4.1])).toBe(5);
+    expect(domainMax("score", [])).toBe(5);
+    expect(domainMax("rate", [0.4])).toBe(1);
+    expect(domainMax("observed", [820, null, 300])).toBe(1000);
+  });
+
+  it("formatScore renders one decimal and yTicks(5, formatScore) reads 5.0/2.5/0.0", () => {
+    expect(formatScore(4.2)).toBe("4.2");
+    expect(formatScore(5)).toBe("5.0");
+    expect(yTicks(5, formatScore).map((t) => t.label)).toEqual(["5.0", "2.5", "0.0"]);
+  });
+
+  it("a bucket with Runs but no judge verdicts maps to null and breaks the line — no interpolation", () => {
+    const axis = synthesizeAxis([
+      judged("2026-08-27T00:00:00.000Z", 4.2),
+      judged("2026-08-28T00:00:00.000Z", null),
+      judged("2026-08-29T00:00:00.000Z", 3),
+    ], "day");
+    const values = axis.map((b) => (b.point ? taskScore(b.point) : null));
+    expect(values).toEqual([4.2, null, 3]);
+    expect(linePath(values, 5)).toBe("M0 16 L0 16 M100 40 L100 40"); // two separate segments, gap in between
   });
 });
 

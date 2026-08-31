@@ -151,7 +151,7 @@ export function emptyStateMessage(series: readonly ReliabilitySeriesPoint[], buc
 
 /** #369 overlay delta chips: raw B − A per chart, same signed rendering as the comparison table
  * ("+4.5 pp", "−500 ms") — a null delta renders "—" because one side observed nothing. */
-export type ChartKey = "completion" | "failure" | "latency" | "cost" | "volume";
+export type ChartKey = "completion" | "failure" | "latency" | "cost" | "volume" | "judge";
 
 const signedDelta = (value: number | null, render: (absolute: number) => string): string =>
   value === null ? "—" : (value > 0 ? "+" : value < 0 ? "−" : "") + render(Math.abs(value));
@@ -166,8 +166,20 @@ export function chartDeltaChips(chartKey: ChartKey, deltas: ReliabilityDeltas): 
     case "latency": return [`Δ p50 ${deltaMs(deltas.latency.p50)}`, `Δ p95 ${deltaMs(deltas.latency.p95)}`];
     case "cost": return [`Δ avg ${deltaUsd(deltas.cost.avg)}`];
     case "volume": return [`Δ Runs ${signedDelta(deltas.runs, (absolute) => String(Math.round(absolute)))}`];
+    case "judge": return []; // ReliabilityDeltas carries no judge-score deltas (#385)
   }
 }
+
+/** #385 y-domain per chart: "rate" is fixed 0–1 (so a flat 50% never reads as 100%), "score" is fixed
+ * 0–5 (judge scores are 1–5 — an honest full-scale axis), "observed" pads the data via niceMax. */
+export type ChartDomain = "rate" | "score" | "observed";
+
+export function domainMax(domain: ChartDomain, values: readonly (number | null)[]): number {
+  return domain === "rate" ? 1 : domain === "score" ? 5 : niceMax(values);
+}
+
+/** Judge-score labels: one decimal, "4.2". */
+export const formatScore = (value: number): string => value.toFixed(1);
 
 export interface ReadoutLine {
   value: (point: ReliabilitySeriesPoint) => number | null;

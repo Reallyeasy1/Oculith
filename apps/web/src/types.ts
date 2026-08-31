@@ -465,7 +465,9 @@ export interface ReliabilityNumbers {
   /** #369: USD over Runs with a persisted estimate; `sampled` counts them. */
   cost: { avg: number | null; sum: number | null; sampled: number };
 }
-export interface ReliabilitySeriesPoint extends ReliabilityNumbers { bucket: string }
+/** #384 — per-bucket LLM-judge means (1–5 scale), one entry per evaluator that scored Runs in the bucket. */
+export interface JudgeScore { evaluatorId: string; version: number; evaluated: number; meanScore: number }
+export interface ReliabilitySeriesPoint extends ReliabilityNumbers { bucket: string; judgeScores: JudgeScore[] }
 export interface ReliabilityProvenance {
   count: number; runIds?: string[];
   filter: { agentId?: string; configHash?: string; from?: string; to?: string };
