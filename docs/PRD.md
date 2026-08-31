@@ -274,10 +274,10 @@ The Verify loop consumes the observation contract; it never creates a second sou
 ### 16.1 Acceptance scenario AC-08 — save → rerun → REGRESSION
 
 1. Run the Repo Doctor fixture from its named template and observe a passing baseline with a stable FR-12 hash.
-2. Save the baseline as a Regression Case with an expected tool and post-check assertion.
+2. Save the baseline as a Regression Case and rebuild its assertions around the deterministic fresh-workspace post-check.
 3. Change only the candidate Agent instructions so the verification step is skipped.
 4. Start an EvalRun. It provisions a fresh copy of the same template and a fresh thread, then executes through AgentService.
-5. The candidate fails at least one deterministic assertion (the fixture regresses `expected_tool` and `post_check`); comparison marks PASS→FAIL as `REGRESSION` and links the baseline/candidate evidence.
+5. The candidate fails at least one deterministic assertion (the fixture regresses the fresh-workspace `post_check`); comparison marks PASS→FAIL as `REGRESSION` and links the baseline/candidate evidence.
 6. The integration fixture reproduces the sequence without network/model judgement and the complete path remains covered by `npm run check` (#90, #91, #92).
 
 ### 16.2 Verify non-goals

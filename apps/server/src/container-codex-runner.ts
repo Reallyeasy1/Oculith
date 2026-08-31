@@ -334,12 +334,15 @@ export class ContainerCodexRunner implements AgentRunner {
           : {}),
         stderrBytes,
       };
+      const safeStderr = status !== "ok" && capturesSummaries(this.emitter.capturePolicy) && stderr.trim()
+        ? redactText(stderr)
+        : undefined;
       span?.end(status, {
         type: status === "ok" ? "runtime.codex.completed" : "runtime.codex.failed",
         attributes: { ...endAttrs, ...extra },
         ...(error ? { error } : {}),
-        ...(status !== "ok" && capturesSummaries(this.emitter.capturePolicy) && stderr.trim()
-          ? { summary: { text: redactText(stderr).text.slice(-2_048), policy: "safe_summary" as const } }
+        ...(safeStderr
+          ? { summary: { text: safeStderr.text.slice(-2_048), policy: "safe_summary" as const }, preRedactedRules: safeStderr.rules }
           : {}),
       });
       // Only the container's own outcome (status/exitCode/cleanup) — the codex `error` belongs to the

@@ -311,8 +311,9 @@ export class CodexRunner implements AgentRunner {
           : {}),
         stderrBytes,
       };
-      const stderrSummary = capturesSummaries(this.emitter.capturePolicy) && stderr.trim()
-        ? { summary: { text: redactText(stderr).text.slice(-2_048), policy: "safe_summary" as const } }
+      const safeStderr = capturesSummaries(this.emitter.capturePolicy) && stderr.trim() ? redactText(stderr) : undefined;
+      const stderrSummary = safeStderr
+        ? { summary: { text: safeStderr.text.slice(-2_048), policy: "safe_summary" as const }, preRedactedRules: safeStderr.rules }
         : {};
       if (active.cancelled) {
         span?.end("cancelled", {

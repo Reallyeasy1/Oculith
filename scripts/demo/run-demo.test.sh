@@ -62,6 +62,39 @@ test_opt_in_is_safe_and_repeatable() (
   assert_no_demo_files "$workspace"
 )
 
+test_fresh_opt_in_keeps_the_regression_baseline_clean() (
+  load_demo_functions
+  DEMO_REDACTION_BEAT=1
+  agent_id="agt-1"
+  workspace="$(mktemp -d)"
+  prompts="$workspace/prompts"
+  call() {
+    case "$1 $2" in
+      "GET /api/runs?agentId=agt-1&status=ok") printf '{"runs":[]}' ;;
+      "GET /api/agents/agt-1") printf '{"agent":{"workspacePath":"%s"}}' "$workspace" ;;
+      *) return 99 ;;
+    esac
+  }
+  send_run() {
+    local prompt="$1" number relative
+    printf '%s\n' "$prompt" >> "$prompts"
+    number="$(wc -l < "$prompts")"
+    if [[ "$number" -eq 2 ]]; then
+      relative="$(printf '%s' "$prompt" | sed -n 's/.*read \([^ ]*glassbox-redaction-demo\.[^ ]*\.txt\).*/\1/p')"
+      [[ -n "$relative" && -f "$workspace/$relative" ]]
+    fi
+    printf 'run-%s' "$number"
+  }
+  wait_run() { run_status="completed"; trace_status="ok"; }
+
+  step3 >/dev/null
+
+  [[ "$(sed -n '1p' "$prompts")" == "$BASELINE_PROMPT" ]]
+  sed -n '2p' "$prompts" | grep -q 'glassbox-redaction-demo'
+  [[ "$(wc -l < "$prompts")" -eq 2 ]]
+  assert_no_demo_files "$workspace"
+)
+
 test_failed_run_cleans_up() (
   workspace="$(mktemp -d)"
   # Execute step3 at the top level of a shell sourced through /dev/fd, matching the focused
@@ -72,7 +105,7 @@ test_failed_run_cleans_up() (
     agent_id="agt-1"
     call() {
       case "$1 $2" in
-        "GET /api/runs?agentId=agt-1&status=ok") printf "{\"runs\":[]}" ;;
+        "GET /api/runs?agentId=agt-1&status=ok") printf "{\"runs\":[{\"runId\":\"existing-run\"}]}" ;;
         "GET /api/agents/agt-1") printf "{\"agent\":{\"workspacePath\":\"%s\"}}" "$DEMO_TEST_WORKSPACE" ;;
         *) return 99 ;;
       esac
@@ -95,7 +128,7 @@ test_interrupted_run_cleans_up() (
   workspace="$(mktemp -d)"
   call() {
     case "$1 $2" in
-      "GET /api/runs?agentId=agt-1&status=ok") printf '{"runs":[]}' ;;
+      "GET /api/runs?agentId=agt-1&status=ok") printf '{"runs":[{"runId":"existing-run"}]}' ;;
       "GET /api/agents/agt-1") printf '{"agent":{"workspacePath":"%s"}}' "$workspace" ;;
       *) return 99 ;;
     esac
@@ -113,6 +146,12 @@ test_interrupted_run_cleans_up() (
 
 test_default_reuses_existing_run
 test_opt_in_is_safe_and_repeatable
+test_fresh_opt_in_keeps_the_regression_baseline_clean
 test_failed_run_cleans_up
 test_interrupted_run_cleans_up
+if grep -Fq 'program:\"npm\"' "$demo_script"; then
+  echo "demo must not use nondeterministic expected_tool npm assertions" >&2
+  exit 1
+fi
+grep -q 'post_check.*npm test' "$demo_script"
 echo "run-demo: default, opt-in rerun, failure, and interruption paths pass"

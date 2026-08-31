@@ -91,7 +91,9 @@ opt in before the run:
 DEMO_REDACTION_BEAT=1 bash scripts/demo/run-demo.sh
 ```
 
-Step 3 then creates a uniquely named `.notes/glassbox-redaction-demo.*.txt` in the demo
+On a clean data root, step 3 first records the unchanged baseline Run so the later regression
+case never inherits a temporary-file request. It then creates a uniquely named
+`.notes/glassbox-redaction-demo.*.txt` in the demo
 workspace — one **provably fake**
 canary, an `ARK_API_KEY` assignment whose value is `ark-` plus the all-zeros/`dead-beef`
 UUID (shaped to match the `ark_key` rule but impossible as a real key) — and appends one sentence
@@ -100,7 +102,7 @@ summary. The audience sees the **redacted** chip on the trace, `[REDACTED:env_as
 drawer summary (the assignment rule swallows the inner key marker — that label is what actually
 renders), and `redactedEvents > 0`. The exclusive temporary name cannot overwrite an existing
 workspace file, and an exit/signal trap removes it after success, failure, or interruption.
-When an ok baseline already exists, opting in intentionally sends a fresh redaction Run; repeated
+When an ok baseline already exists, opting in sends only the separate redaction Run; repeated
 opt-in rehearsals each use and clean up a different temporary file. Say the
 honest line out loud: *"that's a seeded fake credential — the redactor caught it before it
 reached persisted trace data."* It adds ~10–20 s to step 3, and with the flag unset the script's

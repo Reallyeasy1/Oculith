@@ -25,7 +25,7 @@ export interface EmitterOptions {
 }
 export interface SpanHandle {
   spanId: string;
-  end(status: TraceStatus, extra?: { type?: EventType; attributes?: EventInput["attributes"]; error?: EventInput["error"]; summary?: EventInput["summary"]; name?: string }): ObservationEvent | null;
+  end(status: TraceStatus, extra?: { type?: EventType; attributes?: EventInput["attributes"]; error?: EventInput["error"]; summary?: EventInput["summary"]; name?: string; preRedactedRules?: readonly string[] }): ObservationEvent | null;
 }
 
 export class ObservationEmitter {
@@ -75,10 +75,10 @@ export class ObservationEmitter {
   }
   flush(): Promise<void> { return this.queue; }
 
-  emit(input: EventInput): ObservationEvent | null {
+  emit(input: EventInput, preRedactedRules: readonly string[] = []): ObservationEvent | null {
     // #358: nothing inside observation may throw into the caller (invariant 4). The known edges (null
     // input, poisoned sequence) are guarded individually; this backstop catches the ones we haven't met.
-    try { return this.emitUnsafe(input); }
+    try { return this.emitUnsafe(input, preRedactedRules); }
     catch (error) {
       const runId = typeof input === "object" && input !== null && typeof (input as { runId?: unknown }).runId === "string" ? (input as { runId: string }).runId : undefined;
       if (runId !== undefined && !this.degradedRuns.has(runId)) {
@@ -89,14 +89,14 @@ export class ObservationEmitter {
     }
   }
 
-  private emitUnsafe(input: EventInput): ObservationEvent | null {
+  private emitUnsafe(input: EventInput, preRedactedRules: readonly string[]): ObservationEvent | null {
     const parsed = eventInputSchema.safeParse(input);
     if (!parsed.success) {
       const issue = parsed.error.issues[0];
       this.quarantine(input, issue ? issue.path.join(".") + ": " + issue.message : "invalid");
       return null;
     }
-    const final = this.finalize(parsed.data);
+    const final = this.finalize(parsed.data, preRedactedRules);
     if ("invalid" in final) { this.quarantine(input, "post-redaction: " + final.invalid); return null; }
     this.enqueue(final);
     return final;
@@ -120,7 +120,7 @@ export class ObservationEmitter {
           durationMs: Math.max(0, Date.now() - startedAt),
           attributes: { ...(input.attributes ?? {}), ...(extra.attributes ?? {}) },
           ...(extra.error ? { error: extra.error } : {}), ...(extra.summary ? { summary: extra.summary } : {}),
-        });
+        }, extra.preRedactedRules);
       },
     };
   }
@@ -154,10 +154,10 @@ export class ObservationEmitter {
   /** build -> redact (fail-closed on redactor throw) -> re-validate. Shared by emit(), quarantine()
    * and the truncation/degraded system events so nothing reaches the store without passing redaction.
    * On post-redaction failure returns the specific zod issue so the quarantine reason names it (#54). */
-  private finalize(data: ReturnType<typeof eventInputSchema.parse>): ObservationEvent | { invalid: string } {
+  private finalize(data: ReturnType<typeof eventInputSchema.parse>, preRedactedRules: readonly string[] = []): ObservationEvent | { invalid: string } {
     const event = this.build(data);
     let safe: ObservationEvent;
-    try { safe = redactEvent(event, { policy: this.capturePolicy, extraPatterns: this.extraPatterns }); }
+    try { safe = redactEvent(event, { policy: this.capturePolicy, extraPatterns: this.extraPatterns, preRedactedRules }); }
     catch (error) { safe = failClosed(event); this.log("redaction_failed_closed", { runId: event.runId, error: String(error) }); }
     const final = observationEventSchema.safeParse(safe);
     if (final.success) return final.data;

@@ -216,6 +216,17 @@ describe("redactEvent", () => {
     expect(out.attributes.note).toBe("[REDACTED:custom] present");
     expect(out.privacy.rules).toEqual(["custom"]);
   });
+  it("bounds trusted pre-redaction provenance to the persisted privacy schema", () => {
+    const valid = Array.from({ length: 40 }, (_, index) => `rule_${index}`);
+    const out = redactEvent(ev({ summary: { text: "[REDACTED:ark_key]", policy: "safe_summary" } }), {
+      policy: "safe_summary",
+      preRedactedRules: ["", "x".repeat(65), ...valid],
+    });
+    expect(out.privacy.redacted).toBe(true);
+    expect(out.privacy.rules).toHaveLength(32);
+    expect(out.privacy.rules).toEqual(valid.slice(0, 32));
+    expect(observationEventSchema.safeParse(out).success).toBe(true);
+  });
   it("caps error messages at 2048 and summaries at the 4096 default", () => {
     const out = redactEvent(
       ev({ error: { type: "e", message: "m".repeat(3000) }, summary: { text: "s".repeat(5000), policy: "safe_summary" } }),

@@ -233,6 +233,7 @@ describe("CodexStreamObserver", () => {
         // Redacted, bounded, parented like every other observed event; messageBytes measures the original.
         expect(messages[0]!.summary?.text).toContain("[REDACTED:bearer]");
         expect(messages[0]!.summary?.text).not.toContain("abcdefghijklmnopqrstuvwxyz");
+        expect(messages[0]!.privacy).toMatchObject({ redacted: true, rules: ["bearer"] });
         expect(messages[0]!.attributes.messageBytes).toBe(Buffer.byteLength(intermediate, "utf8"));
         expect(messages[1]!.summary?.text).toHaveLength(240);
         expect(messages[1]!.attributes.messageBytes).toBe(300);
@@ -329,6 +330,7 @@ describe("CodexStreamObserver", () => {
     expect(tail).toContain("error: auth failed");
     expect(tail).toContain("[REDACTED:bearer]");
     expect(e!.summary!.text).not.toContain("abcdefghijklmnopqrstuvwxyz");
+    expect(e!.privacy).toMatchObject({ redacted: true, rules: ["bearer"] });
     expect(output.slice(-512)).toHaveLength(512); // the seeded output really exceeded the tail bound
   });
 
@@ -348,6 +350,7 @@ describe("CodexStreamObserver", () => {
     const [e] = await store.readRun("run-1");
     expect(e!.summary!.text).not.toContain("a".repeat(100));
     expect(e!.summary!.text).toContain("[REDACTED:bearer]");
+    expect(e!.privacy).toMatchObject({ redacted: true, rules: ["bearer"] });
   });
 
   it("drops an abandoned turn's item count instead of donating it to the next turn", async () => {
