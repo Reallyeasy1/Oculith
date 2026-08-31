@@ -28,6 +28,8 @@ reuse."
 
 **CUE.** None.
 
+![All runs overview: stat tiles and the runs table](../assets/ui/s1b-shell-overview.png)
+
 ---
 
 ## Beat 2 — A real run (0:15–0:40)
@@ -44,6 +46,8 @@ Codex, the Ark model. We trim the wait, never the result."
 
 **CUE.** Caption: "wait trimmed".
 
+![Playground composer on the agent page](../assets/ui/s2-playground-composer.png)
+
 ---
 
 ## Beat 3 — The trace (0:40–1:10)
@@ -58,6 +62,8 @@ any span and the drawer shows its attributes and events. If a layer exposed noth
 Oculith says 'no evidence' instead of inventing it."
 
 **CUE.** **FREEZE 1** on the drawer's exit code.
+
+![Trace with the span drawer open on a tool span](../assets/ui/s3b-span-drawer.png)
 
 ---
 
@@ -74,6 +80,8 @@ a judge right in the UI."
 
 **CUE.** None.
 
+![Evaluation block: PASS pills with written reasons](../assets/ui/c06-evaluation-pass.png)
+
 ---
 
 ## Beat 5 — Redaction (1:30–1:50)
@@ -88,6 +96,10 @@ built."
 
 **CUE.** **FREEZE 2** on the drawer marker.
 
+![Trace header wearing the purple REDACTED chip](../assets/ui/s3-redaction-live.png)
+
+![Span drawer summary ending in the REDACTED env_assignment marker](../assets/ui/s3-redaction-drawer.png)
+
 ---
 
 ## Beat 6 — The failure (1:50–2:10)
@@ -100,6 +112,8 @@ codex exec, runner layer, cut at three seconds. One click and I'm standing on th
 failing span. That used to be twenty minutes of grepping logs."
 
 **CUE.** **FREEZE 3** on the TIMEOUT badge.
+
+![Timeout trace: red first-failure banner with Jump to failing span](../assets/ui/s5a-trace-timeout.png)
 
 ---
 
@@ -115,6 +129,8 @@ And over time the overview turns runs into reliability: completion rates, latenc
 a chart per judge."
 
 **CUE.** **FREEZE 4** on the all-passed case row.
+
+![Regression cases card on the overview](../assets/ui/s6-regression-cases.png)
 
 ---
 

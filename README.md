@@ -166,7 +166,7 @@ the next Run, which then takes the ordinary runner timeout (SIGTERM→SIGKILL fo
 `docker rm --force` for `container`) and ends in `run.timed_out`. It is off by default and never
 enabled by `npm run poc`.
 
-![Agent Playground](docs/assets/playground.jpg)
+![Agent Playground](docs/assets/ui/s2-playground-composer.png)
 
 ## Observability behaviour
 

@@ -39,6 +39,8 @@ An **Agent** is a persistent workspace folder plus a resumable Codex session and
 
 Type into the Playground and press Enter. Runs are asynchronous: the Run is queued, the UI polls.
 
+![Playground composer on the agent page](assets/ui/s2-playground-composer.png)
+
 - **Message queue**: a busy Agent *accepts* your message and queues it (up to 10; the composer shows
   "queued, N ahead" and each queued row has a Cancel). Queued messages survive restarts; each
   dequeued Run gets its own trace with a `queuedMs` attribute showing its wait.
@@ -53,6 +55,8 @@ Type into the Playground and press Enter. Runs are asynchronous: the Run is queu
 ## 4. Reading a trace
 
 Every Run is one correlated, privacy-safe trace. Click any run row (or a chat *trace* link).
+
+![Trace detail with the span drawer open on a tool span](assets/ui/s3b-span-drawer.png)
 
 - **Runs table**: filter chips (*Needs attention* is the default — failures, denials, degraded, or
   agent-reported failure; a run that merely *recovered* from tool errors is informational, not
@@ -94,9 +98,13 @@ provenance), tool-failure and denial rates, token averages, latency p50/p95, and
 With `GLASSBOX_PRICE_PER_MTOK_INPUT`/`_CACHED_INPUT`/`_OUTPUT` set, runs carry an estimated cost and
 the metrics API aggregates it.
 
+![Reliability charts: completion, failure, latency and per-judge cards](assets/ui/s9b-reliability-charts.png)
+
 ## 6. The verify chain: case → eval → comparison
 
 This is how a good Run becomes a permanent check.
+
+![Regression cases card on the overview](assets/ui/s6-regression-cases.png)
 
 1. **Save as regression case** (trace header, on an `ok` Run): assertions are prefilled from the
    Run's own evidence — terminal status, expected tool, tool/duration budgets. You can edit the set;
