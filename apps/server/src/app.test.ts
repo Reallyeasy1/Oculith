@@ -928,7 +928,7 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
         cancel: async () => false,
         isAvailable: async () => true,
       };
-      const svc = new RealAgentService(cfg, new JsonStore(path.join(root, "data", "db.json")), new WorkspaceManager(path.join(root, "workspaces")), runner);
+      const svc = new RealAgentService(cfg, new JsonStore(path.join(root, "data", "db.json")), new WorkspaceManager(path.join(root, "workspaces"), path.join(root, "templates")), runner);
       await svc.initialize();
       const agent = await svc.createAgent({ name: "Redact" });
       const app = await createApp(cfg, svc);
@@ -958,6 +958,25 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
       expect(joined).not.toContain(promptSecret);
       expect(joined).not.toContain(outputSecret);
       expect(joined).toContain("[REDACTED:openai_key]");
+
+      // (b2) GET /api/agents/:id/runs — the list surface returns base AgentRun objects too, same leak class.
+      const runs = (await app.inject({ method: "GET", url: base + "/runs", headers: auth })).json().runs;
+      const listed = runs.map((r: { prompt: string; output: string | null }) => (r.prompt ?? "") + "\n" + (r.output ?? "")).join("\n");
+      expect(listed).not.toContain(promptSecret);
+      expect(listed).not.toContain(outputSecret);
+      expect(listed).toContain("[REDACTED:openai_key]");
+
+      // (b3) regression cases copy run.prompt verbatim — every serve surface scrubs, storage stays raw
+      // (the EvalRunner replays case.prompt from the store, so replay fidelity is untouched).
+      await mkdir(path.join(root, "templates", "fixture"), { recursive: true });
+      const casePayload = { name: "canary", prompt: "Deploy with " + promptSecret, workspaceTemplate: "fixture", baselineConfigHash: "hash", assertions: [{ type: "terminal_status", expected: "ok" }] };
+      const createdCase = await app.inject({ method: "POST", url: "/api/regression-cases", headers: { ...auth, "content-type": "application/json" }, payload: casePayload });
+      expect(createdCase.statusCode).toBe(201);
+      expect(createdCase.json().regressionCase.prompt).toContain("[REDACTED:openai_key]");
+      const caseId = createdCase.json().regressionCase.id;
+      expect((await app.inject({ method: "GET", url: "/api/regression-cases", headers: auth })).json().cases[0].prompt).not.toContain(promptSecret);
+      expect((await app.inject({ method: "GET", url: "/api/regression-cases/" + caseId, headers: auth })).json().regressionCase.prompt).not.toContain(promptSecret);
+      expect(svc.getRegressionCase(caseId).prompt).toContain(promptSecret);
 
       // (d) The store stays raw: the runner received the unredacted prompt (execution unaffected) and the
       // persisted Run still holds the raw secret — redaction happens only on the serve path.
