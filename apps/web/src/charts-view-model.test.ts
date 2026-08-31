@@ -8,9 +8,11 @@ import type { ReliabilityDeltas } from "./types";
 import {
   bucketDrillWindow,
   bucketLabel,
+  bucketNoun,
   chartDeltaChips,
   domainMax,
   emptyStateMessage,
+  formatCount,
   formatScore,
   hoverReadout,
   linePath,
@@ -127,6 +129,20 @@ describe("y domains", () => {
   it("latency ticks use formatDuration labels", () => {
     expect(yTicks(1000, formatDuration).map((t) => t.label)).toEqual(["1.0 s", "500 ms", "0 ms"]);
   });
+
+  it("#390 item 1: volume ticks label the true half value, not a rounded one (max 5 → mid '2.5')", () => {
+    // Math.round(2.5) rendered "3" on the 2.5 gridline; formatCount keeps the label on its line.
+    expect(yTicks(5, formatCount).map((t) => t.label)).toEqual(["5", "2.5", "0"]);
+    expect(yTicks(15, formatCount).map((t) => t.label)).toEqual(["15", "7.5", "0"]);
+    expect(yTicks(4, formatCount).map((t) => t.label)).toEqual(["4", "2", "0"]);
+  });
+});
+
+describe("bucketNoun (#390 item 3)", () => {
+  it("tracks the Day|Hour toggle", () => {
+    expect(bucketNoun("day")).toBe("daily buckets");
+    expect(bucketNoun("hour")).toBe("hourly buckets");
+  });
 });
 
 describe("nearestBucketIndex", () => {
@@ -148,6 +164,11 @@ describe("emptyStateMessage", () => {
   it("single hourly bucket says charts appear at two buckets", () => {
     expect(emptyStateMessage([point("2026-08-29T14:00:00.000Z", { runs: 7 })], "hour"))
       .toBe("Charts appear once Runs span two time buckets.");
+  });
+
+  it("#390 item 4: a single Run in the day doesn't dead-end at Hour view (1 Run can't span 2 hourly buckets)", () => {
+    expect(emptyStateMessage([point("2026-08-29T00:00:00.000Z", { runs: 1 })], "day"))
+      .toBe("All 1 Run falls in a single daily bucket — charts appear once Runs span two time buckets.");
   });
 
   it("two or more buckets render charts", () => {

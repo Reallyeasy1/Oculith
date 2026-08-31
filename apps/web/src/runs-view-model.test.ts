@@ -136,6 +136,7 @@ describe("runOutlier", () => {
     expect(formatCost(0.001234)).toBe("$0.0012");
     expect(formatCost(1.234)).toBe("$1.23");
     expect(formatCost(undefined)).toBe("—");
+    expect(formatCost(0)).toBe("$0"); // #390 item 2: 0 skips the sub-cent toFixed(4) branch, not "$0.0000"
   });
 });
 

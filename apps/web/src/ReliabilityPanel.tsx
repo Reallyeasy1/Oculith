@@ -4,7 +4,7 @@ import MetricsDashboard, { type ChartOverlay } from "./MetricsDashboard";
 import type { ReliabilityCompareReport, ReliabilityOverviewReport, ReliabilityReport, ReliabilitySeriesPoint, RunListItem } from "./types";
 import { reliabilityTiles, sparklineHeights, type ReliabilityDrill, type ReliabilityTile } from "./reliability-view-model";
 import { configOptions, provenanceRunIds } from "./config-comparison-view-model";
-import { presetWindow, RANGE_PRESETS, type RangePreset } from "./charts-view-model";
+import { bucketNoun, presetWindow, RANGE_PRESETS, type RangePreset } from "./charts-view-model";
 
 interface Props {
   /** null while loading or when the server runs without the reliability endpoints — the panel stays hidden.
@@ -135,7 +135,7 @@ export default function ReliabilityPanel({ report, agentId, runs, onDrill }: Pro
         </div>
         <div className="reliability-topbar-actions">
           <span className="trace-muted">
-            {report.runs} {report.runs === 1 ? "Run" : "Runs"} · daily buckets
+            {report.runs} {report.runs === 1 ? "Run" : "Runs"} · {bucketNoun(bucket)}
           </span>
           {chartsAvailable && (
             <button
