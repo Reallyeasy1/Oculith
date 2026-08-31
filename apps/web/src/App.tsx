@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, getAuthToken, setAuthToken } from "./api";
+import { api, ApiError, getAuthToken, setAuthToken, setUnauthorizedHandler } from "./api";
 import { connectLive } from "./live";
 import { agentPayload, budgetFormError } from "./agent-form";
 import { preferredPreviewCommand, queuedSentNote, showLastErrorHint } from "./agent-view-model";
@@ -294,6 +294,18 @@ export default function App() {
       .auth()
       .then(async ({ required }) => {
         if (!mountedRef.current) return;
+        // #413: a token restored from sessionStorage skips the form while it still works; on a
+        // 401 api.ts has already wiped it, so falling through renders the ordinary token form.
+        if (required && getAuthToken()) {
+          try {
+            await bootstrap();
+            if (mountedRef.current) setAuthRequired(false);
+            return;
+          } catch (reason) {
+            if (!(reason instanceof ApiError && reason.status === 401)) throw reason;
+          }
+        }
+        if (!mountedRef.current) return;
         setAuthRequired(required);
         if (!required) await bootstrap();
       })
@@ -302,6 +314,16 @@ export default function App() {
       mountedRef.current = false;
     };
   }, [bootstrap]);
+
+  // #413: any 401 mid-session (rotated APP_AUTH_TOKEN, stale stored token) returns the app to the
+  // token screen; the stored token is already wiped by the time this runs.
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      setAuthRequired(true);
+      setError("The access token was rejected. Enter the current token to continue.");
+    });
+    return () => setUnauthorizedHandler(null);
+  }, []);
 
   useEffect(() => {
     setActiveRun(null);
@@ -593,11 +615,12 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (authRequired !== false) return; // #413: don't keep polling (and 401ing) behind the token screen
     if (view === "agent" && !selectedId) return;
     const intervalMs = refreshIntervalMs(trace?.summary.status);
     const id = window.setInterval(() => void refreshVisibleRuns(), intervalMs);
     return () => window.clearInterval(id);
-  }, [selectedId, trace?.summary.status, view]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [authRequired, selectedId, trace?.summary.status, view]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // #40: live updates — an SSE notification triggers the same refresh path the timer runs, just
   // sooner. The polling intervals above stay untouched as the safety net, so a failed or

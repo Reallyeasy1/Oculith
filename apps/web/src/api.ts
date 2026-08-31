@@ -27,15 +27,55 @@ export function humanizeErrorMessage(message: string): string {
   }
 }
 
-let authToken = "";
+// #413: the token survives a refresh via sessionStorage — deliberately not localStorage, so it
+// still dies with the tab on a shared machine. Storage can be absent (vitest's node env) or throw
+// (storage-blocking browsers); auth then degrades to the in-memory-only behaviour it had before.
+const TOKEN_STORAGE_KEY = "launchpad.access-token";
+
+function tokenStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> | null {
+  return typeof sessionStorage === "undefined" ? null : sessionStorage;
+}
+
+function readStoredToken(): string {
+  try {
+    return tokenStorage()?.getItem(TOKEN_STORAGE_KEY)?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+let authToken = readStoredToken();
 
 export function setAuthToken(token: string): void {
   authToken = token.trim();
+  try {
+    if (authToken) tokenStorage()?.setItem(TOKEN_STORAGE_KEY, authToken);
+    else tokenStorage()?.removeItem(TOKEN_STORAGE_KEY);
+  } catch {
+    // a blocked write only costs refresh survival; the in-memory token still works
+  }
+}
+
+export function clearAuthToken(): void {
+  setAuthToken("");
 }
 
 // #40: the SSE stream (live.ts) needs the token at connect time — EventSource cannot set headers.
 export function getAuthToken(): string {
   return authToken;
+}
+
+// #413: App registers this to fall back to the token screen when the server rejects the token
+// (rotated APP_AUTH_TOKEN, stale stored copy). The stored token is wiped before the handler runs.
+let onUnauthorized: (() => void) | null = null;
+
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  onUnauthorized = handler;
+}
+
+function handleUnauthorized(): void {
+  clearAuthToken();
+  onUnauthorized?.();
 }
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -50,6 +90,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   });
   const data = (await response.json().catch(() => ({}))) as T & { error?: string };
   if (!response.ok) {
+    if (response.status === 401) handleUnauthorized();
     throw new ApiError(data.error ? humanizeErrorMessage(data.error) : "Request failed", response.status);
   }
   return data;
@@ -228,6 +269,7 @@ export const api = {
       headers: authToken ? { Authorization: "Bearer " + authToken } : undefined,
     });
     if (!response.ok) {
+      if (response.status === 401) handleUnauthorized();
       const data = (await response.json().catch(() => ({}))) as { error?: string };
       throw new ApiError(data.error ? humanizeErrorMessage(data.error) : "Export failed", response.status);
     }
