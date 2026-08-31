@@ -1137,25 +1137,24 @@ describe("per-Agent message queue (#254)", () => {
     const service = await makeService(runner);
     const agent = await service.createAgent({ name: "transcript-order" });
     expect("queued" in (await service.sendMessage(agent.id, "one"))).toBe(false);
-    // Real clock, so the queue moment must be strictly earlier than run one's completion.
-    await new Promise((resolve) => setTimeout(resolve, 5));
     expect(await service.sendMessage(agent.id, "two")).toMatchObject({ queued: true, position: 1 });
+    // Real clock: run one must complete strictly after "two" was queued, or a same-millisecond tie
+    // rescued by the stable sort would let the reverted code pass. This sleep is load-bearing.
     await new Promise((resolve) => setTimeout(resolve, 5));
     for (let index = 0; index < 2; index += 1) {
       await expect.poll(() => runner.resolvers.length).toBe(index + 1);
       runner.resolvers[index]!();
     }
     await expect.poll(() => service.getRuns(agent.id).filter((run) => run.status === "completed").length).toBe(2);
-    expect(service.getMessages(agent.id).map((message) => message.content)).toEqual([
-      "one",
-      "done: one",
-      "two",
-      "done: two",
-    ]);
-    // The original send moment survives on the dequeued message.
-    const dequeuedMessage = service.getMessages(agent.id).find((message) => message.content === "two")!;
-    expect(dequeuedMessage.queuedAt).toEqual(expect.any(String));
-    expect(dequeuedMessage.createdAt >= dequeuedMessage.queuedAt!).toBe(true);
+    const transcript = service.getMessages(agent.id);
+    expect(transcript.map((message) => message.content)).toEqual(["one", "done: one", "two", "done: two"]);
+    // The dequeued message keeps its true send moment (provably before the reply it waited behind —
+    // this fails if a refactor stamps queuedAt at dequeue time) and its createdAt is the moment its
+    // own Run was created, so the transcript sorts by conversation.
+    const dequeuedMessage = transcript.find((message) => message.content === "two")!;
+    const firstReply = transcript.find((message) => message.content === "done: one")!;
+    expect(dequeuedMessage.queuedAt! < firstReply.createdAt).toBe(true);
+    expect(dequeuedMessage.createdAt).toBe(service.getRuns(agent.id).find((run) => run.prompt === "two")!.createdAt);
   });
 
   it("caps the queue at 10 and refuses the next message with 429", async () => {
