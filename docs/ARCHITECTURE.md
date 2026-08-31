@@ -2,7 +2,13 @@
 
 Volc Agent Launchpad is a single-node control plane. Oculith observes the existing execution path; it does not replace the runner or become a second source of Run state.
 
-## Implemented system
+## The one-page diagram
+
+![Oculith architecture — trust boundaries, instrumentation points, redaction gate, recovery behavior, verify loop](assets/architecture.svg)
+
+Reading guide: dashed borders are trust boundaries (untrusted browser client, untrusted runtime execution); ★ marks the five instrumentation points where adapters sit on existing seams; the green gate is the single redaction boundary every event crosses before it can exist on disk, API, export or log (and the serve gate scrubs the raw conversation store on every read); ↻ marks recovery behavior (non-blocking emitter, `telemetry.degraded`, fail-closed redaction, honest restart cancellation); the purple loop is verification replaying saved evidence through the same real execution path until `PASS→FAIL = REGRESSION`.
+
+## Implemented system (component detail)
 
 ```mermaid
 flowchart LR
@@ -119,6 +125,6 @@ Both runner adapters use argv-only process execution, bounded output/time, resum
 
 - No autonomous controller, approval engine, or policy-enforcement loop; the dashed controller boundary is an extension seam only.
 - No multi-user identity, authorization, hardened tenant isolation, or distributed control plane.
-- No external trace database or message bus; NDJSON is the deliberate POC trace store. PostgreSQL is an opt-in backend for Run summaries only.
-- No LLM-based evaluator or success inference. Regression evaluators use explicit stored evidence. The `postCheck` assertion type is defined but `EvalRunner` runs evaluators without a workspace runner, so it reports "unavailable" rather than executing commands.
+- No external trace database or message bus; NDJSON is the deliberate POC trace store. PostgreSQL is an opt-in backend for traces, Run summaries and evaluation records behind the same store interfaces; NDJSON + JSON stay the judged default.
+- No LLM in the diagnosis or regression path. `llm_judge` evaluators exist (task_completion, recovery_quality, user-defined) but are fenced to provenance-stamped scores over the redacted evaluation view; deterministic evaluators own every verdict, and `REGRESSION` is classified only from their PASS→FAIL deltas. `post_check` executes real commands in the isolated eval workspace, restricted to `GLASSBOX_POSTCHECK_ALLOWLIST` (default `npm test`) and failing closed otherwise (#282).
 - No deployment topology beyond the local POC and single ECS task described above.

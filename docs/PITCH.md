@@ -10,7 +10,7 @@ _One product narrative for the TechJam Track 1 submission ("Agent Launchpad: Des
 
 **Agents execute opaque chains of actions.** A Run on the starter kit ends in a final message or a one-line error. We hit the cost ourselves: a ten-minute timeout that looked like a model problem was actually every shell command paying a 40-second host-profile tax. The evidence existed — nothing in the product surfaced it.
 
-**Oculith instruments the real runtime.** Not a mock, not a wrapper UI: adapters at the real seams — Fastify → AgentService → AgentRunner → container/process → Codex → workspace — normalise everything into one versioned `ObservationEvent` contract, through a single redaction boundary, into an append-only local trace per Run. Thirty event types across nine categories today.
+**Oculith instruments the real runtime.** Not a mock, not a wrapper UI: adapters at the real seams — Fastify → AgentService → AgentRunner → container/process → Codex → workspace — normalise everything into one versioned `ObservationEvent` contract, through a single redaction boundary, into an append-only local trace per Run. Thirty-eight event types across nine categories today.
 
 **The trace explains what happened.** One correlated tree from the HTTP request to the terminal result: per-call model activity, tool identities with durations and exit codes, token usage, sandbox denials as first-class evidence, and first-failure focus that puts the operator on the failing span in at most two interactions.
 
