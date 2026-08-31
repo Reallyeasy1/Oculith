@@ -708,7 +708,7 @@ export default function App() {
       <main className="auth-screen">
         <section className="auth-card" aria-live="polite">
           <BrandMark />
-          <span className="eyebrow">GlassBox · Agent Launchpad</span>
+          <span className="eyebrow">Oculith · Agent Launchpad</span>
           <h1>Connecting to the control plane</h1>
           {error ? <div className="error-banner" role="alert">{error}</div> : <Spinner />}
         </section>
@@ -721,7 +721,7 @@ export default function App() {
       <main className="auth-screen">
         <form className="auth-card" onSubmit={unlock}>
           <BrandMark />
-          <span className="eyebrow">GlassBox · Agent Launchpad</span>
+          <span className="eyebrow">Oculith · Agent Launchpad</span>
           <h1>Enter the access token</h1>
           <p>This shared demo token is configured by the platform operator.</p>
           {error && <div className="error-banner" role="alert">{error}</div>}
@@ -750,7 +750,7 @@ export default function App() {
         <div className="brand">
           <BrandMark />
           <div>
-            <strong>GlassBox</strong>
+            <strong>Oculith</strong>
             <span>Observability for Agent Runs</span>
           </div>
         </div>
@@ -776,7 +776,7 @@ export default function App() {
             <div className="agent-avatar">◎</div>
             <div className="agent-card-copy">
               <strong>All runs</strong>
-              <span>GlassBox · every Agent</span>
+              <span>Oculith · every Agent</span>
             </div>
           </button>
         </nav>
@@ -1242,7 +1242,7 @@ export default function App() {
           <div className="no-agent">
             {/* #371: the one spot #325's GlassBox rebrand missed. */}
             <BrandMark />
-            <span className="eyebrow">GlassBox</span>
+            <span className="eyebrow">Oculith</span>
             <h1>Your runtime is ready for an Agent.</h1>
             <p>Create a workspace, give Codex a job, and continue the conversation here.</p>
             <button

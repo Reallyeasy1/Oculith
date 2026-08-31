@@ -1,8 +1,8 @@
-# Oculith — GlassBox
+# Oculith
 
 **TikTok TechJam 2026 · Track 1 "Agent Launchpad" · selected middleware track: Glass Box (observability).**
 Built on the CodeJam Starter Kit (React Playground + Fastify control plane + Codex CLI on the
-Volcengine/BytePlus Ark Responses API); GlassBox is the middleware layer this team added on top.
+Volcengine/BytePlus Ark Responses API); Oculith is the middleware layer this team added on top.
 
 ## Problem statement (Track 1)
 
@@ -10,7 +10,7 @@ A Run on the starter kit is a black box: the Playground shows a final message or
 nothing connects the HTTP request, service state transitions, the runner process/container, Codex's own
 event stream, and the terminal result. When something fails, an operator cannot tell **which layer**
 failed — and the naive fix (dump everything to a log) turns observability into a secret-leak liability.
-Track 1 leaves "trace timeline" and "audit model" as intentionally absent middleware; GlassBox fills
+Track 1 leaves "trace timeline" and "audit model" as intentionally absent middleware; Oculith fills
 that gap. Full statement: [docs/PROBLEM_STATEMENT.md](docs/PROBLEM_STATEMENT.md) · spec: [docs/PRD.md](docs/PRD.md).
 
 ## Product thesis: instrument → observe → audit → verify
@@ -30,13 +30,13 @@ judgement* (PRD §17.1). No LLM writes a diagnosis or classifies a regression.
 
 ## Architecture
 
-![GlassBox architecture](docs/assets/architecture.png)
+![Oculith architecture](docs/assets/architecture.png)
 
 Component and extension boundaries:
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 Runtime flow in one line: Web UI → Fastify control plane → `AgentService` → `AgentRunner`
-(`local-process` or disposable `container`) → Codex CLI → Ark Responses API, with GlassBox observing
+(`local-process` or disposable `container`) → Codex CLI → Ark Responses API, with Oculith observing
 every seam into per-Run NDJSON traces plus an in-memory index.
 
 ## Middleware boundaries: instrumented vs derived
@@ -50,7 +50,7 @@ every seam into per-Run NDJSON traces plus an in-memory index.
 | Sandbox denials as `policy.denied` | Evaluator results and baseline/candidate comparison |
 | Workspace disk truth (bytes/files) | Capability states per layer: `observed` / `unavailable` / `unknown` — absence is never guessed |
 
-Adapters live in the existing starter-kit seams; GlassBox server code is `apps/server/src/glassbox/`
+Adapters live in the existing starter-kit seams; Oculith server code is `apps/server/src/glassbox/`
 (context, emitter, redact, store, query).
 
 ## Setup
@@ -275,7 +275,7 @@ Not covered — know this before putting anything sensitive near it:
   in-memory-plus-file with no cross-process locking; run one server.
 - **Templates are versioned starting states, not exact replay.** An EvalRun reruns the task from the
   template; it does not replay the original trace step by step.
-- **No policy engine.** Denials are *observed* sandbox facts; nothing in GlassBox decides or blocks —
+- **No policy engine.** Denials are *observed* sandbox facts; nothing in Oculith decides or blocks —
   controls are roadmap, written as linked `ControlDecision` records that never mutate observation facts.
 - **Landlock fallback in Docker Desktop.** Kernels without Landlock (Docker Desktop on Windows/macOS)
   fall back to `danger-full-access` inside the outer container: the container boundary holds, per-Agent

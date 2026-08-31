@@ -11,7 +11,7 @@ instance differ, the "on the poc box" notes say what the recording will actually
 Two windows side by side. Left: Git Bash running `run-demo.sh`, large font, printing its
 pre-flight lines and `Pre-flight OK`. Right: the browser on the access gate, a single
 centered card with a masked token field over a dark page. The presenter pastes the token
-(masked, safe on camera) and the shell appears: dark sidebar, GlassBox wireframe-box logo,
+(masked, safe on camera) and the shell appears: dark sidebar, Oculith wireframe-box logo,
 "Observability for Agent Runs" under it, a violet Create Agent button, and the agent list.
 
 On the poc box: the sidebar has only the Demo agent, and the Runs list starts almost empty.

@@ -130,7 +130,7 @@ export default function ReliabilityPanel({ report, agentId, runs, onDrill }: Pro
     <section className="runs-view reliability-panel" aria-labelledby="reliability-heading">
       <div className="playground-topbar">
         <div>
-          <span className="eyebrow">GlassBox</span>
+          <span className="eyebrow">Oculith</span>
           <h2 id="reliability-heading">Reliability</h2>
         </div>
         <div className="reliability-topbar-actions">
