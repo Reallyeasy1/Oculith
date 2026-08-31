@@ -7,7 +7,7 @@
 | **Status** | Draft v4 — 27 Aug 2026 (Observe + Audit + Evaluate + Verify) |
 | **Source** | *Oculith Observability PRD* (25 Aug 2026) + Track 1 problem statement §1.1–1.12 |
 | **Decision** | **Ship evidence before control.** Single-Run observability and failure diagnosis are the MVP; orchestration is roadmap. |
-| **Horizon** | Sprint plan S0–S8 (Observe → Verify) and E1–E3 (Evaluate, in parallel with S6–S8); see [SPRINTS.md](SPRINTS.md) |
+| **Horizon** | Sprint plan S0–S8 (Observe → Verify) and E1–E3 (Evaluate, in parallel with S6–S8); tracked on the **TechJam MVP** GitHub milestone |
 
 **Change log — v4 (27 Aug 2026, #167).** This version is an amendment, not a rewrite: v3 text stands unless a section below says otherwise. It adds the **Evaluate** plane as new §17 (FR-20…FR-26, AC-09): versioned evaluator definitions, evaluation results with provenance, `executionStatus` vs `taskOutcome`, a per-Run summary store with historical aggregates, background evaluation jobs, the Task Completion evaluator v1, and config comparison over history with a reliability dashboard. It states the three-vocabulary rule once (§17.1 — *observed fact · derived diagnosis · evaluator judgement*), amends §16.2 so deterministic Verify stays LLM-free and remains the only classifier of `REGRESSION`, adds the fixture-vs-telemetry privacy semantics (§17.4, referenced from §8 and §9), amends Appendix A so PostgreSQL is an optional backend behind the existing store interfaces while NDJSON + `db.json` remain the judged one-command path, rewrites the §13 demo script to the historical path with at most one live Run, and extends §16.3 traceability to #167–#177. The organisers' constraints quoted in v3 and `docs/PROBLEM_STATEMENT.md` are unchanged.
 
@@ -219,7 +219,7 @@ ObservationEmitter ──► validate (zod) ──► RedactionPipeline ──�
 
 ## 12. Sprint plan
 
-The authoritative S0–S8 schedule, issue membership, gates, lanes and critical path live in [docs/SPRINTS.md](SPRINTS.md). S0 is the completed observation plane. S1 pins the Verify contracts before S2–S5 build evidence, starting state, cases, execution and comparison; S6 verifies the complete loop; S7 rehearses; S8 packages the submission. **v4:** the Evaluate plane is sprints E1–E3 (#167–#177, #190–#193), running in parallel with S6–S8; E1 lands the summary/evaluator stores, E2 the jobs, judge and aggregates, E3 the dashboard and comparison that §13 walks through.
+The authoritative S0–S8 schedule, issue membership, gates, lanes and critical path live on the **TechJam MVP** GitHub milestone and epic #42. S0 is the completed observation plane. S1 pins the Verify contracts before S2–S5 build evidence, starting state, cases, execution and comparison; S6 verifies the complete loop; S7 rehearses; S8 packages the submission. **v4:** the Evaluate plane is sprints E1–E3 (#167–#177, #190–#193), running in parallel with S6–S8; E1 lands the summary/evaluator stores, E2 the jobs, judge and aggregates, E3 the dashboard and comparison that §13 walks through.
 
 **Team split (by contract, not layer):** runtime/starting state (A) · trace/audit (B) · evaluation (C) · experience (D) · verification/submission (E).
 

@@ -194,8 +194,8 @@ This is a hackathon-scale Agent infrastructure challenge, not a requirement to b
 
 | Track requirement | Where Oculith addresses it |
 |---|---|
-| Agent-specific problem + coherent middleware story | PRD §1–§2: observability-first reliability middleware (Instrument → Observe → Audit → Verify); `docs/PROJECT_BRIEF.md` §1 |
-| Real behavior in a backend / Runtime / data path | Emitters at the Fastify boundary, `AgentService`, `AgentRunner`, the Codex stream and the workspace; NDJSON trace store; query/audit/eval services (`docs/PROJECT_BRIEF.md` §3–§7) |
+| Agent-specific problem + coherent middleware story | PRD §1–§2: observability-first reliability middleware (Instrument → Observe → Audit → Verify); `docs/ARCHITECTURE.md` |
+| Real behavior in a backend / Runtime / data path | Emitters at the Fastify boundary, `AgentService`, `AgentRunner`, the Codex stream and the workspace; NDJSON trace store; query/audit/eval services (`docs/ARCHITECTURE.md`) |
 | Define the boundary and what happens when it fails | PRD §7, §9; invariants (`.claude/rules/glassbox-invariants.md`): telemetry non-blocking, `telemetry.degraded`, fail-closed redaction |
 | Trace / audit / observability example | Stable IDs and actor types (PRD §8), span categories, redacted summaries under `safe_summary`, usage/cost signals (metrics), Runs list + trace tree/timeline + first failing step (UX-01/02), export and events query API |
 | Normal case + failure / denial / degraded / recovery case | Demo script PRD §13: real Run, controlled timeout fixture, denial evidence, restart interruption, recovered tool failures; UAT rounds in `docs/UAT_COVERAGE.md` |
@@ -204,5 +204,5 @@ This is a hackathon-scale Agent infrastructure challenge, not a requirement to b
 | Smallest useful infrastructure | Local POC (`npm run poc`) is the judged path; no Collector/DB/cloud dependency (PRD Appendix A) |
 | Lifecycle: open middleware evidence for a Run; update configuration and show what changed | Trace per Run; `configHash` + `configSnapshot` (FR-12); Regression Case → EvalRun → comparison with `REGRESSION` (FR-16…19) |
 | Layered architecture with extensible contracts | Observation contract versioned and additive; `TraceStore` interface; adapters never import UI (G6); OTLP mapping adapter |
-| Three-minute demo, one-page diagram, README | Sprint S7 (#92, #94) and S8 (#35, #93, #95) in `docs/SPRINTS.md` |
+| Three-minute demo, one-page diagram, README | `docs/demo/` (script + run sheet), `docs/assets/architecture.svg`, `README.md` |
 | Evaluation weights (40/25/20/15) | PRD §15 rubric alignment |
