@@ -51,8 +51,8 @@ Recommended host:
 - 2 vCPU, 4 GiB memory, and a 40 GiB system disk
 - Docker Engine 24+ and the Docker Compose plugin
 
-The procedure was verified from a clean veLinux 2 host with Docker Engine
-29.6.2 and Compose 5.3.1. Debian 10 is unsupported.
+The procedure was verified from a clean veLinux 2 host with a current
+Docker Engine and Compose v2 plugin. Debian 10 is unsupported.
 
 ### Install Docker
 
@@ -147,7 +147,8 @@ Verify:
 
 ```bash
 curl http://127.0.0.1/api/health
-export APP_AUTH_TOKEN=your-shared-demo-token
+# the same token you set in .env.production above
+export APP_AUTH_TOKEN=the-random-token-generated-above
 curl -H "Authorization: Bearer $APP_AUTH_TOKEN" \
   http://127.0.0.1/api/system
 docker compose --env-file .env.production ps

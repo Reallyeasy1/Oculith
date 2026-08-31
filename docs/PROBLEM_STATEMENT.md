@@ -199,7 +199,7 @@ This is a hackathon-scale Agent infrastructure challenge, not a requirement to b
 | Define the boundary and what happens when it fails | PRD §7, §9; invariants (`.claude/rules/glassbox-invariants.md`): telemetry non-blocking, `telemetry.degraded`, fail-closed redaction |
 | Trace / audit / observability example | Stable IDs and actor types (PRD §8), span categories, redacted summaries under `safe_summary`, usage/cost signals (metrics), Runs list + trace tree/timeline + first failing step (UX-01/02), export and events query API |
 | Normal case + failure / denial / degraded / recovery case | Demo script PRD §13: real Run, controlled timeout fixture, denial evidence, restart interruption, recovered tool failures; UAT rounds in `docs/UAT_COVERAGE.md` |
-| Automated verification of the middleware | `npm run check` (unit, guard self-test, build) and the E2E lane (`scripts/e2e/`, 117 checks incl. privacy sweep and performance bounds) |
+| Automated verification of the middleware | `npm run check` (unit, guard self-test, build) and the E2E lane (`scripts/e2e/`, 180 checks on the last green run, incl. privacy sweep and performance bounds) |
 | Keep secrets out | Redaction before persistence (PRD G4, AC-03), privacy sweep across files/API/export/log/DOM, commit hook secret scan |
 | Smallest useful infrastructure | Local POC (`npm run poc`) is the judged path; no Collector/DB/cloud dependency (PRD Appendix A) |
 | Lifecycle: open middleware evidence for a Run; update configuration and show what changed | Trace per Run; `configHash` + `configSnapshot` (FR-12); Regression Case → EvalRun → comparison with `REGRESSION` (FR-16…19) |

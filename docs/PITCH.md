@@ -10,7 +10,7 @@ _One product narrative for the TechJam Track 1 submission ("Agent Launchpad: Des
 
 **Agents execute opaque chains of actions.** A Run on the starter kit ends in a final message or a one-line error. We hit the cost ourselves: a ten-minute timeout that looked like a model problem was actually every shell command paying a 40-second host-profile tax. The evidence existed — nothing in the product surfaced it.
 
-**Oculith instruments the real runtime.** Not a mock, not a wrapper UI: adapters at the real seams — Fastify → AgentService → AgentRunner → container/process → Codex → workspace — normalise everything into one versioned `ObservationEvent` contract, through a single redaction boundary, into an append-only local trace per Run. Thirty-eight event types across nine categories today.
+**Oculith instruments the real runtime.** Not a mock, not a wrapper UI: adapters at the real seams — Fastify → AgentService → AgentRunner → container/process → Codex → workspace — normalise everything into one versioned `ObservationEvent` contract, through a single redaction boundary, into an append-only local trace per Run. Thirty-seven event types across nine categories today.
 
 **The trace explains what happened.** One correlated tree from the HTTP request to the terminal result: per-call model activity, tool identities with durations and exit codes, token usage, sandbox denials as first-class evidence, and first-failure focus that puts the operator on the failing span in at most two interactions.
 
@@ -31,7 +31,7 @@ The Glass Box track asks for correlated Run and step events in a timeline or tre
 - Redaction before persistence: allowlist → key denylist → bounded pattern scan → truncation; on redactor error it fails closed to metadata only. Verified by an automated sweep of seeded fake keys across files, API, export, logs, and the rendered DOM.
 - Runs list and trace detail with first-failure focus, span drawer, audit view, evidence chips, deep links, keyboard navigation.
 - Per-Run metrics (`modelCallsObserved` per observed reasoning/message item, tool calls/failures, denials, tokens), the bounded metrics query API, reliability aggregate/compare endpoints, and dashboard cards for telemetry and each LLM-judge evaluator — built and tested.
-- Regression Cases, isolated EvalRuns through AgentService, deterministic evaluators (`terminal_status`, `expected_tool`, `max_tool_calls`, `max_duration_ms`, `post_check`), comparison with `REGRESSION` classification, and the versioned `task_completion@1` LLM judge for historical quality — kept strictly outside the diagnosis path.
+- Regression Cases, isolated EvalRuns through AgentService, deterministic evaluators (`terminal_status`, `expected_tool`, `max_tool_calls`, `max_duration_ms`, `post_check`), comparison with `REGRESSION` classification, and versioned LLM judges (`task_completion`, `recovery_quality`, plus user-defined judges via New evaluator) for historical quality — kept strictly outside the diagnosis path.
 - Authenticated SSE nudges with polling fallback, plus the optional PostgreSQL trace/summary/evaluation stores behind the same interfaces; NDJSON + JSON remain the judged default.
 - The gated deterministic failure fixture (`GLASSBOX_DEMO_FAILURE=timeout`) that traverses the same real Run path.
 - Performance inside declared bounds: append p95 measured at 3.8 ms (bound 20 ms), 500-event query at 36.6 ms (bound 500 ms).
@@ -123,7 +123,7 @@ _Nine steps matching the #92 runbook (`docs/DEMO.md`). **Say** lines are the spo
 6. **Codex emits one turn — how do you count 22 model calls?** We count the observed reasoning and message items in Codex's own event stream (#207/#230), so `modelCallsObserved` is a count of things that actually happened, verified against a 321k-token production Run.
 7. **What happens when the trace store fails mid-Run?** The emitter is non-blocking: the Run completes normally and the trace shows an explicit `telemetry.degraded` gap — observability failure is itself observable, and never costs the user their result.
 8. **How is the cost figure computed?** Display-only: operator-configured prices per million tokens multiplied by observed usage — no configured price, no number shown, and it never feeds any decision.
-9. **Why polling instead of SSE?** A locked PRD decision: a 1–2 s poll is indistinguishable in the demo and cuts a failure class from a single-process server; SSE is queued behind the P0 evidence work.
+9. **Why polling instead of SSE?** Polling is the fallback, not the design: authenticated SSE nudges shipped (#40), and the UI degrades to a 1–2 s poll when the stream drops — a deliberate failure-class trade on a single-process server.
 10. **What does the "recovered after N failures" chip mean?** A derived diagnosis: the Run had N failed tool calls but a later attempt succeeded and the Run completed — visible recovery, distinguished from a clean Run and from a real failure.
 
 ---
