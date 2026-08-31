@@ -56,7 +56,16 @@ export default function RunsView({ runs, selectedRunId, onOpenTrace, showAgent =
   // #369: chart-bucket drill — only Runs whose startedAt falls inside the clicked bucket.
   const [timeWindow, setTimeWindow] = useState<{ from: string; to: string; label: string } | undefined>();
   useEffect(() => {
-    if (!drill) return;
+    // #389: the parent clears the drill on agent switch (App.tsx setRunsDrill(null)); RunsView is keyed
+    // on `view`, not the agent id, so it isn't remounted — reset the drill-derived filters to their
+    // defaults here instead of early-returning, or a stale time window empties the next agent's table.
+    if (!drill) {
+      setFilter("attention");
+      setTaskOutcome("all");
+      setProvenanceRunIds(undefined);
+      setTimeWindow(undefined);
+      return;
+    }
     setFilter(drill.quick);
     setTaskOutcome(drill.taskOutcome);
     setProvenanceRunIds(drill.runIds);
