@@ -1,0 +1,10 @@
+{
+  "name": "frontend-button",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Landing page with one primary CTA. The campaign design gate lives in test/run-tests.js.",
+  "scripts": {
+    "test": "node test/run-tests.js",
+    "build": "node scripts/build.js"
+  }
+}
