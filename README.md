@@ -39,8 +39,9 @@ judgement* (PRD §17.1). No LLM writes a diagnosis or classifies a regression.
 | Demo & reproducibility (15%) | One command, no hidden setup (`npm run poc`) · [docs/DEMO.md](docs/DEMO.md) runbook rehearsed twice at 171 s / 168 s from a clean root · [Known limitations](#known-limitations) documented, not hidden |
 
 Every §1.10 acceptance line holds: clone → `npm run poc` → create/test an Agent from the browser;
-the middleware executes server-side; `npm run check` passes (CI); commit hooks scan every diff for
-secrets and the E2E lane sweeps seeded canaries across every persisted and rendered surface.
+the middleware executes server-side; `npm run check` passes (CI); the guarded agent workflow scans
+staged additions for credential-shaped content before commits, and the E2E lane sweeps seeded
+canaries across persisted and rendered surfaces.
 
 ## Architecture
 
@@ -155,10 +156,10 @@ bash scripts/demo/run-demo.sh          # walks steps 1–9, prints every URL to 
 DEMO_REDACTION_BEAT=1 bash scripts/demo/run-demo.sh   # opt-in: seeds a provably fake credential and shows the REDACTED chip live
 ```
 
-Runbook with per-step fallbacks: [docs/DEMO.md](docs/DEMO.md); recording plan, storyboard and
-narration: [docs/demo/](docs/demo/). Rehearsed twice on the judged Docker path from a clean root:
-171 s and 168 s end to end (logs on #92). Quick smoke alternative: `bash scripts/seed-demo.sh
-ok|fail` seeds a single real ok/timeout Run.
+Runbook with per-step fallbacks: [docs/DEMO.md](docs/DEMO.md). Video production kit (recording plan,
+storyboard, 2:30 narration): [docs/demo/](docs/demo/). Rehearsed twice on the judged Docker path from
+a clean root: 171 s and 168 s end to end (logs on #92). Quick smoke alternative:
+`bash scripts/seed-demo.sh ok|fail` seeds a single real ok/timeout Run.
 
 The failure fixture adds no failure path of its own: it only overrides `CODEX_TIMEOUT_MS` to 3 s for
 the next Run, which then takes the ordinary runner timeout (SIGTERM→SIGKILL for `local-process`,
@@ -169,7 +170,7 @@ enabled by `npm run poc`.
 
 ## Observability behaviour
 
-**Trace.** One append-only NDJSON file per Run (34 event types across 9 categories): stable
+**Trace.** One append-only NDJSON file per Run (38 event types across 9 categories): stable
 `traceId/spanId/runId/agentId/sessionId/requestId/actorId/sequence`, per-turn token usage (input,
 cached-input, output, reasoning), per-call `modelCallsObserved`, bounded tool identities with durations
 and exit codes, workspace disk truth, `configHash` on every Run. Trace detail = fixed summary header,
@@ -285,9 +286,7 @@ Not covered — know this before putting anything sensitive near it:
   disk as plain files; the trace records bytes/paths, but the workspace itself is outside the redaction
   boundary.
 - **The shared bearer token is a demo secret, not identity.** One `APP_AUTH_TOKEN` for every route;
-  no users, no authz — that is the Bouncer track, not this one. The browser keeps this demo token in
-  tab `sessionStorage` so a refresh doesn't log you out; it dies with the tab and is wiped the moment
-  the server rejects it.
+  no users, no authz — that is the Bouncer track, not this one.
 - Redaction is exact on structured attributes and best-effort on free text; a novel secret format in a
   command string can slip past — which is why the default policy is `metadata_only`.
 - Single-user proof of concept: do not use production data or credentials. See [SECURITY.md](SECURITY.md).
@@ -337,7 +336,7 @@ judge — labelled *evaluation*, never mixed with telemetry.
 
 | Deferred | Where it stands |
 |---|---|
-| Controls / policy engine | Roadmap by design ("evidence before control") — the opt-in budget gate (#255) is the only enforcement shipped |
+| Controls / policy engine | Roadmap by design ("evidence before control") — nothing in Oculith blocks or decides |
 | Cross-model comparison / tournament | Explicit non-goal for the MVP (PRD §16.2) |
 | OTLP / OTel GenAI mapping | #41 — adapter stub exists; internal schema stays authoritative |
 | Server-side rerun for queued lineage + span-name polish | Follow-ups recorded on PR #405 |
