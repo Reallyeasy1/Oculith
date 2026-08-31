@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError, clearAuthToken, getAuthToken, humanizeErrorMessage, setAuthToken, setUnauthorizedHandler } from "./api";
+import { api, ApiError, clearAuthToken, getAuthToken, humanizeErrorMessage, probeToken, setAuthToken, setUnauthorizedHandler } from "./api";
 
 afterEach(() => {
   setUnauthorizedHandler(null);
@@ -96,6 +96,18 @@ describe("auth token persistence (#413)", () => {
     expect(storage.getItem("launchpad.access-token")).toBe("fresh-token");
   });
 
+  it("does not treat an anonymous 401 as a rejection of the current token", async () => {
+    // A recovery request issued after the token was wiped goes out with no Authorization header;
+    // its inevitable 401 must not re-fire the handler behind the token screen.
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(401, { error: "unauthorized" })));
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+    clearAuthToken();
+
+    await expect(api.listAgents()).rejects.toThrowError(new ApiError("unauthorized", 401));
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+
   it("keeps the token and stays quiet on non-401 failures", async () => {
     const storage = fakeSessionStorage();
     vi.stubGlobal("sessionStorage", storage);
@@ -108,6 +120,36 @@ describe("auth token persistence (#413)", () => {
     expect(onUnauthorized).not.toHaveBeenCalled();
     expect(getAuthToken()).toBe("valid-token");
     expect(storage.getItem("launchpad.access-token")).toBe("valid-token");
+  });
+
+  it("probeToken validates a candidate without persisting it or firing the handler", async () => {
+    const storage = fakeSessionStorage({ "launchpad.access-token": "still-good" });
+    vi.stubGlobal("sessionStorage", storage);
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+    setAuthToken("still-good");
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(200)));
+    await expect(probeToken("candidate")).resolves.toBe(true);
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(401, { error: "unauthorized" })));
+    await expect(probeToken("wrong-guess")).resolves.toBe(false);
+    // The rejected CANDIDATE must not disturb the working token or bounce the UI.
+    expect(onUnauthorized).not.toHaveBeenCalled();
+    expect(getAuthToken()).toBe("still-good");
+    expect(storage.getItem("launchpad.access-token")).toBe("still-good");
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(503, { error: "backend down" })));
+    await expect(probeToken("candidate")).rejects.toThrowError(new ApiError("backend down", 503));
+  });
+
+  it("sends the trimmed candidate in probeToken's Authorization header", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200));
+    vi.stubGlobal("fetch", fetchMock);
+    await probeToken("  padded-token  ");
+    expect(fetchMock).toHaveBeenCalledWith("/api/system", {
+      headers: { Authorization: "Bearer padded-token" },
+    });
   });
 
   it("treats a 401 from the raw-fetch export path the same way", async () => {

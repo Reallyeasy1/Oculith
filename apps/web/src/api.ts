@@ -76,25 +76,54 @@ export function setUnauthorizedHandler(handler: (() => void) | null): void {
 function handleUnauthorized(rejectedToken: string): void {
   // A slow request issued with an older token can 401 after a successful re-auth; only the
   // CURRENT token's rejection may wipe storage and bounce the UI back to the token screen.
-  if (rejectedToken !== authToken) return;
+  // A request that sent no token proves nothing about the token either — a recovery call made
+  // after the wipe would otherwise match "" === "" and re-fire the handler.
+  if (!rejectedToken || rejectedToken !== authToken) return;
   clearAuthToken();
   onUnauthorized?.();
 }
 
-async function request<T>(url: string, options?: RequestInit): Promise<T> {
+/** The one auth funnel for every server call: captures the token at issue time, sets the header,
+ * and runs the 401 gate exactly once — a new raw-fetch endpoint must go through here too. */
+async function authorizedFetch(url: string, options?: RequestInit): Promise<Response> {
   const tokenUsed = authToken;
-  const headers = {
-    ...(options?.body ? { "Content-Type": "application/json" } : {}),
-    ...(tokenUsed ? { Authorization: "Bearer " + tokenUsed } : {}),
-    ...options?.headers,
-  };
   const response = await fetch(url, {
     ...options,
-    headers,
+    headers: {
+      ...(tokenUsed ? { Authorization: "Bearer " + tokenUsed } : {}),
+      ...options?.headers,
+    },
+  });
+  if (response.status === 401) handleUnauthorized(tokenUsed);
+  return response;
+}
+
+/** #413: validate a candidate token with one cheap call BEFORE it is persisted or any fan-out
+ * happens. Deliberately outside the authorizedFetch gate: a rejected candidate must not wipe a
+ * still-working stored token or bounce the UI — the caller decides what a `false` means. */
+export async function probeToken(candidate: string): Promise<boolean> {
+  const token = candidate.trim();
+  const response = await fetch("/api/system", {
+    headers: token ? { Authorization: "Bearer " + token } : undefined,
+  });
+  if (response.status === 401) return false;
+  if (!response.ok) {
+    const data = (await response.json().catch(() => ({}))) as { error?: string };
+    throw new ApiError(data.error ? humanizeErrorMessage(data.error) : "Request failed", response.status);
+  }
+  return true;
+}
+
+async function request<T>(url: string, options?: RequestInit): Promise<T> {
+  const response = await authorizedFetch(url, {
+    ...options,
+    headers: {
+      ...(options?.body ? { "Content-Type": "application/json" } : {}),
+      ...options?.headers,
+    },
   });
   const data = (await response.json().catch(() => ({}))) as T & { error?: string };
   if (!response.ok) {
-    if (response.status === 401) handleUnauthorized(tokenUsed);
     throw new ApiError(data.error ? humanizeErrorMessage(data.error) : "Request failed", response.status);
   }
   return data;
@@ -269,12 +298,8 @@ export const api = {
   logs: (runId: string, level = "") => request<{ lines: RunLogLine[]; truncated: boolean }>("/api/runs/" + runId + "/logs?" + new URLSearchParams({ limit: "500", ...(level ? { level } : {}) })),
   audit: (runId: string) => request<{ schemaVersion: string; capturePolicy: CapturePolicy; audit: AuditRow[] }>("/api/runs/" + runId + "/audit"),
   exportTrace: async (traceId: string): Promise<{ blob: Blob; filename: string }> => {
-    const tokenUsed = authToken;
-    const response = await fetch("/api/traces/" + encodeURIComponent(traceId) + "/export", {
-      headers: tokenUsed ? { Authorization: "Bearer " + tokenUsed } : undefined,
-    });
+    const response = await authorizedFetch("/api/traces/" + encodeURIComponent(traceId) + "/export");
     if (!response.ok) {
-      if (response.status === 401) handleUnauthorized(tokenUsed);
       const data = (await response.json().catch(() => ({}))) as { error?: string };
       throw new ApiError(data.error ? humanizeErrorMessage(data.error) : "Export failed", response.status);
     }
