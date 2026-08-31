@@ -8,8 +8,9 @@ session see the [Tutorial](TUTORIAL.md); for the demo script see [DEMO.md](DEMO.
 
 Open the app (dev: `http://localhost:5173`, judged path: `http://localhost:3000`) and enter the
 **access token** — the value of `APP_AUTH_TOKEN` the server was started with. If the operator left it
-empty, auth is off and any value works. The token lives only in your browser's memory: a page reload
-asks again.
+empty, auth is off and any value works. The token is kept in the tab's sessionStorage: a page
+reload signs you back in, closing the tab forgets it, and a token the server rejects (e.g. after the
+operator rotates `APP_AUTH_TOKEN`) is wiped and the sign-in screen returns.
 
 ## 2. Agents
 

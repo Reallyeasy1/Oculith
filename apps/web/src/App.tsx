@@ -311,8 +311,13 @@ export default function App() {
         if (required && getAuthToken()) {
           try {
             await bootstrap();
-            if (mountedRef.current) setAuthRequired(false);
-            return;
+            // A mid-fan-out 401 can be swallowed by fail-soft refreshes (refreshRuns) and still
+            // resolve bootstrap; the wiped token is the reliable sign the handler took over —
+            // fall through to the form instead of overriding it with the full UI.
+            if (mountedRef.current && getAuthToken()) {
+              setAuthRequired(false);
+              return;
+            }
           } catch (reason) {
             showError(reason);
           }
@@ -688,8 +693,12 @@ export default function App() {
       await dispatchPrompt(selected.id, content);
     } catch (reason) {
       showError(reason);
+      // Put the unsent text back (unless the user already typed anew) so a 401 bounce to the
+      // token screen doesn't eat the message; fail-soft the recovery refresh, which would
+      // otherwise 401 again and reject out of the submit handler.
+      setPrompt((current) => current || content);
       setActiveRun(null);
-      await refreshAgents();
+      await refreshAgents().catch(() => undefined);
     }
   };
 
@@ -725,8 +734,12 @@ export default function App() {
     setAuthToken(authInput);
     try {
       await bootstrap();
-      setAuthRequired(false);
-      setAuthInput("");
+      // Same guard as the boot-time restore: a 401 swallowed inside bootstrap's fan-out has
+      // wiped the token — stay on the form rather than opening a half-authenticated UI.
+      if (getAuthToken()) {
+        setAuthRequired(false);
+        setAuthInput("");
+      }
     } catch (reason) {
       if (reason instanceof ApiError && reason.status === 401) {
         setError("The access token is not valid.");

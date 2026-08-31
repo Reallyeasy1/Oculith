@@ -77,6 +77,25 @@ describe("auth token persistence (#413)", () => {
     expect(storage.size).toBe(0);
   });
 
+  it("ignores a 401 earned by a superseded token (slow response landing after re-auth)", async () => {
+    const storage = fakeSessionStorage();
+    vi.stubGlobal("sessionStorage", storage);
+    let respond!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => { respond = resolve; })));
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+    setAuthToken("rotated-away");
+
+    const pending = api.listAgents();
+    setAuthToken("fresh-token"); // user re-authenticated while the request was in flight
+    respond(jsonResponse(401, { error: "unauthorized" }));
+
+    await expect(pending).rejects.toThrowError(new ApiError("unauthorized", 401));
+    expect(onUnauthorized).not.toHaveBeenCalled();
+    expect(getAuthToken()).toBe("fresh-token");
+    expect(storage.getItem("launchpad.access-token")).toBe("fresh-token");
+  });
+
   it("keeps the token and stays quiet on non-401 failures", async () => {
     const storage = fakeSessionStorage();
     vi.stubGlobal("sessionStorage", storage);
