@@ -936,6 +936,10 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
 
       const posted = await app.inject({ method: "POST", url: base + "/messages", headers: { ...auth, "content-type": "application/json" }, payload: { content: "Please save " + promptSecret } });
       expect(posted.statusCode).toBe(202);
+      // (a2) the 202 echo itself is a serve surface — the secret must not render back into the chat.
+      expect(posted.json().run.prompt).not.toContain(promptSecret);
+      expect(posted.json().run.prompt).toContain("[REDACTED:openai_key]");
+      expect(posted.json().message.content).not.toContain(promptSecret);
       const runId = posted.json().run.id;
 
       let run = posted.json().run;

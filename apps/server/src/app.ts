@@ -37,6 +37,7 @@ const redactRunForServe = (run: AgentRun): AgentRun => ({
   ...run,
   prompt: redactText(run.prompt).text,
   output: run.output === null ? null : redactText(run.output).text,
+  error: run.error === null ? null : redactText(run.error).text,
 });
 const redactMessageForServe = (message: Message): Message => ({
   ...message,
@@ -459,7 +460,9 @@ export async function createApp(
     // The client tells the two 202 bodies apart by the `queued: true` discriminator.
     if ("queued" in result) return reply.code(202).send(result);
     request.log = request.log.child({ traceId: result.run.traceId, runId: result.run.id, agentId: id });
-    return reply.code(202).send(result);
+    // The 202 echo is a serve surface too: without this the just-pasted secret renders straight
+    // back into the Playground chat (the original #388 symptom) until the next GET refetch.
+    return reply.code(202).send({ run: redactRunForServe(result.run), message: redactMessageForServe(result.message) });
   });
 
   // #254: cancel a message that is still waiting in the Agent's queue.
