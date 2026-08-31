@@ -907,6 +907,93 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     await app.close();
   });
 
+  // #404: rerun is server-side — the replay must use the RAW stored prompt (served copies are
+  // redacted per #388), stamp rerunOf lineage, and serve a redacted echo.
+  it("reruns a Run from the raw store with a redacted echo (#404)", async () => {
+    const promptSecret = "sk-" + "rerun" + "1".repeat(22);
+    const root = await mkdtemp(path.join(tmpdir(), "rerun-serve-"));
+    try {
+      const cfg = config({
+        APP_DATA_DIR: path.join(root, "data"),
+        AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+        CODEX_HOME: path.join(root, "codex"),
+        ARK_API_KEY: "test-key",
+        ARK_MODEL: "ep-test",
+      });
+      const prompts: string[] = [];
+      const runner = {
+        run: async (req: { prompt: string }) => { prompts.push(req.prompt); return { output: "done", threadId: "t" }; },
+        cancel: async () => false,
+        isAvailable: async () => true,
+      };
+      const svc = new RealAgentService(cfg, new JsonStore(path.join(root, "data", "db.json")), new WorkspaceManager(path.join(root, "workspaces"), path.join(root, "templates")), runner);
+      await svc.initialize();
+      const agent = await svc.createAgent({ name: "Rerun" });
+      const app = await createApp(cfg, svc);
+      const headers = { ...auth, "content-type": "application/json" };
+      const awaitTerminal = async (runId: string) => {
+        for (let i = 0; i < 200; i++) {
+          const run = (await app.inject({ method: "GET", url: "/api/runs/" + runId, headers: auth })).json().run;
+          if (["completed", "failed", "cancelled"].includes(run.status)) return run;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        throw new Error("run never reached a terminal state");
+      };
+
+      const posted = await app.inject({ method: "POST", url: "/api/agents/" + agent.id + "/messages", headers, payload: { content: "key " + promptSecret } });
+      expect(posted.statusCode).toBe(202);
+      await awaitTerminal(posted.json().run.id);
+
+      const rerun = await app.inject({ method: "POST", url: "/api/runs/" + posted.json().run.id + "/rerun", headers: auth });
+      expect(rerun.statusCode).toBe(202);
+      // echo is a serve surface: redacted, marker present
+      expect(rerun.body).not.toContain(promptSecret);
+      expect(rerun.json().run.prompt).toContain("[REDACTED:openai_key]");
+      await awaitTerminal(rerun.json().run.id);
+      // the runner got the RAW prompt again — byte-identical to the original dispatch
+      expect(prompts).toHaveLength(2);
+      expect(prompts[1]).toBe(prompts[0]);
+      expect(prompts[1]).toContain(promptSecret);
+      // internal store stays raw for the replayed Run too
+      expect(svc.getRun(rerun.json().run.id).prompt).toContain(promptSecret);
+
+      // unknown run id → 404, nothing dispatched
+      const missing = await app.inject({ method: "POST", url: "/api/runs/12345678-1234-4234-8234-123456789abc/rerun", headers: auth });
+      expect(missing.statusCode).toBe(404);
+      expect(prompts).toHaveLength(2);
+      await app.close();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // #404: EvalRun.results[].error can quote command lines/output — scrubbed on serve, store raw.
+  it("redacts eval-run result errors on serve (#404)", async () => {
+    const errorSecret = "sk-" + "evalerr" + "0".repeat(21);
+    const evalRun = {
+      id: "aaaaaaaa-1234-4234-8234-123456789abc",
+      status: "completed",
+      results: [
+        { caseId: "c1", results: [], error: "boom " + errorSecret },
+        { caseId: "c2", results: [] },
+      ],
+    };
+    const svc = {
+      ...service,
+      listEvalRuns: () => [evalRun],
+      getEvalRun: () => evalRun,
+    } as unknown as AgentService;
+    const app = await createApp(config(), svc);
+    const list = await app.inject({ method: "GET", url: "/api/eval-runs", headers: auth });
+    expect(list.body).not.toContain(errorSecret);
+    expect(list.body).toContain("[REDACTED:openai_key]");
+    const single = await app.inject({ method: "GET", url: "/api/eval-runs/" + evalRun.id, headers: auth });
+    expect(single.body).not.toContain(errorSecret);
+    // the stored object was not mutated by serving it
+    expect(evalRun.results[0]!.error).toContain(errorSecret);
+    await app.close();
+  });
+
   // #388 redact-on-serve: a secret pasted into the Playground is stored RAW (so the Codex runner still gets
   // it) but must be scrubbed on the two read surfaces that echo it back. Canaries are concatenated at RUNTIME
   // so the commit-hook/push-protection file scanners never see a literal secret.

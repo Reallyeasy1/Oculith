@@ -156,6 +156,13 @@ export const api = {
   cancelPendingMessage: (agentId: string, messageId: string) =>
     request<void>("/api/agents/" + agentId + "/messages/" + messageId, { method: "DELETE" }),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
+  // #404: server-side rerun — the server replays the RAW stored prompt (served copies are
+  // redacted since #388, so the client's copy can't be trusted for re-dispatch).
+  rerun: (runId: string) =>
+    request<{ run: AgentRun; message: Message } | QueuedMessageReceipt>(
+      "/api/runs/" + runId + "/rerun",
+      { method: "POST" },
+    ),
   listRuns: (options: { agentId?: string; limit?: number } = {}) =>
     request<{ schemaVersion: string; capturePolicy: CapturePolicy; runs: RunListItem[] }>(
       "/api/runs?" + new URLSearchParams({ limit: String(options.limit ?? 100), ...(options.agentId ? { agentId: options.agentId } : {}) }),

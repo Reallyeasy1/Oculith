@@ -26,7 +26,7 @@ import { caseFromRun, regressionCaseInput } from "./eval/cases.js";
 import { assertionSchema } from "./eval/evaluators.js";
 import { EvalRunner } from "./eval/runner.js";
 import { compareEvalRuns } from "./eval/compare.js";
-import type { AgentRun, Message } from "./types.js";
+import type { AgentRun, EvalRun, Message } from "./types.js";
 
 // #388: redact-on-serve. The base conversation store keeps `Run.prompt`/`Run.output` and message
 // `content` RAW on purpose — the Codex runner reads `run.prompt` from the store during executeRun,
@@ -48,6 +48,13 @@ const redactMessageForServe = (message: Message): Message => ({
 const redactCaseForServe = <T extends { prompt: string }>(item: T): T => ({
   ...item,
   prompt: redactText(item.prompt).text,
+});
+// #404: a failed eval execution stores error.message verbatim, which can quote command lines or
+// output — same serve-only scrub; the stored EvalRun stays raw.
+const redactEvalRunForServe = (evalRun: EvalRun): EvalRun => ({
+  ...evalRun,
+  results: evalRun.results.map((entry) =>
+    entry.error === undefined ? entry : { ...entry, error: redactText(entry.error).text }),
 });
 
 declare module "fastify" {
@@ -477,6 +484,18 @@ export async function createApp(
     return { run: redactRunForServe(service.getRun(id)) };
   });
 
+  // #404: server-side rerun. Served run payloads are redacted (#388), so a client re-sending its
+  // copy of `run.prompt` would execute the [REDACTED:...] literal. The replay reads the raw stored
+  // Run instead — same raw-store contract as EvalRunner — and stamps rerunOf lineage itself.
+  app.post("/api/runs/:id/rerun", async (request, reply) => {
+    const { id } = runIdParams.parse(request.params);
+    const source = service.getRun(id);
+    const result = await service.sendMessage(source.agentId, source.prompt, request.glassbox, { tags: { rerunOf: id } });
+    if ("queued" in result) return reply.code(202).send(result);
+    request.log = request.log.child({ traceId: result.run.traceId, runId: result.run.id, agentId: source.agentId });
+    return reply.code(202).send({ run: redactRunForServe(result.run), message: redactMessageForServe(result.message) });
+  });
+
   app.get("/api/regression-cases", async () => ({ cases: service.listRegressionCases().map(redactCaseForServe) }));
   app.get("/api/regression-cases/:id", async (request) => ({ regressionCase: redactCaseForServe(service.getRegressionCase(z.object({ id: z.string().uuid() }).parse(request.params).id)) }));
   app.delete("/api/regression-cases/:id", async (request, reply) => {
@@ -488,11 +507,13 @@ export async function createApp(
     const regressionCase = await service.createRegressionCase({ ...body });
     return reply.code(201).send({ regressionCase: redactCaseForServe(regressionCase) });
   });
-  app.get("/api/eval-runs", async () => ({ evalRuns: service.listEvalRuns() }));
-  app.get("/api/eval-runs/:id", async (request) => ({ evalRun: service.getEvalRun(z.object({ id: z.string().uuid() }).parse(request.params).id) }));
+  app.get("/api/eval-runs", async () => ({ evalRuns: service.listEvalRuns().map(redactEvalRunForServe) }));
+  app.get("/api/eval-runs/:id", async (request) => ({ evalRun: redactEvalRunForServe(service.getEvalRun(z.object({ id: z.string().uuid() }).parse(request.params).id)) }));
   app.get("/api/eval-runs/:baseline/compare/:candidate", async (request) => {
     const { baseline, candidate } = z.object({ baseline: z.string().uuid(), candidate: z.string().uuid() }).parse(request.params);
-    return compareEvalRuns(service.getEvalRun(baseline), service.getEvalRun(candidate));
+    // compare surfaces `error` text in its messages — feed it the serve-redacted views (statuses
+    // and assertions, which drive the verdicts, are untouched by text scrubbing).
+    return compareEvalRuns(redactEvalRunForServe(service.getEvalRun(baseline)), redactEvalRunForServe(service.getEvalRun(candidate)));
   });
 
   if (glassbox?.live) {
