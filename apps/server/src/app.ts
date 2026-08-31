@@ -26,6 +26,29 @@ import { caseFromRun, regressionCaseInput } from "./eval/cases.js";
 import { assertionSchema } from "./eval/evaluators.js";
 import { EvalRunner } from "./eval/runner.js";
 import { compareEvalRuns } from "./eval/compare.js";
+import type { AgentRun, Message } from "./types.js";
+
+// #388: redact-on-serve. The base conversation store keeps `Run.prompt`/`Run.output` and message
+// `content` RAW on purpose — the Codex runner reads `run.prompt` from the store during executeRun,
+// so scrubbing before persistence would starve execution. Instead we scrub only these READ responses
+// with the same text scrubber the trace pipeline uses, so a secret pasted into the Playground never
+// echoes back verbatim. Store, AgentService internals and the runner are untouched; types stay intact.
+const redactRunForServe = (run: AgentRun): AgentRun => ({
+  ...run,
+  prompt: redactText(run.prompt).text,
+  output: run.output === null ? null : redactText(run.output).text,
+  error: run.error === null ? null : redactText(run.error).text,
+});
+const redactMessageForServe = (message: Message): Message => ({
+  ...message,
+  content: redactText(message.content).text,
+});
+// Regression cases copy `run.prompt` verbatim (caseFromRun) — same leak class. Storage stays raw
+// (EvalRunner replays `case.prompt` via service.getRegressionCase); only responses are scrubbed.
+const redactCaseForServe = <T extends { prompt: string }>(item: T): T => ({
+  ...item,
+  prompt: redactText(item.prompt).text,
+});
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -420,12 +443,12 @@ export async function createApp(
 
   app.get("/api/agents/:id/messages", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    return { messages: service.getMessages(id) };
+    return { messages: service.getMessages(id).map(redactMessageForServe) };
   });
 
   app.get("/api/agents/:id/runs", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    return { runs: service.getRuns(id) };
+    return { runs: service.getRuns(id).map(redactRunForServe) };
   });
 
   app.post("/api/agents/:id/messages", async (request, reply) => {
@@ -437,7 +460,9 @@ export async function createApp(
     // The client tells the two 202 bodies apart by the `queued: true` discriminator.
     if ("queued" in result) return reply.code(202).send(result);
     request.log = request.log.child({ traceId: result.run.traceId, runId: result.run.id, agentId: id });
-    return reply.code(202).send(result);
+    // The 202 echo is a serve surface too: without this the just-pasted secret renders straight
+    // back into the Playground chat (the original #388 symptom) until the next GET refetch.
+    return reply.code(202).send({ run: redactRunForServe(result.run), message: redactMessageForServe(result.message) });
   });
 
   // #254: cancel a message that is still waiting in the Agent's queue.
@@ -449,11 +474,11 @@ export async function createApp(
 
   app.get("/api/runs/:id", async (request) => {
     const { id } = runIdParams.parse(request.params);
-    return { run: service.getRun(id) };
+    return { run: redactRunForServe(service.getRun(id)) };
   });
 
-  app.get("/api/regression-cases", async () => ({ cases: service.listRegressionCases() }));
-  app.get("/api/regression-cases/:id", async (request) => ({ regressionCase: service.getRegressionCase(z.object({ id: z.string().uuid() }).parse(request.params).id) }));
+  app.get("/api/regression-cases", async () => ({ cases: service.listRegressionCases().map(redactCaseForServe) }));
+  app.get("/api/regression-cases/:id", async (request) => ({ regressionCase: redactCaseForServe(service.getRegressionCase(z.object({ id: z.string().uuid() }).parse(request.params).id)) }));
   app.delete("/api/regression-cases/:id", async (request, reply) => {
     await service.deleteRegressionCase(z.object({ id: z.string().uuid() }).parse(request.params).id);
     return reply.code(204).send();
@@ -461,7 +486,7 @@ export async function createApp(
   app.post("/api/regression-cases", async (request, reply) => {
     const body = createRegressionCaseBody.parse(request.body);
     const regressionCase = await service.createRegressionCase({ ...body });
-    return reply.code(201).send({ regressionCase });
+    return reply.code(201).send({ regressionCase: redactCaseForServe(regressionCase) });
   });
   app.get("/api/eval-runs", async () => ({ evalRuns: service.listEvalRuns() }));
   app.get("/api/eval-runs/:id", async (request) => ({ evalRun: service.getEvalRun(z.object({ id: z.string().uuid() }).parse(request.params).id) }));
@@ -638,7 +663,7 @@ export async function createApp(
       catch (error) { throw new HttpError(400, error instanceof Error ? error.message : "Unable to create regression case"); }
     };
     // Prefill is read-only (#158): the dialog edits the draft, then POST below is the single create.
-    app.get("/api/runs/:id/regression-case", async (request) => ({ draft: await draftFor(request.params) }));
+    app.get("/api/runs/:id/regression-case", async (request) => ({ draft: redactCaseForServe(await draftFor(request.params)) }));
     app.post("/api/runs/:id/regression-case", async (request, reply) => {
       const requested = regressionCaseFromRunBody.parse(request.body ?? {});
       const input = await draftFor(request.params);
@@ -647,7 +672,7 @@ export async function createApp(
         ...(requested.name ? { name: requested.name } : {}),
         ...(requested.assertions ? { assertions: requested.assertions } : {}),
       });
-      return reply.code(201).send({ regressionCase });
+      return reply.code(201).send({ regressionCase: redactCaseForServe(regressionCase) });
     });
     app.get("/api/runs", async (request) => {
       const q = runsQuery.parse(request.query);

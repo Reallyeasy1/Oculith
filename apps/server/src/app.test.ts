@@ -906,4 +906,129 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     expect((await call("POST", "/api/agents/" + agentId + "/messages", { content: "hi", surprise: true })).statusCode).toBe(400);
     await app.close();
   });
+
+  // #388 redact-on-serve: a secret pasted into the Playground is stored RAW (so the Codex runner still gets
+  // it) but must be scrubbed on the two read surfaces that echo it back. Canaries are concatenated at RUNTIME
+  // so the commit-hook/push-protection file scanners never see a literal secret.
+  it("redacts prompt/output/message content on serve while the store stays raw (#388)", async () => {
+    const promptSecret = "sk-" + "prompt" + "0".repeat(22); // openai_key shape
+    const outputSecret = "sk-" + "output" + "0".repeat(22);
+    const root = await mkdtemp(path.join(tmpdir(), "redact-serve-"));
+    try {
+      const cfg = config({
+        APP_DATA_DIR: path.join(root, "data"),
+        AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+        CODEX_HOME: path.join(root, "codex"),
+        ARK_API_KEY: "test-key",
+        ARK_MODEL: "ep-test",
+      });
+      const prompts: string[] = [];
+      const runner = {
+        run: async (req: { prompt: string }) => { prompts.push(req.prompt); return { output: "Result: " + outputSecret, threadId: "t" }; },
+        cancel: async () => false,
+        isAvailable: async () => true,
+      };
+      const svc = new RealAgentService(cfg, new JsonStore(path.join(root, "data", "db.json")), new WorkspaceManager(path.join(root, "workspaces"), path.join(root, "templates")), runner);
+      await svc.initialize();
+      const agent = await svc.createAgent({ name: "Redact" });
+      const app = await createApp(cfg, svc);
+      const base = "/api/agents/" + agent.id;
+
+      const posted = await app.inject({ method: "POST", url: base + "/messages", headers: { ...auth, "content-type": "application/json" }, payload: { content: "Please save " + promptSecret } });
+      expect(posted.statusCode).toBe(202);
+      // (a2) the 202 echo itself is a serve surface — the secret must not render back into the chat.
+      expect(posted.json().run.prompt).not.toContain(promptSecret);
+      expect(posted.json().run.prompt).toContain("[REDACTED:openai_key]");
+      expect(posted.json().message.content).not.toContain(promptSecret);
+      const runId = posted.json().run.id;
+
+      let run = posted.json().run;
+      for (let i = 0; i < 300; i++) {
+        run = (await app.inject({ method: "GET", url: "/api/runs/" + runId, headers: auth })).json().run;
+        if (run.status === "completed") break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      // (a) GET /api/runs/:id — prompt and output scrubbed on serve.
+      expect(run.status).toBe("completed");
+      expect(run.prompt).not.toContain(promptSecret);
+      expect(run.prompt).toContain("[REDACTED:openai_key]");
+      expect(run.output).not.toContain(outputSecret);
+      expect(run.output).toContain("[REDACTED:openai_key]");
+
+      // (b) GET /api/agents/:id/messages — user + assistant content scrubbed on serve.
+      const messages = (await app.inject({ method: "GET", url: base + "/messages", headers: auth })).json().messages;
+      const joined = messages.map((m: { content: string }) => m.content).join("\n");
+      expect(joined).not.toContain(promptSecret);
+      expect(joined).not.toContain(outputSecret);
+      expect(joined).toContain("[REDACTED:openai_key]");
+
+      // (b2) GET /api/agents/:id/runs — the list surface returns base AgentRun objects too, same leak class.
+      const runs = (await app.inject({ method: "GET", url: base + "/runs", headers: auth })).json().runs;
+      const listed = runs.map((r: { prompt: string; output: string | null }) => (r.prompt ?? "") + "\n" + (r.output ?? "")).join("\n");
+      expect(listed).not.toContain(promptSecret);
+      expect(listed).not.toContain(outputSecret);
+      expect(listed).toContain("[REDACTED:openai_key]");
+
+      // (b3) regression cases copy run.prompt verbatim — every serve surface scrubs, storage stays raw
+      // (the EvalRunner replays case.prompt from the store, so replay fidelity is untouched).
+      await mkdir(path.join(root, "templates", "fixture"), { recursive: true });
+      const casePayload = { name: "canary", prompt: "Deploy with " + promptSecret, workspaceTemplate: "fixture", baselineConfigHash: "hash", assertions: [{ type: "terminal_status", expected: "ok" }] };
+      const createdCase = await app.inject({ method: "POST", url: "/api/regression-cases", headers: { ...auth, "content-type": "application/json" }, payload: casePayload });
+      expect(createdCase.statusCode).toBe(201);
+      expect(createdCase.json().regressionCase.prompt).toContain("[REDACTED:openai_key]");
+      const caseId = createdCase.json().regressionCase.id;
+      expect((await app.inject({ method: "GET", url: "/api/regression-cases", headers: auth })).json().cases[0].prompt).not.toContain(promptSecret);
+      expect((await app.inject({ method: "GET", url: "/api/regression-cases/" + caseId, headers: auth })).json().regressionCase.prompt).not.toContain(promptSecret);
+      expect(svc.getRegressionCase(caseId).prompt).toContain(promptSecret);
+
+      // (d) The store stays raw: the runner received the unredacted prompt (execution unaffected) and the
+      // persisted Run still holds the raw secret — redaction happens only on the serve path.
+      expect(prompts).toEqual(["Please save " + promptSecret]);
+      expect(svc.getRun(runId).prompt).toContain(promptSecret);
+      expect(svc.getRun(runId).output).toContain(outputSecret);
+
+      await app.close();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // (c) a normal, non-secret conversation flows through the same paths untouched.
+  it("passes a non-secret prompt/output/message through serve unchanged (#388)", async () => {
+    const prompt = "Summarize the quarterly roadmap for the platform team.";
+    const output = "Here is a summary of the roadmap: ship, measure, iterate.";
+    const root = await mkdtemp(path.join(tmpdir(), "redact-serve-clean-"));
+    try {
+      const cfg = config({
+        APP_DATA_DIR: path.join(root, "data"),
+        AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+        CODEX_HOME: path.join(root, "codex"),
+        ARK_API_KEY: "test-key",
+        ARK_MODEL: "ep-test",
+      });
+      const runner = { run: async () => ({ output, threadId: "t" }), cancel: async () => false, isAvailable: async () => true };
+      const svc = new RealAgentService(cfg, new JsonStore(path.join(root, "data", "db.json")), new WorkspaceManager(path.join(root, "workspaces")), runner);
+      await svc.initialize();
+      const agent = await svc.createAgent({ name: "Clean" });
+      const app = await createApp(cfg, svc);
+      const base = "/api/agents/" + agent.id;
+
+      const posted = await app.inject({ method: "POST", url: base + "/messages", headers: { ...auth, "content-type": "application/json" }, payload: { content: prompt } });
+      const runId = posted.json().run.id;
+      let run = posted.json().run;
+      for (let i = 0; i < 300; i++) {
+        run = (await app.inject({ method: "GET", url: "/api/runs/" + runId, headers: auth })).json().run;
+        if (run.status === "completed") break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(run.prompt).toBe(prompt);
+      expect(run.output).toBe(output);
+      const messages = (await app.inject({ method: "GET", url: base + "/messages", headers: auth })).json().messages;
+      expect(messages.map((m: { content: string }) => m.content)).toEqual([prompt, output]);
+      await app.close();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
