@@ -1,22 +1,49 @@
 # Deployment
 
-Use one of two ECS paths:
+Use one of two paths:
 
-- Install and deploy to an existing Linux ECS instance (BytePlus or Volcengine —
-  the procedure is identical and cloud-agnostic).
+- Install and deploy to an existing Linux VM (GCP Compute Engine is the
+  documented demo host; the procedure is cloud-agnostic and works on any
+  Ubuntu/Debian VM with a public IP).
 - Provision the complete network and ECS stack on Volcengine with Terraform.
 
-Both profiles require an Ark API key and a Responses-capable endpoint.
+Both profiles require an Ark API key and a Responses-capable endpoint. The Ark
+key works from any host — the model API does not require the VM to live on
+BytePlus. (BytePlus ECS itself is enterprise-account-only, which is why the
+demo host is GCP.)
 
-## Existing Linux ECS (BytePlus or Volcengine)
+## Existing Linux VM (GCP Compute Engine)
 
-For BytePlus, create the instance in the console first: region `ap-southeast-1`,
-2 vCPU / 4 GiB general-purpose instance, Ubuntu 24.04 LTS image, 40 GiB system
-disk, an SSH key pair, and a pay-by-traffic EIP. Security group: TCP 22 from
-administrator IPs only; TCP 80 and 443 open when using the HTTPS overlay below
-(80 only, event network only, for the plain-HTTP setup); egress open (Ark, Git,
-package registries). Ubuntu 24.04's kernel supports Landlock, so the Codex
+Create the VM with the gcloud CLI (or the console equivalents). Region
+`asia-southeast1` (Singapore) keeps the VM close to
+`ark.ap-southeast.bytepluses.com`; `e2-medium` matches the recommended
+2 vCPU / 4 GiB shape:
+
+```bash
+gcloud compute addresses create launchpad-demo-ip --region=asia-southeast1
+gcloud compute instances create launchpad-demo \
+  --zone=asia-southeast1-b \
+  --machine-type=e2-medium \
+  --image-family=ubuntu-2404-lts-amd64 \
+  --image-project=ubuntu-os-cloud \
+  --boot-disk-size=40GB \
+  --tags=launchpad-demo \
+  --address="$(gcloud compute addresses describe launchpad-demo-ip \
+      --region=asia-southeast1 --format='value(address)')"
+gcloud compute firewall-rules create launchpad-demo-web \
+  --allow=tcp:80,tcp:443 --target-tags=launchpad-demo
+```
+
+The reserved static address is what DuckDNS points at below; an ephemeral IP
+changes when the instance stops. Firewall: open TCP 80 and 443 when using the
+HTTPS overlay below (80 only, restricted to the event network via
+`--source-ranges`, for the plain-HTTP setup); leave TCP 22 to
+`gcloud compute ssh` (IAP or your project's default SSH rule — restrict it to
+administrator IPs if that rule is open). Egress is open by default (Ark, Git,
+package registries). GCP's Ubuntu 24.04 kernel supports Landlock, so the Codex
 sandbox keeps `workspace-write` without the `danger-full-access` fallback.
+
+Connect with `gcloud compute ssh launchpad-demo --zone=asia-southeast1-b`.
 
 Recommended host:
 
@@ -89,7 +116,7 @@ docker run --rm hello-world
 ```
 
 Do not replace an existing engine on a host with important containers. Use a
-dedicated ECS instance for this POC.
+dedicated VM for this POC.
 
 ### Deploy
 
@@ -136,7 +163,8 @@ TLS with an automatic Let's Encrypt certificate. Use it whenever
 `APP_AUTH_TOKEN` crosses an untrusted network.
 
 1. Create a free hostname at [duckdns.org](https://www.duckdns.org) and point it
-   at the instance's EIP. DuckDNS is on the Public Suffix List, so each
+   at the instance's static external IP (`launchpad-demo-ip` above). DuckDNS is
+   on the Public Suffix List, so each
    subdomain gets its own Let's Encrypt rate-limit bucket; do not use nip.io,
    whose shared bucket is usually exhausted.
 2. Set in `.env.production`:
@@ -152,8 +180,9 @@ TLS with an automatic Let's Encrypt certificate. Use it whenever
    without a domain and a loopback-bound `PUBLIC_PORT` (a public app port would
    either collide with Caddy on port 80 or keep serving the API in cleartext
    beside the HTTPS front).
-3. Open TCP 443 in the security group and keep TCP 80 open (Caddy answers the
-   ACME HTTP-01 challenge there and redirects HTTP to HTTPS).
+3. Make sure the firewall rule opens TCP 443 and keeps TCP 80 open (the
+   `launchpad-demo-web` rule above opens both; Caddy answers the ACME HTTP-01
+   challenge on 80 and redirects HTTP to HTTPS).
 4. Rerun `./scripts/deploy-existing-ecs.sh .env.production`.
 
 Verify:
@@ -178,8 +207,10 @@ volume and the certificates with it.
 ### Network and cleanup
 
 - With the HTTPS overlay: allow TCP 80 and 443 from anywhere (the token is
-  protected in transit); without it: allow TCP 80 only from the event network.
-- Allow TCP 22 only from administrator IP addresses.
+  protected in transit); without it: allow TCP 80 only from the event network
+  (`--source-ranges` on the firewall rule).
+- Allow TCP 22 only from administrator IP addresses (or use IAP via
+  `gcloud compute ssh`).
 - Allow outbound HTTPS to Ark and package registries.
 - Add HTTPS before using `APP_AUTH_TOKEN` across an untrusted network.
 
@@ -189,9 +220,18 @@ Stop the application without deleting Agent data:
 docker compose --env-file .env.production down
 ```
 
-When a console-provisioned demo instance is no longer needed, stop the stack,
-release the EIP, and terminate the instance in the console (this deletes the
-system disk and all Agent data — back up `data/` and `workspaces/` first).
+When the demo instance is no longer needed, stop the stack, then delete the
+GCP resources (this deletes the boot disk and all Agent data — back up `data/`
+and `workspaces/` first):
+
+```bash
+gcloud compute instances delete launchpad-demo --zone=asia-southeast1-b
+gcloud compute firewall-rules delete launchpad-demo-web
+gcloud compute addresses delete launchpad-demo-ip --region=asia-southeast1
+```
+
+The static address bills while reserved but unattached — release it even if
+the instance is merely stopped for a while.
 
 ## Terraform deployment
 
