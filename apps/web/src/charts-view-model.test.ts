@@ -1,10 +1,11 @@
 // ponytail: one runnable check for the chart math behind MetricsDashboard (#342). Run from repo root:
 //   npx vitest run apps/web/src/charts-view-model.test.ts
 import { describe, expect, it } from "vitest";
-import type { ReliabilityNumbers, ReliabilitySeriesPoint } from "./types";
+import type { JudgeScore, ReliabilityNumbers, ReliabilitySeriesPoint } from "./types";
 import { formatDuration } from "./runs-view-model";
 import { formatPercent } from "./reliability-view-model";
 import type { ReliabilityDeltas } from "./types";
+import { buildJudgeSpecs } from "./MetricsDashboard";
 import {
   bucketDrillWindow,
   bucketLabel,
@@ -14,6 +15,7 @@ import {
   emptyStateMessage,
   formatCount,
   formatScore,
+  humanizeEvaluatorId,
   hoverReadout,
   linePath,
   nearestBucketIndex,
@@ -334,5 +336,36 @@ describe("slotIndex (#369 volume bars)", () => {
     expect(slotIndex(1, 4)).toBe(3); // exact right edge stays in the last slot
     expect(slotIndex(-1, 4)).toBe(0);
     expect(slotIndex(0.5, 0)).toBe(0);
+  });
+});
+
+const judgeScore = (evaluatorId: string, meanScore: number): JudgeScore => ({ evaluatorId, version: 1, evaluated: 3, meanScore });
+const withJudges = (bucket: string, judgeScores: JudgeScore[]): ReliabilitySeriesPoint => ({ ...point(bucket), judgeScores });
+
+describe("humanizeEvaluatorId", () => {
+  it("title-cases underscore slugs (#192 assumption)", () => {
+    expect(humanizeEvaluatorId("task_completion")).toBe("Task Completion");
+    expect(humanizeEvaluatorId("recovery_quality")).toBe("Recovery Quality");
+    expect(humanizeEvaluatorId("politeness_judge")).toBe("Politeness Judge");
+  });
+});
+
+describe("buildJudgeSpecs (#396)", () => {
+  it("yields one score spec per distinct evaluator, in stable sorted order", () => {
+    const series = [
+      withJudges("2026-08-29T00:00:00.000Z", [judgeScore("recovery_quality", 4), judgeScore("task_completion", 5)]),
+      withJudges("2026-08-30T00:00:00.000Z", [judgeScore("politeness_judge", 3), judgeScore("task_completion", 4)]),
+    ];
+    const specs = buildJudgeSpecs(series);
+    expect(specs.map((s) => s.title)).toEqual(["Politeness Judge", "Recovery Quality", "Task Completion"]);
+    expect(specs.every((s) => s.key === "judge" && s.domain === "score" && s.provenance === "evaluation" && s.lines.length === 1)).toBe(true);
+  });
+
+  it("gives a judge with no scored buckets an all-null line, not a crash", () => {
+    const [spec] = buildJudgeSpecs([withJudges("2026-08-29T00:00:00.000Z", [judgeScore("task_completion", 5)])]);
+    const value = spec!.lines[0]!.value;
+    expect(value(withJudges("2026-08-30T00:00:00.000Z", []))).toBeNull(); // evaluator absent this bucket
+    expect(value(point("2026-08-30T00:00:00.000Z"))).toBeNull(); // gap bucket carries no judgeScores
+    expect(value(withJudges("2026-08-29T00:00:00.000Z", [judgeScore("task_completion", 5)]))).toBe(5);
   });
 });
