@@ -921,8 +921,9 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
         ARK_MODEL: "ep-test",
       });
       const prompts: string[] = [];
+      let holdRun: Promise<void> | null = null;
       const runner = {
-        run: async (req: { prompt: string }) => { prompts.push(req.prompt); return { output: "done", threadId: "t" }; },
+        run: async (req: { prompt: string }) => { prompts.push(req.prompt); if (holdRun) await holdRun; return { output: "done", threadId: "t" }; },
         cancel: async () => false,
         isAvailable: async () => true,
       };
@@ -930,6 +931,7 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
       await svc.initialize();
       const agent = await svc.createAgent({ name: "Rerun" });
       const app = await createApp(cfg, svc);
+      const base = "/api/agents/" + agent.id;
       const headers = { ...auth, "content-type": "application/json" };
       const awaitTerminal = async (runId: string) => {
         for (let i = 0; i < 200; i++) {
@@ -961,6 +963,33 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
       const missing = await app.inject({ method: "POST", url: "/api/runs/12345678-1234-4234-8234-123456789abc/rerun", headers: auth });
       expect(missing.statusCode).toBe(404);
       expect(prompts).toHaveLength(2);
+
+      // busy Agent: the rerun queues its RAW prompt in pendingMessages — the agent-serving
+      // surfaces must scrub it (the store stays raw so the dequeue replays exactly as typed).
+      let release!: () => void;
+      holdRun = new Promise((resolve) => { release = resolve; });
+      const blocker = await app.inject({ method: "POST", url: base + "/messages", headers, payload: { content: "keep busy" } });
+      expect(blocker.statusCode).toBe(202);
+      const queued = await app.inject({ method: "POST", url: "/api/runs/" + posted.json().run.id + "/rerun", headers: auth });
+      expect(queued.statusCode).toBe(202);
+      expect(queued.json().queued).toBe(true);
+      const agentsBody = (await app.inject({ method: "GET", url: "/api/agents", headers: auth })).body;
+      expect(agentsBody).not.toContain(promptSecret);
+      expect(agentsBody).toContain("[REDACTED:openai_key]");
+      const agentBody = (await app.inject({ method: "GET", url: base, headers: auth })).body;
+      expect(agentBody).not.toContain(promptSecret);
+      // the internal queue keeps the raw content
+      expect(svc.getAgent(agent.id).pendingMessages?.[0]?.content).toContain(promptSecret);
+      release();
+      holdRun = null;
+      // drain the queue so close() isn't racing the dequeued dispatch
+      for (let i = 0; i < 300; i++) {
+        const current = (await app.inject({ method: "GET", url: base, headers: auth })).json().agent;
+        if (current.status === "ready" && !(current.pendingMessages?.length)) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      // the dequeued replay carried the raw prompt again (baseline, first rerun, dequeued rerun)
+      expect(prompts.filter((p) => p.includes(promptSecret))).toHaveLength(3);
       await app.close();
     } finally {
       await rm(root, { recursive: true, force: true });

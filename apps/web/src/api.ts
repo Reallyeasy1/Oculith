@@ -142,14 +142,14 @@ export const api = {
   // #255: live budget status for the Agent banner — the rolling 24 h window the pre-run gate enforces.
   agentBudget: (id: string) =>
     request<import("./types").AgentBudgetReport>("/api/agents/" + id + "/budget"),
-  // rerunOf (#256): id of the Run this prompt re-dispatches; stamped on run.created for lineage.
   // #254: a busy Agent answers with a QueuedMessageReceipt instead of a started Run.
-  sendMessage: (id: string, content: string, rerunOf?: string) =>
+  // (#404: rerun lineage moved server-side — see api.rerun; no client-sent rerunOf any more.)
+  sendMessage: (id: string, content: string) =>
     request<{ run: AgentRun; message: Message } | QueuedMessageReceipt>(
       "/api/agents/" + id + "/messages",
       {
         method: "POST",
-        body: JSON.stringify({ content, ...(rerunOf ? { rerunOf } : {}) }),
+        body: JSON.stringify({ content }),
       },
     ),
   // #254: cancel a message still waiting in the Agent's queue.

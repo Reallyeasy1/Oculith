@@ -26,7 +26,7 @@ import { caseFromRun, regressionCaseInput } from "./eval/cases.js";
 import { assertionSchema } from "./eval/evaluators.js";
 import { EvalRunner } from "./eval/runner.js";
 import { compareEvalRuns } from "./eval/compare.js";
-import type { AgentRun, EvalRun, Message } from "./types.js";
+import type { Agent, AgentRun, EvalRun, Message } from "./types.js";
 
 // #388: redact-on-serve. The base conversation store keeps `Run.prompt`/`Run.output` and message
 // `content` RAW on purpose — the Codex runner reads `run.prompt` from the store during executeRun,
@@ -49,6 +49,14 @@ const redactCaseForServe = <T extends { prompt: string }>(item: T): T => ({
   ...item,
   prompt: redactText(item.prompt).text,
 });
+// #404 review: a queued message (composer send or rerun on a busy Agent) holds its RAW content in
+// agent.pendingMessages — the store must stay raw (dequeue replays it exactly as typed), so the
+// scrub happens on every agent-serving route instead.
+const redactAgentForServe = (agent: Agent): Agent =>
+  agent.pendingMessages === undefined ? agent : {
+    ...agent,
+    pendingMessages: agent.pendingMessages.map((pending) => ({ ...pending, content: redactText(pending.content).text })),
+  };
 // #404: a failed eval execution stores error.message verbatim, which can quote command lines or
 // output — same serve-only scrub; the stored EvalRun stays raw.
 const redactEvalRunForServe = (evalRun: EvalRun): EvalRun => ({
@@ -235,13 +243,14 @@ export async function createApp(
       if (
         request.method === "POST" &&
         // The matched route pattern, not request.url: a query string (?x=1) must not bypass the http root span (#54).
-        request.routeOptions.url === "/api/agents/:id/messages"
+        // #404: the server-side rerun is a message ingress too — same root span and budget-refusal evidence.
+        (request.routeOptions.url === "/api/agents/:id/messages" || request.routeOptions.url === "/api/runs/:id/rerun")
       ) {
         request.glassbox = createTraceContext(
           {
             requestId: request.id,
             method: request.method,
-            path: "/api/agents/:id/messages",
+            path: request.routeOptions.url,
           },
           glassbox.emitter.capturePolicy,
         );
@@ -287,7 +296,7 @@ export async function createApp(
     previewAvailable: previews ? await previews.isAvailable() : false,
   }));
 
-  app.get("/api/agents", async () => ({ agents: service.listAgents() }));
+  app.get("/api/agents", async () => ({ agents: service.listAgents().map(redactAgentForServe) }));
 
   app.get("/api/workspaces", async () => ({ workspaces: await service.listWorkspaces() }));
   app.get("/api/workspace-templates", async () => ({ templates: await service.listWorkspaceTemplates() }));
@@ -295,12 +304,12 @@ export async function createApp(
   app.post("/api/agents", async (request, reply) => {
     const body = createAgentBody.parse(request.body);
     const agent = await service.createAgent(body);
-    return reply.code(201).send({ agent });
+    return reply.code(201).send({ agent: redactAgentForServe(agent) });
   });
 
   app.get("/api/agents/:id", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    return { agent: service.getAgent(id) };
+    return { agent: redactAgentForServe(service.getAgent(id)) };
   });
 
   app.patch("/api/agents/:id", async (request) => {
@@ -310,7 +319,7 @@ export async function createApp(
     if (body.workspace !== undefined && previews?.get(id)) {
       throw new HttpError(409, "Stop the preview before switching workspaces — the container has the current one mounted");
     }
-    return { agent: await service.updateAgent(id, body) };
+    return { agent: redactAgentForServe(await service.updateAgent(id, body)) };
   });
 
   app.delete("/api/agents/:id", async (request) => {
@@ -339,12 +348,12 @@ export async function createApp(
 
   app.post("/api/agents/:id/start", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    return { agent: await service.startAgent(id) };
+    return { agent: redactAgentForServe(await service.startAgent(id)) };
   });
 
   app.post("/api/agents/:id/stop", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    return { agent: await service.stopAgent(id) };
+    return { agent: redactAgentForServe(await service.stopAgent(id)) };
   });
 
   // #65: read-only workspace browser. Responses carry file metadata (and bounded utf8 content from
