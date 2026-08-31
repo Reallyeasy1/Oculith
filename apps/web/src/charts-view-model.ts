@@ -146,7 +146,12 @@ export function emptyStateMessage(series: readonly ReliabilitySeriesPoint[], buc
   if (series.length >= 2) return null;
   if (bucket === "hour") return "Charts appear once Runs span two time buckets.";
   const runs = series.reduce((sum, point) => sum + point.runs, 0);
-  return `All ${runs} ${runs === 1 ? "Run falls" : "Runs fall"} in a single daily bucket — hourly buckets show the shape of one day`;
+  // #390 item 4: the day series carries no hourly breakdown, so we can only tell Hour view WON'T
+  // help when a single Run sits in the day — one Run can't span two hourly buckets, so don't send
+  // them to Hour only to hit "Charts appear once Runs span two time buckets." A ≥2-Run day might
+  // spread across hours or pile into one; that's not determinable here, so the hint stays.
+  if (runs < 2) return `All ${runs} ${runs === 1 ? "Run falls" : "Runs fall"} in a single daily bucket — charts appear once Runs span two time buckets.`;
+  return `All ${runs} Runs fall in a single daily bucket — hourly buckets show the shape of one day`;
 }
 
 /** #369 overlay delta chips: raw B − A per chart, same signed rendering as the comparison table
@@ -180,6 +185,14 @@ export function domainMax(domain: ChartDomain, values: readonly (number | null)[
 
 /** Judge-score labels: one decimal, "4.2". */
 export const formatScore = (value: number): string => value.toFixed(1);
+
+/** Volume axis / tick labels: whole counts stay integers, but a .5 midpoint stays honest.
+ * niceMax can hand the mid tick a fractional value (max 5 → 2.5); rounding it to "3" put the
+ * label off the gridline it names (#390 item 1), so show the true value with one decimal. */
+export const formatCount = (value: number): string => (Number.isInteger(value) ? String(value) : value.toFixed(1));
+
+/** Reliability header granularity noun tracking the Day|Hour toggle (#390 item 3). */
+export const bucketNoun = (bucket: "hour" | "day"): string => (bucket === "day" ? "daily buckets" : "hourly buckets");
 
 export interface ReadoutLine {
   value: (point: ReliabilitySeriesPoint) => number | null;

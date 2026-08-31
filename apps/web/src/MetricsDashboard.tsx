@@ -7,6 +7,7 @@ import {
   chartDeltaChips,
   domainMax,
   emptyStateMessage,
+  formatCount,
   formatScore,
   hoverReadout,
   linePath,
@@ -106,7 +107,7 @@ const CHARTS: ChartSpec[] = [
     title: "Volume",
     kind: "bar",
     domain: "observed",
-    format: (runs) => String(Math.round(runs)),
+    format: formatCount,
     lines: [{ label: "Runs", color: "var(--blue)", value: (p) => p.runs }],
   },
 ];

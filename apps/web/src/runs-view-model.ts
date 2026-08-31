@@ -260,6 +260,7 @@ export function runOutlier(run: RunListItem, baseline: AgentRunBaseline | null |
 
 export function formatCost(value: number | undefined): string {
   if (value === undefined) return "—";
+  if (value === 0) return "$0"; // #390 item 2: keep 0 out of the sub-cent toFixed(4) branch ("$0.0000" → "$0")
   return value < 0.01 ? "$" + value.toFixed(4) : "$" + value.toFixed(2);
 }
 
