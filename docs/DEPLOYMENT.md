@@ -121,8 +121,8 @@ dedicated VM for this POC.
 ### Deploy
 
 ```bash
-git clone https://github.com/your-org/volc-agent-launchpad.git
-cd volc-agent-launchpad
+git clone https://github.com/Reallyeasy1/Oculith.git
+cd Oculith
 cp .env.example .env.production
 openssl rand -hex 32
 ```
