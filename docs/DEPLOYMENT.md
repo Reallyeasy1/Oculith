@@ -130,9 +130,10 @@ Deploy updates with `git pull --ff-only`, then rerun the deployment script.
 
 ### HTTPS with Caddy and DuckDNS
 
-The repository ships an optional Caddy overlay (`docker-compose.caddy.yml` +
-`deploy/caddy/Caddyfile`) that terminates TLS with an automatic Let's Encrypt
-certificate. Use it whenever `APP_AUTH_TOKEN` crosses an untrusted network.
+The repository ships an optional `caddy` compose profile (service in
+`docker-compose.yml`, site config in `deploy/caddy/Caddyfile`) that terminates
+TLS with an automatic Let's Encrypt certificate. Use it whenever
+`APP_AUTH_TOKEN` crosses an untrusted network.
 
 1. Create a free hostname at [duckdns.org](https://www.duckdns.org) and point it
    at the instance's EIP. DuckDNS is on the Public Suffix List, so each
@@ -141,17 +142,19 @@ certificate. Use it whenever `APP_AUTH_TOKEN` crosses an untrusted network.
 2. Set in `.env.production`:
 
    ```dotenv
-   PUBLIC_PORT=127.0.0.1:3000
+   COMPOSE_PROFILES=caddy
    LAUNCHPAD_DOMAIN=your-name.duckdns.org
-   ACME_EMAIL=you@example.com
+   PUBLIC_PORT=127.0.0.1:3000
    ```
 
    `PUBLIC_PORT=127.0.0.1:3000` binds the app port to loopback so Caddy is the
-   only public entrypoint.
+   only public entrypoint. The deploy script refuses to start the caddy profile
+   without a domain and a loopback-bound `PUBLIC_PORT` (a public app port would
+   either collide with Caddy on port 80 or keep serving the API in cleartext
+   beside the HTTPS front).
 3. Open TCP 443 in the security group and keep TCP 80 open (Caddy answers the
    ACME HTTP-01 challenge there and redirects HTTP to HTTPS).
-4. Rerun `./scripts/deploy-existing-ecs.sh .env.production` — a non-empty
-   `LAUNCHPAD_DOMAIN` adds the overlay automatically.
+4. Rerun `./scripts/deploy-existing-ecs.sh .env.production`.
 
 Verify:
 
@@ -161,8 +164,16 @@ curl -H "Authorization: Bearer $APP_AUTH_TOKEN" \
   https://your-name.duckdns.org/api/system
 ```
 
-Certificates persist in `data/caddy/`, so recreating containers does not burn
-Let's Encrypt rate limits.
+Because the profile lives in the env file, every compose command in this
+document (`ps`, `down`, `logs`) covers the caddy container unchanged. To turn
+HTTPS off again, remove `caddy` from `COMPOSE_PROFILES` and rerun the deploy
+script; its `--remove-orphans` stops the leftover caddy container.
+
+Certificates and the ACME account key persist in the `caddy_data` docker
+volume — deliberately outside `data/`, which is mounted into the
+agent-executing container. Recreating containers does not burn Let's Encrypt
+rate limits; `docker compose --env-file .env.production down -v` deletes the
+volume and the certificates with it.
 
 ### Network and cleanup
 

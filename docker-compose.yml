@@ -46,6 +46,26 @@ services:
       postgres:
         condition: service_healthy
         required: false
+  caddy:
+    image: caddy:2-alpine
+    # HTTPS front (#382): enable with COMPOSE_PROFILES=caddy in the env file, paired with
+    # PUBLIC_PORT=127.0.0.1:3000 so Caddy is the only public entrypoint (deploy-existing-ecs.sh
+    # enforces the pairing and a non-empty LAUNCHPAD_DOMAIN before starting).
+    profiles: ["caddy"]
+    restart: unless-stopped
+    environment:
+      LAUNCHPAD_DOMAIN: ${LAUNCHPAD_DOMAIN:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Named volume, deliberately NOT under ./data: keeps ACME/TLS private keys out of the
+      # tree that is mounted into the agent-executing container and chown'd to uid 1000.
+      # Certificates survive `down` (avoids Let's Encrypt rate limits); `down -v` deletes them.
+      - caddy_data:/data
+    depends_on:
+      - launchpad
   postgres:
     image: postgres:16-alpine
     profiles: ["postgres"]
@@ -65,3 +85,6 @@ services:
       timeout: 3s
       retries: 12
       start_period: 10s
+
+volumes:
+  caddy_data:
