@@ -675,6 +675,7 @@ export class AgentService {
         source: { component: "Fastify", observed: true },
       });
     }
+    const safePrompt = capturesSummaries(this.emitter.capturePolicy) ? redactText(prompt) : undefined;
     this.emitter.emit({
       ...ids,
       spanId: newId("spn"),
@@ -693,10 +694,10 @@ export class AgentService {
       },
       // #258: bounded prompt summary, opt-in only — same gate as the run.completed outcome summary.
       // The emitter's redactEvent scans it and would also strip it at metadata_only (policy_drop_summary).
-      ...(capturesSummaries(this.emitter.capturePolicy)
-        ? { summary: { text: redactText(prompt).text.slice(0, 240), policy: "safe_summary" as const } }
+      ...(safePrompt
+        ? { summary: { text: safePrompt.text.slice(0, 240), policy: "safe_summary" as const } }
         : {}),
-    });
+    }, safePrompt?.rules);
     this.spans.set(runId, {
       traceId: ctx.traceId,
       rootSpanId: ctx.rootSpanId,
@@ -1015,6 +1016,7 @@ export class AgentService {
         .info(restartNote)
         .catch(() => undefined);
     }
+    const safePrompt = capturesSummaries(this.emitter.capturePolicy) ? redactText(run.prompt) : undefined;
     this.emitter.emit({
       traceId: ctx.traceId,
       spanId: newId("spn"),
@@ -1033,10 +1035,10 @@ export class AgentService {
         workspace: agentAtStart.workspaceName ?? path.basename(agentAtStart.workspacePath),
         queuedMs,
       },
-      ...(capturesSummaries(this.emitter.capturePolicy)
-        ? { summary: { text: redactText(run.prompt).text.slice(0, 240), policy: "safe_summary" as const } }
+      ...(safePrompt
+        ? { summary: { text: safePrompt.text.slice(0, 240), policy: "safe_summary" as const } }
         : {}),
-    });
+    }, safePrompt?.rules);
     this.spans.set(run.id, { traceId: ctx.traceId, rootSpanId: ctx.rootSpanId, agentId: agentAtStart.id });
     const execution = this.executeRun(agentAtStart, run, {});
     this.activeExecutions.set(agentAtStart.id, execution);

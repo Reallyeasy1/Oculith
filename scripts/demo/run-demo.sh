@@ -378,20 +378,21 @@ step7() {
     log "Regression case $case_id already exists for Run $run_id."
   fi
   # The prefilled expected_tool names the shell wrapper (powershell.exe/bash), which any candidate
-  # still invokes — it cannot regress, so the case is rebuilt to assert "npm" (#283). The primary
-  # deterministic signal is post_check "npm test" (#282, PostCheckRunner in the eval workspace):
+  # still invokes. Rewriting it to "npm" is also nondeterministic: Codex may validly combine a file
+  # edit and `npm test` in one bash command whose bounded identity is `bash cat`. Remove expected_tool
+  # and use post_check "npm test" (#282, PostCheckRunner in the eval workspace) as the deterministic signal:
   # it re-runs the checksum suite in a fresh template copy and fails unless the agent's fix
   # produced the CORRECT fees — which requires the billing fact held only by the baseline
   # configuration (#298). The command must be on GLASSBOX_POSTCHECK_ALLOWLIST (default
-  # "npm test"). expected_tool npm stays as the secondary signal.
-  local has_both
-  has_both="$(call GET "/api/regression-cases/$case_id" | json 'd.regressionCase.assertions.some(a=>a.type==="expected_tool"&&a.program==="npm")&&d.regressionCase.assertions.some(a=>a.type==="post_check")')"
-  if [[ "$has_both" != "true" ]]; then
+  # "npm test").
+  local has_deterministic_postcheck
+  has_deterministic_postcheck="$(call GET "/api/regression-cases/$case_id" | json 'd.regressionCase.assertions.some(a=>a.type==="post_check")&&!d.regressionCase.assertions.some(a=>a.type==="expected_tool")')"
+  if [[ "$has_deterministic_postcheck" != "true" ]]; then
     local rebuilt
-    rebuilt="$(call GET "/api/regression-cases/$case_id" | json 'JSON.stringify({name:d.regressionCase.name,prompt:d.regressionCase.prompt,workspaceTemplate:d.regressionCase.workspaceTemplate,sourceRunId:d.regressionCase.sourceRunId,baselineConfigHash:d.regressionCase.baselineConfigHash,assertions:d.regressionCase.assertions.filter(a=>a.type!=="post_check").map(a=>a.type==="expected_tool"?{type:"expected_tool",program:"npm"}:a).concat([{type:"post_check",command:"npm test"}])}).replace(/[^\x20-\x7e]/g,c=>"\\u"+("000"+c.charCodeAt(0).toString(16)).slice(-4))')"
+    rebuilt="$(call GET "/api/regression-cases/$case_id" | json 'JSON.stringify({name:d.regressionCase.name,prompt:d.regressionCase.prompt,workspaceTemplate:d.regressionCase.workspaceTemplate,sourceRunId:d.regressionCase.sourceRunId,baselineConfigHash:d.regressionCase.baselineConfigHash,assertions:d.regressionCase.assertions.filter(a=>a.type!=="post_check"&&a.type!=="expected_tool").concat([{type:"post_check",command:"npm test"}])}).replace(/[^\x20-\x7e]/g,c=>"\\u"+("000"+c.charCodeAt(0).toString(16)).slice(-4))')"
     call DELETE "/api/regression-cases/$case_id" >/dev/null
     case_id="$(call POST /api/regression-cases "$rebuilt" | json 'd.regressionCase.id')"
-    log "Case rebuilt as $case_id asserting expected_tool npm + post_check \"npm test\" (#282) — post_check is the deterministic signal."
+    log "Case rebuilt as $case_id with deterministic post_check \"npm test\" (#397)."
   fi
   call GET "/api/regression-cases/$case_id" | json 'd.regressionCase.assertions.map(a=>a.type).join(", ")' | { read -r kinds; echo "  assertions: $kinds"; }
   # The baseline EvalRun must record the GOOD configuration; step 2 keeps the instructions there.

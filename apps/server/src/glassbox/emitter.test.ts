@@ -16,6 +16,22 @@ describe("ObservationEmitter", () => {
     await em.flush();
     expect((await store.readRun("run-1")).map((e) => e.sequence)).toEqual([0, 1]);
   });
+  it("preserves trusted pre-redaction provenance after an adapter bounds already-safe text", async () => {
+    const store = new MemoryTraceStore(); const em = new ObservationEmitter({ store, capturePolicy: "safe_summary" });
+    const direct = em.emit({ ...base, summary: { text: "[REDACTED:bearer]", policy: "safe_summary" } }, ["bearer"])!;
+    const span = em.startSpan({ ...base, type: "runtime.codex.started", name: "codex exec" });
+    const ended = span.end("error", {
+      type: "runtime.codex.failed",
+      summary: { text: "[REDACTED:ark_key]", policy: "safe_summary" },
+      preRedactedRules: ["ark_key"],
+    })!;
+    expect(direct.privacy).toMatchObject({ redacted: true, rules: ["bearer"] });
+    expect(ended.privacy).toMatchObject({ redacted: true, rules: ["ark_key"] });
+    expect(direct.summary?.text).toBe("[REDACTED:bearer]");
+    expect(ended.summary?.text).toBe("[REDACTED:ark_key]");
+    await em.flush();
+    expect(buildTrace(await store.readRun("run-1"), {}).summary.redactedEvents).toBe(2);
+  });
   it("never awaits the store on emit (append runs on the microtask queue), and never throws when the store rejects", async () => {
     let calls = 0;
     const counting: TraceStore = { async initialize() {}, async append() { calls++; return { stored: true }; }, async readRun() { return []; }, runIdForTrace() { return undefined; }, listRuns() { return []; }, markTruncated() {} };

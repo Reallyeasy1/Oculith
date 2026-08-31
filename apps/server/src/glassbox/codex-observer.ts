@@ -192,13 +192,14 @@ export class CodexStreamObserver implements CodexStreamSink {
       // model.message below.
       if (this.emitter.capturePolicy === "reasoning_summary") {
         const text = str(item.text) ?? "";
+        const safe = redactText(text);
         this.emitter.emit({
           ...this.base("model.reasoning", "model.reasoning"),
           category: "model",
           status: "ok",
           attributes: { reasoningBytes: Buffer.byteLength(text, "utf8") },
-          summary: { text: redactText(text).text.slice(0, 240), policy: "safe_summary" },
-        });
+          summary: { text: safe.text.slice(0, 240), policy: "safe_summary" },
+        }, safe.rules);
       }
     } else if (kind === "agent_message") {
       // A message produced by the same call as its reasoning is not a second call; without one
@@ -211,13 +212,14 @@ export class CodexStreamObserver implements CodexStreamSink {
       // policy-independent.
       if (capturesSummaries(this.emitter.capturePolicy)) {
         const text = str(item.text) ?? "";
+        const safe = redactText(text);
         this.emitter.emit({
           ...this.base("model.message", "model.message"),
           category: "model",
           status: "ok",
           attributes: { messageBytes: Buffer.byteLength(text, "utf8") },
-          summary: { text: redactText(text).text.slice(0, 240), policy: "safe_summary" },
-        });
+          summary: { text: safe.text.slice(0, 240), policy: "safe_summary" },
+        }, safe.rules);
       }
     }
     if (kind && ["command_execution", "file_change", "mcp_tool_call", "web_search"].includes(kind)) {
@@ -239,10 +241,13 @@ export class CodexStreamObserver implements CodexStreamSink {
 
   /** #258: last 512 chars of `aggregated_output`, appended to tool summaries under summary-capturing policies only.
    * Redacted BEFORE slicing (same as the runner's stderr tail): a tail cut can drop the `Bearer `/key
-   * prefix a pattern anchors on and leak the bare token. The emitter's redactEvent scans it again. */
-  private outputTail(item: Record<string, unknown>): string | undefined {
+   * prefix a pattern anchors on and leak the bare token. The applied rule ids are passed separately to
+   * the emitter so privacy.redacted stays truthful even though the raw tail never leaves this adapter. */
+  private outputTail(item: Record<string, unknown>): { text: string; rules: string[] } | undefined {
     const output = str(item.aggregated_output);
-    return output ? redactText(output).text.slice(-512) : undefined;
+    if (!output) return undefined;
+    const safe = redactText(output);
+    return { text: safe.text.slice(-512), rules: safe.rules };
   }
 
   /** "shell:powershell.exe Get-ChildItem" — the same bounded identity the trace stores, nothing more. */
@@ -296,7 +301,7 @@ export class CodexStreamObserver implements CodexStreamSink {
       ...(capturesSummaries(this.emitter.capturePolicy)
         ? {
             summary: {
-              text: command.slice(0, 1024) + (tail !== undefined ? "\n--- output tail ---\n" + tail : ""),
+              text: command.slice(0, 1024) + (tail !== undefined ? "\n--- output tail ---\n" + tail.text : ""),
               policy: "safe_summary" as const,
             },
           }
@@ -308,7 +313,7 @@ export class CodexStreamObserver implements CodexStreamSink {
               : { type: "exit_code", message: "exit code " + String(exitCode) },
           }
         : {}),
-    });
+    }, tail?.rules);
     if (declined) {
       // Keep this separate from tool.call.failed: consumers need to distinguish a sandbox policy
       // decision from an ordinary non-zero exit. Only bounded metadata is captured here.
@@ -343,9 +348,9 @@ export class CodexStreamObserver implements CodexStreamSink {
       status: failed ? "error" : "ok",
       attributes: { tool: kind },
       // #258: when the stream reported output for this tool, keep its redacted tail under safe_summary.
-      ...(tail !== undefined ? { summary: { text: tail, policy: "safe_summary" as const } } : {}),
+      ...(tail !== undefined ? { summary: { text: tail.text, policy: "safe_summary" as const } } : {}),
       ...(failed ? { error: { type: "tool_failed", message: kind + " failed" } } : {}),
-    });
+    }, tail?.rules);
   }
 
   private fileChange(changes: Array<Record<string, unknown>>): void {
@@ -438,6 +443,7 @@ export class CodexStreamObserver implements CodexStreamSink {
     // A turn still open when the stream ends gets the same one-call floor buildTrace gives its span (#243).
     this.foldAbandonedTurn();
     if (outcome !== "ok" && this.lastError) {
+      const safeError = redactText(this.lastError);
       this.emitter.emit({
         ...this.base("error.recorded", "codex.error"),
         ...RUNNER_ACTOR,
@@ -445,8 +451,8 @@ export class CodexStreamObserver implements CodexStreamSink {
         status: "error",
         // Redact BEFORE slicing: a clamp on the raw string could cut a key at the boundary and
         // leave a partial that no longer matches any pattern (same class as #54's redact.ts fix).
-        error: { type: "codex_error", message: redactText(this.lastError).text.slice(0, 2048) },
-      });
+        error: { type: "codex_error", message: safeError.text.slice(0, 2048) },
+      }, safeError.rules);
     }
     if (this.sawAnyEvent && (!this.sawTool || !this.sawModel) && (outcome === "ok" || outcome === "error")) {
       this.emitter.emit({

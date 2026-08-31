@@ -18,7 +18,7 @@ _One product narrative for the TechJam Track 1 submission ("Agent Launchpad: Des
 
 **Successful evidence becomes a regression check.** A good Run saves as a Regression Case: bounded task, workspace-template reference (content-hashed), and deterministic assertions pre-filled from the Run's own evidence. An EvalRun replays the case through the same real execution path in a fresh template copy and a fresh thread.
 
-**An Agent change produces a detectable regression.** Change only the candidate's instructions so it skips running tests; the rerun fails `expected_tool` and `post_check`, and the comparison classifies PASS→FAIL as `REGRESSION` — deterministically, with both traces linked as proof. Observability closes into verification.
+**An Agent change produces a detectable regression.** Change only the candidate's instructions so it loses the required billing fact; the fresh-workspace `post_check` fails, and the comparison classifies PASS→FAIL as `REGRESSION` — deterministically, with both traces linked as proof. Observability closes into verification.
 
 ### Track 1 alignment
 

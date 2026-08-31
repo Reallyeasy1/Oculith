@@ -4,6 +4,9 @@ export interface RedactOptions {
   policy: CapturePolicy;
   extraPatterns?: RegExp[] | undefined;
   maxSummaryChars?: number | undefined;
+  /** Rules already applied before bounding a field. The trusted adapter supplies these when it must
+   * redact before slicing, so the persisted privacy evidence remains truthful without retaining raw text. */
+  preRedactedRules?: readonly string[] | undefined;
 }
 
 // Boundary-aware "contains": the sensitive word must sit between separators (or the key's ends), so
@@ -63,7 +66,12 @@ export function redactText(text: string, extra: RegExp[] = []): { text: string; 
 }
 
 export function redactEvent(event: ObservationEvent, options: RedactOptions): ObservationEvent {
-  const rules = new Set<string>();
+  // Adapter provenance is trusted only as an indication that redaction already happened. Keep the
+  // schema boundary here authoritative so a future adapter cannot quarantine safe evidence by
+  // supplying an oversized/empty rule id or more entries than the persisted contract permits.
+  const rules = new Set<string>(
+    (options.preRedactedRules ?? []).filter((rule) => rule.length > 0 && rule.length <= 64).slice(0, 32),
+  );
   const extra = options.extraPatterns ?? [];
   const attributes: ObservationEvent["attributes"] = {};
   for (const [key, value] of Object.entries(event.attributes)) {

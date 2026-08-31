@@ -666,11 +666,15 @@ describe("GlassBox control-plane adapter", () => {
 
     const safe = await makeTraced(runner, new MemoryTraceStore(), "safe_summary");
     const safeAgent = await safe.service.createAgent({ name: "safe outcome" });
-    const safeRun = (await safe.service.sendMessage(safeAgent.id, "go")).run;
+    const safeRun = (await safe.service.sendMessage(safeAgent.id, `go with ${secret}`)).run;
     await settle(safe.service, safeRun.id); await safe.emitter.flush();
-    const safeEvent = (await safe.store.readRun(safeRun.id)).find((event) => event.type === "run.completed")!;
+    const safeEvents = await safe.store.readRun(safeRun.id);
+    const safeCreated = safeEvents.find((event) => event.type === "run.created")!;
+    const safeEvent = safeEvents.find((event) => event.type === "run.completed")!;
+    expect(safeCreated.summary?.text).toContain("[REDACTED:ark_key]");
+    expect(safeCreated.privacy).toMatchObject({ redacted: true, rules: ["ark_key"] });
     expect(safeEvent.summary?.text).toContain("[REDACTED:ark_key]");
-    expect(JSON.stringify(safeEvent)).not.toContain(secret);
+    expect(JSON.stringify(safeEvents)).not.toContain(secret);
   });
 
   it("redacts a runner failure before it reaches the process logger (#75)", async () => {

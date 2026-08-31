@@ -115,4 +115,9 @@ test_default_reuses_existing_run
 test_opt_in_is_safe_and_repeatable
 test_failed_run_cleans_up
 test_interrupted_run_cleans_up
+if grep -Fq 'program:\"npm\"' "$demo_script"; then
+  echo "demo must not use nondeterministic expected_tool npm assertions" >&2
+  exit 1
+fi
+grep -q 'post_check.*npm test' "$demo_script"
 echo "run-demo: default, opt-in rerun, failure, and interruption paths pass"

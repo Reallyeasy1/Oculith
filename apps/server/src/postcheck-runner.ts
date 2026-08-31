@@ -126,12 +126,12 @@ export class PostCheckRunner {
         ...(request.trace ? { spanId } : {}),
       };
       const status = timedOut ? "timeout" : outcome.code === 0 ? "ok" : "error";
-      const safeTail = redactText(stderrTail).text.slice(-512);
+      const safeTail = redactText(stderrTail);
       span?.end(status, {
         type: status === "ok" ? "runtime.postcheck.completed" : "runtime.postcheck.failed",
         attributes: { exitCode: outcome.code, durationMs, stdoutBytes, stderrBytes, ...(outcome.signal ? { signal: outcome.signal } : {}) },
-        ...(capturesSummaries(this.emitter.capturePolicy) && safeTail
-          ? { summary: { text: safeTail, policy: "safe_summary" as const } }
+        ...(capturesSummaries(this.emitter.capturePolicy) && safeTail.text
+          ? { summary: { text: safeTail.text.slice(-512), policy: "safe_summary" as const }, preRedactedRules: safeTail.rules }
           : {}),
       });
       return result;
