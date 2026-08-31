@@ -39,8 +39,9 @@ judgement* (PRD §17.1). No LLM writes a diagnosis or classifies a regression.
 | Demo & reproducibility (15%) | One command, no hidden setup (`npm run poc`) · [docs/DEMO.md](docs/DEMO.md) runbook rehearsed twice at 171 s / 168 s from a clean root · [Known limitations](#known-limitations) documented, not hidden |
 
 Every §1.10 acceptance line holds: clone → `npm run poc` → create/test an Agent from the browser;
-the middleware executes server-side; `npm run check` passes (CI); commit hooks scan every diff for
-secrets and the E2E lane sweeps seeded canaries across every persisted and rendered surface.
+the middleware executes server-side; `npm run check` passes (CI); the guarded agent workflow scans
+staged additions for credential-shaped content before commits, and the E2E lane sweeps seeded
+canaries across persisted and rendered surfaces.
 
 ## Architecture
 
@@ -169,7 +170,7 @@ enabled by `npm run poc`.
 
 ## Observability behaviour
 
-**Trace.** One append-only NDJSON file per Run (30 event types across 9 categories): stable
+**Trace.** One append-only NDJSON file per Run (38 event types across 9 categories): stable
 `traceId/spanId/runId/agentId/sessionId/requestId/actorId/sequence`, per-turn token usage (input,
 cached-input, output, reasoning), per-call `modelCallsObserved`, bounded tool identities with durations
 and exit codes, workspace disk truth, `configHash` on every Run. Trace detail = fixed summary header,
