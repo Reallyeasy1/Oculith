@@ -2,8 +2,9 @@
 
 The single page to have open while recording the features cut. Each beat: **DO** (the
 exact action), **SAY** (verbatim from `SCRIPT.md`), **CUE** (freeze/caption for the
-edit). Raw recording can run long; the waits are trimmed. Step mechanics and per-step
-fallbacks: `docs/DEMO.md`.
+edit). Raw recording can run long; the waits are trimmed. (`docs/DEMO.md` documents the
+separate scripted fee-ledger story — its seeded runs supply beats 5 and 6 here, but its
+9 steps are not these 8 beats.)
 
 Before rolling: clean browser window (fresh profile or F11 full-screen — no extra tabs,
 extension buttons, or bookmarks), notifications off, 1080p, token pasted once, mic off
@@ -12,7 +13,9 @@ extension buttons, or bookmarks), notifications off, 1080p, token pasted once, m
 Every evidence beat (5, 6, 7) opens pre-existing stored runs on the seeded demo
 instance, so nothing depends on the model being in a good mood except beat 2 — and its
 fallback is any existing ok run. `DEMO_REDACTION_BEAT=1 bash scripts/demo/run-demo.sh`
-seeds the redaction run; `bash scripts/seed-demo.sh fail` seeds the timeout run.
+seeds the redaction run (into the fee-ledger Demo Agent's workspace — beat 5 opens that
+run); `bash scripts/seed-demo.sh fail` seeds the timeout run, but only after the server
+was restarted with `GLASSBOX_DEMO_FAILURE=timeout` (restart it back to `off` afterwards).
 
 ---
 
@@ -147,5 +150,5 @@ more black boxes. Every run, in plain sight."
 
 ---
 
-**If a step misbehaves:** keep rolling, redo the click calmly; the per-step fallbacks in
-`docs/DEMO.md` apply.
+**If a step misbehaves:** keep rolling, redo the click calmly; beats 5–7 open stored
+runs that cannot fail, and beat 2's fallback is any existing ok run.

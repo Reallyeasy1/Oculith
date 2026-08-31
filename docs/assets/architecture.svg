@@ -109,7 +109,7 @@
     <!-- event contract -->
     <rect x="40" y="384" width="230" height="96" rx="8" fill="#ffffff" stroke="#6ee7b7" stroke-width="1.5"/>
     <text x="155" y="408" font-size="12.5" font-weight="600" fill="#0f172a" text-anchor="middle">ObservationEvent v1.0</text>
-    <text x="155" y="426" font-size="10.5" fill="#475569" text-anchor="middle">38 event types · 9 categories</text>
+    <text x="155" y="426" font-size="10.5" fill="#475569" text-anchor="middle">37 event types · 9 categories</text>
     <text x="155" y="441" font-size="10.5" fill="#475569" text-anchor="middle">traceId · spanId · runId · actor · sequence</text>
     <text x="155" y="462" font-size="10.5" fill="#b45309" text-anchor="middle">↻ emitter is non-blocking: telemetry</text>
     <text x="155" y="475" font-size="10.5" fill="#b45309" text-anchor="middle">failure never breaks the Run</text>

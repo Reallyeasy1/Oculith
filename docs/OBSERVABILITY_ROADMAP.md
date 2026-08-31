@@ -1,10 +1,10 @@
-# Observability roadmap — what GlassBox should capture next
+# Observability roadmap — what Oculith should capture next
 
-_Tech-lead position, 28 August 2026 (main `a47447f`). Answers "what belongs in the observability portion — inputs, outputs, model reasoning?" with a concrete stance per signal, ranked against the judging rubric (40% end-to-end behavior · 25% design · 20% verification · 15% demo/repro). The full inventory of what is captured today lives in the tables below; PRD §4/§8 and `.claude/rules/glassbox-invariants.md` remain the constitution — nothing here relaxes them._
+_Tech-lead position, 28 August 2026 (main `a47447f`); shipped-status notes refreshed 1 September. Answers "what belongs in the observability portion — inputs, outputs, model reasoning?" with a concrete stance per signal, ranked against the judging rubric (40% end-to-end behavior · 25% design · 20% verification · 15% demo/repro). The full inventory of what is captured today lives in the tables below; PRD §4/§8 and `.claude/rules/glassbox-invariants.md` remain the constitution — nothing here relaxes them._
 
 ## 1. Where we stand
 
-One correlated, privacy-safe trace per Run: 38 event types across 9 categories, per-turn token usage, per-call `modelCallsObserved` (#207/#230), bounded tool identities with durations and exit codes, sandbox denials as first-class `policy.denied` evidence, per-layer capability honesty (#212), workspace disk truth, first-failure focus with deterministic diagnosis, regression cases → isolated EvalRuns → comparison with evidence links. Three capture policies: `metadata_only` (default), `safe_summary` (four bounded, redacted text fields) and `reasoning_summary` (#259: everything `safe_summary` captures plus 240-char redacted reasoning summaries). `full/raw` is prohibited by PRD §4, not merely unimplemented.
+One correlated, privacy-safe trace per Run: 37 event types across 9 categories, per-turn token usage, per-call `modelCallsObserved` (#207/#230), bounded tool identities with durations and exit codes, sandbox denials as first-class `policy.denied` evidence, per-layer capability honesty (#212), workspace disk truth, first-failure focus with deterministic diagnosis, regression cases → isolated EvalRuns → comparison with evidence links. Three capture policies: `metadata_only` (default), `safe_summary` (four bounded, redacted text fields) and `reasoning_summary` (#259: everything `safe_summary` captures plus 240-char redacted reasoning summaries). `full/raw` is prohibited by PRD §4, not merely unimplemented.
 
 ## 2. The stance on inputs, outputs, and reasoning
 
@@ -12,24 +12,24 @@ One correlated, privacy-safe trace per Run: 38 event types across 9 categories, 
 
 **Outputs (the agent's final message).** Already solved in shape: `finalMessageBytes` + `reportedFailure` always; the 240-char redacted summary and the Outcome line under `safe_summary`. The real gap is operational: the demo instance runs `metadata_only`, so the Outcome line — one of our best storytelling surfaces — is invisible (round 6 finding). **Decision: the demo runbook sets `GLASSBOX_CAPTURE_POLICY=safe_summary`.** That is a config choice, not new capture code.
 
-**Model reasoning.** Raw chain-of-thought text is never captured at any policy (invariant #5, PRD §4). Under the explicit opt-in `reasoning_summary` policy (#259, product decision 28 Aug) — never the default — each observed reasoning item is additionally kept as one `model.reasoning` event carrying a 240-char redacted summary through the same fail-closed pipeline as every other summary. The reasoning stream's **shape** ships at every policy: we count reasoning items into `modelCallsObserved`, and we capture `reasoningOutputTokens` on `model.completed` — but `buildTrace` drops it (`query.ts` sums only input/cachedInput/output). Surfacing reasoning-token share ("2.1k of 13k output tokens were reasoning") is a one-line projection change plus a UI cell, and it answers a question operators actually ask (is this model thinking or thrashing?) with zero privacy cost.
+**Model reasoning.** Raw chain-of-thought text is never captured at any policy (invariant #5, PRD §4). Under the explicit opt-in `reasoning_summary` policy (#259, product decision 28 Aug) — never the default — each observed reasoning item is additionally kept as one `model.reasoning` event carrying a 240-char redacted summary through the same fail-closed pipeline as every other summary. The reasoning stream's **shape** ships at every policy: we count reasoning items into `modelCallsObserved`, and we capture `reasoningOutputTokens` on `model.completed` — and `buildTrace` now sums and projects it (shipped since this position was written). Reasoning-token share answers a question operators actually ask (is this model thinking or thrashing?) with zero privacy cost.
 
 **Per-call latency / time-to-first-token.** Structurally unavailable: `codex exec` emits one turn per prompt and the JSONL items carry no timestamps we can trust for call boundaries. Document it as a declared capability gap (we already have the vocabulary — `capability.unavailable` semantics) rather than approximating; invariant #3 says never fabricate. Revisit if a Codex upgrade adds item timestamps.
 
 ## 3. Ranked gaps
 
-**P0 — before submission (moves the 40% and 15% axes):**
-1. **Run-log narrative (#232, in flight).** The Logs panel's two lines per Run was the round-7 headline finding; an operator should be able to follow a Run from the log stream alone: spawn, first output, denials (coalesced), failures with exit hints, capability gaps, completion summary with tokens and model calls.
-2. **Reliability dashboard (#173, open P0).** `POST /api/metrics/query` and both reliability endpoints are built, tested, and invisible — roughly a third of the computed API surface has no UI. This is finished backend value waiting for a front end.
-3. **Demo policy + noise:** `safe_summary` in the runbook (above) and #202 (every ok template Run reads "Needs attention" via recovered chips — the first thing a judge will ask about).
+**P0 — before submission (moves the 40% and 15% axes)** — all three landed before the freeze:
+1. **Run-log narrative (#232 — shipped).** The Logs panel's two lines per Run was the round-7 headline finding; an operator can now follow a Run from the log stream alone: spawn, first output, denials (coalesced), failures with exit hints, capability gaps, completion summary with tokens and model calls.
+2. **Reliability dashboard (#173 — shipped).** `POST /api/metrics/query` and both reliability endpoints now render as the reliability panel, chart cards and config comparison in the web UI.
+3. **Demo policy + noise — shipped:** the runbook sets `safe_summary` (docs/DEMO.md pre-flight) and #202 retuned the attention rule (recovered Runs are informational, not flagged).
 
-**P1 — high value, contained effort:**
-4. Surface `reasoningOutputTokens` (projection + one cell) and `cachedInputTokens` (already summed, never rendered — it is the cache-hit story on a 300k-token Run).
-5. `promptHash` on `run.created` for cross-Run correlation.
-6. **Cost as a first-class metric:** `estimatedCostUsd` exists (env-priced, baseline + per-run column) but is not in the metric catalogue, not persisted on RunSummary, and prices cached input at full rate. Fold it into the catalogue and price cached tokens separately.
+**P1 — high value, contained effort** — 4–6 landed; 7 remains open:
+4. ~~Surface `reasoningOutputTokens` and `cachedInputTokens`~~ — shipped (projection + usage cells).
+5. ~~`promptHash` on `run.created`~~ — shipped (cross-Run correlation without storing a word of prompt text).
+6. ~~Cost as a first-class metric~~ — shipped: `estimated_cost_usd` is in the metric catalogue and read from the persisted RunSummary.
 7. Audit surface: `audit.actors[]` and `audit.denials` are computed and unshown; actor attribution is a trust story worth one row of UI.
 
-**P2 — after the hackathon:** OTLP adapter wiring (stub exists), SSE (#40, gated on P0 per PRD), per-model pricing table, evaluations/jobs UI (#192), budget hooks beyond the shipped per-Agent pre-run gate (#255; PRD §14 roadmap), and an **AI diagnostic agent over the evidence plane** — an LLM agent that reads a Run's trace, correlated logs, and metric rollups to propose a root-cause diagnosis and flag cross-run anomalies (latency drift, cost spikes, recurring failure spans). The shipped LLM judges score one Run's outcome; this agent would evaluate the observability data itself, always as annotations linked back to spans — the recorded evidence stays authoritative. Alerting stays out (PRD §17.5 explicit non-goal).
+**P2 — after the hackathon:** OTLP adapter wiring (stub exists, no route), per-model pricing table, budget hooks beyond the shipped per-Agent pre-run gate (#255; PRD §14 roadmap) — SSE (#40) and the evaluations UI (#192) graduated from this list and shipped — and an **AI diagnostic agent over the evidence plane** — an LLM agent that reads a Run's trace, correlated logs, and metric rollups to propose a root-cause diagnosis and flag cross-run anomalies (latency drift, cost spikes, recurring failure spans). The shipped LLM judges score one Run's outcome; this agent would evaluate the observability data itself, always as annotations linked back to spans — the recorded evidence stays authoritative. Alerting stays out (PRD §17.5 explicit non-goal).
 
 ## 4. What we will not capture, ever
 

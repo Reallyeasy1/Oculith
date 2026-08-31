@@ -2,8 +2,8 @@
 
 The narration for the submission video: a feature showcase in eight beats. ~370 spoken
 words, landing near 2:50 at a 125–130 wpm presenting pace with pauses on the four freeze
-moments. Recording actions beat by beat: `RUNSHEET.md`. Step mechanics and fallbacks:
-`docs/DEMO.md`.
+moments. Recording actions beat by beat: `RUNSHEET.md`. (`docs/DEMO.md` is the separate
+scripted fee-ledger runbook; it seeds the stored runs beats 5–6 open.)
 
 Cutting order if long: the last sentence of the trace beat first, then the audit aside in
 the failure beat.

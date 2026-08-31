@@ -164,7 +164,7 @@ enabled by `npm run poc`.
 
 ## Observability behaviour
 
-**Trace.** One append-only NDJSON file per Run (38 event types across 9 categories): stable
+**Trace.** One append-only NDJSON file per Run (37 event types across 9 categories): stable
 `traceId/spanId/runId/agentId/sessionId/requestId/actorId/sequence`, per-turn token usage (input,
 cached-input, output, reasoning), per-call `modelCallsObserved`, bounded tool identities with durations
 and exit codes, workspace disk truth, `configHash` on every Run. Trace detail = fixed summary header,
@@ -248,11 +248,11 @@ E2E details: it starts its own server on `:3100` with a throwaway state root, so
 on `:3000` is never touched. Playwright is deliberately not a dependency: run
 `npx -y playwright@1.60.0 --version` once and point `PLAYWRIGHT_DIR` at the npx cache it created.
 
-**Windows:** `npm run check` exits non-zero with 2 documented platform-artifact failures, not bugs
+**Windows:** `npm run check` exits non-zero with documented platform artifacts, not bugs
 (see `CLAUDE.md`): a POSIX `/tmp` path assertion in `container-codex-runner.test.ts` always fails, and
 slow machines can hit vitest's 5 s default timeout on a few more tests (those pass with
 `--testTimeout=30000`; a temp-dir cleanup race may add an `ENOTEMPTY` error to the same report). If
-those are the only two failing files, the fresh clone is healthy. The suite is authoritative on
+nothing else fails, the fresh clone is healthy. The suite is authoritative on
 Linux/macOS, where CI runs it. Shell scripts are bash — run them from Git Bash.
 
 ## Security and redaction
@@ -304,8 +304,8 @@ Not covered — know this before putting anything sensitive near it:
 - **Landlock fallback in Docker Desktop.** Kernels without Landlock (Docker Desktop on Windows/macOS)
   fall back to `danger-full-access` inside the outer container: the container boundary holds, per-Agent
   filesystem isolation inside it does not. Use a scoped demo model key.
-- **Windows test artifacts.** 2 of the unit tests fail on Windows for platform-path/timeout reasons
-  (documented in `CLAUDE.md`); Linux/macOS is authoritative.
+- **Windows test artifacts.** One test file always fails on Windows (POSIX path assertion) and a
+  few more can flake on timeouts under load (documented in `CLAUDE.md`); Linux/macOS is authoritative.
 - **Local-first storage.** NDJSON + JSON by default; PostgreSQL is an opt-in backend behind the same
   store interfaces (`GLASSBOX_STORE=postgres`), and there is no external tracing service or message
   bus. Retention is a startup-only pass (`GLASSBOX_RETENTION_DAYS` / `GLASSBOX_MAX_DISK_MB`), and
@@ -341,7 +341,6 @@ judge — labelled *evaluation*, never mixed with telemetry.
 | Controls / policy engine | Roadmap by design ("evidence before control") — nothing in Oculith blocks or decides |
 | Cross-model comparison / tournament | Explicit non-goal for the MVP (PRD §16.2) |
 | OTLP / OTel GenAI mapping | #41 — adapter stub exists; internal schema stays authoritative |
-| Server-side rerun for queued lineage + span-name polish | Follow-ups recorded on PR #405 |
 | AI agent evaluating the metrics, logs and traces | Roadmap (#425) — an LLM agent that reads a Run's trace, logs and metric rollups to propose root-cause diagnoses and flag cross-run anomalies; extends the shipped per-run judges to the evidence plane, as annotations that link back to spans |
 | Alerting | Explicit non-goal (PRD) |
 
