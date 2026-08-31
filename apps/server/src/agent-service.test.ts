@@ -1132,6 +1132,32 @@ describe("per-Agent message queue (#254)", () => {
     expect(userMessageIds).toContain(third.messageId);
   });
 
+  it("orders the transcript by conversation, not send time: a queued message lands after the reply it followed (#395)", async () => {
+    const runner = new StepRunner();
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "transcript-order" });
+    expect("queued" in (await service.sendMessage(agent.id, "one"))).toBe(false);
+    // Real clock, so the queue moment must be strictly earlier than run one's completion.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(await service.sendMessage(agent.id, "two")).toMatchObject({ queued: true, position: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    for (let index = 0; index < 2; index += 1) {
+      await expect.poll(() => runner.resolvers.length).toBe(index + 1);
+      runner.resolvers[index]!();
+    }
+    await expect.poll(() => service.getRuns(agent.id).filter((run) => run.status === "completed").length).toBe(2);
+    expect(service.getMessages(agent.id).map((message) => message.content)).toEqual([
+      "one",
+      "done: one",
+      "two",
+      "done: two",
+    ]);
+    // The original send moment survives on the dequeued message.
+    const dequeuedMessage = service.getMessages(agent.id).find((message) => message.content === "two")!;
+    expect(dequeuedMessage.queuedAt).toEqual(expect.any(String));
+    expect(dequeuedMessage.createdAt >= dequeuedMessage.queuedAt!).toBe(true);
+  });
+
   it("caps the queue at 10 and refuses the next message with 429", async () => {
     const service = await makeService({
       run: () => new Promise(() => undefined),

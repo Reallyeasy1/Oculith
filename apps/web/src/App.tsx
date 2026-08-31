@@ -1115,7 +1115,10 @@ export default function App() {
                     <article className={"message message-" + message.role} key={message.id}>
                       <div className="message-meta">
                         <strong>{message.role === "user" ? "You" : selected.name}</strong>
-                        <span>{formatTime(message.createdAt)}</span>
+                        {/* #395: a dequeued message's createdAt is when its Run started, not when the user hit Enter. */}
+                        <span title={message.queuedAt ? "sent " + formatTime(message.queuedAt) + ", ran " + formatTime(message.createdAt) : undefined}>
+                          {formatTime(message.createdAt)}
+                        </span>
                         {message.role === "assistant" && (
                           <button type="button" className="evidence-link message-trace" onClick={() => openTrace(message.runId)}>
                             trace

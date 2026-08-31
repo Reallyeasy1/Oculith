@@ -105,6 +105,8 @@ export interface Message {
   role: "user" | "assistant";
   content: string;
   createdAt: string;
+  /** #395: when the user sent a message that waited in the queue; createdAt is the dequeue moment. */
+  queuedAt?: string;
 }
 
 export interface RunActivity {
