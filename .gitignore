@@ -19,3 +19,5 @@ fixtures/protected/.pristine/
 .superpowers/
 # Session crawl/UAT artifacts (screenshots, probe scripts with test tokens) — never commit.
 scratchpad/
+# Devpost submission drafts and media (team details, unpublished pitch) — never commit.
+deliverables/
