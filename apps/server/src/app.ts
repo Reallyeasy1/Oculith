@@ -26,6 +26,22 @@ import { caseFromRun, regressionCaseInput } from "./eval/cases.js";
 import { assertionSchema } from "./eval/evaluators.js";
 import { EvalRunner } from "./eval/runner.js";
 import { compareEvalRuns } from "./eval/compare.js";
+import type { AgentRun, Message } from "./types.js";
+
+// #388: redact-on-serve. The base conversation store keeps `Run.prompt`/`Run.output` and message
+// `content` RAW on purpose — the Codex runner reads `run.prompt` from the store during executeRun,
+// so scrubbing before persistence would starve execution. Instead we scrub only these READ responses
+// with the same text scrubber the trace pipeline uses, so a secret pasted into the Playground never
+// echoes back verbatim. Store, AgentService internals and the runner are untouched; types stay intact.
+const redactRunForServe = (run: AgentRun): AgentRun => ({
+  ...run,
+  prompt: redactText(run.prompt).text,
+  output: run.output === null ? null : redactText(run.output).text,
+});
+const redactMessageForServe = (message: Message): Message => ({
+  ...message,
+  content: redactText(message.content).text,
+});
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -420,7 +436,7 @@ export async function createApp(
 
   app.get("/api/agents/:id/messages", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    return { messages: service.getMessages(id) };
+    return { messages: service.getMessages(id).map(redactMessageForServe) };
   });
 
   app.get("/api/agents/:id/runs", async (request) => {
@@ -449,7 +465,7 @@ export async function createApp(
 
   app.get("/api/runs/:id", async (request) => {
     const { id } = runIdParams.parse(request.params);
-    return { run: service.getRun(id) };
+    return { run: redactRunForServe(service.getRun(id)) };
   });
 
   app.get("/api/regression-cases", async () => ({ cases: service.listRegressionCases() }));
