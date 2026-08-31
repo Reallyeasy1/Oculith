@@ -32,8 +32,10 @@ reuse."
 
 ## Beat 2 — A real run (0:15–0:40)
 
-**DO.** Sidebar → the Frontend Builder agent → type the campaign-style task into the
-composer → Enter. Cut to the runs list; watch queued → running. Keep rolling.
+**DO.** Sidebar → the Frontend Builder agent (create it from the `frontend-button`
+template, with the approved brand values in its agent instructions) → type the
+campaign-style task into the composer → Enter. Cut to the runs list; watch
+queued → running. Keep rolling.
 
 **SAY.** "This is Frontend Builder. I ask it, right in the Playground, to apply our
 approved campaign style to the primary button. The design values live in the agent's

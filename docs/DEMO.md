@@ -67,8 +67,8 @@ the step-9 REGRESSION depends on knowledge, not on model mood or disobedience.
 
 Run `bash scripts/demo/run-demo.sh` once at 0:00; it walks 1→9 and prints every URL to
 open. Fallback for any live step that misbehaves: the pre-seeded Run/EvalRun ids from the
-rehearsal (the script reuses them automatically on re-run) and the screenshots under
-`docs/assets/demo/` (to be captured during the rehearsals, tracked on #92).
+rehearsal (the script reuses them automatically on re-run) and the committed screenshots
+`docs/assets/demo/step3-runs-list.png` and `docs/assets/demo/step5-timeout-trace.png`.
 
 | # | Step | Run / click | Say (one line) | Expected screen | Fallback |
 |---|------|-------------|----------------|-----------------|----------|
@@ -94,6 +94,9 @@ opt in before the run:
 ```bash
 DEMO_REDACTION_BEAT=1 bash scripts/demo/run-demo.sh
 ```
+
+(The script waits up to `DEMO_TIMEOUT_S` seconds — default 600 — for each Run/EvalRun to
+finish; lower it for a faster fail-out on a misconfigured box.)
 
 On a clean data root, step 3 first records the unchanged baseline Run so the later regression
 case never inherits a temporary-file request. It then creates a uniquely named
