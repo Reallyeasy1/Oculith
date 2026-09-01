@@ -2801,7 +2801,8 @@ select:focus {
 
 .workspace-row {
   display: grid;
-  grid-template-columns: 18px minmax(160px, 1fr) auto;
+  /* #437: the trailing 22px column holds the per-row download button (empty on symlink rows). */
+  grid-template-columns: 18px minmax(160px, 1fr) auto 22px;
   align-items: center;
   gap: 8px;
   padding: 5px 14px 5px 12px;
@@ -2834,6 +2835,30 @@ select:focus {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* #437: compact per-row download control — always visible so keyboard users can Tab to it. */
+.workspace-row-download {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.workspace-row-download:hover:not(:disabled),
+.workspace-row-download:focus-visible {
+  color: var(--purple);
+  outline: 2px solid var(--purple);
+  outline-offset: 1px;
+}
+
+.workspace-row-download:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
 .workspace-preview {

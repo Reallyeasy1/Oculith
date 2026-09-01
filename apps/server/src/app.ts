@@ -27,6 +27,7 @@ import { assertionSchema } from "./eval/evaluators.js";
 import { EvalRunner } from "./eval/runner.js";
 import { compareEvalRuns } from "./eval/compare.js";
 import type { Agent, AgentRun, EvalRun, Message } from "./types.js";
+import { contentDispositionAttachment } from "./workspace-archive.js";
 
 // #388: redact-on-serve. The base conversation store keeps `Run.prompt`/`Run.output` and message
 // `content` RAW on purpose — the Codex runner reads `run.prompt` from the store during executeRun,
@@ -369,6 +370,19 @@ export async function createApp(
     const { id } = agentIdParams.parse(request.params);
     const query = workspacePathQuery.parse(request.query);
     return service.readAgentWorkspaceFile(id, query.path);
+  });
+
+  // #437: downloads. A regular file streams as an attachment; a directory (or path="") is zipped
+  // in memory under hard caps (413 beyond them). Read-only like browse — allowed while the Agent
+  // is busy, and nothing here reaches a trace, a log or the store.
+  app.get("/api/agents/:id/workspace/download", async (request, reply) => {
+    const { id } = agentIdParams.parse(request.params);
+    const query = workspacePathQuery.parse(request.query);
+    const download = await service.downloadAgentWorkspacePath(id, query.path);
+    return reply
+      .header("content-type", download.contentType)
+      .header("content-disposition", contentDispositionAttachment(download.filename))
+      .send(download.body);
   });
 
   // #66: workspace editing from the browser. The service refuses edits while a Run has the

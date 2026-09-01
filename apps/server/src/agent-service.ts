@@ -34,6 +34,7 @@ import type {
   WorkspaceHistoryEntry,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import { prepareWorkspaceDownload, WorkspaceArchiveTooLargeError, type WorkspaceDownload } from "./workspace-archive.js";
 import { browseWorkspace, readWorkspaceFileView, WorkspacePathError, type WorkspaceFileView, type WorkspaceListing } from "./workspace-browse.js";
 import { deleteWorkspaceFile, seedWorkspaceFiles, WorkspaceEditError, writeWorkspaceFile, type WorkspaceUpload, type WorkspaceWriteReceipt } from "./workspace-edit.js";
 import { LOG_SECRET_ASSIGNMENT, type RunLogStore } from "./run-log-store.js";
@@ -48,6 +49,7 @@ const now = () => new Date().toISOString();
  * stays a 500 for the error handler. */
 function mapWorkspaceBrowseError(error: unknown): unknown {
   if (error instanceof WorkspacePathError || error instanceof WorkspaceEditError) return new HttpError(400, error.message);
+  if (error instanceof WorkspaceArchiveTooLargeError) return new HttpError(413, error.message);
   const code = (error as NodeJS.ErrnoException | null)?.code;
   if (code === "ENOENT") return new HttpError(404, "No such file or directory in this workspace");
   if (code === "EEXIST" || code === "ENOTDIR") return new HttpError(400, "A path segment is not a directory");
@@ -375,6 +377,15 @@ export class AgentService {
   async readAgentWorkspaceFile(id: string, requested: string): Promise<WorkspaceFileView> {
     const agent = this.getAgent(id);
     try { return await readWorkspaceFileView(agent.workspacePath, requested); }
+    catch (error) { throw mapWorkspaceBrowseError(error); }
+  }
+
+  // #437: downloads are reads — allowed while the Agent is busy, same error mapping as browse.
+  // The whole-workspace zip is named after the Agent (workspace dirs are bare agent ids).
+  async downloadAgentWorkspacePath(id: string, requested: string): Promise<WorkspaceDownload> {
+    const agent = this.getAgent(id);
+    const slug = agent.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
+    try { return await prepareWorkspaceDownload(agent.workspacePath, requested, { rootStem: slug ? slug + "-workspace" : undefined }); }
     catch (error) { throw mapWorkspaceBrowseError(error); }
   }
 
