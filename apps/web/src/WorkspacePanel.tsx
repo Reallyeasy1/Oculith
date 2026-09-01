@@ -57,6 +57,7 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
   const [editText, setEditText] = useState<string | null>(null);
   const [newFilePath, setNewFilePath] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [downloading, setDownloading] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<"copied" | "failed" | null>(null);
   const copyTimer = useRef<number | undefined>(undefined);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
@@ -271,6 +272,28 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
     }
   };
 
+  /** #437: fetch through api.ts (a plain <a href> cannot carry the bearer token), then hand the
+   * blob to the browser as an object-URL click. "" downloads the whole workspace as a zip. */
+  const downloadPath = async (path: string) => {
+    setDownloading(path);
+    try {
+      const { blob, filename } = await api.downloadWorkspacePath(agentId, path);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      anchor.click();
+      // Deferred: Safari/older Firefox start the blob fetch asynchronously — an immediate
+      // revoke can cancel the download.
+      window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setDownloading(null);
+    }
+  };
+
   const activate = (row: WorkspaceRow) => {
     if (row.kind === "dir") toggleDir(row);
     else if (confirmDiscardEdits()) void openPreview(row.path);
@@ -340,6 +363,9 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
               />
               <button type="button" className="button button-ghost" disabled={editLocked} title={editHint} onClick={() => fileInput.current?.click()}>Add files</button>
               <button type="button" className="button button-ghost" disabled={editLocked} title={editHint} onClick={() => setNewFilePath((value) => (value === null ? "" : value))}>New file</button>
+              <button type="button" className="button button-ghost" disabled={downloading !== null} title="Download the whole workspace as a zip" onClick={() => void downloadPath("")}>
+                {downloading === "" ? "Zipping…" : "Download zip"}
+              </button>
               <button type="button" className="button button-danger" disabled={editLocked} title={editHint} onClick={() => void resetWorkspace()}>Reset…</button>
               <button type="button" className="button button-ghost" onClick={() => { if (confirmDiscardEdits()) refresh(); }}>Refresh</button>
               {pending && <span className="workspace-row-meta" role="status">Saving…</span>}
@@ -400,6 +426,19 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
               <span className="workspace-row-meta">
                 {row.kind === "file" ? formatBytes(row.size) : row.kind === "symlink" ? "symlink" : ""}
               </span>
+              {row.kind !== "symlink" && (
+                <button
+                  type="button"
+                  className="workspace-row-download"
+                  aria-label={row.kind === "dir" ? "Download " + row.path + " as zip" : "Download " + row.path}
+                  title={row.kind === "dir" ? "Download folder as zip" : "Download file"}
+                  disabled={downloading !== null}
+                  onClick={(event) => { event.stopPropagation(); void downloadPath(row.path); }}
+                  onKeyDown={(event) => event.stopPropagation()}
+                >
+                  {downloading === row.path ? "…" : "↓"}
+                </button>
+              )}
             </div>
             {/* #341: an expanded directory shows a placeholder child until its listing lands. */}
             {row.kind === "dir" && row.expanded && !row.loaded && (
@@ -420,6 +459,11 @@ export default function WorkspacePanel({ agentId, workspacePath, fileCount, last
             <div className="header-actions">
               {canEditPreview && editText === null && (
                 <button type="button" className="button button-ghost" disabled={editLocked} title={editHint} onClick={() => setEditText(preview.content ?? "")}>Edit</button>
+              )}
+              {editText === null && (
+                <button type="button" className="button button-ghost" disabled={downloading !== null} onClick={() => void downloadPath(preview.path)}>
+                  {downloading === preview.path ? "Downloading…" : "Download"}
+                </button>
               )}
               {!preview.managed && editText === null && (
                 <button type="button" className="button button-ghost" disabled={editLocked} title={editHint} onClick={() => void deleteFile()}>Delete</button>

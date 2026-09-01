@@ -114,6 +114,22 @@ export async function probeToken(candidate: string): Promise<boolean> {
   return true;
 }
 
+/** #437: pull the download name out of `Content-Disposition`, preferring the RFC 5987 UTF-8 form
+ * over the ASCII-sanitised quoted fallback. Null when the header is missing or carries neither. */
+export function filenameFromContentDisposition(header: string | null): string | null {
+  if (!header) return null;
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(header);
+  if (star?.[1]) {
+    try {
+      return decodeURIComponent(star[1]);
+    } catch {
+      // fall through to the plain filename
+    }
+  }
+  const plain = /filename="([^"]*)"/i.exec(header);
+  return plain?.[1] ? plain[1] : null;
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await authorizedFetch(url, {
     ...options,
@@ -163,6 +179,23 @@ export const api = {
     request<WorkspaceListing>("/api/agents/" + id + "/workspace?path=" + encodeURIComponent(path)),
   readWorkspaceFile: (id: string, path: string) =>
     request<WorkspaceFile>("/api/agents/" + id + "/workspace/file?path=" + encodeURIComponent(path)),
+  // #437: binary response, so it bypasses request()'s JSON parse but still rides authorizedFetch —
+  // a plain <a href> cannot carry the bearer token. "" downloads the whole workspace as a zip.
+  downloadWorkspacePath: async (id: string, path: string): Promise<{ blob: Blob; filename: string }> => {
+    const response = await authorizedFetch(
+      "/api/agents/" + id + "/workspace/download?path=" + encodeURIComponent(path),
+    );
+    if (!response.ok) {
+      const data = (await response.json().catch(() => ({}))) as { error?: string };
+      throw new ApiError(data.error ? humanizeErrorMessage(data.error) : "Download failed", response.status);
+    }
+    return {
+      blob: await response.blob(),
+      filename:
+        filenameFromContentDisposition(response.headers.get("content-disposition")) ??
+        (path === "" ? "workspace.zip" : path.split("/").pop() || "download"),
+    };
+  },
   // #66: workspace editing. Uploads travel as base64/utf8 inside JSON; the server enforces the
   // caps (1 MB per PUT file, 20 files / 8 MB per batch), refuses managed files and credential-
   // looking content with 400, and refuses everything with 409 while a Run has the workspace mounted.

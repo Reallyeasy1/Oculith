@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError, clearAuthToken, getAuthToken, humanizeErrorMessage, probeToken, setAuthToken, setUnauthorizedHandler } from "./api";
+import { api, ApiError, clearAuthToken, filenameFromContentDisposition, getAuthToken, humanizeErrorMessage, probeToken, setAuthToken, setUnauthorizedHandler } from "./api";
 
 afterEach(() => {
   setUnauthorizedHandler(null);
@@ -248,5 +248,50 @@ describe("humanizeErrorMessage (#344)", () => {
       headers: { "content-type": "application/json" },
     })));
     await expect(api.listAgents()).rejects.toThrowError(new ApiError("name: Too small", 400));
+  });
+});
+
+describe("workspace downloads (#437)", () => {
+  it.each([
+    ["both forms, preferring the RFC 5987 one", "attachment; filename=\"r_sum_.zip\"; filename*=UTF-8''r%C3%A9sum%C3%A9.zip", "résumé.zip"],
+    ["a plain quoted filename", 'attachment; filename="notes.txt"', "notes.txt"],
+    ["an undecodable RFC 5987 value falling back to the quoted form", "attachment; filename=\"a.zip\"; filename*=UTF-8''%E0%A4%A", "a.zip"],
+  ])("parses %s", (_label, header, expected) => {
+    expect(filenameFromContentDisposition(header)).toBe(expected);
+  });
+
+  it.each([
+    ["a missing header", null],
+    ["a header with neither form", "attachment"],
+    ["an empty quoted filename", 'attachment; filename=""'],
+  ])("returns null for %s", (_label, header) => {
+    expect(filenameFromContentDisposition(header)).toBe(null);
+  });
+
+  it("carries the token, reads the blob, and names the file from the header", async () => {
+    setAuthToken("token-123");
+    const fetchMock = vi.fn().mockResolvedValue(new Response(new Blob([Buffer.from([1, 2, 3])]), {
+      status: 200,
+      headers: { "content-disposition": 'attachment; filename="ws.zip"' },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { blob, filename } = await api.downloadWorkspacePath("agent-1", "");
+    expect(filename).toBe("ws.zip");
+    expect(blob.size).toBe(3);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/agents/agent-1/workspace/download?path=",
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer token-123" }) }),
+    );
+  });
+
+  it("falls back to the path basename when the header is absent, and maps error bodies", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(new Blob(["x"]), { status: 200 })));
+    expect((await api.downloadWorkspacePath("agent-1", "src/notes.txt")).filename).toBe("notes.txt");
+    expect((await api.downloadWorkspacePath("agent-1", "")).filename).toBe("workspace.zip");
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: "Archive exceeds the 128 MB limit" }), { status: 413 })));
+    await expect(api.downloadWorkspacePath("agent-1", "")).rejects.toThrowError(
+      new ApiError("Archive exceeds the 128 MB limit", 413),
+    );
   });
 });

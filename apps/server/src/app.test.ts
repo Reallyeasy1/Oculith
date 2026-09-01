@@ -304,6 +304,55 @@ describe.each([["test"], ["production"]] as const)("HTTP boundary (NODE_ENV=%s)"
     }
   });
 
+  it("serves workspace downloads: raw file, folder zip, whole-workspace zip, auth and 400/404 (#437)", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "workspace-download-api-"));
+    try {
+      const cfg = config({
+        APP_DATA_DIR: path.join(root, "data"),
+        AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+        CODEX_HOME: path.join(root, "codex"),
+        ARK_API_KEY: "test-key",
+        ARK_MODEL: "ep-test",
+      });
+      const runner = { run: async () => ({ output: "", threadId: "t" }), cancel: async () => false, isAvailable: async () => true };
+      const svc = new RealAgentService(cfg, new JsonStore(path.join(root, "data", "db.json")), new WorkspaceManager(path.join(root, "workspaces")), runner);
+      await svc.initialize();
+      const agent = await svc.createAgent({ name: "Downloader" });
+      await mkdir(path.join(agent.workspacePath, "src"));
+      await writeFile(path.join(agent.workspacePath, "src", "index.ts"), "export {};\n", "utf8");
+      const app = await createApp(cfg, svc);
+      const base = "/api/agents/" + agent.id;
+      expect((await app.inject({ method: "GET", url: base + "/workspace/download" })).statusCode).toBe(401);
+      const get = (url: string) => app.inject({ method: "GET", url, headers: auth });
+
+      const file = await get(base + "/workspace/download?path=" + encodeURIComponent("src/index.ts"));
+      expect(file.statusCode).toBe(200);
+      expect(file.headers["content-type"]).toBe("application/octet-stream");
+      expect(file.headers["content-disposition"]).toContain('attachment; filename="index.ts"');
+      expect(file.body).toBe("export {};\n");
+
+      const folder = await get(base + "/workspace/download?path=src");
+      expect(folder.statusCode).toBe(200);
+      expect(folder.headers["content-type"]).toBe("application/zip");
+      expect(folder.headers["content-disposition"]).toContain('filename="src.zip"');
+      expect(folder.rawPayload.readUInt32LE(0)).toBe(0x04034b50); // zip local-header signature
+
+      const whole = await get(base + "/workspace/download");
+      expect(whole.statusCode).toBe(200);
+      expect(whole.headers["content-disposition"]).toContain('filename="downloader-workspace.zip"');
+      // The workspace zip includes the platform files and the nested source file by name.
+      expect(whole.rawPayload.includes(Buffer.from("AGENTS.md"))).toBe(true);
+      expect(whole.rawPayload.includes(Buffer.from("src/index.ts"))).toBe(true);
+
+      expect((await get(base + "/workspace/download?path=" + encodeURIComponent("../"))).statusCode).toBe(400);
+      expect((await get(base + "/workspace/download?path=missing.txt")).statusCode).toBe(404);
+      expect((await get("/api/agents/2c1b9f8e-3b7e-4b9d-9d3a-1c2d3e4f5a6b/workspace/download")).statusCode).toBe(404);
+      await app.close();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("serves workspace editing: write, seed, delete, reset, history and refusals (#66)", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "workspace-edit-api-"));
     try {
